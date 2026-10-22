@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { withSendToSessionLock } from '../sendToSessionLock';
+import { createScheduledModelScope } from '../scheduledModelSelection';
 import { createBotModelRouteReconciler } from '../botModelRouteReconciler';
 import type { BotModelRoute } from '../../../shared/botModelChain';
 import type { SessionRuntimeProfile } from '../sessionRuntimeControl';
@@ -13,8 +14,9 @@ function harness() {
   };
   const read = vi.fn(async () => state);
   const apply = vi.fn<Parameters<typeof createBotModelRouteReconciler>[0]['apply']>(async () => undefined);
-  const reconcile = createBotModelRouteReconciler({ ownerEpoch: () => owner, read, apply });
-  return { state, read, apply, reconcile, changeOwner: () => { owner = 'owner-b'; } };
+  const onSelectionAccepted = vi.fn(async (_id: string) => {});
+  const reconcile = createBotModelRouteReconciler({ ownerEpoch: () => owner, read, apply, onSelectionAccepted });
+  return { state, read, apply, reconcile, onSelectionAccepted, changeOwner: () => { owner = 'owner-b'; } };
 }
 
 describe('permanent Bot model selection', () => {
@@ -231,4 +233,36 @@ it('reconciles shared-to-local and local-to-shared selections of the same model'
   delete h.state.chain[0]!.agentDeviceId;
   await h.reconcile.profileChanged('canonical');
   expect(h.apply).toHaveBeenLastCalledWith('canonical', local, h.state.current);
+});
+
+// #6759: an explicit save can accept the automation's temporary model without a switch.
+it.each([true, false])('invalidates the automation baseline after an explicit save (already current: %s)', async alreadyCurrent => {
+  const h = harness();
+  const permanent = { agentKind: 'codex' as const, model: 'luna', providerId: 'xd', effort: 'medium' as const, fastMode: false };
+  h.state.current = alreadyCurrent ? permanent : { ...permanent, model: 'temporary-model' };
+  h.apply.mockImplementation(async () => { h.state.current = permanent; });
+  let baseline: string | null = JSON.stringify({ ...permanent, model: 'old-model', scopeId: 'automation' });
+  const scope = createScheduledModelScope({
+    read: async () => ({ profile: h.state.current, baseline }),
+    write: async (_id, value) => { baseline = value ? JSON.stringify(value) : null; },
+    apply: async (_id, profile) => { h.state.current = profile; },
+    isBusy: () => false, createId: () => 'unused',
+  });
+  h.onSelectionAccepted.mockImplementation(async () => { baseline = null; });
+  if (alreadyCurrent) {
+    await h.reconcile('canonical');
+    expect(baseline).not.toBeNull(); // Ordinary reconciliation must not cancel an automation scope.
+  }
+  await h.reconcile.profileChanged('canonical');
+  await scope.restore('canonical', 'automation');
+  expect(h.state.current).toEqual(permanent);
+  expect(baseline).toBeNull();
+  expect(h.apply).toHaveBeenCalledTimes(alreadyCurrent ? 0 : 1);
+});
+
+it('does not accept a permanent selection whose staging failed', async () => {
+  const h = harness();
+  h.apply.mockRejectedValueOnce(new Error('provider unavailable'));
+  await expect(h.reconcile.profileChanged('canonical')).rejects.toThrow('provider unavailable');
+  expect(h.onSelectionAccepted).not.toHaveBeenCalled();
 });

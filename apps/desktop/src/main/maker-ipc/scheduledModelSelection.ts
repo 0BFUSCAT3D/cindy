@@ -1,5 +1,5 @@
 import type { AgentKind, Effort } from '@cindy/maker-core';
-import { effectiveSourceIdForModel, findCatalogModel, type ProviderView } from '@cindy/model-providers';
+import { effectiveSourceIdForModel, findCatalogModel, isModelSelectableForNewRoute, type ProviderView } from '@cindy/model-providers';
 import { resolveCompatibleSessionRuntimeEffort } from './sessionRuntimeControl';
 import { parseScheduledModelBaseline, type ScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
 
@@ -92,7 +92,8 @@ export function resolveScheduledModelSelection(
     effectiveSourceIdForModel(providers, null, selection.model, selection.agentKind);
   const provider = providers.find((candidate) => candidate.id === providerId);
   const model = findCatalogModel(provider, selection.model, selection.agentKind, { exact: true });
-  if (!provider?.connected || provider.suspended === true || !model || model.disabled === true) {
+  if (!provider?.connected || provider.suspended === true || !model ||
+    !isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })) {
     throw new Error(`Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
   }
   return {
@@ -100,6 +101,22 @@ export function resolveScheduledModelSelection(
     providerId,
     effort: resolveCompatibleSessionRuntimeEffort(model, selection.effort),
     fastMode: model.supportsFastMode === true && (selection.fastMode !== 'ultrafast' || (selection.agentKind === 'codex' && model.supportsUltrafastMode === true)) ? selection.fastMode : false,
+  };
+}
+
+/** Resolve against the bound execution computer; inactive replacements use the local path. */
+export function createScheduledModelSelectionResolver(deps: {
+  readRemoteProviders: (deviceId: string, agent: AgentKind, model: string, providerId: string | null) => Promise<ProviderView[]>;
+  resolveLocalSelection: (selection: ScheduledModelSelection) => Promise<ScheduledModelSelection>;
+}) {
+  return async (selection: ScheduledModelSelection, target?: ScheduledModelTarget | null): Promise<ScheduledModelSelection> => {
+    if (target?.agentDeviceId && !target.remoteHostId) {
+      const providers = await deps.readRemoteProviders(
+        target.agentDeviceId, selection.agentKind, selection.model, selection.providerId,
+      );
+      return resolveScheduledModelSelection(selection, providers);
+    }
+    return deps.resolveLocalSelection(selection);
   };
 }
 

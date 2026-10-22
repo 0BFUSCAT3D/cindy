@@ -53,6 +53,8 @@ export function createBotModelRouteReconciler(deps: {
   withSessionLock?<T>(sessionId: string, run: () => Promise<T>): Promise<T>;
   read(sessionId: string, purpose: 'apply' | 'preview'): Promise<BotRouteState | null>;
   apply(sessionId: string, route: RuntimeRoute, current: RuntimeRoute): Promise<void>;
+  /** An accepted permanent choice supersedes temporary preferences, even without a switch. */
+  onSelectionAccepted?(sessionId: string): Promise<void>;
 }) {
   let owner: string | undefined;
   const configured = new Map<string, string>();
@@ -87,23 +89,28 @@ export function createBotModelRouteReconciler(deps: {
           throwIpcError('PRECONDITION_FAILED', '请先选择已开启的伙伴模型');
         }
         const key = JSON.stringify(state.chain);
-        const route = configuredRoute(state, configured.get(sessionId));
+        const previous = configured.get(sessionId);
+        const route = configuredRoute(state, previous);
         if (!route) {
           configured.set(sessionId, key);
           return;
         }
         const current = state.current;
-        if (!sameRoute(route, current) || (state.next && !sameRoute(route, state.next))) {
-          try {
-            await deps.apply(sessionId, route, state.current);
-          } catch (error) {
-            // A failed obsolete selection must not discard a newer explicit save.
-            // Re-read its route and runtime state; never retry the same failure
-            // indefinitely or continue applying after the account owner changes.
-            if (deps.ownerEpoch() !== epoch) throw new Error('Bot model route owner changed');
-            if ((revisions.get(sessionId) ?? 0) !== revision) continue;
-            throw error;
+        const needsApply = !sameRoute(route, current) || !!(state.next && !sameRoute(route, state.next));
+        try {
+          if (needsApply) await deps.apply(sessionId, route, current);
+          if (deps.ownerEpoch() !== epoch) throw new Error('Bot model route owner changed');
+          if ((revisions.get(sessionId) ?? 0) !== revision) continue;
+          // profileChanged marks previous as ''; ordinary matching reconciliation
+          // must leave an in-flight automation scope intact.
+          if (needsApply || (previous !== undefined && previous !== key)) {
+            await deps.onSelectionAccepted?.(sessionId);
           }
+        } catch (error) {
+          // A failed obsolete selection must not discard a newer explicit save.
+          if (deps.ownerEpoch() !== epoch) throw new Error('Bot model route owner changed');
+          if ((revisions.get(sessionId) ?? 0) !== revision) continue;
+          throw error;
         }
         if (deps.ownerEpoch() !== epoch) throw new Error('Bot model route owner changed');
         if ((revisions.get(sessionId) ?? 0) !== revision) continue;

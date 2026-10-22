@@ -195,7 +195,7 @@ import {
   readInputDeliveryClientIds,
 } from '@cindy/device-link';
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from 'drizzle-orm';
-import { applyScheduledModelSelection, createScheduledModelScope, resolveScheduledModelSelection, ScheduledModelSelectionBusyError, type ScheduledModelSelection, type ScheduledModelSelectionLease } from './scheduledModelSelection';
+import { applyScheduledModelSelection, createScheduledModelScope, createScheduledModelSelectionResolver, ScheduledModelSelectionBusyError, type ScheduledModelSelection, type ScheduledModelSelectionLease } from './scheduledModelSelection';
 import { parseScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
 import { recordTurnModelChange, type TurnModelIdentity } from './turnModelChange';
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
@@ -10876,19 +10876,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         remoteHostId: row.remoteHostId, agentDeviceId: row.agentDeviceId, orcaRole: row.orcaRole } : null;
     },
     isBusy: () => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning(),
-    resolveSelection: async (route, target) => {
-      if (target?.agentDeviceId && !target.remoteHostId) {
-        const providers = await readUsableAgentDeviceProviders(
-          target.agentDeviceId, route.agentKind, route.model, route.providerId,
-        );
-        return resolveScheduledModelSelection(route, providers);
-      }
-      const reroute = await assertModelRouteUsable(route.agentKind, route.model, route.providerId);
-      return resolveScheduledModelSelectionLive({ ...route,
-        providerId: reroute && shouldApplyExclusiveProviderRerouteLive(route.providerId)
-          ? reroute : route.providerId,
-      });
-    },
+    resolveSelection: createScheduledModelSelectionResolver({
+      readRemoteProviders: readUsableAgentDeviceProviders,
+      resolveLocalSelection: async (route) => {
+        const reroute = await assertModelRouteUsable(route.agentKind, route.model, route.providerId);
+        return resolveScheduledModelSelectionLive({ ...route,
+          providerId: reroute && shouldApplyExclusiveProviderRerouteLive(route.providerId)
+            ? reroute : route.providerId,
+        });
+      },
+    }),
     switchHarness: async (route) => {
       const [savedModes] = await getDbClient().drizzle
         .select({ planMode: sessions.planModeEnabled }).from(sessions)
@@ -15885,6 +15882,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   const reconcileBotModelRoute = createBotModelRouteReconciler({
     ownerEpoch: captureSessionRuntimeControlOwnerEpoch,
+    onSelectionAccepted: (sessionId) => updateScheduledPreference(sessionId, null),
     withSessionLock: withSendToSessionLock,
     read: async (sessionId, purpose) => {
       const [row] = await getDbClient().drizzle.select({
@@ -15939,9 +15937,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     apply: async (sessionId, route, current) => {
       await stageSessionRouteSelection(sessionId, { ...route, agentDeviceId: route.agentDeviceId ?? null }, current.agentKind);
-      // The permanent teammate route has superseded the pre-automation preference.
-      // Do not restore that stale source before the next ordinary send (#6745).
-      await updateScheduledPreference(sessionId, null);
       // Consume the same model/Harness intent as the normal send path. Its
       // verified window protection and history handoff also apply here; a Bot
       // settings save need not wait for a second user message. Busy runtimes

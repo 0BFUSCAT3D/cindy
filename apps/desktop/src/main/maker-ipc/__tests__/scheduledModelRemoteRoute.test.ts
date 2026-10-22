@@ -1,29 +1,9 @@
-import { readFileSync } from 'node:fs';
-import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderView } from '@cindy/model-providers';
-import { applyScheduledModelSelection, createScheduledModelScope, resolveScheduledModelSelection, type ScheduledModelSelection } from '../scheduledModelSelection';
+import { applyScheduledModelSelection, createScheduledModelScope, createScheduledModelSelectionResolver, resolveScheduledModelSelection, type ScheduledModelSelection } from '../scheduledModelSelection';
 
-// #6745: execute the production adapter and persisted-scope restore together.
-// A shared-provider baseline must use the execution computer's catalog.
-const source = ts.createSourceFile('register.ts', readFileSync(new URL('../register.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
-const adapters = new Map<string, string>();
-function visit(node: ts.Node) {
-  if (ts.isVariableDeclaration(node) && node.initializer) {
-    if (node.name.getText(source) === 'applyScheduledProfile') adapters.set('scheduled', node.initializer.getText(source));
-    if (node.name.getText(source) === 'reconcileBotModelRoute' && ts.isCallExpression(node.initializer)) {
-      const deps = node.initializer.arguments[0] as ts.ObjectLiteralExpression;
-      const apply = deps.properties.find(p => ts.isPropertyAssignment(p) && p.name.getText(source) === 'apply') as ts.PropertyAssignment;
-      adapters.set('bot', apply.initializer.getText(source));
-    }
-  }
-  ts.forEachChild(node, visit);
-}
-visit(source);
-function compile(key: string, bindings: Record<string, unknown>) {
-  const js = ts.transpileModule(`return ${adapters.get(key)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  return new Function(...Object.keys(bindings), js)(...Object.values(bindings));
-}
+// #6745: invoke the same production resolver wired into register.ts with the
+// real persisted-scope lifecycle; only catalog, storage and engine I/O are fakes.
 const choice: ScheduledModelSelection = {
   agentKind: 'codex', model: 'test-model', providerId: 'openai-shared', effort: 'high', fastMode: false,
 };
@@ -41,33 +21,29 @@ function fixture(device: string | null = 'share:test', status = 'active') {
     if (!local.some(p => p.id === providerId)) throw new Error('provider unavailable on this computer');
     return undefined;
   });
-  const query = { from: () => query, where: () => query, limit: async () => [{ planMode: false }] };
-  const switchHarness = vi.fn(async (_deps: unknown, route: { agentDeviceId?: string | null }) => {
-    if (route.agentDeviceId !== undefined) current.agentDeviceId = route.agentDeviceId;
-    return { engineReady: true };
+  const switchHarness = vi.fn(async () => ({ engineReady: true }));
+  const applyModel = vi.fn(async (route: ScheduledModelSelection) => {
+    current = { ...current, ...route };
   });
-  const applyModel = vi.fn(async (_id: string, model: string, providerId: string | null, axes: object) => {
-    current = { ...current, model, providerId, ...axes };
-    return {};
-  });
-  const apply = compile('scheduled', {
-    applyScheduledModelSelection, resolveScheduledModelSelection,
-    agentSwitchDeps: { getSessionRow: async () => status === 'missing' ? null : ({ ...current, status }) },
-    dbToMakerAgentKind: (kind: string) => kind,
-    isSessionInTurn: () => false, maker: { getSession: () => undefined },
-    assertModelRouteUsable: guard, shouldApplyExclusiveProviderRerouteLive: () => false,
-    resolveScheduledModelSelectionLive: async (route: ScheduledModelSelection) => resolveScheduledModelSelection(route, local),
-    readUsableAgentDeviceProviders: remote,
-    performSessionAgentSwitch: switchHarness, getDbClient: () => ({ drizzle: { select: () => query } }),
-    sessions: {}, eq: vi.fn(), persistSessionFields: vi.fn(),
-    applySessionRuntimeSelection: applyModel, runtimeSelectionRequiresModelWindowConfirmation: () => false,
+  const apply = async (_id: string, selection: ScheduledModelSelection) => applyScheduledModelSelection(selection, {
+    getTarget: async () => status === 'missing' ? null : ({ ...current, status }),
+    isBusy: () => false,
+    resolveSelection: createScheduledModelSelectionResolver({
+      readRemoteProviders: remote,
+      resolveLocalSelection: async route => {
+        await guard(route.agentKind, route.model, route.providerId);
+        return resolveScheduledModelSelection(route, local);
+      },
+    }),
+    switchHarness, applyModel,
   });
   const deps = {
     read: async () => ({ profile: current, baseline }),
     write: async (_id: string, value: unknown) => { baseline = value ? JSON.stringify(value) : null; },
-    isBusy: () => false, createId: () => 'new-run', apply,
+    isBusy: () => false, createId: () => 'new-run',
+    apply: async (id: string, profile: ScheduledModelSelection) => { await apply(id, profile); },
   };
-  return { deps, remote, guard, switchHarness, applyModel, scope: createScheduledModelScope(deps),
+  return { deps, apply, remote, guard, switchHarness, applyModel, scope: createScheduledModelScope(deps),
     state: () => ({ current, baseline }), save: (value: unknown) => { baseline = JSON.stringify(value); } };
 }
 
@@ -83,7 +59,7 @@ describe('automation restore uses the execution computer', () => {
   });
   it('validates an automation choice on the same remote execution computer', async () => {
     const h = fixture();
-    await h.deps.apply('task', choice);
+    await h.apply('task', choice);
     expect(h.remote).toHaveBeenCalledWith('share:test', 'codex', 'test-model', 'openai-shared');
     expect(h.guard).not.toHaveBeenCalled();
     expect(h.switchHarness).not.toHaveBeenCalled();
@@ -106,6 +82,31 @@ describe('automation restore uses the execution computer', () => {
     expect(h.guard).not.toHaveBeenCalled();
     expect(h.state().baseline).not.toBeNull();
   });
+  it('preserves the standard admission exception for a custom user-owned model group', async () => {
+    const h = fixture();
+    const views = catalog('openai-shared');
+    const model = 'gpt-4o-audio-preview';
+    views[0].models.codex![0].id = model;
+    views[0].models.codex![0].group = 'custom:openai-shared';
+    h.save({ ...choice, model, scopeId: 'old-run' });
+    h.remote.mockResolvedValueOnce(views);
+    await h.scope.restore('task');
+    expect(h.state().baseline).toBeNull();
+    expect(h.state().current).toMatchObject({ ...choice, model });
+  });
+  it.each([{ status: 'retired' }, { availability: 'requires_payment' }, { mode: 'image' }])(
+    'rejects a remote catalog entry outside new-route admission: %j', async flags => {
+      const h = fixture();
+      const before = h.state();
+      const views = catalog('openai-shared');
+      Object.assign(views[0].models.codex![0], flags);
+      h.remote.mockResolvedValueOnce(views);
+      await expect(h.scope.restore('task')).rejects.toThrow('unavailable');
+      expect(h.state()).toEqual(before);
+      expect(h.applyModel).not.toHaveBeenCalled();
+      expect(h.switchHarness).not.toHaveBeenCalled();
+    },
+  );
   it.each(['provider', 'model'] as const)('preserves the baseline when the remote %s is disabled after restart', async disabled => {
     const h = fixture();
     const before = h.state();
@@ -124,7 +125,7 @@ describe('automation restore uses the execution computer', () => {
     const before = h.state();
     h.remote.mockRejectedValue(new Error('REMOTE_AGENT_SHARE_PAUSED'));
     const localChoice = { ...choice, providerId: 'openai' };
-    await expect(h.deps.apply('task', localChoice)).resolves.toEqual(localChoice);
+    await expect(h.apply('task', localChoice)).resolves.toEqual(localChoice);
     expect(h.remote).not.toHaveBeenCalled();
     expect(h.guard).toHaveBeenCalledWith('codex', 'test-model', 'openai');
     expect(h.applyModel).not.toHaveBeenCalled();
@@ -133,7 +134,7 @@ describe('automation restore uses the execution computer', () => {
   });
   it.each(['archived', 'deleted'])('rejects a remote-only source for the local replacement of a %s target', async status => {
     const h = fixture('share:test', status);
-    await expect(h.deps.apply('task', choice)).rejects.toThrow('provider unavailable');
+    await expect(h.apply('task', choice)).rejects.toThrow('provider unavailable');
     expect(h.remote).not.toHaveBeenCalled();
     expect(h.applyModel).not.toHaveBeenCalled();
     expect(h.switchHarness).not.toHaveBeenCalled();
@@ -151,34 +152,5 @@ describe('automation restore uses the execution computer', () => {
     await expect(h.scope.restore('task')).rejects.toThrow('provider unavailable');
     expect(h.remote).not.toHaveBeenCalled();
     expect(h.state().baseline).not.toBeNull();
-  });
-});
-
-describe('a new teammate preference supersedes the old automation baseline', () => {
-  it.each([false, true])('clears the scope only after selection succeeds (fails=%s)', async fails => {
-    const h = fixture();
-    const originalBaseline = h.state().baseline;
-    const stage = vi.fn(async () => {
-      if (fails) throw new Error('unavailable');
-      h.state().current.providerId = 'new-preference';
-    });
-    const clear = vi.fn(h.deps.write);
-    const apply = compile('bot', {
-      stageSessionRouteSelection: stage, updateScheduledPreference: clear, isSessionIdleForRouteApply: () => false,
-    });
-    const request = apply('task', { ...choice, agentDeviceId: 'share:new' }, choice);
-    if (fails) {
-      await expect(request).rejects.toThrow('unavailable');
-      expect(clear).not.toHaveBeenCalled();
-      expect(h.state().baseline).toBe(originalBaseline);
-    } else {
-      await request;
-      expect(clear).toHaveBeenCalledExactlyOnceWith('task', null);
-      expect(h.state().baseline).toBeNull();
-      // The ordinary send's restore must leave the newly selected route intact.
-      await h.scope.restore('task');
-      expect(h.state().current.providerId).toBe('new-preference');
-      expect(h.applyModel).not.toHaveBeenCalled();
-    }
   });
 });
