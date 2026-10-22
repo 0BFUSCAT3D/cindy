@@ -23,17 +23,21 @@ export function useAskCardVoice(input: {
   getSelection: () => MobileVoiceSelection;
 }): {
   listening: boolean;
+  starting: boolean;
+  busy: boolean;
   stopping: boolean;
   error: string | null;
   toggle: () => void;
   stop: () => Promise<boolean>;
 } {
   const auth = useAskCardAuth();
+  const [starting, setStarting] = useState(false);
   const [listening, setListening] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const runRef = useRef<VoiceRun | null>(null);
   const startingRef = useRef(false);
+  const runReadyRef = useRef<{ promise: Promise<VoiceRun | null>; resolve: (run: VoiceRun | null) => void } | null>(null);
   const stoppingRef = useRef<Promise<boolean> | null>(null);
   const failedRef = useRef(false);
   const mountedRef = useRef(true);
@@ -45,24 +49,26 @@ export function useAskCardVoice(input: {
 
   const stop = useCallback(() => {
     if (stoppingRef.current) return stoppingRef.current;
-    const run = runRef.current;
     const abort = startAbortRef.current;
-    if (!run) {
-      startingRef.current = false;
-      abort?.abort();
-      setListening(false);
-      return Promise.resolve(false);
-    }
+    const ready = runReadyRef.current;
     setStopping(true);
-    const finishing = run.stop().then(() => !failedRef.current && !abort?.signal.aborted).catch((error: unknown) => {
+    const finishing = (async () => {
+      // The handle is published after module/permission/speaker-filter setup,
+      // before the service handshake. A submit during setup must not be lost.
+      const run = runRef.current ?? await ready?.promise;
+      if (!run || abort?.signal.aborted) return false;
+      await run.stop();
+      return !failedRef.current && !abort?.signal.aborted;
+    })().catch((error: unknown) => {
       if (mountedRef.current) setError(error instanceof Error ? error.message : String(error));
       return false;
     }).finally(() => {
-      if (runRef.current === run) runRef.current = null;
       if (stoppingRef.current === finishing) stoppingRef.current = null;
+      runRef.current = null;
       startingRef.current = false;
       abort?.abort();
       if (mountedRef.current) {
+        setStarting(false);
         setListening(false);
         setStopping(false);
       }
@@ -79,6 +85,7 @@ export function useAskCardVoice(input: {
       mountedRef.current = false;
       startingRef.current = false;
       startAbortRef.current?.abort();
+      runReadyRef.current?.resolve(null);
       startAbortRef.current = null;
       const run = runRef.current;
       runRef.current = null;
@@ -90,8 +97,16 @@ export function useAskCardVoice(input: {
     // A session that is still closing must finish first; starting a new one
     // now would race the microphone teardown.
     if (stoppingRef.current) return;
-    if (runRef.current || startingRef.current) {
-      stop();
+    if (startingRef.current && !runRef.current) {
+      // A second mic tap cancels setup; submit calls stop() directly and waits.
+      startAbortRef.current?.abort();
+      runReadyRef.current?.resolve(null);
+      startingRef.current = false;
+      setStarting(false);
+      return;
+    }
+    if (runRef.current) {
+      void stop();
       return;
     }
     const deviceId = inputRef.current.deviceId?.trim();
@@ -102,8 +117,11 @@ export function useAskCardVoice(input: {
     }
     startingRef.current = true;
     failedRef.current = false;
-    setListening(true);
+    setStarting(true);
     setError(null);
+    let resolveRun!: (run: VoiceRun | null) => void;
+    const ready = { promise: new Promise<VoiceRun | null>((resolve) => { resolveRun = resolve; }), resolve: (run: VoiceRun | null) => resolveRun(run) };
+    runReadyRef.current = ready;
     const abort = new AbortController();
     startAbortRef.current = abort;
     void (async () => {
@@ -120,12 +138,21 @@ export function useAskCardVoice(input: {
           setText: (value) => { if (!abort.signal.aborted) inputRef.current.setText(value); },
           getSelection: () => inputRef.current.getSelection(),
           onListening: () => {
-            if (!abort.signal.aborted && !stoppingRef.current) setListening(true);
+            if (abort.signal.aborted) return;
+            startingRef.current = false;
+            setStarting(false);
+            if (!stoppingRef.current) setListening(true);
           },
-          onRunCreated: (run) => { if (!abort.signal.aborted) runRef.current = run; },
+          onRunCreated: (run) => {
+            if (abort.signal.aborted) { void run.cancel().catch(() => undefined); return; }
+            runRef.current = run;
+            ready.resolve(run);
+          },
           onError: (message) => {
             if (abort.signal.aborted) return;
             failedRef.current = true;
+            ready.resolve(null);
+            setStarting(false);
             startingRef.current = false;
             setError(message);
             if (!stoppingRef.current) {
@@ -142,10 +169,11 @@ export function useAskCardVoice(input: {
           return;
         }
         runRef.current = run;
-        startingRef.current = false;
-        if (!stoppingRef.current) setListening(true);
+        ready.resolve(run);
       } catch (error) {
+        ready.resolve(null);
         if (abort.signal.aborted) return;
+        setStarting(false);
         startingRef.current = false;
         runRef.current = null;
         setListening(false);
@@ -157,5 +185,5 @@ export function useAskCardVoice(input: {
     })();
   }, [stop]);
 
-  return { listening, stopping, error, toggle, stop };
+  return { listening, starting, stopping, busy: starting || listening || stopping, error, toggle, stop };
 }
