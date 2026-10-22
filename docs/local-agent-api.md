@@ -122,7 +122,7 @@ node scripts/examples/local-agent-client.mjs --connection-code "cindy-local:v1:<
 
 `Maker.startLocalAgentSession` 复用三种引擎及既有内存 `Session`，由同一套发送、原生续段、终态归属、工具循环与关闭生命周期管理执行；不建立第二个 Agent 循环，也不写入 Cindy 的私人任务数据库或装载私人记忆。原生带 continuation claim 的 done 只是 SDK 段落边界，不能提前宣布客户端执行完成或接受下一轮发送。原生 cancelled 投影为 interrupted。
 
-Claude client-only 关闭原生 tools/settings/skills；Pi 仅开启客户端网关；Codex 使用独立模型工具目录、app-server 与原生历史配置，保留所选模型的窗口配置。client-only 不合入 Cindy 的其他 MCP。Cindy 固定身份、回答呈现、host system prompt 及既有动态段装配保持原样；插件花名册仍由原回调按工作目录、启用状态和账号可见性产生，通讯录说明沿用各引擎现有可用性判断。花名册与提示词不是工具授权；连接未注册的私人 MCP 仍不可调用，也不因此取得私人任务、记忆或供应商凭据。静态指引可能提及本连接未开放的能力，调用方须按本连接实际登记的工具与公开事件处理，不能仅凭文字假定能力已获授权。Codex native 排除自动继承的私有 MCP 连接与 Apps 账号连接，同时保留工作目录的原生技能、原生插件与执行能力，不复用 Review 的全量技能禁用策略。native 模式仍可读取工作目录和引擎原生配置；其文件访问受本机系统用户权限支配，API 隔离不是对同一系统用户下恶意程序的 OS 沙箱。
+Claude client-only 关闭原生 tools/settings/skills；Pi 仅开启客户端网关；Codex 使用独立模型工具目录、app-server 与原生历史配置，保留所选模型的窗口配置。client-only 不合入 Cindy 的其他 MCP。Cindy 固定身份、回答呈现、host system prompt 及既有动态段装配保持原样；插件花名册仍由原回调按工作目录、启用状态和账号可见性产生，通讯录说明沿用各引擎现有可用性判断。花名册与提示词不是工具授权；连接未注册的私人 MCP 仍不可调用，也不因此取得私人任务、记忆或供应商凭据。静态指引可能提及本连接未开放的能力，调用方须按本连接实际登记的工具与公开事件处理，不能仅凭文字假定能力已获授权。Codex native 排除自动继承的私有 MCP 连接与 Apps 账号连接（包括原生插件自带的 MCP 服务，它们可能携带账号凭据），同时保留工作目录的原生技能、原生插件与执行能力，不复用 Review 的全量技能禁用策略。native 模式仍可读取工作目录和引擎原生配置；其文件访问受本机系统用户权限支配，API 隔离不是对同一系统用户下恶意程序的 OS 沙箱。
 
 关闭、撤销授权及晚到的启动结果以 account-boundary 原因关闭内存 Session，连同其持有的原生子执行收尾。无法确认进程退出时返回 `RUNTIME_CLOSE_UNCONFIRMED`，保留清理对象供宿主关闭重试；令牌及工具入口仍立即失效，不将不确定的停止报告为已经结束。
 
