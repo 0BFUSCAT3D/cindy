@@ -85,6 +85,7 @@ const list = vi.fn(async () => ({ items, version: 1 as const }));
 const update = vi.fn(async (_botId: string, patch: { id: string }) => ({ ...todo(patch.id), revision: 4 }));
 const openPath = vi.fn(async () => ({ ok: true }));
 let dailyOn = false;
+let routinesChanged: (() => void) | null = null;
 const dailyCheck = vi.fn(async (_botId: string, enabled?: boolean) => (dailyOn = enabled ?? dailyOn));
 
 beforeEach(() => {
@@ -97,6 +98,7 @@ beforeEach(() => {
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     localDb: { bots: { todos: { list, update, dailyCheck } } },
     maker: { onBotWorkbenchChanged: () => () => undefined },
+    routines: { onChanged: (listener: () => void) => { routinesChanged = listener; return () => { routinesChanged = null; }; } },
     deviceLink: { invoke: vi.fn(), onRemotePush: () => () => undefined },
     openPath,
   };
@@ -152,6 +154,11 @@ describe('BotGlanceButton', () => {
     fireEvent.click(toggle);
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
     expect(dailyCheck).toHaveBeenLastCalledWith('bot-1', true);
+
+    // Paused from the routines list while 近况 is open: the switch follows.
+    dailyOn = false;
+    await act(async () => routinesChanged?.());
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
   });
 
   it('lights the entry dot for a due todo until 近况 is opened, and marks the row itself', async () => {

@@ -122,6 +122,13 @@ async function readTodos(host: GlanceTodoHost): Promise<GlanceTodos> {
   };
 }
 
+/** 只重读「每天帮我查一次」：例行任务列表里暂停或恢复它时用，不必重读整份待办。 */
+async function readDailyCheck(host: GlanceTodoHost): Promise<boolean | null> {
+  if (!host.deviceId) return window.electronAPI.localDb.bots.todos.dailyCheck(host.botId);
+  const page = await readRemotePage(host.deviceId, host.botId, { view: 'open', order: 'due', offset: 0, limit: 1 });
+  return page.dailyCheck ?? null;
+}
+
 /** 打开或关掉伙伴的「每天帮我查一次」（宿主上的内置例行任务）；返回宿主确认后的状态。 */
 export async function setGlanceDailyCheck(host: GlanceTodoHost, enabled: boolean): Promise<boolean> {
   if (!host.deviceId) return window.electronAPI.localDb.bots.todos.dailyCheck(host.botId, enabled);
@@ -177,6 +184,13 @@ export function useGlanceTodos(host: GlanceTodoHost, enabled = true) {
     }
   }, [botId, deviceId, enabled]);
 
+  const refreshDailyCheck = useCallback(async () => {
+    const owner = getDataOwnerGeneration();
+    const dailyCheck = await readDailyCheck({ botId, deviceId }).catch(() => undefined);
+    if (dailyCheck === undefined || !isDataOwnerGenerationCurrent(owner)) return;
+    setState((previous) => ({ ...previous, todos: { ...previous.todos, dailyCheck } }));
+  }, [botId, deviceId]);
+
   useEffect(() => {
     setState({ todos: EMPTY, loaded: false, failed: false });
     if (!enabled || !botId) return;
@@ -186,6 +200,8 @@ export function useGlanceTodos(host: GlanceTodoHost, enabled = true) {
           if (push.deviceId !== deviceId || push.channel !== REMOTE_RESOURCE_CHANGED_CHANNEL) return;
           if (!isDeviceLinkRemotePushCurrent(push, stamp)) return;
           const payload = parseRemoteResourceChangedPayload(push.payload);
+          // 例行任务列表里暂停或恢复「每天查待办」：只重读开关。
+          if (payload?.collectionId === 'routines') return void refreshDailyCheck();
           if (payload?.collectionId !== 'teammates') return;
           if (
             payload.resourceRefs?.length &&
@@ -197,6 +213,7 @@ export function useGlanceTodos(host: GlanceTodoHost, enabled = true) {
       : window.electronAPI.maker.onBotWorkbenchChanged((event) => {
           if (event.botId === botId) void refresh();
         });
+    const offRoutines = deviceId ? undefined : window.electronAPI.routines?.onChanged(() => void refreshDailyCheck());
     const foreground = () => {
       if (document.visibilityState === 'visible') void refresh();
     };
@@ -205,10 +222,11 @@ export function useGlanceTodos(host: GlanceTodoHost, enabled = true) {
     return () => {
       epoch.current++;
       unsubscribe?.();
+      offRoutines?.();
       document.removeEventListener('visibilitychange', foreground);
       window.removeEventListener('focus', foreground);
     };
-  }, [botId, deviceId, enabled, refresh]);
+  }, [botId, deviceId, enabled, refresh, refreshDailyCheck]);
 
   // 浮层开着时也要跟上时间：「稍后再说」到时回到列表，跨过午夜时重算今天到期的红点。
   const nextDeferredAt = state.todos.nextDeferredAt;

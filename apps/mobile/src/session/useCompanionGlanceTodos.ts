@@ -97,18 +97,34 @@ export function useCompanionGlanceTodos({ deviceId, deviceName, botId, enabled }
     }
   }, [botId, deviceId, deviceName, enabled, i18n.language, invoke, openLink]);
 
+  /** Only the 「每天帮我查一次」 state, re-read when the routine is paused or resumed on the desktop. */
+  const refreshDailyCheck = useCallback(async () => {
+    if (!enabled) return;
+    try {
+      await openLink(deviceId);
+      const resource = await getRemoteResource(invoke, { deviceId, deviceName }, todosResourceRef(botId), i18n.language,
+        ['teammate-todos'], JSON.stringify({ view: 'open', order: 'due', offset: 0, limit: 1 }));
+      const value = (resource.blocks?.find(block => block.primitive === 'teammate-todos')?.data as Page | undefined)?.dailyCheck;
+      if (typeof value === 'boolean') setState(previous => ({ ...previous, todos: { ...previous.todos, dailyCheck: value } }));
+    } catch {
+      // The next full read corrects it.
+    }
+  }, [botId, deviceId, deviceName, enabled, i18n.language, invoke, openLink]);
+
   useEffect(() => {
     setState({ todos: EMPTY, loaded: false, failed: false });
     if (!enabled) return;
     void refresh();
     const offChanged = onRemoteResourceChanged((id, payload) => {
-      if (id !== deviceId || payload.collectionId !== 'teammates') return;
+      if (id !== deviceId) return;
+      if (payload.collectionId === 'routines') { void refreshDailyCheck(); return; }
+      if (payload.collectionId !== 'teammates') return;
       if (payload.resourceRefs && !payload.resourceRefs.some(ref => ref.id === botId || ref.id === `todos:${botId}`)) return;
       void refresh();
     });
     const appState = AppState.addEventListener('change', next => { if (next === 'active') void refresh(); });
     return () => { epoch.current++; offChanged(); appState.remove(); };
-  }, [botId, deviceId, enabled, onRemoteResourceChanged, refresh]);
+  }, [botId, deviceId, enabled, onRemoteResourceChanged, refresh, refreshDailyCheck]);
 
   // Keep up with time while the chat is open: a deferred todo comes back, and past midnight
   // today's due dots are recomputed.
