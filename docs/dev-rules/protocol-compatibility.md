@@ -1,5 +1,19 @@
 # 跨端协议兼容
 
+## 灵动岛完成卡操作
+
+`local-db:sessions:activity` 追加可选的 `completionToken`，由任务所属进程按完成卡代次签发。
+桌面控制端经活动镜像将它原样传到原生灵动岛；新完成卡即使文案和毫秒时间相同也会更换标识。
+新 invoke `agent-island:completion-action(sessionId, action, completionToken)` 只支持 `mark-read` /
+`archive`，复用同账号远控授权和既有任务发送锁；归属端在变更前核对卡片，归档另在现有
+worktree 资源等待后复核。控制端先按既有工作区／自动化预检规则确认，再发送归档动作。
+
+旧控制端忽略可选字段；新控制端连接旧归属端时，没有标识的远程卡片保留点击打开入口，
+不提供滑动动作。旧归属端不识别新增 invoke 时恢复本机卡片，不回退到无卡片校验的归档／已读
+请求，不重放。原生 helper 的完成动作追加同一标识，缺失时不执行。无需服务端、Mobile
+原生配置或数据库 migration 更新。回归见 `agentIslandRemoteSessions.test.ts`、
+`agent-island/__tests__/service.test.ts` 和 `localDb/ipc/__tests__/sessionsUpdate.test.ts`。
+
 ## 限额恢复时间查询
 
 既有 `maker:usage:claude-subscription` 请求可选在 providerId 后追加 `true`，表示等待同一余量
@@ -336,6 +350,12 @@ stale 时不能再用消息时间戳复活已被接收顺序判定为旧的正�
 本地 `history view changed` 调试记录使用设备／任务短引用与缓存、最新页、旧页、详情、降级、
 重置来源及行数；手机滚动采样携带相同短引用和可见列表项数，区分数据替换与布局重测，
 不记录正文、不扩展遥测上传。
+
+历史页以 20 个可见项为目标；边界跨过子任务时，主机将起点前移到完整子任务入口，
+并恢复额外可见项的正文，折叠详情仍按需读取。实际正文恢复后继续执行原有 1 MiB 页预算；
+可先返回的完整较短后缀照常返回，只有不可分割范围本身超限时沿用旧的降级行为。
+分页游标仍是原始消息 ID，返回结构、权限、缓存与 Mobile 原生配置不变；现有手机和
+远程桌面均可读取超过 20 项的完整页，修复只需更新提供历史的主机。
 
 `messages:list` / `messages:view` 的 options 可选携带 `messageBodies: { version: 1, known }`，
 known 是消息 ID 与主机提供的 SHA-256 正文指纹对。支持的主机在授权、净化之后返回
