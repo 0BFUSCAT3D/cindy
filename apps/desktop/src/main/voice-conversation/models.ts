@@ -96,10 +96,10 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
         continue;
       // Display preferences affect the picker, independently of route admission.
       // BYOK media keeps the runtime that owns both its key and display override.
-      if (!selection && !isModelVisible(
+      const pickerVisible = isModelVisible(
         media.sourceAgent ? deps.visibilityOverride?.(media.sourceAgent, provider.id, media.id) : undefined,
         media.defaultEnabled,
-      )) continue;
+      );
       const declared = nativeProtocol(deps.catalog, provider.id, media);
       if (provider.id === 'xd') {
         if (
@@ -113,6 +113,7 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
         result.push({
           model: {
             id: media.id,
+            ...(pickerVisible ? {} : { pickerVisible: false }),
             name: media.name,
             providerId: 'xd',
             providerName: provider.name,
@@ -188,6 +189,7 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       result.push({
         model: {
           id: media.id,
+          ...(pickerVisible ? {} : { pickerVisible: false }),
           name: media.name,
           providerId: provider.id,
           providerName: provider.name,
@@ -205,7 +207,8 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
   return result;
 }
 
-/** Registry entries alone never add catalog membership or grant a credential. */
+/** Admitted routes include hidden saved choices; pickerVisible only controls discovery UI.
+ * Registry entries alone never add catalog membership or grant a credential. */
 export function speechModels(deps: SpeechCatalogDeps): VoiceConversationModel[] {
   return bindings(deps).map((binding) => binding.model);
 }

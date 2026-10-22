@@ -1718,3 +1718,46 @@ describe('existing connection speech additions', () => {
     expect(createCustomProvider).not.toHaveBeenCalled();
   });
 });
+
+// Review regression: a mixed provider with no preset models and no directory must
+// retain the chat fallback alongside speech suggestions. Prior LiteLLM coverage
+// used a URL without speech support (Renderer unit, mock discovery, no requests).
+describe('general manual fallback beside speech suggestions', () => {
+  it.each([
+    ['OpenAI', 'https://api.openai.com/v1'],
+    ['MiniMax', 'https://api.minimax.io/v1'],
+    ['Bailian', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'],
+  ].flatMap(([name, baseUrl]) => [true, false].map(failed => ({ name, baseUrl, failed }))))(
+    'keeps manual chat entry for $name with failed=$failed directory', async ({ name, baseUrl, failed }) => {
+      window.electronAPI.maker.listProviderPresets = vi.fn(async () => ({ presets: [{
+        id: 'empty-mixed-api', name, runtimes: { codex: { baseUrl, models: [] } },
+      }] }));
+      if (!failed) vi.mocked(window.electronAPI.maker.fetchProviderModels).mockResolvedValue({ ok: true, models: [] });
+      renderWizard('empty-mixed-api');
+      fireEvent.change(await screen.findByPlaceholderText('sk-…'), { target: { value: 'fake-test-key' } });
+      fireEvent.click(screen.getByText('settings.providers.wizard.next'));
+      const input = await screen.findByPlaceholderText('settings.providers.wizard.manualModelPlaceholder');
+      expect(screen.getByText('settings.providers.speechSetup.manual')).toBeTruthy();
+      fireEvent.change(input, { target: { value: 'my-new-chat-model' } });
+      fireEvent.click(screen.getByText('settings.providers.wizard.addManualModel'));
+      fireEvent.click(screen.getByText('settings.providers.wizard.finish'));
+      await waitFor(() => expect(createCustomProvider).toHaveBeenCalledOnce());
+      const saved = vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.codex!.models;
+      expect(saved.find(model => model.id === 'my-new-chat-model')).toMatchObject({ name: 'my-new-chat-model' });
+      expect(saved.find(model => model.id === 'my-new-chat-model')?.mode).toBeUndefined();
+    },
+  );
+  it.each(['elevenlabs', 'speech-only'] as const)('does not offer a chat fallback in %s setup', async (kind) => {
+    window.electronAPI.maker.listProviderPresets = vi.fn(async () => ({ presets: [{
+      id: 'empty-api', name: 'Empty API', runtimes: { codex: {
+        baseUrl: kind === 'elevenlabs' ? 'https://api.elevenlabs.io/v1' : 'https://api.openai.com/v1', models: [],
+      } },
+    }] }));
+    render(<AddProviderWizard providers={[]} entry={{ kind: 'preset', presetId: 'empty-api', speechOnly: kind === 'speech-only' }} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.change(await screen.findByPlaceholderText('sk-…'), { target: { value: 'fake-test-key' } });
+    fireEvent.click(screen.getByText('settings.providers.wizard.next'));
+    await screen.findByText('settings.providers.speechSetup.manual');
+    await waitFor(() => expect(screen.queryByText('settings.providers.wizard.fetching')).toBeNull());
+    expect(screen.queryByPlaceholderText('settings.providers.wizard.manualModelPlaceholder')).toBeNull();
+  });
+});

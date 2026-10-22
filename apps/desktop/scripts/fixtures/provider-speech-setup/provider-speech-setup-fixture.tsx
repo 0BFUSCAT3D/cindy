@@ -131,7 +131,11 @@ void mountPage({
       safeStorageRead: async () => 'fixture-key',
       maker: {
         listProviderPresets: async () => ({
-          presets: BUNDLED_CATALOG.presets!.filter((p) => p.id === 'minimax-global'),
+          presets: ctx.case === 'bailian-fallback' ? [{
+            id: 'bailian-empty', name: 'Fallback API', runtimes: {
+              codex: { baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', models: [] },
+            },
+          }] : BUNDLED_CATALOG.presets!.filter((p) => p.id === 'minimax-global'),
         }),
         localModelList: async () => ({
           status: { runtime: 'ollama', kind: 'absent', appInstalled: false },

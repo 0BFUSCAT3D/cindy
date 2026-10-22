@@ -16,6 +16,7 @@ export default {
     bailian: {
       about: 'Alibaba Cloud speech recommendations visible above 100 discovered chat models',
     },
+    'bailian-fallback': { about: 'An empty mixed preset with failed discovery keeps manual chat entry beside speech suggestions' },
     'bailian-existing': {
       about: 'Existing Beijing workspace recommends CosyVoice and preserves its chat model',
     },
@@ -37,7 +38,7 @@ export default {
       await page.getByTestId('add-provider').click();
       await ui.capture('single-add-entry');
       const name =
-        ui.case === 'minimax' ? /MiniMax/ : ui.case === 'elevenlabs' ? /ElevenLabs/ : /API/;
+        ui.case === 'minimax' ? /MiniMax/ : ui.case === 'elevenlabs' ? /ElevenLabs/ : ui.case === 'bailian-fallback' ? /Fallback API/ : /API/;
       const buttons = page.getByRole('dialog').getByRole('button').filter({ hasText: name });
       await buttons.first().click();
       if (ui.case === 'minimax')
@@ -57,7 +58,7 @@ export default {
     const recommendedId =
       ui.case === 'elevenlabs'
         ? 'eleven_flash_v2_5'
-        : ui.case === 'bailian'
+        : ['bailian', 'bailian-fallback'].includes(ui.case)
           ? 'qwen3-tts-flash'
           : ui.case === 'bailian-existing'
             ? 'cosyvoice-v3-flash'
@@ -75,12 +76,21 @@ export default {
     }
     await recommended.scrollIntoViewIfNeeded();
     await ui.capture('models');
+    if (ui.case === 'bailian-fallback') {
+      const manual = page.getByPlaceholder(await ui.t('settings.providers.wizard.manualModelPlaceholder'));
+      await manual.fill('my-new-chat-model');
+      await page.getByRole('button', { name: await ui.t('settings.providers.wizard.addManualModel'), exact: true }).click();
+      await manual.scrollIntoViewIfNeeded();
+      await ui.capture('chat-fallback');
+    }
     const finish = existing
       ? 'settings.providers.wizard.addManualModel'
       : 'settings.providers.wizard.finish';
     await page.getByRole('button', { name: await ui.t(finish), exact: true }).click();
     await page.getByTestId('saved').waitFor();
     assert.ok((await page.getByTestId('saved').textContent()).includes(recommendedId));
+    if (ui.case === 'bailian-fallback')
+      assert.ok((await page.getByTestId('saved').textContent()).includes('my-new-chat-model'));
     if (ui.case === 'default')
       assert.ok((await page.getByTestId('saved').textContent()).includes('MiniMax-M3'));
     if (ui.case === 'bailian-existing')

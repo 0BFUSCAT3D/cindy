@@ -35,6 +35,7 @@ mountPage({
       customized: ctx.data.speed !== undefined || !!ctx.data.manual,
       sentencePlayback: true,
     };
+    if (ctx.data.noPreference) preference.selection = null;
     return {
       onAuthStateChange: () => () => {},
       voiceInput: { onPowerStateChange: () => () => {} },
@@ -46,6 +47,7 @@ mountPage({
             : [
                 {
                   id: modelId,
+                  ...(ctx.data.hidden ? { pickerVisible: false } : {}),
                   name: modelId,
                   providerId: 'fixture',
                   providerName:
@@ -59,6 +61,8 @@ mountPage({
                   protocolLocked: true,
                   defaultVoice: 'river',
                 },
+                ...(ctx.data.hidden ? [{ id: 'unchecked', name: 'Unchecked speech', providerId: 'fixture', agent: 'codex' as const, pickerVisible: false }] : []),
+                ...(ctx.data.hidden && !ctx.data.noPreference ? [{ id: 'visible', name: 'Visible speech', providerId: 'fixture', agent: 'codex' as const, protocol, protocolLocked: true, defaultVoice: 'river' }] : []),
               ],
         voices: async () => ({
           source: 'provider',

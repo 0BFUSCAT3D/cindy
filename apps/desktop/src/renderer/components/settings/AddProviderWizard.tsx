@@ -1468,7 +1468,9 @@ export function AddProviderWizard({
     sel?.kind === 'preset' &&
     fetchState.status === 'done' &&
     (fetchState.failed || fetchState.empty) &&
-    !presetHasRecommendedModels && !speechTarget;
+    !presetHasRecommendedModels &&
+    !(entry?.kind === 'preset' && entry.speechOnly) &&
+    speechTarget?.service !== 'elevenlabs';
   const presetNeedsApiKey = sel?.kind === 'preset' && sel.preset.authMethod !== 'none';
   const presetBaseUrlsValid =
     sel?.kind === 'preset' &&

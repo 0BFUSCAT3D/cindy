@@ -199,13 +199,15 @@ export function providerSpeechSetup(
 export function appendSpeechModels(
   current: CustomProviderConfig,
   request: CustomProviderConfig,
+  presets: ProviderPreset[] = [],
 ): CustomProviderConfig {
   if ((current.auth?.method ?? 'apiKey') !== 'apiKey')
     throw new Error('api_key_connection_required');
   const next = structuredClone(current);
-  // The catalog omits an explicit runtime protocol when it equals the engine default.
-  // Compare the same projection, while keeping the original stored declaration intact.
-  const currentRouting = buildUserProvider(current).routing;
+  // Compare the current effective route with the dialog's projected snapshot.
+  // Do not reapply presets to the snapshot: that would hide a genuinely stale URL.
+  // Append to the stored config below without persisting derived preset fields.
+  const currentRouting = buildUserProvider(current, { presets }).routing;
   const requestedRouting = buildUserProvider(request).routing;
   const known = new Set(
     Object.values(next.runtimes).flatMap(
@@ -218,10 +220,10 @@ export function appendSpeechModels(
     if (
       !draft ||
       !runtime ||
-      runtime.baseUrl !== draft.baseUrl ||
+      currentRouting[agent]?.upstream !== requestedRouting[agent]?.upstream ||
       currentRouting[agent]?.wireProtocol !== requestedRouting[agent]?.wireProtocol ||
-      runtime.requestPath !== draft.requestPath ||
-      runtime.modelsUrl !== draft.modelsUrl
+      currentRouting[agent]?.requestPath !== requestedRouting[agent]?.requestPath ||
+      currentRouting[agent]?.modelsUrl !== requestedRouting[agent]?.modelsUrl
     )
       throw new Error('connection_changed');
     for (const model of draft.models) {

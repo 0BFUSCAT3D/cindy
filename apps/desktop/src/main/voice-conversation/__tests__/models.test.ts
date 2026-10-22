@@ -51,7 +51,7 @@ it('lists only selected speech models and applies connection-scoped display over
     custom('a', 'https://api.elevenlabs.io/v1', models),
     custom('b', 'https://api.elevenlabs.io/v1', models),
   ]);
-  const choices = () => speechModels(d).map((item) => [item.providerId, item.id]);
+  const choices = () => speechModels(d).filter((item) => item.pickerVisible !== false).map((item) => [item.providerId, item.id]);
   expect(choices()).toEqual([['a', 'eleven_flash_v2_5'], ['b', 'eleven_flash_v2_5']]);
   d.visibilityOverride = (agent, provider, id) => agent === 'codex' && provider === 'a'
     ? id === 'eleven_v3' : undefined;

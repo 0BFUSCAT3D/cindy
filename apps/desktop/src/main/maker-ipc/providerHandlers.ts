@@ -2059,7 +2059,7 @@ export function registerProviderHandlers(
         if (!previous) throwIpcError('NOT_FOUND', `custom provider '${config.id}' not found`);
         if (options.appendSpeechModelsOnly) {
           if (Object.keys(keys).length) throwIpcError('INVALID_PARAMS', 'speech additions cannot change credentials');
-          try { config = appendSpeechModels(previous, config); }
+          try { config = appendSpeechModels(previous, config, deps.listPresets()); }
           catch { throwIpcError('INVALID_PARAMS', 'connection changed or invalid speech additions'); }
           const validation = validateCustomProviderConfig(config, { allowLegacyXai: true });
           if (!validation.ok) throwIpcError(validation.code, validation.message);

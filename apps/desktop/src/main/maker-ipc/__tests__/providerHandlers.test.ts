@@ -2,7 +2,8 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 
-import type { AgentKind, CustomProviderConfig, ProviderView } from '@cindy/model-providers';
+import { buildUserProvider, type AgentKind, type CustomProviderConfig, type ProviderPreset, type ProviderView } from '@cindy/model-providers';
+import { providerViewToCustomProviderConfig } from '../../../renderer/lib/customProviders.js';
 
 import type { ProviderImportPreview } from '../../../shared/providerImport.js';
 import { BUILTIN_REFRESHABLE_PROVIDER_IDS } from '../../../shared/providerModelRefresh.js';
@@ -4735,3 +4736,35 @@ it('speech additions accept an unchanged projected default protocol and preserve
   expect(stored?.runtimes.codex?.models.map(model => model.id)).toEqual(['gpt-5.4', 'gpt-4o-mini-tts']);
   expect(stored?.runtimes.pi).toEqual(config.runtimes.pi);
 });
+
+// Review regression: real catalog projection + update handler. A current preset can
+// replace a stored directory URL without changing the connection. Existing tests
+// only compared raw snapshots, so they missed this failed save (DB tier, no network).
+it.each([undefined, 'https://api.minimax.io/v1/old-models'])(
+  'appends speech against the current preset while preserving stored modelsUrl %s',
+  async (modelsUrl) => {
+    mountDb();
+    const harness = new IpcHarness();
+    const config: CustomProviderConfig = { id: 'preset-speech', name: 'My MiniMax', runtimes: {
+      codex: { catalogPresetId: 'minimax-api', baseUrl: 'https://api.minimax.io/v1',
+        modelsUrl, models: [{ id: 'MiniMax-M3', name: 'My chat' }] },
+    } };
+    const presets: ProviderPreset[] = [{ id: 'minimax-api', name: 'MiniMax API', runtimes: {
+      codex: { baseUrl: 'https://api.minimax.io/v1', modelsUrl: 'https://api.minimax.io/v1/current-models', models: [] },
+    } }];
+    registerProviderHandlers(harness, makeDeps({ listPresets: () => presets }));
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    const projected = buildUserProvider(config, { presets });
+    const request = providerViewToCustomProviderConfig({ ...projected, connected: true } as ProviderView);
+    request.runtimes.codex!.models = [{ id: 'speech-2.8-turbo', name: 'Speech' }];
+    expect(request.runtimes.codex!.modelsUrl).toBe(presets[0].runtimes.codex!.modelsUrl);
+    // A dialog from before the preset update is genuinely stale; reopening fixes it.
+    const stale = structuredClone(request);
+    stale.runtimes.codex!.modelsUrl = 'https://api.minimax.io/v1/stale-models';
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, stale, {}, { appendSpeechModelsOnly: true })).rejects.toThrow(/INVALID_PARAMS/);
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, request, {}, { appendSpeechModelsOnly: true })).resolves.toEqual({ ok: true });
+    expect((await getCustomProvider(config.id))?.runtimes.codex).toEqual({
+      ...config.runtimes.codex, models: [...config.runtimes.codex!.models, ...request.runtimes.codex!.models],
+    });
+  },
+);
