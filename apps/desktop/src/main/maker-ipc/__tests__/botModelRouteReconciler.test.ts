@@ -7,7 +7,7 @@ import type { SessionRuntimeProfile } from '../sessionRuntimeControl';
 
 function harness() {
   let owner = 'owner-a';
-  const state: { chain: BotModelRoute[]; current: SessionRuntimeProfile; hasRuntimeOverride: boolean; next?: SessionRuntimeProfile } = {
+  const state: { chain: BotModelRoute[]; current: SessionRuntimeProfile; hasRuntimeOverride: boolean; followsCindyDefault?: boolean; next?: SessionRuntimeProfile } = {
     chain: [{ harness: 'codex' as const, model: 'luna', providerId: 'xd', effort: 'medium', fastMode: false }],
     current: { agentKind: 'pi' as const, model: 'glm', providerId: 'xd', effort: 'high', fastMode: false },
     hasRuntimeOverride: false,
@@ -181,6 +181,7 @@ it('finishes at the newest settings selection when another save arrives during s
   await Promise.all([first, second]);
   expect(h.apply).toHaveBeenCalledTimes(2);
   expect(h.apply).toHaveBeenLastCalledWith('canonical', expect.objectContaining({ model: 'newest-model' }), h.state.current);
+  expect(h.onSelectionAccepted).toHaveBeenCalledOnce();
 });
 it('selecting the current route cancels a different pending route instead of leaving it queued', async () => {
   const h = harness();
@@ -204,6 +205,7 @@ it('applies the latest saved selection even when the superseded switch fails', a
   await Promise.all([first, second]);
   expect(h.apply).toHaveBeenCalledTimes(2);
   expect(h.apply).toHaveBeenLastCalledWith('canonical', expect.objectContaining({ model: 'working-model' }), h.state.current);
+  expect(h.onSelectionAccepted).toHaveBeenCalledOnce();
 });
 
 it('does not retry a superseded failed switch after the account owner changes', async () => {
@@ -219,6 +221,7 @@ it('does not retry a superseded failed switch after the account owner changes', 
   fail(new Error('Old provider unavailable'));
   expect((await results).map(result => result.status)).toEqual(['rejected', 'rejected']);
   expect(h.apply).toHaveBeenCalledOnce();
+  expect(h.onSelectionAccepted).not.toHaveBeenCalled();
 });
 
 // Regression: changing only the account location must still move the runtime.
@@ -235,34 +238,117 @@ it('reconciles shared-to-local and local-to-shared selections of the same model'
   expect(h.apply).toHaveBeenLastCalledWith('canonical', local, h.state.current);
 });
 
-// #6759: an explicit save can accept the automation's temporary model without a switch.
-it.each([true, false])('invalidates the automation baseline after an explicit save (already current: %s)', async alreadyCurrent => {
+// #6759: exercise the production reconciler before scope.restore, as IM sends do.
+// A restart can lose the override marker while retaining a fallback baseline.
+// Existing save tests did not cover ordinary reconciliation that applies a route.
+function automationHarness() {
   const h = harness();
-  const permanent = { agentKind: 'codex' as const, model: 'luna', providerId: 'xd', effort: 'medium' as const, fastMode: false };
-  h.state.current = alreadyCurrent ? permanent : { ...permanent, model: 'temporary-model' };
-  h.apply.mockImplementation(async () => { h.state.current = permanent; });
-  let baseline: string | null = JSON.stringify({ ...permanent, model: 'old-model', scopeId: 'automation' });
+  const original = { ...h.state.current, model: 'runtime-fallback' };
+  let baseline: string | null = JSON.stringify({ ...original, scopeId: 'automation' });
+  h.apply.mockImplementation(async (_id, route) => {
+    h.state.current = { ...route, effort: route.effort as SessionRuntimeProfile['effort'] };
+  });
+  h.onSelectionAccepted.mockImplementation(async () => { baseline = null; });
   const scope = createScheduledModelScope({
     read: async () => ({ profile: h.state.current, baseline }),
     write: async (_id, value) => { baseline = value ? JSON.stringify(value) : null; },
-    apply: async (_id, profile) => { h.state.current = profile; },
+    apply: async (_id, profile) => {
+      const { agentKind, model, providerId, effort, fastMode } = profile;
+      h.state.current = { agentKind, model, providerId, effort, fastMode };
+    },
     isBusy: () => false, createId: () => 'unused',
   });
-  h.onSelectionAccepted.mockImplementation(async () => { baseline = null; });
+  return { ...h, original, scope, baseline: () => baseline };
+}
+
+it.each(['restart', 'changed-chain', 'pending-route', 'follow-default'] as const)(
+  'restores the saved fallback after ordinary IM preparation: %s', async scenario => {
+    const h = automationHarness();
+    const primary = { agentKind: 'codex' as const, model: 'luna', providerId: 'xd', effort: 'medium' as const, fastMode: false };
+    if (scenario === 'changed-chain') {
+      h.state.current = primary;
+      await h.reconcile('canonical');
+      h.state.chain[0].model = 'changed-default';
+    }
+    h.state.current = { ...primary, model: 'automation-model' };
+    if (scenario === 'pending-route') {
+      h.state.current = primary;
+      h.state.next = { ...primary, model: 'pending-automation' };
+    }
+    if (scenario === 'follow-default') {
+      h.state.hasRuntimeOverride = true;
+      h.state.followsCindyDefault = true;
+    }
+    const baseline = h.baseline();
+    await h.reconcile('canonical');
+    expect(h.apply).toHaveBeenCalledOnce();
+    expect(h.onSelectionAccepted).not.toHaveBeenCalled();
+    expect(h.baseline()).toBe(baseline);
+    await h.scope.restore('canonical', 'automation');
+    expect(h.state.current).toEqual(h.original);
+    expect(h.baseline()).toBeNull();
+  },
+);
+
+it.each([true, false])('invalidates the automation baseline after an explicit save (already current: %s)', async alreadyCurrent => {
+  const h = automationHarness();
+  const permanent = { agentKind: 'codex' as const, model: 'luna', providerId: 'xd', effort: 'medium' as const, fastMode: false };
+  h.state.current = alreadyCurrent ? permanent : { ...permanent, model: 'temporary-model' };
   if (alreadyCurrent) {
     await h.reconcile('canonical');
-    expect(baseline).not.toBeNull(); // Ordinary reconciliation must not cancel an automation scope.
+    expect(h.baseline()).not.toBeNull();
   }
   await h.reconcile.profileChanged('canonical');
-  await scope.restore('canonical', 'automation');
+  await h.scope.restore('canonical', 'automation');
   expect(h.state.current).toEqual(permanent);
-  expect(baseline).toBeNull();
+  expect(h.baseline()).toBeNull();
+  expect(h.onSelectionAccepted).toHaveBeenCalledOnce();
   expect(h.apply).toHaveBeenCalledTimes(alreadyCurrent ? 0 : 1);
 });
 
-it('does not accept a permanent selection whose staging failed', async () => {
-  const h = harness();
+it('retains the baseline and retries an explicit save whose staging failed', async () => {
+  const h = automationHarness();
+  const baseline = h.baseline();
   h.apply.mockRejectedValueOnce(new Error('provider unavailable'));
   await expect(h.reconcile.profileChanged('canonical')).rejects.toThrow('provider unavailable');
   expect(h.onSelectionAccepted).not.toHaveBeenCalled();
+  expect(h.baseline()).toBe(baseline);
+  await h.reconcile('canonical');
+  expect(h.onSelectionAccepted).toHaveBeenCalledOnce();
+  await h.scope.restore('canonical', 'automation');
+  expect(h.state.current.model).toBe('luna');
+});
+
+it('retries an accepted save whose baseline cleanup failed, even when the route already matches', async () => {
+  const h = automationHarness();
+  const baseline = h.baseline();
+  h.onSelectionAccepted.mockRejectedValueOnce(new Error('storage unavailable'));
+  await expect(h.reconcile.profileChanged('canonical')).rejects.toThrow('storage unavailable');
+  expect(h.baseline()).toBe(baseline);
+  await h.reconcile('canonical');
+  expect(h.apply).toHaveBeenCalledOnce();
+  await h.scope.restore('canonical', 'automation');
+  expect(h.state.current.model).toBe('luna');
+  expect(h.baseline()).toBeNull();
+});
+
+it('keeps the baseline when a newer explicit save fails after an ordinary reconcile was in flight', async () => {
+  const h = automationHarness();
+  const baseline = h.baseline();
+  let finish!: () => void;
+  h.apply.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  const ordinary = h.reconcile('canonical');
+  await vi.waitFor(() => expect(h.apply).toHaveBeenCalledOnce());
+  h.state.chain[0].model = 'new-permanent';
+  h.apply.mockRejectedValueOnce(new Error('new provider unavailable'));
+  const explicit = h.reconcile.profileChanged('canonical');
+  const results = Promise.allSettled([ordinary, explicit]);
+  finish();
+  expect((await results).map(result => result.status)).toEqual(['rejected', 'rejected']);
+  expect(h.onSelectionAccepted).not.toHaveBeenCalled();
+  expect(h.baseline()).toBe(baseline);
+  await h.reconcile('canonical');
+  expect(h.onSelectionAccepted).toHaveBeenCalledOnce();
+  await h.scope.restore('canonical', 'automation');
+  expect(h.state.current.model).toBe('new-permanent');
 });

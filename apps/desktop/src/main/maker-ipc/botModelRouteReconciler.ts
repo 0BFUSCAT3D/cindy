@@ -101,9 +101,9 @@ export function createBotModelRouteReconciler(deps: {
           if (needsApply) await deps.apply(sessionId, route, current);
           if (deps.ownerEpoch() !== epoch) throw new Error('Bot model route owner changed');
           if ((revisions.get(sessionId) ?? 0) !== revision) continue;
-          // profileChanged marks previous as ''; ordinary matching reconciliation
-          // must leave an in-flight automation scope intact.
-          if (needsApply || (previous !== undefined && previous !== key)) {
+          // Only profileChanged's explicit-save marker supersedes the saved scope.
+          // Ordinary IM preparation can switch routes before automation restore.
+          if (previous === '') {
             await deps.onSelectionAccepted?.(sessionId);
           }
         } catch (error) {
