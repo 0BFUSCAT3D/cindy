@@ -104,7 +104,7 @@ export function ImChannelSettingsCard({
           {/* Wrap using the trigger's available width, including any sibling
               headerAction, rather than the window width of a narrow sidebar. */}
           <span className={cn(
-            'flex min-w-0 max-w-full items-center justify-end gap-3',
+            'ml-auto flex min-w-0 max-w-full items-center justify-end gap-3',
             routeSummary ? 'flex-[1_1_18rem]' : 'shrink-0',
           )}>
             {routeSummary ? (

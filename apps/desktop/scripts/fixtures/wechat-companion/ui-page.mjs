@@ -39,10 +39,27 @@ export default {
       viewport: { width: 1280, height: 900 },
       data: { cardWidth: 760, headerAction: true },
     },
+    'sidebar-empty-320': {
+      about: 'Review #6729: empty summary keeps status and chevron at the right edge after wrapping',
+      viewport: { width: 1280, height: 900 },
+      data: { cardWidth: 320 },
+    },
+    'header-action-empty-320': {
+      about: 'Empty summary with an independent switch at 320px',
+      viewport: { width: 1280, height: 900 },
+      data: { cardWidth: 320, headerAction: true },
+    },
+    'header-action-empty-394': {
+      about: 'Empty summary with an independent switch at 394px',
+      viewport: { width: 1280, height: 900 },
+      data: { cardWidth: 394, headerAction: true },
+    },
   },
   // Browser/e2e regression for #6706. The existing jsdom unit test covers
   // accordion semantics but cannot detect flex shrink or viewport breakpoints.
   // Minimal failure: 394px assigned WeChat card inside a 1280px viewport.
+  // Review regression: null summary at 320px; checking visibility alone misses
+  // the wrapped status group jumping to the left. Measure the chevron's edge.
   async check(page, ui) {
     const trigger = page.locator('#companion-im-wechat-trigger');
     await trigger.getByRole('status').waitFor();
@@ -71,11 +88,12 @@ export default {
         textTop: text.getBoundingClientRect().top,
         statusTop: status.getBoundingClientRect().top,
         textBottom: text.getBoundingClientRect().bottom,
+        trailingGap: bounds.right - parseFloat(getComputedStyle(element).paddingRight) - chevron.getBoundingClientRect().right,
       };
     });
     const assertHeader = async (button) => {
       const metrics = await measureHeader(button);
-      if (metrics.textWidth < 160 || metrics.titleLines !== 1 || !metrics.statusVisible || !metrics.chevronVisible || !metrics.summaryVisible) {
+      if (metrics.textWidth < 160 || metrics.titleLines !== 1 || !metrics.statusVisible || !metrics.chevronVisible || !metrics.summaryVisible || Math.abs(metrics.trailingGap) > 1) {
         throw new Error(`Unreadable channel header: ${JSON.stringify(metrics)}`);
       }
       return metrics;
