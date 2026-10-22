@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderShareReceived } from '@cindy/device-link';
 import type { ProviderShareInsights } from '../../shared/providerShareInsights';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
-import { ProviderShareQuotaViewingContext } from '@/features/provider-share/useProviderShareWeeklyQuota';
+import { ProviderShareQuotaViewingContext, useProviderShareQuotaViewing } from '@/features/provider-share/useProviderShareWeeklyQuota';
 import type { ProviderView } from '@cindy/model-providers';
 import type { MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-link-contract';
 
@@ -600,6 +600,46 @@ describe('shared provider rail weekly quota', () => {
       expect(bar()).toBeNull();
     }
     expect(command.mock.calls.every(([cmd]) => cmd.includeUsage === false)).toBe(true);
+  });
+
+  // E2E: changing directory remounted the rail 1.2s after its last read.
+  it('reuses quota across directory remounts and shares in-flight reads', async () => {
+    const first = render(<Rail />);
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    first.unmount();
+    const second = render(<Rail />);
+    expect(bar()?.getAttribute('data-weekly-remaining')).toBe('21');
+    await act(async () => {});
+    expect(command).toHaveBeenCalledTimes(1);
+    let resolve!: (value: ProviderShareInsights) => void;
+    command.mockImplementation(() => new Promise<ProviderShareInsights>((done) => { resolve = done; }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(3800); });
+    expect(command).toHaveBeenCalledTimes(2);
+    second.unmount();
+    render(<><Rail /><Rail /></>);
+    await act(async () => {});
+    expect(command).toHaveBeenCalledTimes(2);
+    await act(async () => { resolve(insight()); });
+    expect(document.querySelectorAll('[data-weekly-remaining="21"]')).toHaveLength(2);
+  });
+
+  it('clears the shared result when the picker closes without retaining its rail', async () => {
+    function Picker({ open }: { open: boolean }) {
+      useProviderShareQuotaViewing(open);
+      return open ? <Rail /> : null;
+    }
+    const view = render(<Picker open />);
+    await act(async () => {});
+    expect(bar()).not.toBeNull();
+    view.rerender(<Picker open={false} />);
+    await act(async () => {});
+    view.rerender(<Picker open />);
+    expect(bar()).toBeNull();
+    expect(command).toHaveBeenCalledTimes(1);
+    await tick();
+    expect(bar()?.getAttribute('data-weekly-remaining')).toBe('21');
+    expect(command).toHaveBeenCalledTimes(2);
   });
 
   it('does not query closed lists and discards late reads after closing or hiding', async () => {
