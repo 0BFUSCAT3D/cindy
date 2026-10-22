@@ -3074,9 +3074,22 @@ async function sweepableRunsUnderRoots(
   // from each consuming another slice of the shared recovery deadline.
   const processes = await readRecoveryProcessInventory(recoveryDeadline);
   if (!processes) return byRoot;
+  const missing: string[] = [];
+  for (const runs of byRoot.values()) {
+    for (const { terminalIdentities } of runs) {
+      if (!terminalIdentities) continue;
+      if (processes.some((command) => terminalIdentities.some((id) => command.includes(id)))) continue;
+      missing.push(...terminalIdentities);
+    }
+  }
+  const procfs = process.platform === 'linux' && missing.length > 0
+    ? await linuxProcfsLiveIdentities(missing, recoveryDeadline)
+    : 'unavailable';
+  if (procfs === 'unknown') return byRoot;
   for (const [root, runs] of byRoot) {
     byRoot.set(root, runs.filter(({ terminalIdentities }) => !terminalIdentities
-      || processes.some(command => terminalIdentities.some(id => command.includes(id)))));
+      || processes.some((command) => terminalIdentities.some((id) => command.includes(id)))
+      || (procfs !== 'unavailable' && terminalIdentities.some((id) => procfs.has(id)))));
   }
   return byRoot;
 }
@@ -3159,6 +3172,39 @@ async function readLinuxProcArgs(pid: string): Promise<string | null | 'unknown'
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'unknown';
   }
+}
+
+/**
+ * Identities still visible in `/proc` after `ps` missed them.
+ * `unavailable` means this is not a Linux procfs (a unit test may only pretend
+ * to be Linux). `unknown` means the scan could not finish and must fail closed.
+ */
+async function linuxProcfsLiveIdentities(
+  identities: readonly string[],
+  deadline: number,
+): Promise<Set<string> | 'unavailable' | 'unknown'> {
+  const sought = identities.filter((id) => id.length >= 32);
+  if (sought.length === 0) return new Set();
+  let names: string[];
+  try {
+    names = await fs.readdir('/proc');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'unavailable' : 'unknown';
+  }
+  const found = new Set<string>();
+  for (const name of names) {
+    if (Date.now() >= deadline) return 'unknown';
+    if (!/^[1-9]\d*$/.test(name)) continue;
+    const args = await readLinuxProcArgs(name);
+    if (args === 'unknown') return 'unknown';
+    if (!args) continue;
+    for (const id of sought) {
+      if (args.includes(id)) found.add(id);
+    }
+    if (sought.every((id) => found.has(id))) break;
+  }
+  return found;
 }
 
 /** Add same-user processes `ps` omitted. An unreadable live command line is unknown. */
@@ -3352,10 +3398,13 @@ async function readRecoveryProcessInventory(deadline: number): Promise<string[] 
       if (process.platform === 'linux') {
         const full = await readLinuxProcArgs(pid);
         if (full === 'unknown') return null;
-        // Only replace a clipped listing. A missing or unrelated /proc entry
-        // keeps the ps text so a test stub pid is not overwritten.
+        // Replace only a listing /proc confirms. A missing entry keeps the ps
+        // text so a test stub pid is not overwritten by an unrelated process.
+        // A live argv that does not contain the visible ps text is still
+        // recorded: ps can show only `comm` while /proc keeps --session-id.
         const visible = command.endsWith('+') ? command.slice(0, -1) : command;
-        if (visible && full?.includes(visible)) command = full;
+        if (full && visible && full.includes(visible)) command = full;
+        else if (full && full !== command) commands.push(full);
       }
       commands.push(command);
       seenPids.add(pid);
