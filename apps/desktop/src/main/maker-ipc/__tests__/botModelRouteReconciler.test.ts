@@ -12,7 +12,7 @@ function harness() {
     current: { agentKind: 'pi' as const, model: 'glm', providerId: 'xd', effort: 'high', fastMode: false },
     hasRuntimeOverride: false,
   };
-  const read = vi.fn(async () => state);
+  const read = vi.fn<Parameters<typeof createBotModelRouteReconciler>[0]['read']>(async () => state);
   const apply = vi.fn<Parameters<typeof createBotModelRouteReconciler>[0]['apply']>(async () => undefined);
   const onSelectionAccepted = vi.fn(async (_id: string) => {});
   const reconcile = createBotModelRouteReconciler({ ownerEpoch: () => owner, read, apply, onSelectionAccepted });
@@ -351,4 +351,47 @@ it('keeps the baseline when a newer explicit save fails after an ordinary reconc
   expect(h.onSelectionAccepted).toHaveBeenCalledOnce();
   await h.scope.restore('canonical', 'automation');
   expect(h.state.current.model).toBe('new-permanent');
+});
+
+// A paused Bot is absent from the production apply reader, but its settings
+// can still save a permanent selection. Resume must accept that selection
+// before the next IM restores a surviving automation baseline.
+it.each([true, false])('retains a paused save until resume (already current: %s)', async alreadyCurrent => {
+  const h = automationHarness();
+  let paused = true;
+  h.read.mockImplementation(async (_id, purpose) => paused && purpose === 'apply' ? null : h.state);
+  h.state.hasRuntimeOverride = true;
+  if (alreadyCurrent) {
+    h.state.current = { agentKind: 'codex', model: 'luna', providerId: 'xd', effort: 'medium', fastMode: false };
+  }
+  const baseline = h.baseline();
+  await h.reconcile.profileChanged('canonical');
+  await h.reconcile('canonical');
+  await h.reconcile.preview('canonical');
+  expect(h.apply).not.toHaveBeenCalled();
+  expect(h.onSelectionAccepted).not.toHaveBeenCalled();
+  expect(h.baseline()).toBe(baseline);
+  paused = false;
+  await h.reconcile('canonical');
+  await h.scope.restore('canonical', 'automation');
+  expect(h.state.current.model).toBe('luna');
+  expect(h.baseline()).toBeNull();
+  expect(h.onSelectionAccepted).toHaveBeenCalledOnce();
+  expect(h.apply).toHaveBeenCalledTimes(alreadyCurrent ? 0 : 1);
+});
+
+it('retries a paused save after its first resumed route fails without losing the baseline', async () => {
+  const h = automationHarness();
+  h.state.hasRuntimeOverride = true;
+  h.read.mockResolvedValueOnce(null);
+  const baseline = h.baseline();
+  await h.reconcile.profileChanged('canonical');
+  h.apply.mockRejectedValueOnce(new Error('provider unavailable'));
+  await expect(h.reconcile('canonical')).rejects.toThrow('provider unavailable');
+  expect(h.baseline()).toBe(baseline);
+  expect(h.onSelectionAccepted).not.toHaveBeenCalled();
+  await h.reconcile('canonical');
+  await h.scope.restore('canonical', 'automation');
+  expect(h.state.current.model).toBe('luna');
+  expect(h.baseline()).toBeNull();
 });
