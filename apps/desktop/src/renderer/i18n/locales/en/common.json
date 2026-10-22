@@ -3878,7 +3878,7 @@
         "more": "More speech models ({{count}})",
         "manual": "Enter a speech model ID",
         "modelId": "Speech model ID",
-        "modelsHint": "Saving only adds models; it does not call the speech service. Choose voices and sentence playback in companion voice settings.",
+        "modelsHint": "Saving speech models does not start speech synthesis. Choose voices and sentence playback in companion voice settings.",
         "otherModels": "Chat and other models",
         "separateKey": "Speech requires an API key. This creates a separate connection and keeps your subscription or device-code connection.",
         "fetchFailed": "The model catalog is unavailable. You can still add reference models.",

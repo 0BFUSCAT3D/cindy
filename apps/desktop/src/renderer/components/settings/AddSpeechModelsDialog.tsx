@@ -244,9 +244,6 @@ export function AddSpeechModelsDialog({
                     })
                   }
                 />
-                <p className="text-11 leading-relaxed text-[var(--text-tertiary)]">
-                  {t('settings.providers.speechSetup.modelsHint')}
-                </p>
               </>
             )}
           </div>

@@ -2230,9 +2230,11 @@ export function AddProviderWizard({
                       ))}
                     </div>
                   )}
-                  <p className="text-11 leading-snug" style={{ color: 'var(--text-tertiary)' }}>
-                    {t(speechPicks.length > 0 ? 'settings.providers.speechSetup.modelsHint' : 'settings.providers.wizard.modelsHint')}
-                  </p>
+                  {(generalPicks.length > 0 || showManualModelFallback) && (
+                    <p className="text-11 leading-snug" style={{ color: 'var(--text-tertiary)' }}>
+                      {t('settings.providers.wizard.modelsHint')}
+                    </p>
+                  )}
                 </>
               )}
             </div>

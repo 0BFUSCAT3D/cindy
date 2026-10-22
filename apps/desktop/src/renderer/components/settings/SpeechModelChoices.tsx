@@ -138,6 +138,9 @@ export function SpeechModelChoices({
           </Button>
         </div>
       )}
+      <p className="text-11 leading-relaxed text-[var(--text-tertiary)]">
+        {t('settings.providers.speechSetup.modelsHint')}
+      </p>
     </section>
   );
 }
