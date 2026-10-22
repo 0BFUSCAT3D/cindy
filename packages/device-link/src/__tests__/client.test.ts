@@ -10562,8 +10562,8 @@ describe('直连优先、中继兜底(Device Link direct path)', () => {
     } finally { h.client.stop(); vi.useRealTimers(); }
   });
 
-  // A small tail can reach its retry deadline while a fragmented head is still cooling down.
-  it.each(['ack-timeout', 'send-failed'])('replays from the large head when a later direct result triggers %s', async (trigger) => {
+  // Cover both tail-triggered recovery and a lone large response with no tail to trigger it.
+  it.each(['ack-timeout', 'send-failed', 'single-large'])('completes fragmented results through relay after %s', async (trigger) => {
     vi.useFakeTimers();
     const relay = new MemoryRelay();
     const host = makeRelayClient(relay, 'desktop', { transportRetryIntervalMs: 1_000, requestTimeoutMs: 30_000 });
@@ -10591,19 +10591,27 @@ describe('直连优先、中继兜底(Device Link direct path)', () => {
       await pump(); await opening;
       const direct = connectDirect({ id: 'viewer-a', client: a }, { id: 'desktop', client: host });
       direct.drop.toLeft = true;
-      for (let index = 0; index < 2; index++) request(index);
+      const requestCount = trigger === 'single-large' ? 1 : 2;
+      for (let index = 0; index < requestCount; index++) request(index);
       await pump();
-      expect(executions).toBe(2);
+      expect(executions).toBe(requestCount);
       expect(results).toHaveLength(0);
       if (trigger === 'send-failed') {
         direct.failSend.right = true;
         request(2);
+      } else if (trigger === 'single-large') {
+        // Keep the healthy relay pumping while the ordinary request deadline approaches.
+        for (let second = 0; second < 35 && results.length === 0; second++) {
+          await vi.advanceTimersByTimeAsync(1_000);
+          await pump();
+        }
       } else {
         await vi.advanceTimersByTimeAsync(1_100);
       }
       await pump();
-      const expectedCount = trigger === 'send-failed' ? 3 : 2;
+      const expectedCount = trigger === 'send-failed' ? 3 : requestCount;
       expect(results).toHaveLength(expectedCount);
+      expect(results[0]).toHaveProperty('ok', true);
       expect(results[0]).toEqual({ ok: true, result: large });
       for (const result of results.slice(1)) expect(result).toEqual({ ok: true, result: 'small' });
       expect(executions).toBe(expectedCount);

@@ -4681,13 +4681,17 @@ export class DeviceLinkClient {
         RELIABLE_RETRY_MAX_SIZE_INTERVALS,
         Math.ceil(pending.bytes / RELIABLE_RETRY_BYTES_PER_INTERVAL),
       );
-      const retryDelayMs = reliableRetryDelayMs(
-        peer.rtt,
-        this.timing.transportRetryIntervalMs,
-        sizeIntervals,
-        pending.attempts,
-        pending.bytes,
-      );
+      // 直连无 ACK 时要及时换路：relay 的大消息字节退避可能长于调用方超时，
+      // 不能让单条大结果在失效直连上等满退避期才尝试健康的 relay。
+      const retryDelayMs = pending.path === 'direct'
+        ? retransmitBaseMs(peer.rtt, this.timing.transportRetryIntervalMs)
+        : reliableRetryDelayMs(
+          peer.rtt,
+          this.timing.transportRetryIntervalMs,
+          sizeIntervals,
+          pending.attempts,
+          pending.bytes,
+        );
       if (pending.sent && !opts.ignoreInterval && now - pending.lastSentAt < retryDelayMs) {
         // A large head frame may still be inside its byte-based cooldown while
         // a later small request is already eligible. Cumulative ACK cannot
