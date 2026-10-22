@@ -27,11 +27,18 @@ that session/window. Override them only when the target is outside the current
 scope. The returned `observation` uses the ordinary read result envelope and
 registers fresh element tokens and secure-field frames. It is mutually exclusive
 with `postcondition`, which checks an explicit assertion instead.
+Invalidating element references does not discard that scope: automatic evidence,
+failed reads and failed verification keep the last successful explicit read's
+bounds, while old tokens remain stale. A successful later read replaces the scope.
 
 Delivery and observation have separate outcomes: inspect `observation.ok` and
 the returned state before continuing. Failed reads do not undo delivery, and
 unknown delivery is not proof that the goal succeeded. Input is never replayed
 automatically. Refused actions do not trigger the optional observation.
+An action exception marked `outcomeUnknown` also honors `observe`, preserving
+its error code and partial-input progress alongside the new observation. A failed
+observation does not replace the original action error. Cancelled actions and
+unresolved window identities do not trigger this follow-up read.
 
 Cindy MCP supplies the task's stable driver session. When using the native CLI
 instead, pass the **same non-default `session` on every read and action**, then

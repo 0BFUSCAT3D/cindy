@@ -565,6 +565,19 @@ export function createComputerMcpServer(
       parsedData,
       sessionId,
     );
+    // Both delivered and uncertain actions honor an explicit observation request.
+    // Keep its normal read guards and registration in one path; never replay input.
+    const readActionObservation = async () => {
+      const read = await handleCallTool('get_window_state', {
+        ...observationScope,
+        ...observe,
+        pid: parsedData.pid,
+        window_id: parsedData.window_id,
+        include_screenshot: observe?.include_screenshot ?? false,
+        ...(typeof parsedData.session === 'string' ? { session: parsedData.session } : {}),
+      }, signal, dispatchOptions);
+      return JSON.parse(read.content[0].text) as Record<string, unknown>;
+    };
 
     try {
       const data = await callComputerTool(
@@ -613,14 +626,7 @@ export function createComputerMcpServer(
       // frames, output handling and fresh element registration remain identical.
       // A returned observation is evidence, never a reason to replay the input.
       const observation = observe && !recovery && outcome.ok && !signal?.aborted
-        ? JSON.parse((await handleCallTool('get_window_state', {
-            ...observationScope,
-            ...observe,
-            pid: parsedData.pid,
-            window_id: parsedData.window_id,
-            include_screenshot: observe.include_screenshot ?? false,
-            ...(typeof parsedData.session === 'string' ? { session: parsedData.session } : {}),
-          }, signal, dispatchOptions)).content[0].text) as Record<string, unknown>
+        ? await readActionObservation()
         : undefined;
       if (postcondition && postcheck) {
         const checked = computerResultOutcome("verify_state", postcheck.data);
@@ -682,17 +688,21 @@ export function createComputerMcpServer(
         windowUnresolved && !signal?.aborted
           ? await rediscoverWindow(parsedData, { ...callContext, signal })
           : undefined;
-      const postcheck =
+      const shouldObserveUnknownAction =
         !recovery &&
         !signal?.aborted &&
         errorCode !== "REQUEST_CANCELLED" &&
         POSTCHECK_ACTION_TOOLS.has(name as ComputerMcpToolName) &&
-        (err as { outcomeUnknown?: boolean })?.outcomeUnknown
-          ? await checkActionState(parsedData, postcondition, {
-              ...callContext,
-              signal,
-            })
-          : undefined;
+        (err as { outcomeUnknown?: boolean })?.outcomeUnknown;
+      const observation = observe && shouldObserveUnknownAction
+        ? await readActionObservation()
+        : undefined;
+      const postcheck = !observe && shouldObserveUnknownAction
+        ? await checkActionState(parsedData, postcondition, {
+            ...callContext,
+            signal,
+          })
+        : undefined;
       const installedDiscovery =
         name === "launch_app" &&
         !signal?.aborted &&
@@ -807,6 +817,7 @@ export function createComputerMcpServer(
           errorCode,
           ...(recovery ? { recovery } : {}),
           ...(postcheck ? { postcheck } : {}),
+          ...(observation ? { observation } : {}),
           ...(appDiscovery || installedDiscovery
             ? {
                 recovery: {
