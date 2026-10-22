@@ -692,7 +692,8 @@ export function RightSidebarShell({
         if (context.hostedTabIds?.has(tabId)) setHostedActiveTabId(tabId);
         return;
       }
-      if (!context.inGroup(tabId)) return;
+      // 与页签投影共用弹出归属镜像;不要依赖尚未重渲染的新页签列表。
+      if (!context.inGroup(tabId) || isTabPoppedOut(tabId)) return;
       setGroupActiveTabId(groupId, sessionId, tabId);
       const activeGlobal = context.activeGlobalTabId;
       if (activeGlobal && context.pinnedTabs.some((tab) => tab.id === activeGlobal)) {
