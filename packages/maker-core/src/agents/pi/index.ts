@@ -7072,7 +7072,10 @@ export class PiAgent extends BaseAgent {
       if (!resp.success) throw new Error(`pi set_thinking_level failed: ${resp.error ?? 'unknown'}`);
       // 意图标记只在 RPC 成功后更新：失败时 Pi 仍是旧状态，提前改标记会让之后的
       // 无载体切模误判（2026-10-06 Greptile P1：已报错的操作在之后意外生效）。
-      thinkingExplicitlyOff = !wanted;
+      // 标记跟随**用户意图**（enabled）而非实际下发的档位：目标模型不支持思考时确实
+      // 发了 off，但那是能力所致，不能被记成「用户主动关闭」——否则之后不带档位切回
+      // 推理模型会跳过档位恢复，思考再也打不开。
+      thinkingExplicitlyOff = !enabled;
       // 只在真的打开时更新档位记忆：关掉思考不丢档位——档位是用户的独立选择，
       // 再打开应回到原档位，而不是回落到启动时的档位。
       if (wanted) mutableEffort = targetEffort ?? 'xhigh';

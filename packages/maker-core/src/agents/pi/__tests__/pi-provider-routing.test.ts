@@ -4841,6 +4841,15 @@ describe("Pi provider-aware model routing", () => {
       .map((request) => String(request.level));
     expect(levels).toEqual(["off"]);
     expect(handle.getEffort!()).toBe("high");
+    // 发 off 是能力所致，不是用户主动关闭：不带档位切回推理模型时必须恢复思考。
+    const beforeBack = captured.requests.length;
+    await handle.setModel!("model-a", { providerId: "native-a" });
+    const restored = captured.requests
+      .slice(beforeBack)
+      .filter((request) => request.type === "set_thinking_level")
+      .map((request) => String(request.level));
+    // 至少下发一次 high（开启逻辑与切模收尾都可能各下一次，后者是幂等的）。
+    expect(restored).toContain("high");
     await handle.close();
   });
 
