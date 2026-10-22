@@ -101,3 +101,18 @@ it('defers a refresh owed by an in-flight read until the app returns to the fore
   expect(poll.mock.calls[1][0]).toEqual({ fresh: true });
   poller.dispose();
 });
+
+it('rereads right after a read that was still in flight across a background period', async () => {
+  let finish!: (count: number) => void;
+  poll.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const poller = startSharedTaskListPoller({ poll, isVisible: () => visible });
+  visible = false; poller.visibilityChanged();
+  await vi.advanceTimersByTimeAsync(30_000);
+  visible = true; poller.visibilityChanged();
+  expect(reads()).toBe(1);
+  finish(0);
+  await vi.advanceTimersByTimeAsync(0);
+  // The pre-background snapshot is not trusted; the return is paid at once.
+  expect(reads()).toBe(2);
+  poller.dispose();
+});

@@ -65,8 +65,12 @@ export function startSharedTaskListPoller(options: {
       if (!options.isVisible()) { cancel(); return; }
       const elapsed = Date.now() - lastReadAt;
       // A negative interval means the clock moved backwards; read rather than trust it.
-      if (refreshPending || elapsed < 0 || elapsed >= SHARED_TASK_LIST_RESUME_MIN_MS) void run();
-      else schedule();
+      if (refreshPending || elapsed < 0 || elapsed >= SHARED_TASK_LIST_RESUME_MIN_MS) {
+        // A read still in flight began before the background period and may
+        // return an old snapshot; owe one more read right after it.
+        if (busy) refreshPending = true;
+        void run();
+      } else schedule();
     },
     dispose() { disposed = true; cancel(); },
   };
