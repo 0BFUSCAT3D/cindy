@@ -5801,6 +5801,27 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { release(); }
   });
 
+  // Cross-channel recall needs live connection discovery, but a group self-read must
+  // not reveal the owner's other connections. Existing model tests did not cover it.
+  it('exposes conversation discovery only with owner access', async () => {
+    await seedPair(); seedGroupLane();
+    const readConversationConnections = vi.fn(async () => [{ channel: 'telegram', connectionId: 'fixture', status: 'offline' }]);
+    const service = createBotCapabilityService({ ...capabilityDeps, readConversationConnections });
+    const owner = await service.inspect({ callerSessionId: 'session-1' });
+    expect(owner).toMatchObject({ ok: true, state: { conversations: {
+      scope: 'local', teammateId: 'bot-a', connectionsAvailable: true,
+      connections: [{ channel: 'telegram', status: 'offline' }],
+    } } });
+    expect(readConversationConnections).toHaveBeenCalledWith('bot-a');
+    readConversationConnections.mockClear();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'tools', isCurrent: () => true, validate: async () => {} });
+    try {
+      const guest = await service.inspect({ callerSessionId: 'group-lane' });
+      expect(guest.ok && guest.state.conversations).toBeUndefined();
+      expect(readConversationConnections).not.toHaveBeenCalled();
+    } finally { release(); }
+  });
+
   it.each([
     { label: 'null override', config: { modelChainOverride: null } },
     { label: 'legacy default marker', config: { modelOverride: null, model: 'stale-profile-model' } },

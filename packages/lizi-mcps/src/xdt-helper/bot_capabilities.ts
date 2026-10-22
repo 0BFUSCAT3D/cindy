@@ -55,6 +55,13 @@ export interface AppDefaultModelRoute {
 }
 
 export interface BotControlState {
+  conversations?: {
+    scope: 'local';
+    teammateId: string;
+    connections: { channel: string; connectionId?: string; status: string }[];
+    connectionsAvailable: boolean;
+    guidance: string;
+  };
   profile: { id: string; name: string; description: string; identitySource: string; version: number };
   session: { id: string; workingDir: string | null; remoteHostId: string | null };
   model: { source: "override" | "default"; candidates: { harness: string; providerId?: string | null; model: string }[] };
@@ -139,7 +146,7 @@ export function registerBotCapabilityTools(
   if (deps.callbacks.inspect) registry.register({
     name: "get_teammate_state",
     category: "bots",
-    description: TEAMMATE_CONTROL_GUIDANCE,
+    description: TEAMMATE_CONTROL_GUIDANCE + '\n主人私聊中还返回本机消息平台连接与跨渠道历史检索指引。按话题接续时使用 profile.id 作为 history 工具的 teammate_id，不需要主人先点名渠道；连接不证明旧记录归属。',
     inputShape: {},
     handler: async () => {
       const callerSessionId = deps.getSessionContext().sessionId;

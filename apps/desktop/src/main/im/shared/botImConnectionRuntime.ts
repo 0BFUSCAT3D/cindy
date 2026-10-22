@@ -208,8 +208,9 @@ function toView(record: BotImConnectionRecord): BotImConnectionView {
   return { ...record, status: statusOf(transport), identity: identityOf(transport) };
 }
 
-export function buildBotImConnectionListPayload(): BotImConnectionListPayload {
-  return { connections: listBotImConnections().map(toView) };
+export function buildBotImConnectionListPayload(botId?: string): BotImConnectionListPayload {
+  const records = botId === undefined ? listBotImConnections() : listBotImConnectionsForBot(botId);
+  return { connections: records.map(toView) };
 }
 
 function broadcastChanged(): void {

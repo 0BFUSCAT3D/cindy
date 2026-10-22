@@ -525,6 +525,13 @@ Claude Code 终态 error 事件可带 `usageResetAt`（unix ms）。服务端无
 
 ## Agent 跨设备历史发现与搜索
 
+历史查询的可选 `teammate_id`、`source` 由源端在召回、排名、分页前过滤，仍与原调用方权限
+及远程可见范围取交集。`list_sessions` 的 `time_field=activity` 同时控制时间窗、排序和游标，
+活动时间取创建、更新、用户发送时间的最大值；省略时保持创建时间语义。新增输出
+`lastActivityAt`、`companion`（持久伙伴关联及可证明的渠道），搜索元数据补充 `source`。
+跨设备转发不丢筛选字段；旧端若拒绝新参数，保留失败设备组与 `partial`，不能重试成无归属
+筛选的查询，也不能把失败当作无聊天。没有这些参数的旧调用保持兼容。
+
 `cindy_helper` 的 `list_history_devices` 使用现有同账号设备目录；`list_sessions` 和
 `search_chat_history` 新增 `device` 参数，默认 `local` 保留原行为，`all` 查询本机和在线且
 允许访问的电脑，也可指定目录返回的设备 ID。跨设备响应按设备分组；`limit`、排序、

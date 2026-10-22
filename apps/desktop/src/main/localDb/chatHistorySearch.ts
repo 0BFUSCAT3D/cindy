@@ -26,7 +26,7 @@
  *   - 上下文窗口 / content 解析复用 mapper.ts 的 messageToCamel(走 drizzle 驼峰行)。
  */
 
-import { and, asc, desc, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type {
   SearchChatHistoryArgs,
@@ -37,6 +37,7 @@ import type {
   HistoryRole,
 } from '@cindy/mcps';
 
+import { historyCompanionJson, parseHistoryCompanion } from './historyCompanion';
 import { getDbClient } from './client/current';
 import { messages as messagesTable, sessions as sessionsTable } from './schema';
 import { messageToCamel } from './mapper';
@@ -454,6 +455,14 @@ function buildFilterClause(
   const conds: string[] = ['m.rewind_at IS NULL'];
   if (args.remoteVisibleOnly) conds.push(remoteVisibleSessionSql('s'));
   const params: unknown[] = [];
+  if (args.teammateId) {
+    conds.push('EXISTS (SELECT 1 FROM bot_session_links hcf WHERE hcf.session_id = s.id AND hcf.bot_id = ?)');
+    params.push(args.teammateId);
+  }
+  if (args.source) {
+    conds.push('s.source = ?');
+    params.push(args.source);
+  }
   if (args.sessionIds && args.sessionIds.length > 0) {
     conds.push(`m.session_id IN (${args.sessionIds.map(() => '?').join(',')})`);
     params.push(...args.sessionIds);
@@ -605,12 +614,14 @@ async function fetchSessionsMeta(
       workingDir: sessionsTable.workingDir,
       agentKind: sessionsTable.agentKind,
       title: sessionsTable.title,
+      source: sessionsTable.source,
+      companionJson: historyCompanionJson(sql`${sessionsTable.id}`),
     })
     .from(sessionsTable)
     .where(inArray(sessionsTable.id, uniq));
   const out: Record<string, SearchChatHistorySessionMeta> = {};
   for (const r of rows) {
-    out[r.id] = { workingDir: r.workingDir, agentKind: r.agentKind, title: r.title };
+    out[r.id] = { workingDir: r.workingDir, agentKind: r.agentKind, title: r.title, source: r.source, companion: parseHistoryCompanion(r.companionJson) };
   }
   return out;
 }

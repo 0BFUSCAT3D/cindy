@@ -894,6 +894,20 @@ function createDesktopBotCapabilityService() {
   return createBotCapabilityService({
     getMaker, getPluginRegistry, isBotToolsetAvailable,
     listMcpServers: listBotRuntimeMcpServers,
+    readConversationConnections: async (botId) => {
+      const [{ buildBotImConnectionListPayload }, { readWechatChannelSettings }, { readXCompanionAssignment }] = await Promise.all([
+        import('../im/shared/botImConnectionRuntime.js'),
+        import('../im/wechat/channelSettings.js'),
+        import('../hook-control/ipc.js'),
+      ]);
+      const connections: NonNullable<import('@cindy/mcps').BotControlState['conversations']>['connections'] =
+        buildBotImConnectionListPayload(botId).connections
+          .map(record => ({ channel: record.service ?? record.channel, connectionId: record.id, status: record.status.kind }));
+      if (readWechatChannelSettings().companionBotId === botId) connections.push({ channel: 'wechat', status: 'assigned' });
+      const x = readXCompanionAssignment();
+      if (x?.botId === botId) connections.push({ channel: 'x', status: x.enabled ? 'assigned' : 'disabled' });
+      return connections;
+    },
     resolveBotAgentKind: async (sessionId, chain) => _resolveBotCapabilityAgentKind?.(sessionId, chain) ?? null,
   });
 }

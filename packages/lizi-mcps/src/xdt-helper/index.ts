@@ -220,6 +220,7 @@ export type {
   HistoryPage,
   HistoryWorkdir,
   HistorySession,
+  HistoryCompanion,
   HistoryMessage,
   ListWorkdirsArgs,
   ListSessionsArgs,
