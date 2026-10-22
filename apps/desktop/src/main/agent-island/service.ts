@@ -151,6 +151,7 @@ import {
 } from './layoutPreferenceStore.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
+import { isDeviceLinkInvoke } from '../device-link/invoke-context.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import {
   beginProtectedFolderCheck,
@@ -548,7 +549,8 @@ export class AgentIslandService {
 
   /** 各平台都注册(含无原生岛的 headless):灵动岛关闭时远程任务靠它发桌面通知。 */
   registerDeviceSessionIpc(): void {
-    ipcMain.handle('agent-island:completion-action', (_event, sessionId: unknown, action: unknown, token: unknown) => {
+    ipcMain.handle('agent-island:completion-action', (event, sessionId: unknown, action: unknown, token: unknown) => {
+      if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
       if (typeof sessionId !== 'string' || !sessionId || (action !== 'archive' && action !== 'mark-read')
         || typeof token !== 'string' || !token || token.length > 128) {
         throwIpcError('INVALID_PARAMS', 'Invalid completion action');

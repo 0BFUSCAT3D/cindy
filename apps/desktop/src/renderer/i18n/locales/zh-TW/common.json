@@ -1074,7 +1074,7 @@
   "agentIsland": {
     "native": {
       "markRead": "標為已讀",
-      "archive": "封存",
+      "archive": "歸檔",
       "actionFailed": "操作未完成，提醒已保留，請重試。",
       "newConversationTitle": "新建任務",
       "newConversationHint": "開始一個新的任務",

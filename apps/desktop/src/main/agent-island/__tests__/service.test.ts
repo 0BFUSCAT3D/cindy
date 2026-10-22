@@ -32,6 +32,7 @@ import { markAppContentWindow } from '../../windowFocusClassifier.js';
 import type { AgentIslandService } from '../service.js';
 import type { AgentIslandCompanionIdentity } from '../companionIdentity.js';
 import { setDeepLinkMainWindow, takePendingDeepLink } from '../../deepLink.js';
+import { runDeviceLinkInvokeContext } from '../../device-link/invoke-context.js';
 
 const REMOTE_DAEMON_CLOSED_REASON = 'remote_daemon_closed';
 
@@ -694,6 +695,36 @@ describe('AgentIslandService native publishing', () => {
     service.resetRuntimeState();
   });
 
+  // IPC security §5: a valid completion token cannot authorize a foreign frame.
+  // The same owner mutation remains available through authenticated device-link.
+  it.each(['mark-read', 'archive'] as const)('rejects an untrusted %s sender before side effects and accepts its tunneled equivalent', async action => {
+    const { AgentIslandService } = await import('../service.js');
+    const service = new AgentIslandService({ getMainWindow: () => null });
+    service.setEnabled(false);
+    service.registerDeviceSessionIpc();
+    const meta = { sessionId: 'sender-guard', agentKind: 'codex' as const };
+    service.handleUserPrompt(meta, 'run');
+    service.handleAgentEvent(meta, doneEvent());
+    const token = (service.getSessionActivitySnapshot(meta.sessionId) as AgentIslandSessionActivity).completionToken!;
+    const handler = registeredIpcHandler('agent-island:completion-action');
+    const event = { senderFrame: null };
+    mocks.assertTrustedAppRendererEvent.mockImplementation(() => { throw new Error('[FORBIDDEN] Untrusted renderer'); });
+    try {
+      expect(() => handler(event, meta.sessionId, action, token)).toThrow('[FORBIDDEN]');
+      expect(mocks.assertTrustedAppRendererEvent).toHaveBeenCalledWith(event);
+      expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
+      expect(service.getSessionActivitySnapshot(meta.sessionId)).toMatchObject({ attention: true });
+      mocks.assertTrustedAppRendererEvent.mockClear();
+      expect(await runDeviceLinkInvokeContext({ controllerDeviceId: 'paired', channel: 'agent-island:completion-action' },
+        () => handler(null, meta.sessionId, action, token))).toBe(true);
+      expect(mocks.assertTrustedAppRendererEvent).not.toHaveBeenCalled();
+      expect(mocks.patchSessionMetaInDb).toHaveBeenCalledTimes(action === 'archive' ? 1 : 0);
+      expect(service.getSessionActivitySnapshot(meta.sessionId)?.attention ?? false).toBe(false);
+    } finally {
+      service.resetRuntimeState();
+    }
+  });
+
   // Owner handler + existing send lock: stale network/queue deliveries must not
   // archive or acknowledge the next completion, even in the same millisecond.
   it.each(['mark-read', 'archive'] as const)('rejects an old %s on the owning device after its route wait', async action => {
@@ -710,7 +741,8 @@ describe('AgentIslandService native publishing', () => {
     const blocked = new Promise<void>(resolve => { release = resolve; });
     setSessionRouteLockImplementation(async (_id, task) => { await blocked; return task(); });
     try {
-      const actionPromise = registeredIpcHandler('agent-island:completion-action')(null, meta.sessionId, action, token);
+      const actionPromise = runDeviceLinkInvokeContext({ controllerDeviceId: 'paired', channel: 'agent-island:completion-action' },
+        () => registeredIpcHandler('agent-island:completion-action')(null, meta.sessionId, action, token));
       complete();
       release();
       expect(await actionPromise).toBe(false);
