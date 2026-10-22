@@ -17,6 +17,11 @@ function trackListWrite<T>(method: string, work: () => Promise<T>): Promise<T> {
   return work().finally(() => { listWrites++; });
 }
 
+/** The next list() is a real request: an external event (reconnect, revocation) may postdate the cache. */
+export function forgetSharedTaskList(): void {
+  listCache = null;
+}
+
 /** Main-owned adapter. Tokens remain inside the existing authenticated HTTP client. */
 const accountApi = createSharedTaskApi({
   captureScope() {

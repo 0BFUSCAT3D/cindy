@@ -17,13 +17,19 @@ export interface SharedTaskListPoller {
 }
 
 export function startSharedTaskListPoller(options: {
-  /** Resolves to the number of listed shared tasks, or null when the read failed. */
-  poll(): Promise<number | null>;
+  /**
+   * Resolves to the number of listed shared tasks, or null when the read failed.
+   * `fresh` marks a read owed to an explicit refresh event; it must not reuse
+   * a list cached before that event.
+   */
+  poll(read: { fresh: boolean }): Promise<number | null>;
   isVisible(): boolean;
 }): SharedTaskListPoller {
   let disposed = false;
   let busy = false;
-  let again = false;
+  // An explicit refresh is owed. It survives an in-flight read (e.g. a join
+  // mid-read) and a background period, and is paid by the next visible read.
+  let refreshPending = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let delay = SHARED_TASK_LIST_IDLE_MS;
   let lastReadAt = Number.NEGATIVE_INFINITY;
@@ -34,32 +40,32 @@ export function startSharedTaskListPoller(options: {
     timer = setTimeout(() => { void run(); }, delay);
   };
   const run = async () => {
-    if (disposed) return;
-    // A refresh requested mid-read (e.g. a join) must not be lost to that read.
-    if (busy) { again = true; return; }
+    if (disposed || busy) return;
     cancel();
     busy = true;
     try {
       do {
-        again = false;
+        const fresh = refreshPending;
+        refreshPending = false;
         lastReadAt = Date.now();
-        const count = await options.poll().catch(() => null);
+        const count = await options.poll({ fresh }).catch(() => null);
         if (count !== null) delay = count > 0 ? SHARED_TASK_LIST_ACTIVE_MS : SHARED_TASK_LIST_IDLE_MS;
-      } while (again && !disposed);
+        // Never start the owed read in the background; it runs on return.
+      } while (refreshPending && !disposed && options.isVisible());
     } finally { busy = false; }
     schedule();
   };
   if (options.isVisible()) void run();
   return {
     refresh() {
+      refreshPending = true;
       if (options.isVisible()) void run();
-      else lastReadAt = Number.NEGATIVE_INFINITY;
     },
     visibilityChanged() {
       if (!options.isVisible()) { cancel(); return; }
       const elapsed = Date.now() - lastReadAt;
       // A negative interval means the clock moved backwards; read rather than trust it.
-      if (elapsed < 0 || elapsed >= SHARED_TASK_LIST_RESUME_MIN_MS) void run();
+      if (refreshPending || elapsed < 0 || elapsed >= SHARED_TASK_LIST_RESUME_MIN_MS) void run();
       else schedule();
     },
     dispose() { disposed = true; cancel(); },

@@ -4,7 +4,7 @@ import { startSharedTaskListPoller } from '../sharedTaskListPoller.js';
 // Guards the request budget of the guest directory that every signed-in
 // Desktop and phone runs; a 5 s fixed poll here overloaded auth on 2026-10-22.
 let visible: boolean;
-let poll: ReturnType<typeof vi.fn<() => Promise<number | null>>>;
+let poll: ReturnType<typeof vi.fn<(read: { fresh: boolean }) => Promise<number | null>>>;
 const reads = () => poll.mock.calls.length;
 beforeEach(() => {
   vi.useFakeTimers();
@@ -80,7 +80,24 @@ it('runs a refresh requested during a read once more after it, never concurrentl
   finish(0);
   await vi.advanceTimersByTimeAsync(0);
   expect(reads()).toBe(2);
+  expect(poll.mock.calls.map(([read]) => read.fresh)).toEqual([false, true]);
   await vi.advanceTimersByTimeAsync(59_999);
   expect(reads()).toBe(2);
+  poller.dispose();
+});
+
+it('defers a refresh owed by an in-flight read until the app returns to the foreground', async () => {
+  let finish!: (count: number) => void;
+  poll.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const poller = startSharedTaskListPoller({ poll, isVisible: () => visible });
+  poller.refresh();
+  visible = false; poller.visibilityChanged();
+  finish(0);
+  await vi.advanceTimersByTimeAsync(10 * 60_000);
+  expect(reads()).toBe(1);
+  visible = true; poller.visibilityChanged();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(reads()).toBe(2);
+  expect(poll.mock.calls[1][0]).toEqual({ fresh: true });
   poller.dispose();
 });

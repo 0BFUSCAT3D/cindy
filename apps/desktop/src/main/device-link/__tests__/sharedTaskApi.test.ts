@@ -7,7 +7,7 @@ vi.mock('../../authManager.js', () => ({ getAuthState: () => ({ isAuthenticated:
   getCurrentUserId: () => state.accountId, getActiveAuthRealm: () => state.region, getAccessToken: () => state.token }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => state.endpoint }));
 vi.mock('../../serverApiClient.js', () => ({ serverApiFetch: http }));
-import { captureSharedTaskBoundaryClose, sharedTaskApi } from '../sharedTaskApi.js';
+import { captureSharedTaskBoundaryClose, forgetSharedTaskList, sharedTaskApi } from '../sharedTaskApi.js';
 
 beforeEach(() => {
   state.key = 'account:1'; state.endpoint = 'https://relay.example.test'; state.authenticated = true; state.boundary = false;
@@ -140,6 +140,15 @@ describe('sharedTask Main list reuse', () => {
     await expect(sharedTaskApi.list()).rejects.toThrow('DEVICE_LINK_NOT_CONNECTED');
     await expect(sharedTaskApi.list()).resolves.toHaveLength(1);
     expect(listCalls()).toBe(4);
+  });
+  it('makes a real request after an external event forgets the recent list', async () => {
+    state.key = 'list-reuse:6';
+    http.mockResolvedValue(listed('a'));
+    await sharedTaskApi.list();
+    forgetSharedTaskList();
+    await sharedTaskApi.list();
+    await sharedTaskApi.list();
+    expect(listCalls()).toBe(2);
   });
   it('treats a cached list as stale after the clock moves backwards', async () => {
     state.key = 'list-reuse:5';

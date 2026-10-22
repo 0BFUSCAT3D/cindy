@@ -12,7 +12,7 @@ import { activeOwnerScopeKey, getActiveAppSession, isAppSessionBoundaryPending }
 import { getAuthState, getCurrentUserId, getDeviceId, getActiveAuthRealm } from '../authManager.js';
 import { createLogger } from '../logger.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
-import { captureSharedTaskBoundaryClose, sharedTaskApi } from './sharedTaskApi.js';
+import { captureSharedTaskBoundaryClose, forgetSharedTaskList, sharedTaskApi } from './sharedTaskApi.js';
 import { SharedTaskHost, type SharedTaskCreationState } from './sharedTaskHost.js';
 import { setSharedTaskDispatchHost } from './sharedTaskDispatch.js';
 
@@ -110,6 +110,8 @@ export function startSharedTaskRuntime(options: {
       seenConnectionEpoch = connectionEpoch;
       syncRequested = true;
       lastServerReadAt = undefined;
+      // A list cached before the reconnect cannot reflect changes made while offline.
+      forgetSharedTaskList();
     }
     const allowNetwork = online && serverReadDue() && (syncRequested || host.needsAuthorityRefresh());
     try {

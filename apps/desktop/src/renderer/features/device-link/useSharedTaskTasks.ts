@@ -27,10 +27,11 @@ export function useSharedTaskTasks(): void {
     const owner = getDataOwnerGeneration();
     const currentOwner = () => !disposed && isDataOwnerGenerationCurrent(owner);
     const linked = new Map<string, string>();
-    const poll = async (): Promise<number | null> => {
+    const poll = async ({ fresh }: { fresh: boolean }): Promise<number | null> => {
       if (!currentOwner()) return null;
       try {
-        const sharedTasks = await window.electronAPI.sharedTask.account({ action: 'list' }) as SharedTaskListItem[];
+        // Event-driven reads bypass Main's short list reuse.
+        const sharedTasks = await window.electronAPI.sharedTask.account({ action: 'list', ...(fresh ? { fresh: true } : {}) }) as SharedTaskListItem[];
         if (!currentOwner()) return null;
         const current = new Set(sharedTasks.map((sharedTask) => sharedTaskHostPeer(sharedTask.sharedTaskId, sharedTask.hostDeviceId)));
         for (const id of remoteProjectsStore.getAllDeviceIds()) {

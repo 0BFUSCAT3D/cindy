@@ -139,6 +139,9 @@ it('rereads the guest directory on join, reconnect and return instead of a fixed
   expect(lists()).toBe(2);
   await act(async () => { state.status?.({ status: 'online' }); });
   expect(lists()).toBe(3);
+  // Event-driven reads ask Main to skip its short list reuse; timed reads do not.
+  expect(state.account.mock.calls.filter(([command]) => command.action === 'list').map(([command]) => command.fresh))
+    .toEqual([undefined, true, true]);
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
   await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
   await act(async () => vi.advanceTimersByTimeAsync(10 * 60_000));

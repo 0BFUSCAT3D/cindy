@@ -398,7 +398,7 @@ export default function SharedSessionScreen() {
         <Text style={styles.intro}>{t('sharedTask.startIntro')}</Text>{taskCard}
         <View style={styles.noticeBox}><Users size={iconSize.sm} color={colors.textTertiary} /><Text style={[styles.smallMuted, styles.grow]}>{t('sharedTask.inviteNotice')}</Text></View>
         <Text style={styles.smallMuted}>{t('sharedTask.offlineAutoClose')}</Text>
-        <View style={styles.footer}><SharedTaskAction grow action={{ label: t('sharedTask.open'), tone: 'primary', busy, onPress: () => void run(async () => { await host({ action: 'open', sessionId: sessionId! }); }) }} /></View>
+        <View style={styles.footer}><SharedTaskAction grow action={{ label: t('sharedTask.open'), tone: 'primary', busy, onPress: () => void run(async () => { await host({ action: 'open', sessionId: sessionId! }); notifySharedTaskMembershipChanged(); }) }} /></View>
       </> : <>
         <Text style={styles.caption}>{title}</Text>
         <View style={styles.copyBox}><Link size={iconSize.md} color={colors.textTertiary} /><View style={styles.grow}><Text style={styles.smallMuted}>{t('sharedTask.inviteBoxTitle')}</Text><Text style={styles.smallMuted}>{t('sharedTask.inviteBoxHint')}</Text></View>
@@ -419,6 +419,7 @@ export default function SharedSessionScreen() {
         <View style={styles.noticeBox}><Clock size={iconSize.sm} color={colors.textTertiary} /><Text style={[styles.smallMuted, styles.grow]}>{t('sharedTask.remoteHostOfflineNote')}</Text></View>
         <View style={styles.footer}><SharedTaskAction grow action={{ label: t('sharedTask.closeCurrent'), tone: 'danger', disabled: busy, onPress: () => confirm(t('sharedTask.closeOneTitle'), t('sharedTask.closeOneBody'), t('sharedTask.closeAllKeep'), t('sharedTask.close'), async current => {
           await host({ action: 'close', sharedTaskId: detail.sharedTaskId });
+          notifySharedTaskMembershipChanged();
           if (current() && mode === 'detail') goBackGuarded(router, { pathname: '/shared-session', params: { mode: 'manage' } });
         }) }} /></View>
       </> : <>

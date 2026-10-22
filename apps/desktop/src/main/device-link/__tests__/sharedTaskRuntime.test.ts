@@ -12,7 +12,7 @@ const state = vi.hoisted(() => ({
   accountId: 'owner', region: 'global', authenticated: true,
   session: { mode: 'cloud', dataOwnerId: 'owner', generation: 1 }, boundary: false,
   db: { client: { query: vi.fn(), exec: vi.fn() }, clientEpoch: 1 },
-  hosts: [] as HostRecord[], dispatch: vi.fn(),
+  hosts: [] as HostRecord[], dispatch: vi.fn(), forgetList: vi.fn(),
   captureClose: vi.fn(), close: vi.fn(), journalClose: vi.fn(), journalPrepare: vi.fn(), journalRollback: vi.fn(), journalFinalize: vi.fn(),
 }));
 vi.mock('../../localDb/client/current.js', () => ({ getCurrentDbClientSnapshot: () => state.db }));
@@ -32,7 +32,7 @@ vi.mock('../../authManager.js', () => ({
   getDeviceId: () => 'host-device', getActiveAuthRealm: () => state.region,
 }));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), debug: vi.fn() }) }));
-vi.mock('../sharedTaskApi.js', () => ({ sharedTaskApi: {}, captureSharedTaskBoundaryClose: state.captureClose }));
+vi.mock('../sharedTaskApi.js', () => ({ sharedTaskApi: {}, captureSharedTaskBoundaryClose: state.captureClose, forgetSharedTaskList: state.forgetList }));
 vi.mock('../sharedTaskDispatch.js', () => ({ setSharedTaskDispatchHost: state.dispatch }));
 vi.mock('../sharedTaskHost.js', () => ({
   SharedTaskHost: class {
@@ -151,8 +151,11 @@ describe('shared runtime stable owner recommit', () => {
     // A reconnect that finished between ticks is never observed offline.
     relay.getConnectionEpoch = () => 2;
     host.restore.mockRejectedValueOnce(new Error('offline'));
+    state.forgetList.mockClear();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(serverReads()).toBe(4);
+    // The reconnect sync must not reuse a list cached before the reconnect.
+    expect(state.forgetList).toHaveBeenCalledOnce();
     // A failed sync retries after the server interval, not on every local tick.
     await vi.advanceTimersByTimeAsync(25_000);
     expect(serverReads()).toBe(4);
