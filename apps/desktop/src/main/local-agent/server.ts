@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { LocalAgentModel } from './catalog.js';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
+import type { LocalAgentInstanceInfo } from '../../shared/localAgent.js';
 
 const MAX_BODY = 16 * 1024 * 1024;
 const MAX_EVENTS = 8 * 1024 * 1024;
@@ -92,6 +93,7 @@ export interface LocalAgentServerDeps {
   directory: string;
   discoveryDirectory?: string;
   version: string;
+  instanceInfo?: Readonly<LocalAgentInstanceInfo>;
   scope(): string;
   models(): Promise<LocalAgentModel[]>;
   approve(signal: AbortSignal, client: LocalAgentClientIdentity): Promise<boolean>;
@@ -698,7 +700,9 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
             protocol: 1,
             version: deps.version,
             instance: instanceId,
+            ...(deps.instanceInfo ? { instanceInfo: deps.instanceInfo } : {}),
             features: {
+              ...(deps.instanceInfo ? { instanceMetadata: true } : {}),
               clientIdentity: true,
               isolatedSessions: true,
               individualRevocation: true,
@@ -816,10 +820,9 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
   const discoveryFile = path.join(discoveryDirectory, 'discovery.json');
   try {
     await fs.mkdir(discoveryDirectory, { recursive: true, mode: 0o700 });
-    await fs.writeFile(
+    atomicWriteFileSync(
       discoveryFile,
       JSON.stringify({ protocol: 1, port: address.port, instance: instanceId }),
-      { mode: 0o600 },
     );
   } catch {
     closing = true;
@@ -843,6 +846,7 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
   }, 1000).unref();
   return {
     base,
+    rpc: Object.freeze({ protocol: 1 as const, port: address.port, instance: instanceId }),
     discoveryFile,
     connections: () =>
       grants

@@ -11,9 +11,37 @@ export class LocalAgentApiError extends Error {
   constructor(code, message) { super(message); this.name = 'LocalAgentApiError'; this.code = code; }
 }
 
+/** The code is an ephemeral loopback locator, never an application grant. */
+export function parseConnectionCode(input) {
+  if (typeof input !== 'string' || input.length > 256) throw new LocalAgentApiError('CONNECTION_CODE_INVALID', 'Invalid connection code.');
+  const code = input.trim();
+  if (/^cindy-local:v[0-9]+:/.test(code) && !code.startsWith('cindy-local:v1:'))
+    throw new LocalAgentApiError('CONNECTION_CODE_UNSUPPORTED', 'Unsupported connection code version.');
+  const match = /^cindy-local:v1:([1-9][0-9]{0,4}):([A-Za-z0-9_-]{43})$/.exec(code);
+  if (!match || Number(match[1]) > 65535) throw new LocalAgentApiError('CONNECTION_CODE_INVALID', 'Invalid connection code.');
+  return { protocol: 1, port: Number(match[1]), instance: match[2] };
+}
+
+async function readCapabilities(response) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new LocalAgentApiError('INVALID_REPLY', 'Missing capabilities reply.');
+  const chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 32 * 1024) throw new LocalAgentApiError('TOO_LARGE', 'Capabilities reply exceeds the limit.');
+      chunks.push(Buffer.from(value));
+    }
+    return JSON.parse(Buffer.concat(chunks, size).toString('utf8'));
+  } finally { await reader.cancel().catch(() => {}); }
+}
+
 /** Intentionally independent of Cindy/HHH packages; credentials live only in this process. */
 export class LocalAgentClient {
-  #base; #instance; #identity; #token; #prefix = randomUUID(); #sequence = 0;
+  #base; #instance; #identity; #token; #development = false; #prefix = randomUUID(); #sequence = 0;
   constructor(discovery, identity) {
     if (discovery.protocol !== 1 || !Number.isInteger(discovery.port) || discovery.port < 1 || discovery.port > 65535
       || typeof discovery.instance !== 'string' || !discovery.instance) {
@@ -26,20 +54,37 @@ export class LocalAgentClient {
   static async discover(file, identity) {
     return new LocalAgentClient(JSON.parse(await fs.readFile(file, 'utf8')), identity);
   }
+  static fromConnectionCode(code, identity) {
+    const client = new LocalAgentClient(parseConnectionCode(code), identity);
+    client.#development = true;
+    return client;
+  }
   async request(method, params = {}, { signal } = {}) {
     let response;
     try {
       response = await fetch(`${this.#base}/rpc`, {
-        method: 'POST', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-        headers: { 'Content-Type': 'application/json', ...(this.#token ? { Authorization: `Bearer ${this.#token}` } : {}) },
+        method: 'POST', redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(method === 'capabilities' ? 750 : 30_000)]) : AbortSignal.timeout(method === 'capabilities' ? 750 : 30_000),
+        headers: { 'Content-Type': 'application/json', ...(this.#token && method !== 'capabilities' ? { Authorization: `Bearer ${this.#token}` } : {}) },
         body: JSON.stringify({ version: 1, instance: this.#instance, id: `${this.#prefix}:${++this.#sequence}`, method, params }),
       });
-      const reply = await response.json();
+      const reply = method === 'capabilities' ? await readCapabilities(response) : await response.json();
       if (reply.error) throw new LocalAgentApiError(reply.error.code, reply.error.message);
       if (!response.ok || !Object.hasOwn(reply, 'result')) throw new LocalAgentApiError('INVALID_REPLY', 'Invalid API reply.');
+      if (method === 'capabilities') {
+        if (reply.result?.protocol !== 1 || reply.result.instance !== this.#instance)
+          throw new LocalAgentApiError('INSTANCE_CHANGED', 'The endpoint changed. Copy a new connection code.');
+        if (this.#development) {
+          const info = reply.result.instanceInfo;
+          if (reply.result.features?.instanceMetadata !== true || !info)
+            throw new LocalAgentApiError('INSTANCE_METADATA_UNSUPPORTED', 'This endpoint cannot identify its build.');
+          if (info.kind !== 'development' || !['global', 'cn', 'dev'].includes(info.region))
+            throw new LocalAgentApiError('INSTANCE_METADATA_MISMATCH', 'This connection code is not for a development build.');
+        }
+      }
       return reply.result;
     } catch (error) {
       if (error instanceof LocalAgentApiError) throw error;
+      if (method === 'capabilities') throw new LocalAgentApiError('CONNECTION_UNAVAILABLE', 'The selected endpoint could not be verified.');
       // Never automatically resubmit a possibly accepted send/tool/control request.
       throw new LocalAgentApiError('RESULT_UNKNOWN', `The ${method} reply was not received. The request may have been accepted; it was not resent.`);
     }
@@ -75,18 +120,20 @@ export class LocalAgentClient {
 
 export async function main(argv = process.argv.slice(2)) {
   const { values } = parseArgs({ args: argv, options: {
-    help: { type: 'boolean' }, discovery: { type: 'string' }, model: { type: 'string' }, provider: { type: 'string' },
+    help: { type: 'boolean' }, discovery: { type: 'string' }, 'connection-code': { type: 'string' }, model: { type: 'string' }, provider: { type: 'string' },
     engine: { type: 'string' }, cwd: { type: 'string' }, prompt: { type: 'string' }, 'list-models': { type: 'boolean' },
     'native-tools': { type: 'boolean' }, 'client-id': { type: 'string' }, 'client-name': { type: 'string' },
   } });
   if (values.help) {
-    console.log('Usage: node scripts/examples/local-agent-client.mjs --discovery <profile>/local-agent/discovery.json [--list-models] [--provider <id>] [--engine pi|codex|claude-code] [--model <opaque-id>] [--prompt <text>] [--cwd <folder>] [--native-tools] [--client-id <id>] [--client-name <name>]');
+    console.log('Usage: node scripts/examples/local-agent-client.mjs (--discovery <profile>/local-agent/discovery.json | --connection-code <code>) [--list-models] [--provider <id>] [--engine pi|codex|claude-code] [--model <opaque-id>] [--prompt <text>] [--cwd <folder>] [--native-tools] [--client-id <id>] [--client-name <name>]');
     return;
   }
-  if (!values.discovery) throw new LocalAgentApiError('DISCOVERY_REQUIRED', 'Pass --discovery with the intended Cindy profile. No profiles are scanned.');
-  const client = await LocalAgentClient.discover(values.discovery, {
+  if (Boolean(values.discovery) === Boolean(values['connection-code'])) throw new LocalAgentApiError('DISCOVERY_REQUIRED', 'Pass exactly one of --discovery or --connection-code. No profiles are scanned.');
+  const identity = {
     id: values['client-id'] ?? 'org.example.cindy-client', name: values['client-name'] ?? 'Independent API example', version: '1.0',
-  });
+  };
+  const client = values['connection-code'] ? LocalAgentClient.fromConnectionCode(values['connection-code'], identity)
+    : await LocalAgentClient.discover(values.discovery, identity);
   const controller = new AbortController();
   const stop = () => controller.abort();
   process.once('SIGINT', stop);

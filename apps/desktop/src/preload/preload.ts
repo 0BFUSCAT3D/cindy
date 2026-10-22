@@ -1077,6 +1077,7 @@ const appearanceSettingsInfo = ipcRenderer.sendSync(
 
 contextBridge.exposeInMainWorld('electronAPI', {
   localAgent: {
+    developerConnection: (): Promise<import('../shared/localAgent').LocalAgentDeveloperConnection | null> => ipcRenderer.invoke('local-agent:developer-connection'),
     connections: (): Promise<import('../shared/localAgent').LocalAgentConnection[]> => ipcRenderer.invoke('local-agent:connections'),
     revoke: (connectionId?: string): Promise<boolean> => ipcRenderer.invoke('local-agent:revoke', connectionId),
     onConnectionsChanged: (listener: () => void) => {

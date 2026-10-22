@@ -417,7 +417,7 @@ import {
   isCindyPersonalRuntime,
 } from './cindy-make/versionRuntimeIdentity.js';
 import { createStorageIpcHandlers } from './cindy-media/storageIpc';
-import { disposeLocalAgentHost, localAgentConnections, revokeLocalAgentConnections } from './local-agent/service.js';
+import { disposeLocalAgentHost, localAgentConnections, localAgentDeveloperConnection, revokeLocalAgentConnections } from './local-agent/service.js';
 import { clearLocalEntries } from './device-link/remoteMediaCacheStore';
 import {
   collectDatabaseSizeWarningStatus,
@@ -8557,6 +8557,10 @@ const registerIpcHandlers = () => {
     ipcMain.handle('local-agent:connections', (event) => {
       assertTrustedAppRendererEvent(event);
       return localAgentConnections(() => assertTrustedAppRendererEvent(event));
+    });
+    ipcMain.handle('local-agent:developer-connection', (event) => {
+      assertTrustedAppRendererEvent(event);
+      return localAgentDeveloperConnection(() => assertTrustedAppRendererEvent(event));
     });
     ipcMain.handle('local-agent:revoke', (event, connectionId?: unknown) => {
       assertTrustedAppRendererEvent(event);

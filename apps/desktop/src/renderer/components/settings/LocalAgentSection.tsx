@@ -3,7 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/lib/toast';
 import { extractIpcError } from '@/utils/ipcError';
-import type { LocalAgentConnection } from '../../../shared/localAgent';
+import type {
+  LocalAgentConnection,
+  LocalAgentDeveloperConnection,
+} from '../../../shared/localAgent';
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_ROW_CLASS,
@@ -19,12 +22,26 @@ export function LocalAgentSection() {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [revoking, setRevoking] = useState<string>();
+  const [developer, setDeveloper] = useState<LocalAgentDeveloperConnection | null>(null);
+  const [copying, setCopying] = useState(false);
+  const copyingRef = useRef(false);
   const busy = useRef(false);
   useEffect(() => {
     let alive = true,
       revision = 0;
     const refresh = () => {
       const request = ++revision;
+      void window.electronAPI.localAgent
+        .developerConnection()
+        .then((value) => {
+          if (alive && revision === request) setDeveloper(value);
+        })
+        .catch(() => {
+          if (alive && revision === request) {
+            setDeveloper((previous) => (previous ? { state: 'failed' } : null));
+            setFailed(true);
+          }
+        });
       void window.electronAPI.localAgent
         .connections()
         .then((value) => {
@@ -47,6 +64,23 @@ export function LocalAgentSection() {
       unsubscribe();
     };
   }, []);
+  const copyConnection = async () => {
+    if (copyingRef.current) return;
+    copyingRef.current = true;
+    setCopying(true);
+    try {
+      const value = await window.electronAPI.localAgent.developerConnection();
+      setDeveloper(value);
+      if (!value || value.state !== 'ready') return;
+      await navigator.clipboard.writeText(value.code);
+      toast.success(t('localAgent.codeCopied'));
+    } catch {
+      toast.error(t('localAgent.codeCopyFailed'));
+    } finally {
+      copyingRef.current = false;
+      setCopying(false);
+    }
+  };
   const revoke = async (id: string) => {
     if (busy.current) return;
     busy.current = true;
@@ -67,6 +101,28 @@ export function LocalAgentSection() {
     <div id="settings-search-target-local-agent" className="mt-6 flex flex-col gap-[14px]">
       <h2 className={SETTINGS_SECTION_TITLE_CLASS}>{t('localAgent.title')}</h2>
       <div className={SETTINGS_CARD_CLASS} aria-busy={loading || Boolean(revoking)}>
+        {developer && (
+          <>
+            <div className={SETTINGS_ROW_CLASS}>
+              <div className="flex min-w-0 flex-col gap-1">
+                <p className={SETTINGS_ROW_LABEL_CLASS}>{t('localAgent.developerConnection')}</p>
+                <p role="status" className={SETTINGS_ROW_HINT_CLASS}>
+                  {t(`localAgent.developerState.${developer.state}`)}
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="shrink-0"
+                disabled={developer.state !== 'ready' || copying}
+                onClick={() => void copyConnection()}
+              >
+                {t('localAgent.copyCode')}
+              </Button>
+            </div>
+            <div className={SETTINGS_ROW_DIVIDER_CLASS} />
+          </>
+        )}
         {connections.length ? (
           connections.map((connection, index) => (
             <Fragment key={connection.id}>
@@ -97,12 +153,16 @@ export function LocalAgentSection() {
           <div className={SETTINGS_ROW_CLASS}>
             <div className="flex min-w-0 flex-col gap-1">
               <p role={failed ? 'status' : undefined} className={SETTINGS_ROW_LABEL_CLASS}>
-                {t(loading ? 'localAgent.loading' : failed ? 'localAgent.failed' : 'localAgent.empty')}
+                {t(
+                  loading
+                    ? 'localAgent.loading'
+                    : failed
+                      ? 'localAgent.failed'
+                      : 'localAgent.empty',
+                )}
               </p>
               {!loading && !failed && (
-                <p className={SETTINGS_ROW_HINT_CLASS}>
-                  {t('localAgent.description')}
-                </p>
+                <p className={SETTINGS_ROW_HINT_CLASS}>{t('localAgent.description')}</p>
               )}
             </div>
           </div>

@@ -1,9 +1,14 @@
 import { mountPage, subscription } from '../../ui-page/harness';
 import { LocalAgentSection } from '../../../src/renderer/components/settings/LocalAgentSection';
+import { ToastContainer } from '../../../src/renderer/components/ui/toast/ToastContainer';
 
 mountPage({
   host: ctx => ({
     localAgent: {
+      developerConnection: async () => {
+        if (ctx.data.copyExpired && (window as any).__copyRequested) return { state: 'stopped' };
+        return ctx.data.developer ?? null;
+      },
       onConnectionsChanged: subscription('localAgentChanged'),
       connections: async () => {
         if (ctx.data.loadFailed) throw new Error('fixture connection read failed');
@@ -16,5 +21,5 @@ mountPage({
       },
     },
   }),
-  render: () => <div className="mx-auto w-full max-w-3xl p-5"><LocalAgentSection /></div>,
+  render: () => <><div className="mx-auto w-full max-w-3xl p-5"><LocalAgentSection /></div><ToastContainer /></>,
 });

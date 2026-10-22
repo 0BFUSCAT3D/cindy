@@ -18,9 +18,17 @@ const mock = vi.hoisted(() => ({
   send: vi.fn(),
   trusted: true,
   lockHeld: true,
+  packaged: false,
+  personal: false,
+  region: 'cn',
+  nonce: 0,
+  startupGate: undefined as Promise<void> | undefined,
 }));
 vi.mock('electron', () => ({
   app: {
+    get isPackaged() {
+      return mock.packaged;
+    },
     getVersion: () => 'test',
     getPath: () => 'unused',
     getPreferredSystemLanguages: () => ['zh-CN'],
@@ -31,6 +39,14 @@ vi.mock('electron', () => ({
     ],
   },
   dialog: { showMessageBox: mock.dialog },
+}));
+vi.mock('../../../shared/brandRegion.js', () => ({
+  get CURRENT_CINDY_REGION() {
+    return mock.region;
+  },
+}));
+vi.mock('../../cindy-make/versionRuntimeIdentity.js', () => ({
+  isCindyPersonalRuntime: () => mock.personal,
 }));
 vi.mock('node:fs/promises', () => ({ default: { mkdir: async () => {} } }));
 vi.mock('../../device-link/crossProcessLock.js', () => ({
@@ -55,11 +71,20 @@ vi.mock('../../maker-host/createDesktopProviderService.js', () => ({
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn() }) }));
 vi.mock('../runtime.js', () => ({ openLocalAgentRuntime: vi.fn() }));
 vi.mock('../server.js', () => ({
-  LocalAgentError: class extends Error {},
+  LocalAgentError: class extends Error {
+    constructor(
+      public code: string,
+      message: string,
+    ) {
+      super(message);
+    }
+  },
   createLocalAgentServer: async (deps: any) => {
     mock.deps = deps;
+    await mock.startupGate;
     if (mock.startupError) throw mock.startupError;
     return {
+      rpc: { protocol: 1, port: 12345, instance: 'n'.repeat(42) + (++mock.nonce % 10) },
       connections: () => [
         { id: 'grant-a', name: 'Notes', clientId: 'notes' },
         { id: 'grant-b', name: 'Board', clientId: 'board' },
@@ -74,6 +99,7 @@ import {
   disposeLocalAgentHost,
   installLocalAgentHost,
   localAgentConnections,
+  localAgentDeveloperConnection,
   revokeLocalAgentConnections,
 } from '../service.js';
 
@@ -83,10 +109,16 @@ beforeEach(async () => {
   mock.generation = 1;
   mock.trusted = true;
   mock.lockHeld = true;
+  mock.packaged = false;
+  mock.personal = false;
+  mock.region = 'cn';
+  mock.nonce = 0;
+  mock.startupGate = undefined;
   mock.startupError = undefined;
   mock.dialog.mockResolvedValue({ response: 1 });
   installLocalAgentHost({} as any);
   await localAgentConnections();
+  mock.send.mockClear();
 });
 afterEach(async () => {
   await disposeLocalAgentHost();
@@ -180,9 +212,11 @@ describe('generic local app native authorization', () => {
     installLocalAgentHost({} as any);
     await expect(localAgentConnections()).rejects.toThrow('[PRECONDITION_FAILED]');
     expect(mock.deps).toBeUndefined();
+    expect(await localAgentDeveloperConnection()).toEqual({ state: 'host-in-use' });
   });
   it('waits for the previous endpoint to close before replacing Maker on the same profile', async () => {
     const previous = mock.deps;
+    const oldCode = await localAgentDeveloperConnection();
     let finish!: () => void;
     mock.close.mockImplementationOnce(
       () =>
@@ -191,7 +225,9 @@ describe('generic local app native authorization', () => {
         }),
     );
     const stopping = disposeLocalAgentHost();
+    expect(await localAgentDeveloperConnection()).toEqual({ state: 'stopped' });
     installLocalAgentHost({} as any);
+    expect(await localAgentDeveloperConnection()).toEqual({ state: 'starting' });
     const connections = localAgentConnections();
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
     expect(mock.deps).toBe(previous);
@@ -199,5 +235,61 @@ describe('generic local app native authorization', () => {
     await stopping;
     await connections;
     expect(mock.deps).not.toBe(previous);
+    expect(await localAgentDeveloperConnection()).not.toEqual(oldCode);
+  });
+  // Build identity, never the shared-profile path/version, controls the developer entry.
+  it.each([
+    [true, false, 'cn', 'installed'],
+    [true, false, 'global', 'installed'],
+    [false, false, 'cn', 'development'],
+    [true, true, 'global', 'development'],
+    [true, false, 'dev', 'development'],
+  ])('projects build identity %s/%s/%s as %s', async (packaged, personal, region, kind) => {
+    await disposeLocalAgentHost();
+    Object.assign(mock, { packaged, personal, region });
+    installLocalAgentHost({} as any);
+    await localAgentConnections();
+    expect(mock.deps.instanceInfo).toEqual({ kind, region });
+    const value = await localAgentDeveloperConnection();
+    if (kind === 'installed') expect(value).toBeNull();
+    else
+      expect(value).toEqual({
+        state: 'ready',
+        code: 'cindy-local:v1:12345:' + 'n'.repeat(42) + '2',
+      });
+  });
+  it('never returns an old owner endpoint or raw startup error from the code query', async () => {
+    mock.generation++;
+    expect(await localAgentDeveloperConnection()).toEqual({ state: 'owner-unavailable' });
+    await disposeLocalAgentHost();
+    mock.owner = '';
+    expect(await localAgentDeveloperConnection()).toEqual({ state: 'owner-unavailable' });
+    mock.owner = 'owner-a';
+    mock.startupError = new Error('PRIVATE PATH');
+    installLocalAgentHost({} as any);
+    await expect(localAgentConnections()).rejects.toThrow('[INTERNAL]');
+    expect(await localAgentDeveloperConnection()).toEqual({ state: 'failed' });
+    await expect(
+      localAgentDeveloperConnection(() => {
+        throw new Error('untrusted');
+      }),
+    ).rejects.toThrow('[INTERNAL]');
+  });
+  it('closes a late startup instead of publishing its code after the host was retired', async () => {
+    await disposeLocalAgentHost();
+    let release!: () => void;
+    mock.startupGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mock.deps = undefined;
+    installLocalAgentHost({} as any);
+    const query = localAgentConnections().catch(() => undefined);
+    await vi.waitFor(() => expect(mock.deps).toBeDefined());
+    const stopping = disposeLocalAgentHost();
+    release();
+    await stopping;
+    await query;
+    expect(await localAgentDeveloperConnection()).toEqual({ state: 'stopped' });
+    expect(mock.close).toHaveBeenCalled();
   });
 });

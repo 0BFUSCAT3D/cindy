@@ -6,7 +6,30 @@ export interface LocalAgentConnection {
 }
 
 export interface LocalAgentSettingsApi {
+  developerConnection(): Promise<LocalAgentDeveloperConnection | null>;
   connections(): Promise<LocalAgentConnection[]>;
   revoke(connectionId?: string): Promise<boolean>;
   onConnectionsChanged(listener: () => void): () => void;
+}
+
+/** Unauthenticated build self-description; never proof of a publisher or an app grant. */
+export interface LocalAgentInstanceInfo {
+  kind: 'installed' | 'development';
+  region: 'global' | 'cn' | 'dev';
+}
+
+export type LocalAgentDeveloperConnection =
+  | { state: 'ready'; code: string }
+  | { state: 'starting' | 'owner-unavailable' | 'host-in-use' | 'failed' | 'stopped' };
+
+/** A locator for this API generation, not a credential. No persistent mapping is needed. */
+export function formatLocalAgentConnectionCode(rpc: { port: number; instance: string }): string {
+  if (
+    !Number.isInteger(rpc.port) ||
+    rpc.port < 1 ||
+    rpc.port > 65535 ||
+    !/^[A-Za-z0-9_-]{43}$/.test(rpc.instance)
+  )
+    throw new Error('Invalid local endpoint');
+  return `cindy-local:v1:${rpc.port}:${rpc.instance}`;
 }

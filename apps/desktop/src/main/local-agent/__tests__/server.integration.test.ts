@@ -2,7 +2,7 @@
  * 测试价值：createLocalAgentServer 的真实 loopback 授权、MCP、恢复与撤销协议。
  * 依据：本机接入必须独立授权、不重放副作用、不跨授权恢复；既有 device-link 测试不经过此接口。
  * 最小失败输入：无凭据 models、同 id 不同 payload、另一 grant 的 resume、超过批次大小的单事件。
- * tier: integration（真实临时文件与 socket）；单文件实测 136ms。
+ * tier: integration（真实临时文件与 socket）；单文件实测 1.43s（含 750ms 握手超时边界）。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
@@ -11,10 +11,14 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { request } from 'node:http';
+import { createServer, request } from 'node:http';
 import { once } from 'node:events';
 import { createLocalAgentServer, type LocalAgentServerDeps } from '../server.js';
 import type { LocalAgentModel } from '../catalog.js';
+import { formatLocalAgentConnectionCode } from '../../../shared/localAgent.js';
+const { LocalAgentClient, parseConnectionCode } = await import(
+  new URL('../../../../../../scripts/examples/local-agent-client.mjs', import.meta.url).href
+);
 
 const model: LocalAgentModel = {
   id: 'source-model-engine',
@@ -110,6 +114,146 @@ async function fixture(overrides: Partial<LocalAgentServerDeps> = {}) {
 }
 
 describe('local application authorization and lifecycle', () => {
+  it('bounds untrusted connection-code handshakes without following redirects or hanging on a reused port', async () => {
+    let mode = 'redirect';
+    let requests = 0;
+    const endpoint = createServer((_request, response) => {
+      requests++;
+      if (mode === 'redirect') {
+        response.writeHead(302, { Location: '/other' }).end();
+      } else if (mode === 'oversize') {
+        response.end('x'.repeat(32 * 1024 + 1));
+      } else if (mode === 'malformed') {
+        response.end('{');
+      }
+      // A stalled non-Cindy endpoint must hit the client's handshake timeout.
+    });
+    cleanups.push(async () => {
+      endpoint.closeAllConnections();
+      await new Promise<void>((resolve) => endpoint.close(() => resolve()));
+    });
+    endpoint.listen(0, '127.0.0.1');
+    await once(endpoint, 'listening');
+    const address = endpoint.address();
+    if (!address || typeof address === 'string') throw new Error('Missing loopback port');
+    const client = LocalAgentClient.fromConnectionCode(
+      formatLocalAgentConnectionCode({ port: address.port, instance: 'n'.repeat(43) }),
+      { id: 'org.example.handshake', name: 'Handshake test' },
+    );
+    for (const [next, code] of [
+      ['redirect', 'CONNECTION_UNAVAILABLE'],
+      ['oversize', 'TOO_LARGE'],
+      ['malformed', 'CONNECTION_UNAVAILABLE'],
+      ['stall', 'CONNECTION_UNAVAILABLE'],
+    ]) {
+      mode = next;
+      await expect(client.connect()).rejects.toMatchObject({ code });
+    }
+    expect(requests).toBe(4);
+  });
+  // Connection codes replace public registration: test independent parsing against a real endpoint.
+  it('accepts only bounded versioned loopback codes without creating a mapping or scanning profiles', async () => {
+    const f = await fixture({ instanceInfo: { kind: 'development', region: 'cn' } });
+    const code = formatLocalAgentConnectionCode(f.server().rpc);
+    expect(parseConnectionCode(` \n${code}\t`)).toEqual(f.server().rpc);
+    for (const port of [1, 65535])
+      expect(
+        parseConnectionCode(formatLocalAgentConnectionCode({ ...f.server().rpc, port })).port,
+      ).toBe(port);
+    for (const bad of [
+      '',
+      code.repeat(5),
+      code.replace(':v1:', ':v01:'),
+      code.replace(/:\d+:/, ':0:'),
+      code.replace(/:\d+:/, ':65536:'),
+      code.replace(/:\d+:/, ':0123:'),
+      code + '?token=x',
+      'http://localhost/rpc',
+      code.replace(':v1:', ':v1:\n'),
+      code.slice(0, -1),
+    ])
+      expect(() => parseConnectionCode(bad)).toThrow();
+    expect(() => parseConnectionCode(code.replace(':v1:', ':v2:'))).toThrow('Unsupported');
+    expect((await f.rpc('capabilities')).result.instanceInfo).toEqual({
+      kind: 'development',
+      region: 'cn',
+    });
+    expect((await fs.readdir(f.directory)).sort()).toEqual(['discovery.json']);
+  });
+  it('verifies code identity without a token, keeps separate target grants, and rejects expired codes', async () => {
+    const approveA = vi.fn(async () => true),
+      approveB = vi.fn(async () => true);
+    const a = await fixture({
+      approve: approveA,
+      instanceInfo: { kind: 'development', region: 'cn' },
+    });
+    const b = await fixture({
+      approve: approveB,
+      instanceInfo: { kind: 'development', region: 'global' },
+    });
+    const identity = { id: 'org.example.code', name: 'Code client' };
+    const ca = LocalAgentClient.fromConnectionCode(
+      formatLocalAgentConnectionCode(a.server().rpc),
+      identity,
+    );
+    const cb = LocalAgentClient.fromConnectionCode(
+      formatLocalAgentConnectionCode(b.server().rpc),
+      identity,
+    );
+    const spy = vi.spyOn(globalThis, 'fetch');
+    try {
+      await ca.request('capabilities');
+      expect(approveA).not.toHaveBeenCalled();
+      await expect(ca.request('models')).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+      await ca.connect();
+      await cb.connect();
+      await ca.request('models');
+      const auth = spy.mock.calls.find(
+        ([url, options]) =>
+          String(url) === `${a.server().base}/rpc` && (options?.headers as any)?.Authorization,
+      )?.[1]?.headers as any;
+      expect((await b.rpc('models', {}, auth.Authorization.slice(7))).error.code).toBe(
+        'UNAUTHORIZED',
+      );
+      await ca.request('capabilities');
+      for (const [, options] of spy.mock.calls)
+        if (JSON.parse(String(options?.body)).method === 'capabilities')
+          expect((options?.headers as any)?.Authorization).toBeUndefined();
+      await ca.disconnect();
+      expect((await cb.request('models')).models).toHaveLength(1);
+      await cb.disconnect();
+      const old = a.server().rpc;
+      await a.restart();
+      const reused = LocalAgentClient.fromConnectionCode(
+        formatLocalAgentConnectionCode({ ...old, port: a.server().rpc.port }),
+        identity,
+      );
+      await expect(reused.connect()).rejects.toMatchObject({ code: 'INSTANCE_CHANGED' });
+      expect(approveA).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it('does not treat an installed or unknown old endpoint as development, preserving explicit legacy access', async () => {
+    for (const instanceInfo of [undefined, { kind: 'installed' as const, region: 'cn' as const }]) {
+      const approve = vi.fn(async () => true);
+      const f = await fixture({ instanceInfo, approve });
+      const client = LocalAgentClient.fromConnectionCode(
+        formatLocalAgentConnectionCode(f.server().rpc),
+        { id: 'test', name: 'Test' },
+      );
+      await expect(client.connect()).rejects.toMatchObject({
+        code: instanceInfo ? 'INSTANCE_METADATA_MISMATCH' : 'INSTANCE_METADATA_UNSUPPORTED',
+      });
+      expect(approve).not.toHaveBeenCalled();
+      const legacy = await LocalAgentClient.discover(f.server().discoveryFile, {
+        id: 'legacy',
+        name: 'Legacy',
+      });
+      await legacy.connect();
+      await legacy.disconnect();
+    }
+  });
   // Revoking the token is immediate; unconfirmed native shutdown must be reported
   // and retained for cleanup, rather than claiming that an executor has stopped.
   it('reports an unconfirmed close and retries cleanup without restoring revoked authority', async () => {
@@ -223,8 +367,9 @@ describe('local application authorization and lifecycle', () => {
     expect(await response).toBe(403);
   });
 
-  it('runs the standalone example in two unrelated Node processes using only discovery and public RPC', async () => {
+  it('runs code and legacy discovery clients in unrelated Node processes with isolated tools', async () => {
     const f = await fixture({
+      instanceInfo: { kind: 'development', region: 'cn' },
       open: async (input, bridge) => {
         let completion = Promise.resolve();
         return {
@@ -270,8 +415,9 @@ describe('local application authorization and lifecycle', () => {
           process.execPath,
           [
             example,
-            '--discovery',
-            f.server().discoveryFile,
+            ...(app === 'notes'
+              ? ['--connection-code', formatLocalAgentConnectionCode(f.server().rpc)]
+              : ['--discovery', f.server().discoveryFile]),
             '--cwd',
             f.directory,
             '--client-id',

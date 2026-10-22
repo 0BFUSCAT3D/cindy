@@ -14,7 +14,14 @@ import { createLogger } from '../logger.js';
 import { t } from '../i18n.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { isIpcError } from '../../shared/ipc-errors.js';
-import type { LocalAgentConnection } from '../../shared/localAgent.js';
+import {
+  formatLocalAgentConnectionCode,
+  type LocalAgentConnection,
+  type LocalAgentDeveloperConnection,
+  type LocalAgentInstanceInfo,
+} from '../../shared/localAgent.js';
+import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
+import { isCindyPersonalRuntime } from '../cindy-make/versionRuntimeIdentity.js';
 import { isTrustedAppRendererWindow } from '../security/trustedAppRenderer.js';
 import { localAgentModels } from './catalog.js';
 import { createLocalAgentServer, LocalAgentError, type LocalAgentServerDeps } from './server.js';
@@ -26,6 +33,25 @@ const log = createLogger('local-agent');
 let current: Promise<Awaited<ReturnType<typeof createLocalAgentServer>>> | undefined;
 let startupFailure: unknown;
 let teardown = Promise.resolve();
+let readyServer: Awaited<ReturnType<typeof createLocalAgentServer>> | undefined;
+let currentOwner: string | undefined;
+
+function instanceInfo(): LocalAgentInstanceInfo {
+  return {
+    kind:
+      !app.isPackaged || isCindyPersonalRuntime() || CURRENT_CINDY_REGION === 'dev'
+        ? 'development'
+        : 'installed',
+    region: CURRENT_CINDY_REGION,
+  };
+}
+
+function notifySettings(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (isTrustedAppRendererWindow(window))
+      window.webContents.send('local-agent:connections-changed');
+  }
+}
 
 /** A shared profile has one discovery endpoint and one grant writer. Reuse the
  * existing process lock so a passive/preview instance cannot resurrect revoked grants. */
@@ -56,6 +82,7 @@ async function startWithProfileLease(deps: LocalAgentServerDeps) {
       if (!deps.scope()) throw new LocalAgentError('UNAUTHORIZED', '本机应用授权范围已更改。');
       const server = await createLocalAgentServer(deps);
       try {
+        if (!deps.scope()) throw new LocalAgentError('UNAUTHORIZED', '本机应用授权范围已更改。');
         ready({
           ...server,
           async close() {
@@ -82,16 +109,20 @@ export function installLocalAgentHost(maker: Maker): void {
   const directory = ownerScopedUserDataPath('local-agent');
   const scopeNow = () => {
     const now = getActiveAppSession();
-    return now.dataOwnerId && !isAppSessionBoundaryPending() && activeOwnerScopeKey() === liveOwner
+    return current === pending &&
+      now.dataOwnerId &&
+      !isAppSessionBoundaryPending() &&
+      activeOwnerScopeKey() === liveOwner
       ? createHash('sha256').update(`${now.mode}:${now.dataOwnerId}`).digest('hex')
       : '';
   };
   startupFailure = undefined;
-  const pending = teardown.then(() =>
+  const pending: Promise<Awaited<ReturnType<typeof createLocalAgentServer>>> = teardown.then(() =>
     startWithProfileLease({
       directory,
       discoveryDirectory: path.join(app.getPath('userData'), 'local-agent'),
       version: app.getVersion(),
+      instanceInfo: Object.freeze(instanceInfo()),
       scope: scopeNow,
       async models() {
         if (scopeNow() !== scope)
@@ -134,22 +165,59 @@ export function installLocalAgentHost(maker: Maker): void {
       warn: (code) => log.warn('local agent request failed', { code }),
       changed: () => {
         if (scopeNow() !== scope) return;
-        for (const window of BrowserWindow.getAllWindows()) {
-          if (isTrustedAppRendererWindow(window))
-            window.webContents.send('local-agent:connections-changed');
-        }
+        notifySettings();
       },
     }),
   );
   current = pending;
+  currentOwner = liveOwner;
+  readyServer = undefined;
+  notifySettings();
+  void pending.then(
+    (server) => {
+      if (current === pending && scopeNow() === scope) {
+        readyServer = server;
+        notifySettings();
+      }
+    },
+    () => {},
+  );
   void pending.catch((error) => {
     if (current === pending) {
       current = undefined;
+      readyServer = undefined;
       startupFailure = error;
+      notifySettings();
     }
     log.warn('local agent API startup failed', {
       code: error instanceof LocalAgentError ? error.code : 'LOCAL_AGENT_FAILED',
     });
+  });
+}
+
+/** Read only this process's held endpoint. Never borrow a shared profile's discovery file. */
+export async function localAgentDeveloperConnection(
+  assertCaller = () => {},
+): Promise<LocalAgentDeveloperConnection | null> {
+  return settingsOperation(async () => {
+    assertCaller();
+    if (instanceInfo().kind !== 'development') return null;
+    if (
+      !getActiveAppSession().dataOwnerId ||
+      isAppSessionBoundaryPending() ||
+      (currentOwner !== undefined && currentOwner !== activeOwnerScopeKey())
+    )
+      return { state: 'owner-unavailable' };
+    if (startupFailure)
+      return {
+        state:
+          startupFailure instanceof LocalAgentError && startupFailure.code === 'HOST_IN_USE'
+            ? 'host-in-use'
+            : 'failed',
+      };
+    if (!current) return { state: 'stopped' };
+    if (!readyServer) return { state: 'starting' };
+    return { state: 'ready', code: formatLocalAgentConnectionCode(readyServer.rpc) };
   });
 }
 
@@ -227,7 +295,10 @@ export async function revokeLocalAgentConnections(
 export async function disposeLocalAgentHost(): Promise<void> {
   const previous = current;
   current = undefined;
+  readyServer = undefined;
+  currentOwner = undefined;
   startupFailure = undefined;
+  notifySettings();
   const stopping = previous
     ? previous
         .then((server) => server.close())

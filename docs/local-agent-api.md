@@ -19,6 +19,28 @@ node scripts/examples/local-agent-client.mjs --discovery "<profile>/local-agent/
 
 示例令牌只在进程内存中，退出时关闭自己的会话并撤销自己的授权，不打印、保存或复用令牌。需要长期连接的产品自行通过 OS 凭据库保存此应用令牌；不得复制供应商登录。命令行参数不接收秘密。`--list-models` 不调用模型生成。
 
+## 开发连接码（可选增量）
+
+开发构建在 **设置 → 远程连接 → 本机应用连接 → 开发连接** 提供“复制连接码”。正式构建隐藏这一行。Main 只从本进程当前持有租约、owner 仍有效的 ready server 内存生成码，不读取其他实例的发现文件；启动中、未登录/未进入本地模式、`HOST_IN_USE`、启动失败或已停止均不能复制。复制时重新查询当前状态。
+
+规范文本为 `cindy-local:v1:<port>:<instance>`：ASCII、总长60–64字符，`port` 为无前导零的十进制整数1..65535，`instance` 为已有API nonce（32字节随机值的43位无padding base64url）。原始输入最多256字符，只允许trim首尾空白，之后严格匹配上述格式；不接受内部空白、URL、host、path、query或额外字段。`v1` 对应RPC protocol=1；其他版本返回 `CONNECTION_CODE_UNSUPPORTED`，非法输入返回 `CONNECTION_CODE_INVALID`。
+
+连接码是本机端点定位信息，不是grant/token，不包含账号、凭据、profile、源码目录、PID或稳定实例账本。没有短码服务、持久映射、公共实例目录、进程/端口扫描、TTL心跳或实例间通信。原API自己的 per-profile discovery、host.lock、owner-scoped grants和恢复记录继续保留；不是“整个API零文件”。
+
+```sh
+node scripts/examples/local-agent-client.mjs --connection-code "cindy-local:v1:<port>:<instance>" --list-models
+```
+
+独立Node示例保留 `--discovery` 旧入口，两个入口必须二选一。接码后只向 `http://127.0.0.1:<port>/rpc` 发无Bearer的 `capabilities`，携带码中nonce，拒绝重定向；握手超时750ms、响应上限32KiB。先核对protocol和instance，再核对 `features.instanceMetadata:true` 和 `instanceInfo:{kind,region}`；开发入口必须为 `kind:"development"`，region只能是global/cn/dev。缺元数据报 `INSTANCE_METADATA_UNSUPPORTED`，类型不符报 `INSTANCE_METADATA_MISMATCH`，端点代次不符报 `INSTANCE_CHANGED`，网络/超时/非法JSON不能验证时为 `CONNECTION_UNAVAILABLE`。只有握手通过后才按原 `connect/start` / 原生确认 / `connect/poll` 申请授权；拒绝、取消和超时保持原协议，不自动批准。
+
+`instanceInfo` 是可选的两字段构建自述，版本继续使用capabilities顶层 `version`。只有实际packaged、非已验证个人构建且region非dev才是installed；unpackaged、CindyDev或个人构建均为development，不能按版本号或profile路径猜。region来自既有构建区域，默认global规则不变。元数据用于避免错连，不是对同OS用户恶意程序的发行认证。
+
+日常正式连接继续读取调用方原先绑定的正式profile的 `local-agent/discovery.json`，然后无token核对nonce、`kind:"installed"`及预期region。共profile的开发实例若持有原host.lock，正式API仍会 `HOST_IN_USE`，该路径的discovery可能指向development；必须明确拒绝把它当正式版，不能自动改接另一实例。不同profile仍可独立连接；不新增锁接管、路由或实例协调。
+
+旧v1端点缺身份元数据时，显式旧 `--discovery` 接入仍兼容、grants无需重建；但无法证明其正式身份，新的正式自动连接应显示legacy/unknown并提示经官方更新入口升级，不把缺字段默认当installed。没有本机API的旧安装版不可连接，不侧载或替换安装版。
+
+每个客户端对象固定端点、nonce及自己的授权，能力查询永不带Bearer。重启/owner或API换代后码失效，重新从目标Cindy复制并握手；旧执行不迁移，消息、工具副作用和控制请求不自动重放。调用方负责临时开发覆盖及恢复正式配置，不转用其他目标token。此码仅用于同一电脑上的应用，不扩展SSH/device-link/Mobile协议。
+
 ## 发现、封装与能力
 
 目标 profile 根目录的 `local-agent/discovery.json`：
