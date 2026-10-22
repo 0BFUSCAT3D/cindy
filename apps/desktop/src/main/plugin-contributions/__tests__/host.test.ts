@@ -376,6 +376,25 @@ describe('community submission', () => {
     expect(harness.commit).not.toHaveBeenCalled();
     expect(releasePreparedContribution).toHaveBeenCalledWith('prepared-1');
   });
+  // 上传器已区分“可能写入”和“尚未写入”；原成功用例没有覆盖这个错误协议。
+  // 最小输入：一次 PUT 抛出带 disposition 的错误；unit，结果仍沿同一个 operation。
+  it.each(['commit_same_upload', 'retry_same_url'] as const)('handles PUT disposition %s without another upload', async disposition => {
+    harness.put.mockRejectedValueOnce(Object.assign(new Error('upload response lost'), { disposition }));
+    await host.prepareContribution('hello', 'manual');
+    await host.submitContribution('prepared-1');
+    const result = await finished();
+    expect(harness.prepare).toHaveBeenCalledTimes(1);
+    expect(harness.put).toHaveBeenCalledTimes(1);
+    if (disposition === 'commit_same_upload') {
+      expect(result.operation?.status).toBe('succeeded');
+      expect(result.errorCode).toBeNull();
+      expect(harness.commit).toHaveBeenCalledTimes(1);
+    } else {
+      expect(result.errorCode).toBe('INTERNAL');
+      expect(harness.commit).not.toHaveBeenCalled();
+    }
+    expect(pendingRows()).toEqual([]);
+  });
   it('resolves a lost commit through the normal submit action without re-uploading or saving terminal history', async () => {
     harness.commit.mockRejectedValueOnce(new Error('commit response lost'));
     await host.prepareContribution('hello', 'manual');
@@ -508,16 +527,29 @@ describe('submission preview ownership', () => {
     await expect(host.submitContribution('prepared-1')).rejects.toThrow('CONTRIBUTION_PACKAGE_CHANGED');
     expect(harness.prepare).not.toHaveBeenCalled();
     expect(harness.put).not.toHaveBeenCalled();
+    expect(releasePreparedContribution).toHaveBeenCalledWith('prepared-1');
   });
-  it('keeps admitted transfer bytes when a detail cleanup discards its preview', async () => {
-    const gate = deferred<ReturnType<typeof uploadResponse>>();
-    harness.prepare.mockReturnValueOnce(gate.promise);
+  // 原用例在 submit 返回后才关闭页面，漏掉校验 await 尚未结束时的快照释放竞态。
+  // unit 最小输入：校验挂起时关闭页面；真实临时包必须保留到同一提交完成。
+  it('keeps transfer bytes when a detail cleanup runs during submission validation', async () => {
+    const gate = deferred<void>();
+    harness.verifyContent.mockReturnValueOnce(gate.promise);
+    const { directory, filePath } = harness.entry!;
+    vi.mocked(releasePreparedContribution).mockImplementation(async () => {
+      await fsp.rm(directory, { recursive: true, force: true });
+    });
     await host.prepareContribution('hello', 'manual');
-    await host.submitContribution('prepared-1');
+    const starting = host.submitContribution('prepared-1');
     await host.discardContribution('prepared-1');
-    expect(await fsp.readFile(harness.entry!.filePath)).toEqual(bytes);
-    gate.resolve(uploadResponse());
+    const retained = fs.existsSync(filePath);
+    gate.resolve();
+    await starting;
     await vi.waitFor(() => expect(host.contributionTransferStatus('prepared-1').stage).toBe('complete'));
+    const result = host.contributionTransferStatus('prepared-1');
+    expect(retained).toBe(true);
+    expect(result.operation?.status).toBe('succeeded');
+    expect(harness.put).toHaveBeenCalledTimes(1);
+    expect(harness.commit).toHaveBeenCalledTimes(1);
   });
   it('keeps a first submission without release notes eligible when the server allows it', async () => {
     delete harness.entry!.summary.releaseNotes;
@@ -585,6 +617,25 @@ describe('review result reading state', () => {
     await expect(late).rejects.toThrow('OWNER_CHANGED');
     harness.list.mockRejectedValueOnce(new Error('offline'));
     await expect(service.reviewUpdates()).rejects.toThrow('offline');
+  });
+  // reviewUpdates 的真实分页入口；已有用例只覆盖向前翻页，漏掉重复游标占住 inFlight。
+  // unit 最小输入：连续两页返回同一游标；失败后下一次正常读取仍须能得到未读审核结果。
+  it.each(['list', 'history'] as const)('rejects a repeated %s cursor and permits the next review refresh', async source => {
+    if (source === 'list') {
+      harness.list.mockResolvedValueOnce({ plugins: [], nextCursor: 'repeat' })
+        .mockResolvedValueOnce({ plugins: [], nextCursor: 'repeat' })
+        .mockRejectedValue(new Error('unexpected repeated list request'));
+    } else {
+      harness.list.mockResolvedValue({ plugins: [plugin({ ...submission(), reviewStatus: 'pending', decidedAt: null })], nextCursor: null });
+      harness.detail.mockResolvedValue({ history: { events: [], nextCursor: 'repeat' } });
+      harness.history.mockResolvedValueOnce({ events: [], nextCursor: 'repeat' })
+        .mockRejectedValue(new Error('unexpected repeated history request'));
+    }
+    const service = await import('../reviewUpdates');
+    await expect(service.reviewUpdates()).rejects.toThrow('PRECONDITION_FAILED');
+    expect(source === 'list' ? harness.list : harness.history).toHaveBeenCalledTimes(source === 'list' ? 2 : 1);
+    harness.list.mockResolvedValue({ plugins: [plugin()], nextCursor: null });
+    expect(await service.reviewUpdates()).toEqual([expect.objectContaining({ pluginId: 'plugin-1', unread: true })]);
   });
 });
 

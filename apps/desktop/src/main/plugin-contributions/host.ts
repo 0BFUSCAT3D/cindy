@@ -221,25 +221,40 @@ export async function submitContribution(
     throwIpcError(blocker?.code && isIpcErrorCode(blocker.code) ? blocker.code : 'PRECONDITION_FAILED',
       blocker?.message ?? 'Refresh the publishing summary before submitting');
   }
-  await assertPreparedContent(entry);
-  await assertCaller?.();
-  assertPreparedInstallation(entry);
   const request = entry.request;
   if (!request)
     throwIpcError('PRECONDITION_FAILED', 'Prepare this submission before submitting');
-  const active = [...submissions.values()].find(item => item.entry.owner === entry.owner &&
-    item.request.target.ghostId === request.target.ghostId && item.stage !== 'complete');
-  if (active) {
-    if (active.entry.contentSha256 !== entry.contentSha256 || active.request.target.version !== entry.summary.version ||
+  if (entry.pinned) {
+    await assertCaller?.();
+    assertPreparedInstallation(entry);
+    const active = submissions.get(preparedId);
+    if (active) return view(active);
+    throwIpcError('PRECONDITION_FAILED', 'This submission is already starting');
+  }
+  // Take ownership before validation yields, so closing the preview cannot
+  // discard the bytes that this submission is about to send.
+  entry.pinned = true;
+  let active: Submission | undefined;
+  try {
+    await assertPreparedContent(entry);
+    await assertCaller?.();
+    assertPreparedInstallation(entry);
+    active = [...submissions.values()].find(item => item.entry.owner === entry.owner &&
+      item.request.target.ghostId === request.target.ghostId && item.stage !== 'complete');
+    if (active && (active.entry.contentSha256 !== entry.contentSha256 || active.request.target.version !== entry.summary.version ||
       active.entry.installationDir !== entry.installationDir || active.entry.approvalToken !== entry.approvalToken ||
-      active.entry.publishingSourceKey !== entry.publishingSourceKey)
+      active.entry.publishingSourceKey !== entry.publishingSourceKey))
       throwIpcError('PRECONDITION_FAILED', 'A submission for this plugin is already running');
-    if (active.entry !== entry) await discardContribution(preparedId);
+  } catch (error) {
+    await releasePreparedContribution(preparedId);
+    throw error;
+  }
+  if (active) {
+    if (active.entry !== entry) await releasePreparedContribution(preparedId);
     return view(active);
   }
   const value: Submission = { entry, prepared: entry.summary, request,
     stage: 'prepared', operation: null, errorCode: null, controller: new AbortController() };
-  entry.pinned = true;
   submissions.set(preparedId, value);
   if (!hooked) {
     hooked = true;
@@ -352,6 +367,10 @@ async function submit(value: Submission, assertCaller?: () => Promise<void>): Pr
           signal: controller.signal,
           onBytes: () => { try { assertCurrent(); } catch { controller.abort(); } },
         });
+      } catch (error) {
+        // The uploader may have sent the bytes despite losing the response.
+        // Commit this same operation; never upload the package a second time.
+        if (!(error instanceof Error) || !('disposition' in error) || error.disposition !== 'commit_same_upload') throw error;
       } finally {
         await handle.close();
       }

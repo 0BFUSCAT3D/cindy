@@ -41,12 +41,15 @@ async function latestDecision(api: ContributionApi, plugin: MyPluginSummary): Pr
   // A newer pending/cancelled version must not hide an older unread decision.
   const detail = await api.detail(plugin.pluginId);
   let history = detail.history;
+  const cursors = new Set<string>();
   for (;;) {
     for (const event of history.events) {
       const result = decision(plugin.pluginId, event);
       if (result) return result;
     }
     if (!history.nextCursor) return null;
+    if (cursors.has(history.nextCursor)) throwIpcError('PRECONDITION_FAILED', 'Review history pagination did not advance');
+    cursors.add(history.nextCursor);
     history = await api.history(plugin.pluginId, history.nextCursor);
   }
 }
@@ -55,6 +58,7 @@ async function refresh(api: ContributionApi): Promise<PluginReviewUpdate[]> {
   if (cache?.owner !== owner) cache = { owner, entries: new Map() };
   const held = cache;
   const visible = new Set<string>();
+  const cursors = new Set<string>();
   let cursor: string | undefined;
   do {
     const page = await api.list({ query: '', filter: 'all', ...(cursor ? { cursor } : {}) });
@@ -69,6 +73,10 @@ async function refresh(api: ContributionApi): Promise<PluginReviewUpdate[]> {
       }
     }
     cursor = page.nextCursor ?? undefined;
+    if (cursor) {
+      if (cursors.has(cursor)) throwIpcError('PRECONDITION_FAILED', 'Plugin pagination did not advance');
+      cursors.add(cursor);
+    }
   } while (cursor);
   assertContributionOwner(owner);
   for (const pluginId of held.entries.keys()) if (!visible.has(pluginId)) held.entries.delete(pluginId);
