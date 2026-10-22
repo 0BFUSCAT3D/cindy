@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { Spinner } from '@/components/ui/spinner';
 import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
 import { useCompanionCloud } from './companionCloudStore';
+import { useCompanionArrivalNotice } from './useCompanionArrivalNotice';
 import { CompanionShadowBanner } from './CompanionShadowBanner';
 import type { ComposerBotMention } from '@/lib/fileTypes';
 import { getBotLastReadAt, markBotRead } from './botReadState';
@@ -95,6 +96,7 @@ function BotSessionGateView() {
   const liveAvatar = liveProfile?.avatar;
   const liveAvatarColor = liveProfile?.avatarColor;
   const liveInvitationStage = liveProfile?.invitation?.stage;
+  useCompanionArrivalNotice(gate.kind === 'ready' ? botId : undefined, liveName);
   const gateIdentity = gate.kind === 'ready' ? gate.identity : null;
   const identity = useMemo(
     () =>

@@ -10006,6 +10006,8 @@
       "switchFailed": "Couldn’t move {{name}} to “{{device}}”",
       "homeOutdated": "The main computer “{{device}}” runs an older Cindy. Update it, or change the main computer there",
       "arrivingLater": "{{name}} moved to this computer and is still getting ready. It will appear in your teammates soon",
+      "arrivalPermissions": "{{name}} now uses this computer’s default permissions.",
+      "arrivalModel": "{{name}}’s saved model isn’t available on this computer, so it follows this computer’s default model.",
       "busyTitle": "{{name}} is still replying",
       "busyDescription": "Move it to “{{device}}” once this reply finishes, or stop the reply and move it now.",
       "busyWait": "Move When Done",

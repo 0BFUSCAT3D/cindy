@@ -9972,6 +9972,8 @@
       "switchFailed": "未能把 {{name}} 换到「{{device}}」",
       "homeOutdated": "主力电脑「{{device}}」上的 Cindy 版本较旧，请先更新它，或在那台电脑上更换",
       "arrivingLater": "{{name}} 已换到这台电脑，还在准备中，稍后会出现在伙伴列表里",
+      "arrivalPermissions": "{{name}} 已按这台电脑的默认权限运行。",
+      "arrivalModel": "{{name}} 之前选的模型在这台电脑上不可用，已改用这台电脑的默认模型。",
       "busyTitle": "{{name}} 还在回复",
       "busyDescription": "可以等这一轮结束后再换到「{{device}}」，也可以停止这一轮马上换。",
       "busyWait": "等回复完再换",

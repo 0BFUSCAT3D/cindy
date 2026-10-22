@@ -1,0 +1,151 @@
+/**
+ * The files a companion's reply refers to (cloud-companions.md §4): generated media by their
+ * `cindy-media://` address, and files the reply names inside the companion's own work folder
+ * (`documents/report.docx`, a Markdown link, an `xdt-file://` link). They go to the room with the
+ * reply so a computer that takes the companion over can open them. Only what the reply names and
+ * what exists inside the task's own folder is sent; nothing else on the disk is ever read.
+ */
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { buildLooseUrl, extractLoosePath } from '../session-share/mediaUrlRewrite.pure.js';
+import type { CompanionMirrorAttachment } from './mirror.js';
+
+/** A reply sends at most this many files to the room. */
+export const REPLY_ARTIFACTS_MAX = 8;
+
+const BLOB_URL = /\bcindy-media:\/\/blobs\/[0-9a-f]{64}\.[a-z0-9]+/g;
+/** A bare file name (no folder) counts only for the formats people are handed as deliverables. */
+const DELIVERABLE_EXT = new Set(['docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'pdf', 'csv', 'tsv', 'zip', 'key', 'pages', 'numbers']);
+const MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+  pdf: 'application/pdf', zip: 'application/zip', csv: 'text/csv', tsv: 'text/tab-separated-values',
+  txt: 'text/plain', md: 'text/markdown', json: 'application/json', html: 'text/html',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+/** UNC / WebDAV / device paths are never opened (realpath could contact a remote server). */
+const NETWORK_PATH = /^[\\/]{2}|^[\\/]\?\?[\\/]/;
+
+export interface ReplyReferences { blobs: string[]; paths: string[] }
+
+/** What the reply text refers to, in reading order and without duplicates. Code fences are examples, not deliveries. */
+export function collectReplyReferences(text: string): ReplyReferences {
+  const prose = text.replace(/```[\s\S]*?(?:```|$)/g, ' ');
+  const blobs = [...new Set(prose.match(BLOB_URL) ?? [])];
+  const paths: string[] = [];
+  const add = (candidate: string | null) => {
+    if (candidate && !candidate.includes('\0') && !paths.includes(candidate)) paths.push(candidate);
+  };
+  // Markdown link / image targets (a local path, or an xdt-file link).
+  for (const match of prose.matchAll(/\]\(\s*<?([^)>\n]+?)>?(?:\s+"[^"]*")?\s*\)/g)) {
+    const target = match[1]!.trim();
+    if (target.startsWith('xdt-file://')) {
+      add(extractLoosePath(target) ?? hostlessFilePath(target));
+    } else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(target) && !target.startsWith('#') && !target.startsWith('mailto:')) {
+      add(safeDecode(target.split(/[?#]/, 1)[0]!));
+    }
+  }
+  // Paths written in the text (inline code or plain).
+  for (const raw of prose.split(/[\s"'`<>()[\]{}|，。；：！？、]+/)) {
+    const token = raw.replace(/[.,;:]+$/, '');
+    if (!token || token.includes('://')) continue;
+    // Chinese text is written without spaces: try the token as is and without the words stuck to its ends.
+    const bare = token.replace(/^[\u3400-\u9fff\uff00-\uffef]+/, '');
+    for (const candidate of new Set([token, bare, token.replace(/[\u3400-\u9fff\uff00-\uffef]+$/, ''), bare.replace(/[\u3400-\u9fff\uff00-\uffef]+$/, '')])) {
+      const ext = /\.([A-Za-z0-9]{1,8})$/.exec(candidate)?.[1]?.toLowerCase();
+      if (!ext) continue;
+      if (candidate.includes('/') ? candidate.length > 1 : DELIVERABLE_EXT.has(ext) && /^[\p{L}\p{N}_.@ -]+$/u.test(candidate)) add(candidate);
+    }
+  }
+  return { blobs, paths };
+}
+
+function safeDecode(value: string): string {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+/** The hostless `xdt-file:///abs/path` form the agent is told to write. */
+function hostlessFilePath(url: string): string | null {
+  if (!url.startsWith('xdt-file:///')) return null;
+  const decoded = safeDecode(url.slice('xdt-file://'.length).split(/[?#]/, 1)[0]!);
+  return /^\/[A-Za-z]:[\\/]/.test(decoded) ? decoded.slice(1) : decoded;
+}
+
+function within(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+export interface ReplyArtifactDeps {
+  /** The real folders this companion's task may read from (its work folder); empty when none. */
+  roots: (sessionId: string) => Promise<string[]>;
+  /** A stored media blob: its type and size, or null when this computer does not have it. */
+  blob: (url: string, sessionId: string) => Promise<{ mimeType: string; size: number } | null>;
+  maxBytes: number;
+  log?: { warn: (message: string, meta?: Record<string, unknown>) => void };
+}
+
+/** Files the reply names that can go to the room with it (see the file comment). */
+export async function replyArtifactAttachments(
+  row: { id: string }, text: string, sessionId: string, deps: ReplyArtifactDeps,
+): Promise<CompanionMirrorAttachment[]> {
+  const refs = collectReplyReferences(text);
+  if (!refs.blobs.length && !refs.paths.length) return [];
+  const out: CompanionMirrorAttachment[] = [];
+  const full = () => out.length >= REPLY_ARTIFACTS_MAX;
+  for (const url of refs.blobs) {
+    if (full()) break;
+    try {
+      const blob = await deps.blob(url, sessionId);
+      if (!blob || blob.size <= 0 || blob.size > deps.maxBytes) continue;
+      out.push({ id: `${row.id}:reply:${out.length}`, name: url.slice(url.lastIndexOf('/') + 1), category: blob.mimeType.startsWith('image/') ? 'image' : 'file',
+        mimeType: blob.mimeType, size: blob.size, url, path: null });
+    } catch (error) { deps.log?.warn('Reply media not sent to the room', { code: (error as NodeJS.ErrnoException)?.code ?? 'UNKNOWN' }); }
+  }
+  if (!refs.paths.length || full()) return out;
+  const roots = await deps.roots(sessionId);
+  if (!roots.length) return out;
+  const seen = new Set<string>();
+  for (const candidate of refs.paths) {
+    if (full()) break;
+    if (NETWORK_PATH.test(candidate)) continue;
+    try {
+      // Relative names are the work folder's; an absolute one must still end up inside it.
+      const real = await fs.realpath(path.isAbsolute(candidate) ? candidate : path.join(roots[0]!, candidate));
+      const root = roots.find(item => within(item, real));
+      if (!root || seen.has(real)) continue;
+      // Hidden files and folders (.env, .git, …) are never part of a delivery.
+      if (path.relative(root, real).split(path.sep).some(part => part.startsWith('.'))) continue;
+      const stat = await fs.stat(real);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > deps.maxBytes) continue;
+      seen.add(real);
+      const ext = path.extname(real).slice(1).toLowerCase();
+      const mimeType = MIME_BY_EXT[ext] ?? 'application/octet-stream';
+      out.push({ id: `${row.id}:reply:${createHash('sha256').update(real).digest('hex').slice(0, 12)}`, name: path.basename(real).slice(0, 200),
+        category: mimeType.startsWith('image/') ? 'image' : 'file', mimeType, size: stat.size, url: null, path: real });
+    } catch { /* not a file here: the text only mentioned it */ }
+  }
+  return out;
+}
+
+/** A name safe inside Markdown link text. */
+const markdownLabel = (name: string) => name.replace(/[\\`*_{}[\]<>#!|]/g, '\\$&').replace(/[\r\n]+/g, ' ');
+
+/**
+ * A reply as it reads on the computer that takes the companion over. A reply has no attachment
+ * slots, so its files are reachable from the text itself: media the text already names (the same
+ * content address) shows as before, anything else is linked below it, and a file that could not
+ * come keeps its name.
+ */
+export function replyTextWithFiles(
+  text: string, files: ReadonlyArray<{ name: string; url: string | null; path: string | null }>,
+): string {
+  const links = files.map(file => {
+    if (file.url) return text.includes(file.url) ? '' : `![${markdownLabel(file.name)}](${file.url})`;
+    if (file.path) return `[${markdownLabel(file.name)}](${buildLooseUrl('xdt-file', file.path)})`;
+    return `[附件: ${file.name}]`;
+  }).filter(Boolean);
+  return [text, ...links].filter(Boolean).join('\n\n');
+}

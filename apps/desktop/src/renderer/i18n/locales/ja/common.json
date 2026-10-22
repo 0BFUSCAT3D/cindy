@@ -9972,6 +9972,8 @@
       "switchFailed": "{{name}} を「{{device}}」に移せませんでした",
       "homeOutdated": "メインのパソコン「{{device}}」の Cindy が古いバージョンです。更新するか、そのパソコンで変更してください",
       "arrivingLater": "{{name}} はこのパソコンに移り、準備中です。まもなくチームメイト一覧に表示されます",
+      "arrivalPermissions": "{{name}} はこのパソコンの既定の権限で動作します。",
+      "arrivalModel": "{{name}} の保存済みモデルはこのパソコンでは使えないため、このパソコンの既定モデルを使います。",
       "busyTitle": "{{name}} はまだ返信中です",
       "busyDescription": "この返信が終わってから「{{device}}」に移すか、返信を止めてすぐに移せます。",
       "busyWait": "終わってから移す",

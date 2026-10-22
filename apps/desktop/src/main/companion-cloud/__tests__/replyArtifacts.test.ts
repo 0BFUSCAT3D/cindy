@@ -1,0 +1,88 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { collectReplyReferences, replyArtifactAttachments, replyTextWithFiles, REPLY_ARTIFACTS_MAX } from '../replyArtifacts.js';
+
+const HASH = 'a'.repeat(64);
+
+describe('collectReplyReferences', () => {
+  it('finds media addresses and the files a reply names, in prose, inline code and links', () => {
+    const text = [
+      `![chart](cindy-media://blobs/${HASH}.png)`,
+      '做好了 documents/报告.docx，另见 `notes/todo.txt`。',
+      '[表格](documents/q3.xlsx) 和 [导出](xdt-file:///work/out/data.csv)',
+      '放在了summary.pdf里，见documents/a.pdf。',
+      '```\ndocuments/example-only.docx\n```',
+      '网页 https://example.com/a/b.pdf 与 [站](https://x.dev/y.zip) 不算',
+    ].join('\n');
+    const found = collectReplyReferences(text);
+    expect(found.blobs).toEqual([`cindy-media://blobs/${HASH}.png`]);
+    expect(found.paths).toEqual(expect.arrayContaining(['documents/报告.docx', 'notes/todo.txt', 'documents/q3.xlsx', '/work/out/data.csv', 'summary.pdf', 'documents/a.pdf']));
+    expect(found.paths).not.toContain('documents/example-only.docx');
+    expect(found.paths.some(item => item.includes('example.com') || item.includes('x.dev'))).toBe(false);
+  });
+
+  it('does not take a bare word with a dot, or a name without a deliverable extension, as a file', () => {
+    expect(collectReplyReferences('版本是 v1.2，见 README.md 和 config.json').paths).toEqual([]);
+  });
+});
+
+describe('replyArtifactAttachments', () => {
+  let root: string;
+  let outside: string;
+  const deps = (extra: Partial<Parameters<typeof replyArtifactAttachments>[3]> = {}) => ({
+    roots: async () => [root], blob: async () => null, maxBytes: 1000, ...extra,
+  });
+  beforeEach(async () => {
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'reply-')));
+    outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'outside-')));
+    await fs.mkdir(path.join(root, 'documents'));
+    await fs.writeFile(path.join(root, 'documents', 'report.docx'), 'docx-bytes');
+  });
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it('lists the existing files inside the work folder that the reply names, by relative or absolute path', async () => {
+    const files = await replyArtifactAttachments({ id: 'm1' }, `做好了 documents/report.docx，也见 ${path.join(root, 'documents', 'report.docx')} 和 documents/missing.docx`, 's1', deps());
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({ name: 'report.docx', category: 'file', path: path.join(root, 'documents', 'report.docx'), url: null, size: 10 });
+  });
+
+  it('never reads outside the work folder, through a link out of it, a hidden file, or an oversized one', async () => {
+    await fs.writeFile(path.join(outside, 'secret.docx'), 'secret');
+    await fs.symlink(path.join(outside, 'secret.docx'), path.join(root, 'documents', 'link.docx'));
+    await fs.writeFile(path.join(root, '.env.docx'), 'hidden');
+    await fs.mkdir(path.join(root, '.git'));
+    await fs.writeFile(path.join(root, '.git', 'config.txt'), 'hidden');
+    await fs.writeFile(path.join(root, 'documents', 'big.docx'), 'x'.repeat(2000));
+    const text = `${path.join(outside, 'secret.docx')} documents/link.docx .env.docx .git/config.txt documents/big.docx ../${path.basename(outside)}/secret.docx`;
+    expect(await replyArtifactAttachments({ id: 'm1' }, text, 's1', deps())).toEqual([]);
+    expect(await replyArtifactAttachments({ id: 'm1' }, 'documents/report.docx', 's1', deps({ roots: async () => [] }))).toEqual([]);
+  });
+
+  it('adds stored media the task may read as image or file, skips missing or oversized ones, and stops at the limit', async () => {
+    const urls = Array.from({ length: REPLY_ARTIFACTS_MAX + 3 }, (_, index) => `cindy-media://blobs/${String(index).padStart(64, '0')}.png`);
+    const blob = async (url: string) => (url === urls[0] ? null : url === urls[1] ? { mimeType: 'image/png', size: 5000 }
+      : url === urls[2] ? { mimeType: 'video/mp4', size: 10 } : { mimeType: 'image/png', size: 10 });
+    const files = await replyArtifactAttachments({ id: 'm1' }, urls.join(' '), 's1', deps({ blob }));
+    expect(files).toHaveLength(REPLY_ARTIFACTS_MAX);
+    expect(files[0]).toMatchObject({ url: urls[2], category: 'file', mimeType: 'video/mp4' });
+    expect(files[1]).toMatchObject({ url: urls[3], category: 'image' });
+    expect(new Set(files.map(file => file.id)).size).toBe(files.length);
+  });
+});
+
+describe('replyTextWithFiles', () => {
+  it('shows media the text already names as before, and links everything else below the reply', () => {
+    const named = `cindy-media://blobs/${HASH}.png`;
+    expect(replyTextWithFiles(`图 ![x](${named})`, [{ name: 'x.png', url: named, path: null }])).toBe(`图 ![x](${named})`);
+    expect(replyTextWithFiles('看这个', [
+      { name: 'chart.png', url: `cindy-media://blobs/${'b'.repeat(64)}.png`, path: null },
+      { name: 'a (1).docx', path: '/att/a (1).docx', url: null },
+      { name: 'gone.pdf', path: null, url: null },
+    ])).toBe(`看这个\n\n![chart.png](cindy-media://blobs/${'b'.repeat(64)}.png)\n\n[a (1).docx](xdt-file://local/?path=%2Fatt%2Fa%20%281%29.docx)\n\n[附件: gone.pdf]`);
+  });
+});

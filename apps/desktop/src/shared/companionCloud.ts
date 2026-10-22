@@ -7,6 +7,9 @@ export interface CompanionCloudHomeDevice {
   isSelf: boolean;
 }
 
+/** What a move to this computer could not keep of the companion's old setup (cloud-companions.md §2). */
+export type CompanionArrivalNoticeKind = 'permissions' | 'model';
+
 export interface CompanionCloudActor {
   /** Chat Server actor id. */
   id: string;
@@ -18,6 +21,8 @@ export interface CompanionCloudActor {
   homeDeviceId: string | null;
   /** Resolved home computer; only present in the renderer view (state IPC / change push). */
   homeDevice?: CompanionCloudHomeDevice | null;
+  /** Only in the renderer view: shown once after the companion arrived here, then dismissed. */
+  arrivalNotices?: CompanionArrivalNoticeKind[];
 }
 
 export interface CompanionCloudSnapshot {

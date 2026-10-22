@@ -1670,8 +1670,14 @@ export async function setBotProfileAvatar(botId: string, image: { buffer: Buffer
     return profile;
 }
 
+/**
+ * Trusted, main-only inputs of a companion restored from the cloud (cloud-companions.md §3.1):
+ * the preset it was made from. Never reachable from a renderer or model body.
+ */
+export interface RestoredBotOrigin { templateId?: unknown }
+
 /** Main-owned creation path shared by the renderer and Bot runtime tools. */
-export async function createBotProfile(raw: unknown) {
+export async function createBotProfile(raw: unknown, restored?: RestoredBotOrigin) {
   const body =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const draftEntry = body.creationDraftToken ? readBotCreationDraft(body.creationDraftToken) : undefined;
@@ -1744,6 +1750,7 @@ export async function createBotProfile(raw: unknown) {
   delete persistedCapabilities.invitation;
   delete persistedCapabilities.templateId;
   if (templateId) persistedCapabilities.templateId = templateId;
+  else if (isBotTemplatePresetId(restored?.templateId)) persistedCapabilities.templateId = restored.templateId;
   if (prepareInvitation) persistedCapabilities.invitation = {
     id: randomUUID(), stage: 'skills', locale: readBotInvitationLocale(body.locale),
     avatarRequested: body.generateAvatar === true && !avatarImage,
@@ -1848,7 +1855,7 @@ export async function prepareImportedBotInvitation(botId: string, requestId: str
 
 /** Shared profile mutation for trusted settings and owner-bound capability selection. */
 export async function updateBotProfile(raw: unknown, expectedVersion?: number,
-  validateAdditions?: (update: BotCapabilityUpdate) => Promise<void>) {
+  validateAdditions?: (update: BotCapabilityUpdate) => Promise<void>, restored?: RestoredBotOrigin) {
   const body =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const id = readText(body.id, 'botId', 128, true);
@@ -1940,7 +1947,9 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     capabilityBaseline: body.capabilityBaseline,
   });
   // Template identity survives renames and cannot be replaced through settings.
-  const retainedTemplate = typeof previous.templateId === 'string' ? previous.templateId : inferBotTemplatePresetId(version?.identitySource ?? '');
+  const retainedTemplate = typeof previous.templateId === 'string' ? previous.templateId
+    : isBotTemplatePresetId(restored?.templateId) ? restored.templateId
+      : inferBotTemplatePresetId(version?.identitySource ?? '');
   if (retainedTemplate) nextConfig.templateId = retainedTemplate;
   else delete nextConfig.templateId;
   // Keep preparation checkpoints outside caller-editable capabilities.
