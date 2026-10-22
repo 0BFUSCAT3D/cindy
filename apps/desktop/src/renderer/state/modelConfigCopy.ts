@@ -41,8 +41,11 @@ export interface ModelConfigCopy {
   agent: ModelEngine;
   /** 思考深度**档位 key**('low' | 'high' | …);缺省 = 跟随该 (模型, 引擎) 的推荐档。 */
   effort?: Effort;
-  /** Fast(插队加速)。**只在开启时存 true**,关闭即缺省 —— 不落「等于默认」的快照。 */
-  fast?: true;
+  /**
+   * Fast(插队加速)。**只存开启态**(`true` 或 `'ultrafast'`),关闭即缺省 —— 不落
+   * 「等于默认」的快照。三态里的两档开启值必须分开存,否则收藏 ultrafast 后还原成普通 fast。
+   */
+  fast?: true | 'ultrafast';
 }
 
 /**
@@ -76,6 +79,7 @@ export function normalizeModelConfigCopy(raw: {
   const config: ModelConfigCopy = { providerId, modelId, agent: raw.agent };
   if (isCanonicalModelEffort(raw.effort)) config.effort = raw.effort;
   if (raw.fast === true) config.fast = true;
+  else if (raw.fast === 'ultrafast') config.fast = 'ultrafast';
   return config;
 }
 
@@ -91,6 +95,6 @@ export function modelConfigCopyIdentity(config: ModelConfigCopy): string {
     config.modelId,
     config.agent,
     config.effort ?? '',
-    config.fast === true ? '1' : '0',
+    config.fast === undefined ? '0' : config.fast === 'ultrafast' ? 'ultrafast' : '1',
   ].join(' ');
 }
