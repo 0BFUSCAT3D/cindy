@@ -4461,6 +4461,7 @@ let pendingAgentSwitchApplyHolder:
     signal?: AbortSignal,
     selection?: ScheduledModelSelection,
     beforeApply?: () => Promise<boolean | void>,
+    scheduledModelOverride?: boolean,
   ) => Promise<{ release: () => void; selection?: ScheduledModelSelection }>) | null = null;
 let cancelPendingAgentSwitchHolder: ((sessionId: string) => void) | null = null;
 let prepareScheduledModelPreferencesHolder: ((sessionId: string, override: boolean) => Promise<void>) | null = null;
@@ -4763,18 +4764,22 @@ export function clearWorkingDirectoryRecoveryForOwnerBoundary(): void {
  * intent,返回 no-op release 即可。
  */
 export function acquirePendingAgentSwitchForDirectSend(
-  sessionId: string, signal?: AbortSignal,
+  sessionId: string, signal?: AbortSignal, selection?: undefined, scheduledModelOverride?: boolean,
 ): Promise<() => void>;
 export function acquirePendingAgentSwitchForDirectSend(
   sessionId: string, signal: AbortSignal | undefined, selection: ScheduledModelSelection,
 ): Promise<ScheduledModelSelectionLease>;
+export function acquirePendingAgentSwitchForDirectSend(
+  sessionId: string, signal?: AbortSignal, selection?: ScheduledModelSelection, scheduledModelOverride?: boolean,
+): Promise<(() => void) | ScheduledModelSelectionLease>;
 export async function acquirePendingAgentSwitchForDirectSend(
   sessionId: string,
   signal?: AbortSignal,
   selection?: ScheduledModelSelection,
+  scheduledModelOverride?: boolean,
 ): Promise<(() => void) | ScheduledModelSelectionLease> {
   if (selection && !pendingAgentSwitchApplyHolder) throw new Error('Scheduled model selection is not initialized');
-  const lease = await pendingAgentSwitchApplyHolder?.(sessionId, signal, selection);
+  const lease = await pendingAgentSwitchApplyHolder?.(sessionId, signal, selection, undefined, scheduledModelOverride);
   if (!selection) return lease?.release ?? (() => {});
   if (!lease?.selection) {
     lease?.release();
@@ -11008,14 +11013,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (override) await scheduledModelScope.begin(sessionId);
     else await scheduledModelScope.restore(sessionId);
   };
-  pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply) => {
+  pendingAgentSwitchApplyHolder = async (sessionId, signal, selection, beforeApply, scheduledModelOverride) => {
     let stage = 'direct-send:acquire';
     let deferPendingApply = false;
     const release = await acquireSendToSessionLock(sessionId, undefined, () => stage);
     try {
-      // Another explicit automation goes straight to its own route. Restoring
+      // An automation with a model override goes straight to its own route. Restoring
       // the owner first could destructively shrink history that this send can use.
-      if (!selection) await scheduledModelScope.restore(sessionId);
+      if (!selection && !scheduledModelOverride) await scheduledModelScope.restore(sessionId);
       // Read after acquisition: a picker can have been queued ahead of this
       // send. Restore under this same lease through dispatch, without re-taking it.
       const pendingSelection = agentSwitchPending.get(sessionId);

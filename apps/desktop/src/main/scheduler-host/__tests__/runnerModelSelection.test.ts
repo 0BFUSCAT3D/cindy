@@ -366,8 +366,12 @@ describe('MakerScheduleRunner model selection', () => {
       sessionAlive: true,
       prepareModelPreferences: preserve,
       onModelDispatched,
-      acquirePendingAgentSwitch: async (_id, _signal, selection) => {
-        if (!selection) return release;
+      acquirePendingAgentSwitch: async (_id, _signal, selection, scheduledModelOverride) => {
+        if (!selection) {
+          // Legacy model overrides must bypass owner restoration too.
+          expect(scheduledModelOverride).toBe(true);
+          return release;
+        }
         await scope.begin(h.session.id);
         await h.session.setModel(selection.model);
         return { release, selection };

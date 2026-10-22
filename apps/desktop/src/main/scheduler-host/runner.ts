@@ -285,6 +285,7 @@ export interface MakerScheduleRunnerDeps {
     sessionId: string,
     signal?: AbortSignal,
     selection?: ScheduledModelSelection,
+    scheduledModelOverride?: boolean,
   ) => Promise<(() => void) | ScheduledModelSelectionLease>;
   prepareModelPreferences?: (sessionId: string, override: boolean) => Promise<void>;
   onModelDispatched?: (sessionId: string, clientId: string) => void;
@@ -963,6 +964,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
       try {
         const lease = await (selection
           ? this.deps.acquirePendingAgentSwitch?.(sessionId, ctx.signal, selection)
+          : schedule.model?.trim()
+          ? this.deps.acquirePendingAgentSwitch?.(sessionId, ctx.signal, undefined, true)
           : this.deps.acquirePendingAgentSwitch?.(sessionId, ctx.signal));
         holder.releaseAgentSwitchLock = typeof lease === 'function' ? lease : lease?.release;
         if (selection) {

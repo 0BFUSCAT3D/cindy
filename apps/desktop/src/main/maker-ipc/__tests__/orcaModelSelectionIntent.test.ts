@@ -18,11 +18,15 @@ const confirmationChecks: string[] = [];
 let applySelectionAdapter = '';
 let piWindowOverride = '';
 let directSendAdapter = '';
+let directSendEntry = '';
 let archivedAdmission = '';
 let terminalGuard = '';
 let stageAxisAdapter = '';
 let scheduledAxisAdapter = '';
 function visit(node: ts.Node) {
+  if (ts.isFunctionDeclaration(node) && node.name?.text === 'acquirePendingAgentSwitchForDirectSend' && node.body) {
+    directSendEntry = node.getText(source).replace(/^export /, '');
+  }
   if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'updateSavedScheduledAxis') {
     scheduledAxisAdapter = node.initializer!.getText(source);
   }
@@ -168,7 +172,9 @@ describe('complete selection commit boundaries', () => {
   // window before applying the next automation. Existing tests covered picker
   // intents only. Unit tier: preserve native history across repeated automation
   // sends and restore the durable owner preference only for an ordinary send.
-  it.each([true, false])('applies only the next send route (automation=%s)', async automated => {
+  // PR #6831: legacy schedules have no complete selection, but still must
+  // preserve the native context before the runner applies their model override.
+  it.each(['explicit', 'legacy', 'ordinary'])('applies only the next send route (%s)', async route => {
     const owner: ScheduledModelSelection = {
       agentKind: 'codex', model: 'owner-model', providerId: 'provider', effort: 'high', fastMode: false,
     };
@@ -190,18 +196,23 @@ describe('complete selection commit boundaries', () => {
     await createScheduledModelScope(deps).begin('scheduled-task');
     profile = automatic;
     // A new scope instance also exercises a restart between turns.
-    const directSend = compile(directSendAdapter, {
+    const adapter = compile(directSendAdapter, {
       scheduledModelScope: createScheduledModelScope(deps),
       acquireSendToSessionLock, agentSwitchPending: new Map(),
       isUserPendingAgentSwitchIntent, reconcileBotModelRoute: vi.fn(),
       applyPendingAgentSwitchIfIdle: vi.fn(), agentSwitchDeps: {},
       applyScheduledProfile: apply, contextOverflowRolloverHolder: null,
     });
-    const lease = await directSend('scheduled-task', undefined, automated ? automatic : undefined);
-    lease.release();
-    expect(transitions).toEqual([automated ? automatic.model : owner.model]);
-    expect(profile.model).toBe(automated ? automatic.model : owner.model);
-    expect(baseline === null).toBe(!automated);
+    const directSend = compile(directSendEntry, { pendingAgentSwitchApplyHolder: adapter });
+    const lease = await directSend('scheduled-task', undefined,
+      route === 'explicit' ? automatic : undefined, route === 'legacy');
+    // The legacy runner applies its model later under this same lease.
+    if (route === 'legacy') await apply('scheduled-task', automatic);
+    if (typeof lease === 'function') lease();
+    else lease.release();
+    expect(transitions).toEqual([route === 'ordinary' ? owner.model : automatic.model]);
+    expect(profile.model).toBe(route === 'ordinary' ? owner.model : automatic.model);
+    expect(baseline === null).toBe(route === 'ordinary');
   });
 
   it('reads a picker intent staged while the direct send waits for the real route lock', async () => {
