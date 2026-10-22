@@ -30,6 +30,7 @@ function harness(result: unknown, reject = false, sharedTaskId: string | undefin
   const session = { id: 'task', deviceLinkDeviceId: 'device-1' };
   const archiveBlockedByRunning = vi.fn(() => false);
   const preflight = vi.fn(async () => 'clean');
+  const confirmDialog = vi.fn(async () => true);
   const bindings = {
     window: { electronAPI: { sharedTask: { account }, binding: { resolveSession: async () => ({ attached: false }) } } },
     toast, t: (key: string) => key, sharedTaskErrorKey: () => 'sharedTask.retry',
@@ -37,7 +38,7 @@ function harness(result: unknown, reject = false, sharedTaskId: string | undefin
     runningSessionIds: new Set(), attachedSessionIdsRef: { current: new Set() },
     loadActiveBoundScheduleNames: async () => new Map(),
     isRemoteSessionWriteBlocked: () => false, resolveWorktreeRemovalPreflight: preflight,
-    archiveBlockedByRunning,
+    archiveBlockedByRunning, confirmDialog, archiveConfirmDescription: () => 'description',
     viewedSessionIdRef: { current: 'other' }, viewedSessionId: 'other',
     resolveSessionRemovalRedirect: vi.fn(), unarchiveSession: vi.fn(),
     runSessionAction: async (id: string, action: string, options: { prepareArchive?: (isCurrent: () => boolean) => Promise<boolean> }) => {
@@ -48,7 +49,7 @@ function harness(result: unknown, reject = false, sharedTaskId: string | undefin
   };
   const closeOwnedSharedTask = callback('closeOwnedSharedTask', bindings);
   return {
-    account, runSessionAction, toast, setConfirm, archiveBlockedByRunning, preflight,
+    account, runSessionAction, toast, setConfirm, archiveBlockedByRunning, preflight, confirmDialog,
     archive: () => callback('handleActionClick', { ...bindings, closeOwnedSharedTask })('task', 'archive', sharedTaskId),
     confirm: (action: string) => callback('handleConfirm', { ...bindings, closeOwnedSharedTask,
       confirm: { sessionId: 'task', action, sharedTaskId },
@@ -64,12 +65,14 @@ describe('sidebar shared-task archive/delete guard', () => {
     const archive = h.archive();
     await vi.waitFor(() => expect(h.preflight).toHaveBeenCalled());
     if (preflight === 'clean') h.archiveBlockedByRunning.mockReturnValue(true);
+    else h.confirmDialog.mockImplementationOnce(async () => {
+      h.archiveBlockedByRunning.mockReturnValue(true);
+      return true;
+    });
     pending.resolve(preflight);
     await archive;
     if (preflight !== 'clean') {
-      expect(h.setConfirm).toHaveBeenCalledWith(expect.objectContaining({ open: true, sharedTaskId: 'share' }));
-      h.archiveBlockedByRunning.mockReturnValue(true);
-      await h.confirm('archive');
+      expect(h.confirmDialog).toHaveBeenCalledOnce();
     }
     expect(h.archiveBlockedByRunning).toHaveBeenLastCalledWith('task', 'device-1');
     expect(h.account).not.toHaveBeenCalled();
@@ -85,8 +88,11 @@ describe('sidebar shared-task archive/delete guard', () => {
   });
   it.each(['archive', 'confirmed-archive', 'delete'])('blocks %s on a resolved close failure', async (action) => {
     const h = harness({ closed: [], failed: [{ sharedTaskId: 'share' }] });
-    if (action === 'archive') await h.archive();
-    else await h.confirm(action === 'delete' ? 'delete' : 'archive');
+    if (action === 'delete') await h.confirm('delete');
+    else {
+      if (action === 'confirmed-archive') h.preflight.mockResolvedValueOnce('dirty');
+      await h.archive();
+    }
     expect(h.runSessionAction).not.toHaveBeenCalled();
     expect(h.setConfirm).not.toHaveBeenCalled();
     expect(h.toast.error).toHaveBeenCalledWith('sharedTask.closeFailedToast');
@@ -124,6 +130,10 @@ function deferred<T>() {
 }
 
 describe('archive preserves the current task until preflight and confirmation finish', () => {
+  // Unit regression, PR #6863 r4353787032: existing cases checked selection
+  // and final state but missed the visible row while confirmation was pending.
+  // Execute each production handler with a held decision; dirty/unknown and
+  // schedule-bound inputs must stay hidden until cancel or a confirmed write.
   const entrypoints = [
     { name: 'sidebar', file: 'CCAgentSidebarUpper.tsx', handler: 'handleActionClick' },
     { name: 'header', file: 'SessionContentHeader.tsx', handler: 'handleArchive' },
@@ -144,6 +154,7 @@ describe('archive preserves the current task until preflight and confirmation fi
     const runSessionAction = vi.fn((..._args: unknown[]) => leaveTask());
     const setConfirm = vi.fn();
     const confirmDialog = vi.fn(() => decision.promise);
+    const archiveConfirmDescription = vi.fn(() => 'description');
     const resolvePreflight = vi.fn(() => preflight.promise);
     const bindings = {
       window: { electronAPI: { binding: { resolveSession: async () => ({ attached: false }) } } },
@@ -154,7 +165,7 @@ describe('archive preserves the current task until preflight and confirmation fi
       resolveWorktreeRemovalPreflight: resolvePreflight,
       loadActiveBoundScheduleNames: async () =>
         new Map(scheduleNames.length > 0 ? [['task', scheduleNames]] : []),
-      archiveConfirmDescription: () => 'description',
+      archiveConfirmDescription,
       viewedSessionIdRef: { current: 'task' }, viewedSessionId: 'task',
       resolveSessionRemovalRedirect: vi.fn(), unarchiveSession: vi.fn(),
       runSessionAction: async (id: string, action: string, options: { prepareArchive?: (isCurrent: () => boolean) => Promise<boolean> }) => {
@@ -174,19 +185,10 @@ describe('archive preserves the current task until preflight and confirmation fi
       confirmDialog,
     };
     return {
-      preflight, resolvePreflight, decision, runSessionAction, beginRemoteArchive, setConfirm, confirmDialog,
+      preflight, resolvePreflight, decision, runSessionAction, beginRemoteArchive, confirmDialog, archiveConfirmDescription,
       selected: () => selectedTask, visible: () => rowVisible,
       archive: () => callback(entry.handler, bindings, entrySource)('task', 'archive'),
-      finish: async (confirmed: boolean) => {
-        if (entry.name === 'sidebar') {
-          if (confirmed) {
-            const saving = callback('handleConfirm', bindings)();
-            // Radix closes the dialog immediately after the confirm click.
-            callback('handleCancelConfirm', bindings)();
-            await saving;
-          } else callback('handleCancelConfirm', bindings)();
-        } else decision.resolve(confirmed);
-      },
+      finish: async (confirmed: boolean) => { decision.resolve(confirmed); },
     };
   }
 
@@ -205,9 +207,10 @@ describe('archive preserves the current task until preflight and confirmation fi
       h.preflight.resolve(preflight);
       if (preflight !== 'clean') {
         await vi.waitFor(() => {
-          expect(entry.name === 'sidebar' ? h.setConfirm : h.confirmDialog).toHaveBeenCalled();
+          expect(h.confirmDialog).toHaveBeenCalled();
         });
         expect(h.selected()).toBe('task');
+        expect(h.visible()).toBe(false);
         expect(h.runSessionAction).not.toHaveBeenCalled();
         await h.finish(false);
       }
@@ -228,9 +231,10 @@ describe('archive preserves the current task until preflight and confirmation fi
       const pending = h.archive();
       h.preflight.resolve(preflight);
       await vi.waitFor(() => {
-        expect(entry.name === 'sidebar' ? h.setConfirm : h.confirmDialog).toHaveBeenCalled();
+        expect(h.confirmDialog).toHaveBeenCalled();
       });
       expect(h.selected()).toBe('task');
+      expect(h.visible()).toBe(false);
       expect(h.runSessionAction).not.toHaveBeenCalled();
       await h.finish(true);
       await pending;
@@ -245,11 +249,11 @@ describe('archive preserves the current task until preflight and confirmation fi
       const pending = h.archive();
       h.preflight.resolve('clean');
       await vi.waitFor(() => {
-        expect(entry.name === 'sidebar' ? h.setConfirm : h.confirmDialog).toHaveBeenCalled();
+        expect(h.confirmDialog).toHaveBeenCalled();
       });
-      if (entry.name === 'sidebar') {
-        expect(h.setConfirm).toHaveBeenCalledWith(expect.objectContaining({ scheduleNames: ['Daily report'] }));
-      }
+      expect(h.archiveConfirmDescription).toHaveBeenCalledWith(expect.anything(),
+        expect.objectContaining({ scheduleNames: ['Daily report'] }));
+      expect(h.visible()).toBe(false);
       expect(h.runSessionAction).not.toHaveBeenCalled();
       await h.finish(false);
       await pending;
