@@ -40,7 +40,11 @@ vi.mock('@/components/ui/select', () => ({
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { voice?: string }) =>
-      options?.voice ? `${key}: ${options.voice}` : key,
+      key === 'settings.providers.xd.title'
+        ? 'Cindy AI'
+        : options?.voice
+          ? `${key}: ${options.voice}`
+          : key,
   }),
 }));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
@@ -489,7 +493,7 @@ it('shows a useful empty state without requesting a microphone or inventing mode
   view.unmount();
   models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   renderSettings();
-  await screen.findByRole('option', { name: 'Speech' });
+  await screen.findByRole('option', { name: 'Speech · Cindy AI' });
   expect(screen.queryByText('bots.voiceMode.noModelsSupportedProtocols')).toBeNull();
   expect(screen.queryByRole('button', { name: 'bots.voiceMode.openProviders' })).toBeNull();
   expect(screen.getByText('bots.voiceMode.settingsHint')).toBeTruthy();
@@ -517,6 +521,45 @@ it('does not present a catalog failure as missing models or suggest adding a con
   await screen.findByText('bots.voiceMode.noModels');
   expect(refresh).toHaveBeenCalledWith('xd');
 });
+
+// Unit regression: the real settings component previously rendered the raw
+// Gateway catalog name. Existing fixtures already used its localized display name.
+it.each(['xd', undefined])(
+  'localizes the Gateway name with provider %s while retaining BYOK names and route IDs',
+  async (providerId) => {
+    const gateway: VoiceConversationModel = {
+      id: 'elevenlabs/eleven_v3',
+      name: 'Eleven v3',
+      providerId,
+      providerName: 'XD Gateway',
+      protocol: 'openai',
+      defaultVoice: 'reference-voice',
+    };
+    const byok: VoiceConversationModel = {
+      ...gateway,
+      providerId: 'my-elevenlabs',
+      providerName: '我的 ElevenLabs',
+      agent: 'codex',
+    };
+    models = [byok, gateway];
+    renderSettings();
+    const field = await screen.findByRole('combobox', { name: 'bots.voiceMode.model' });
+    await waitFor(() => expect((field as HTMLSelectElement).disabled).toBe(false));
+    expect(within(field).getByRole('option', { name: 'Eleven v3 · Cindy AI' })).toBeTruthy();
+    expect(within(field).getByRole('option', { name: 'Eleven v3 · 我的 ElevenLabs' })).toBeTruthy();
+    expect(within(field).queryByRole('option', { name: 'Eleven v3 · XD Gateway' })).toBeNull();
+    expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: voiceModelKey(gateway) } });
+    await waitFor(() =>
+      expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', {
+        providerId,
+        agent: undefined,
+        modelId: gateway.id,
+        voice: gateway.defaultVoice,
+      }),
+    );
+  },
+);
 
 it('selects the exact BYOK connection for duplicate IDs and persists it for this companion', async () => {
   models = ['a', 'b'].map((providerId) => ({

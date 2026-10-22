@@ -16,6 +16,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { makerChatStore, EMPTY_LIGHT_STATE } from '@/lib/makerChatStore';
+import { providerDisplayName } from '@/lib/providerDisplayName';
 import type {
   SpeechProtocol,
   VoiceConversationModel,
@@ -337,7 +338,15 @@ export function CompanionVoiceSettings(props: Props) {
                 value={selectedModel ? voiceModelKey(selectedModel) : ''}
                 options={models.map((model) => ({
                   value: voiceModelKey(model),
-                  label: [model.name, model.providerName].filter(Boolean).join(' · '),
+                  label: [
+                    model.name,
+                    providerDisplayName(
+                      { id: model.providerId ?? 'xd', name: model.providerName ?? '' },
+                      t,
+                    ),
+                  ]
+                    .filter(Boolean)
+                    .join(' · '),
                 }))}
                 onValueChange={chooseModel}
                 disabled={loading || !ready || saving || models.length === 0}

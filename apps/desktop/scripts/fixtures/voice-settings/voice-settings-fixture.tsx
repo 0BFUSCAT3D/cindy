@@ -64,7 +64,7 @@ mountPage({
                   name: modelId,
                   providerId,
                   providerName: ctx.data.gatewayReference
-                    ? 'Cindy AI'
+                    ? 'XD Gateway'
                     : protocol === 'elevenlabs'
                       ? 'ElevenLabs'
                       : protocol === 'minimax'

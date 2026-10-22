@@ -157,6 +157,28 @@ export default {
     }
   },
   async check(page, ui) {
+    if (ui.data.gatewayReference) {
+      // Use raw catalog names in the host fixture; localization belongs to the UI.
+      if (ui.data.menu) await page.keyboard.press('Escape');
+      const modelLabel = await ui.t('bots.voiceMode.model');
+      await page.getByRole('combobox', { name: modelLabel, exact: true }).click();
+      await page.getByRole('listbox').waitFor();
+      await ui.capture('model-provider-name');
+      assert.equal(
+        await page
+          .getByRole('option', {
+            name: `${ui.data.modelId} · ${await ui.t('settings.providers.xd.title')}`,
+            exact: true,
+          })
+          .count(),
+        1,
+      );
+      await page.keyboard.press('Escape');
+      if (ui.data.menu)
+        await page
+          .getByRole('button', { name: await ui.t('bots.voiceMode.voice'), exact: true })
+          .click();
+    }
     const standalonePreview = page.getByRole('button', {
       name: await ui.t('bots.voiceMode.preview'),
       exact: true,
