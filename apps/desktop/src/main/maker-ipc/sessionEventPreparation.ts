@@ -1,4 +1,5 @@
 import { taskResultClientIdForInput } from '../../shared/botCollaboration.js';
+import { readChannelToolScope } from '../im/shared/channelToolScope.js';
 import { isQuietScheduledOutput } from '../scheduler-host/silent-output.js';
 import { captureTurnUsageContext, type TurnUsageContext } from './turnUsageContext.js';
 import type { BotCompactRuntimeRefreshCoordinator } from './botCompactRuntimeRefresh.js';
@@ -226,12 +227,23 @@ export function prepareSessionEvent(
           ...event.agentMeta,
           botPrivateReply: isBotPrivateInput(activeInputId) || (taskCoordination && !event.runtimeRecovery),
           botTaskCoordination: taskCoordination && !event.runtimeRecovery,
+          // The user input this turn answers; companion chats can show it above the reply
+          // (cindy-bots-runtime.md「回复对应的消息」). Hidden trigger inputs are skipped on display.
+          replyToClientId: activeInputId,
           // A group-lane turn is delivered into the group chat; its hidden Session never
           // raises completion/error attention of its own (docs/product-rules/bot-group-chat.md §3).
           ...(groupLaneInputClientId && isBotGroupClientId(groupLaneInputClientId) ? { botGroupLane: true } : {}),
         },
       }
     : event;
+  // Personal IM dispatches directly, outside AgentInputCoordinator. Preserve
+  // its accepted durable input on the reply before the turn lease is released.
+  if (!activeInputId && event.turnScope !== 'background') {
+    const inputClientId = readChannelToolScope({ sessionId: session.id, sessionInstanceId: session.instanceId })?.inputClientId;
+    if (inputClientId) attributedEvent = {
+      ...attributedEvent, agentMeta: { ...attributedEvent.agentMeta, replyToClientId: inputClientId },
+    };
+  }
   if (event.type === 'error' && isTerminalTurnErrorEvent(event)) {
     const reason =
       !session.remoteHostId && session.agentKind === 'claude-code'

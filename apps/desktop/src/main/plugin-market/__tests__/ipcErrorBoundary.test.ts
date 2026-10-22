@@ -136,9 +136,9 @@ describe('Plugin Market IPC error boundary', () => {
     expect(serviceSource).toContain("const outcome = completed ? 'completed' : 'failed';");
     expect(serviceSource).toContain('options.onDefaultReconciliationOutcome?.(outcome);');
     expect(serviceSource).toContain(
-      'await this.applyDefaultInstalls(plugins, currentOrganization, owner, ledger)',
+      'await this.applyDefaultInstalls(plugins, currentOrganization, owner, ledger, refresh)',
     );
-    expect(serviceSource).toContain('await this.applyAutomaticUpgrades(plugins, customDiscovery.entries, owner, ledger)');
+    expect(serviceSource).toContain('await this.applyAutomaticUpgrades(plugins, customDiscovery.entries, owner, ledger, refresh)');
     expect(serviceSource).toContain('if (error instanceof SilentUpgradeBusyError) {');
 
     // Capability boundary: catalog readers cannot initiate install/update/removal maintenance.

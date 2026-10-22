@@ -73,7 +73,7 @@ export function ImChannelSettingsCard({
   return (
     <section
       className={cn(
-        'overflow-hidden rounded-xl',
+        'overflow-hidden rounded-xl [container-type:inline-size]',
         'border border-[var(--settings-theme-card-border)]',
         'bg-[var(--settings-theme-card-bg)]',
       )}
