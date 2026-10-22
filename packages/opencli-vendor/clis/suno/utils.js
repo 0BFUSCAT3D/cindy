@@ -495,7 +495,7 @@ async function writeFromDataUrl(page, url, filePath) {
         return { ok: false, reason: 'empty response body' };
     }
     fs.writeFileSync(recipeOutputPath(filePath), Buffer.from(base64, 'base64'));
-    if (!fs.statSync(resolveRecipePath(filePath)).size) {
+    if (!fs.statSync(recipeOutputPath(resolveRecipePath(filePath))).size) {
         return { ok: false, reason: 'empty file written' };
     }
     return { ok: true };

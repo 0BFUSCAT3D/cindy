@@ -1,3 +1,4 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs/promises';
@@ -60,7 +61,7 @@ export async function readPdfFile(inputPath) {
     }
     let fileStat;
     try {
-        fileStat = await fs.stat(resolveRecipePath(resolvedPath));
+        fileStat = await fs.stat(recipeOutputPath(resolveRecipePath(resolvedPath)));
     }
     catch (error) {
         if (error?.code === 'ENOENT') {

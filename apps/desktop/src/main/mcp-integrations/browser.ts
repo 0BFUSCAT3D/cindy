@@ -11,6 +11,7 @@ import nodePath from 'node:path';
 import { app, ipcMain } from 'electron';
 import {
   createBrowserControlRuntime,
+  browserUploadDirectory,
   setBrowserControlRuntimeConfig,
   type BrowserProxyRoute,
   type BrowserControlRuntime,
@@ -485,9 +486,10 @@ export function getBrowserMcpDeps(): {
         read: (file) => fs.readFileSync(resolve(file)),
         open: (file) => fs.openSync(resolve(file), 'r'),
         directory: sessionRoots[0],
-        // Temporary upload copies belong to this task's existing browser artifact
-        // root so the ordinary upload policy accepts them without extra grants.
-        temporaryRoot: sessionId ? roots[0] : undefined,
+        // Each backend consumes invocation copies below its existing upload root.
+        // The recipe host owns the same finally cleanup for both backends.
+        temporaryRoot: sessionId ? (backendController.kind === 'external'
+          ? artifactSessionRoot(browserUploadDirectory, sessionId) : roots[0]) : undefined,
         output: (file: string) => resolveRecipeOutputPath(file, sessionRoots),
       };
     },

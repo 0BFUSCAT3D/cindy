@@ -1,4 +1,4 @@
-import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { resolveRecipePath, statRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ArgumentError, AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
@@ -36,7 +36,7 @@ function parseReceiptPath(kwargs) {
     const receipt = resolveRecipePath(requireString(kwargs, 'receipt'));
     let stat;
     try {
-        stat = fs.statSync(resolveRecipePath(receipt), { throwIfNoEntry: false });
+        stat = statRecipeFileSync(receipt);
     }
     catch (error) {
         throw new ArgumentError(`Receipt file cannot be read: ${receipt}`, error instanceof Error ? error.message : undefined);

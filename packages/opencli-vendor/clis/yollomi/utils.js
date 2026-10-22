@@ -79,7 +79,7 @@ export function resolveImageInput(input) {
         return input;
     }
     const resolved = resolveRecipePath(input);
-    if (!fs.existsSync(resolveRecipePath(resolved))) {
+    if (!fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))) {
         throw new CliError('FILE_NOT_FOUND', `File not found: ${resolved}`, 'Provide a valid file path or URL');
     }
     const ext = path.extname(resolved).toLowerCase();

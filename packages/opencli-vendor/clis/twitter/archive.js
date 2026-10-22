@@ -36,7 +36,7 @@ function removeFile(filePath) {
 export function loadJsonlArchiveState(filePath) {
     const seen = new Set();
     let count = 0;
-    if (!filePath || !fs.existsSync(resolveRecipePath(filePath)))
+    if (!filePath || !fs.existsSync(recipeOutputPath(resolveRecipePath(filePath))))
         return { seen, count };
     const text = readRecipeFileSync(filePath, 'utf8');
     for (const [index, line] of text.split('\n').entries()) {

@@ -1,4 +1,4 @@
-import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { resolveRecipePath, statRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 /**
  * WeChat Channels (视频号) publish — UI automation for WeChat Video Channels creator center.
@@ -67,7 +67,7 @@ function requireFilePath(filePath, label, allowedExts) {
   const resolved = resolveRecipePath(String(filePath));
   let stat;
   try {
-    stat = fs.statSync(resolveRecipePath(resolved));
+    stat = statRecipeFileSync(resolved);
   } catch {
     throw new ArgumentError(`${label}文件不存在: ${resolved}`);
   }

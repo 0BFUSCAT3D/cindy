@@ -1,3 +1,4 @@
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 /**
@@ -127,7 +128,7 @@ function unwrapBrowserResult(value) {
 function validateImagePaths(filePaths) {
     return filePaths.map((filePath) => {
         const absPath = resolveRecipePath(filePath);
-        if (!fs.existsSync(resolveRecipePath(absPath)))
+        if (!fs.existsSync(recipeOutputPath(resolveRecipePath(absPath))))
             throw new ArgumentError(`Image file not found: ${absPath}`);
         const ext = path.extname(absPath).toLowerCase();
         if (!SUPPORTED_EXTENSIONS[ext]) {

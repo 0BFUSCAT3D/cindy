@@ -124,7 +124,7 @@ function parseLikes(data, seen) {
     return { tweets, nextCursor, hasTimelineItems };
 }
 function readResumeFile(filePath, expected = null) {
-    if (!filePath || !fs.existsSync(resolveRecipePath(filePath)))
+    if (!filePath || !fs.existsSync(recipeOutputPath(resolveRecipePath(filePath))))
         return null;
     let parsed;
     try {
@@ -279,10 +279,10 @@ cli({
             username,
             outputFile: useOutputFile ? outputFile : null,
         }) : null;
-        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(resolveRecipePath(outputFile))) {
+        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(recipeOutputPath(resolveRecipePath(outputFile)))) {
             throw new CommandExecutionError(`Twitter likes output file is missing for resume state: ${outputFile}`);
         }
-        if (useOutputFile && !resumed && fs.existsSync(resolveRecipePath(outputFile))) {
+        if (useOutputFile && !resumed && fs.existsSync(recipeOutputPath(resolveRecipePath(outputFile)))) {
             throw new ArgumentError(`Refusing to overwrite existing Twitter likes output file: ${outputFile}`);
         }
         const allTweets = useOutputFile ? [] : (resumed?.tweets ? [...resumed.tweets] : []);

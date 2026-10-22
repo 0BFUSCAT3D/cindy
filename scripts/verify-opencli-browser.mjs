@@ -1,6 +1,7 @@
 // Real Chromium, isolated temporary profile, local fixture only. No real-site writes.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, mkdir, writeFile } from "node:fs/promises";
+import { readFileSync, openSync } from 'node:fs';
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +19,7 @@ const http = httpServer((req, res) => {
   } else {
     res.setHeader("Content-Type", "text/html");
     res.end(
-      '<!doctype html><title>Recipe fixture</title><input id="name"><button id="save" onclick="window.clicks=(window.clicks||0)+1">Save</button><article><h1>Recipe article</h1><p>This local article verifies the bundled recipe extraction code without using any real account or publishing content.</p></article>',
+      '<!doctype html><title>Recipe fixture</title><input id="name"><input id="file" type="file"><button id="save" onclick="window.clicks=(window.clicks||0)+1">Save</button><article><h1>Recipe article</h1><p>This local article verifies the bundled recipe extraction code without using any real account or publishing content.</p></article>',
     );
   }
 });
@@ -115,6 +116,21 @@ try {
   );
   await page.click("#save");
   assert.equal(await page.evaluate("window.clicks"), 1);
+  const { DEFAULT_UPLOAD_DIR } = await vite.ssrLoadModule('/packages/browser-control-runtime/src/_generated/extension/src/browser/paths.ts');
+  const { withRecipeHost } = await vite.ssrLoadModule('/packages/opencli-vendor/cindy/host.ts');
+  await mkdir(DEFAULT_UPLOAD_DIR, { recursive: true });
+  const uploadRoot = await mkdtemp(path.join(DEFAULT_UPLOAD_DIR, 'cindy-recipe-verify-'));
+  const uploadSource = path.join(scratch, 'fixture.txt');
+  await writeFile(uploadSource, 'local upload fixture');
+  try {
+    await withRecipeHost(undefined, () => page.setFileInput([uploadSource], '#file'), {
+      directory: scratch, temporaryRoot: uploadRoot,
+      read: readFileSync, open: file => openSync(file, 'r'),
+    });
+    assert.equal(await page.evaluate('document.querySelector("#file").files[0].name'), 'fixture.txt');
+    assert.equal(await page.evaluate('document.querySelector("#file").files[0].text()'), 'local upload fixture');
+    assert.equal(await readFile(uploadSource, 'utf8'), 'local upload fixture');
+  } finally { await rm(uploadRoot, { recursive: true, force: true }); }
   const document = await page.cdp("DOM.getDocument");
   const element = await page.cdp("DOM.querySelector", {
     nodeId: document.root.nodeId,
@@ -168,6 +184,7 @@ try {
         "typed-arguments",
         "fill",
         "click",
+        "staged-file-upload",
         "CDP-session",
         "network-after-navigation",
         "screenshot",

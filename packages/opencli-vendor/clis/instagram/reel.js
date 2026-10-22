@@ -20,7 +20,7 @@ function validateVideoPath(input) {
     if (!resolved) {
         throw new ArgumentError('Video path cannot be empty');
     }
-    if (!fs.existsSync(resolveRecipePath(resolved))) {
+    if (!fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))) {
         throw new ArgumentError(`Video file not found: ${resolved}`);
     }
     const ext = path.extname(resolved).toLowerCase();

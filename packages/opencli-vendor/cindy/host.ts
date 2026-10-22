@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, openSync, closeSync, fstatSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, openSync, closeSync, fstatSync } from "node:fs";
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, isAbsolute, basename } from 'node:path';
 
@@ -14,6 +14,22 @@ export function recipeTemporaryDirectory(): string {
 
 export function recipeDiagnosticPath(name: string): string {
   return join(recipeTemporaryDirectory(), basename(name));
+}
+
+/** Both backends consume broker-approved bytes from invocation-owned copies. */
+export function stageRecipeUploadFiles(files: string[]): string[] {
+  if (!files.length || files.length > 20) throw new Error('Upload requires 1 to 20 files');
+  let total = 0;
+  return files.map((file) => {
+    const bytes = readRecipeFileSync(file);
+    total += bytes.length;
+    if (bytes.length > 100 * 1024 * 1024 || total > 500 * 1024 * 1024)
+      throw new Error('Upload byte limit exceeded');
+    const dir = mkdtempSync(join(recipeTemporaryDirectory(), 'upload-'));
+    const staged = join(dir, basename(file));
+    writeFileSync(staged, bytes, { mode: 0o600 });
+    return staged;
+  });
 }
 
 export interface RecipeSecrets {

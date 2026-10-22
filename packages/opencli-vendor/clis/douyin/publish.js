@@ -11,6 +11,7 @@
  *   7. Content safety check
  *   8. create_v2 publish
  */
+import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -112,14 +113,14 @@ cli({
     func: async (page, kwargs) => {
         // ── Fail-fast validation ────────────────────────────────────────────
         const videoPath = resolveRecipePath(kwargs.video);
-        if (!fs.existsSync(resolveRecipePath(videoPath))) {
+        if (!fs.existsSync(recipeOutputPath(resolveRecipePath(videoPath)))) {
             throw new ArgumentError(`视频文件不存在: ${videoPath}`);
         }
         const ext = path.extname(videoPath).toLowerCase();
         if (!['.mp4', '.mov', '.avi', '.webm'].includes(ext)) {
             throw new ArgumentError(`不支持的视频格式: ${ext}（支持 mp4/mov/avi/webm）`);
         }
-        const fileSize = fs.statSync(resolveRecipePath(videoPath)).size;
+        const fileSize = fs.statSync(recipeOutputPath(resolveRecipePath(videoPath))).size;
         const title = kwargs.title;
         if (title.length > 30) {
             throw new ArgumentError('标题不能超过 30 字');
@@ -133,7 +134,7 @@ cli({
         const visibilityType = VISIBILITY_MAP[kwargs.visibility] ?? 0;
         const coverPath = kwargs.cover;
         if (coverPath) {
-            if (!fs.existsSync(resolveRecipePath(resolveRecipePath(coverPath)))) {
+            if (!fs.existsSync(recipeOutputPath(resolveRecipePath(resolveRecipePath(coverPath))))) {
                 throw new ArgumentError(`封面文件不存在: ${resolveRecipePath(coverPath)}`);
             }
         }

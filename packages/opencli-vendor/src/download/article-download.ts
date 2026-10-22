@@ -15,6 +15,9 @@ import { httpDownload, sanitizeFilename } from './index.js';
 import { formatBytes } from './progress.js';
 
 const IMAGE_CONCURRENCY = 5;
+const MAX_ARTICLE_IMAGES = 20;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_ARTICLE_IMAGE_BYTES = 50 * 1024 * 1024;
 const IMAGE_EXT_BY_CONTENT_TYPE: Record<string, string> = {
   'image/avif': 'avif',
   'image/bmp': 'bmp',
@@ -298,11 +301,14 @@ async function downloadImages(
 
   // Deduplicate image URLs
   const seen = new Set<string>();
-  const uniqueUrls = imgUrls.filter(url => {
-    if (seen.has(url)) return false;
+  const uniqueUrls: string[] = [];
+  for (const url of imgUrls) {
+    if (seen.has(url)) continue;
     seen.add(url);
-    return true;
-  });
+    uniqueUrls.push(url);
+    if (uniqueUrls.length >= MAX_ARTICLE_IMAGES) break;
+  }
+  let receivedBytes = 0;
 
   for (let i = 0; i < uniqueUrls.length; i += IMAGE_CONCURRENCY) {
     const batch = uniqueUrls.slice(i, i + IMAGE_CONCURRENCY);
@@ -318,9 +324,17 @@ async function downloadImages(
         const guessedPath = path.join(imgDir, guessedFilename);
 
         try {
+          if (receivedBytes >= MAX_ARTICLE_IMAGE_BYTES) return null;
+          let previous = 0;
           const result = await httpDownload(imgUrl, guessedPath, {
             headers,
             timeout: 15000,
+            maxBytes: MAX_IMAGE_BYTES,
+            onProgress: (received) => {
+              receivedBytes += received - previous;
+              previous = received;
+              if (receivedBytes > MAX_ARTICLE_IMAGE_BYTES) throw new Error('Article image byte limit exceeded');
+            },
             includeContentType: requireContentType,
           });
           if (result.success) {

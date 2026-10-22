@@ -41,14 +41,14 @@ const CONTENT_TYPE_TO_EXTENSION = {
  */
 export function resolveImagePath(imagePath) {
     const absPath = resolveRecipePath(imagePath);
-    if (!fs.existsSync(resolveRecipePath(absPath))) {
+    if (!fs.existsSync(recipeOutputPath(resolveRecipePath(absPath)))) {
         throw new ArgumentError(`Image file not found: ${absPath}`);
     }
     const ext = path.extname(absPath).toLowerCase();
     if (!SUPPORTED_IMAGE_EXTENSIONS.has(ext)) {
         throw new ArgumentError(`Unsupported image format "${ext}". Supported: jpg, jpeg, png, gif, webp`);
     }
-    const stat = fs.statSync(resolveRecipePath(absPath));
+    const stat = fs.statSync(recipeOutputPath(resolveRecipePath(absPath)));
     if (stat.size > MAX_IMAGE_SIZE_BYTES) {
         throw new ArgumentError(`Image too large: ${(stat.size / 1024 / 1024).toFixed(1)} MB (max ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024} MB)`);
     }

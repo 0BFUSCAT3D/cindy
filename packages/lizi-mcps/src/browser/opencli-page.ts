@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
+import { recipeOutputPath, stageRecipeUploadFiles } from '@jackwener/opencli/cindy/host';
 import {
   CDPBasePage,
   buildEvaluateExpression,
@@ -254,8 +254,9 @@ export class OpenCliPage extends CDPBasePage {
     files: string[],
     selector = "input[type=file]",
   ): Promise<void> {
+    const paths = stageRecipeUploadFiles(files);
     await this.ensureTarget();
-    await this.request({ action: "upload", paths: files, element: selector });
+    await this.request({ action: "upload", paths, element: selector });
   }
 
   async startNetworkCapture(pattern = ""): Promise<boolean> {

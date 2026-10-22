@@ -5,6 +5,9 @@ import { RecipeBrowserSessions, type BrowserControlRequest } from "@cindy/browse
 import * as guardedNetwork from '@cindy/browser-control-runtime/ssrf-runtime';
 import { MockAgent } from 'undici';
 import { httpDownload } from '@jackwener/opencli/download';
+import * as downloads from '@jackwener/opencli/download';
+import { downloadArticle } from '@jackwener/opencli/download/article-download';
+import { resolveExistingUploadPaths } from '../../../browser-control-runtime/src/_generated/extension/src/browser/paths.js';
 import { createBrowserMcpServer } from "./server.js";
 import { OpenCliPage } from "./opencli-page.js";
 import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
@@ -27,6 +30,8 @@ import { resolvePayload } from '../../../opencli-vendor/clis/zhihu/write-shared.
 // @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
 import { prepareChatGPTFilePaths } from '../../../opencli-vendor/clis/chatgpt/utils.js';
 import { readFileSync, openSync } from 'node:fs';
+// @ts-expect-error Upstream JavaScript helpers have no declarations.
+import { validateLocalReferences } from '../../../opencli-vendor/clis/midjourney/utils.js';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -35,6 +40,114 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 file boundary recurrence; unit tier. Real adapter input checks must
+  // reject an existing absolute path without the host before browser effects.
+  it.each(['mercury', 'wechat-channels', 'midjourney'])('brokers %s input metadata before browser effects', async site => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-stat-test-'));
+    const file = path.join(dir, site === 'wechat-channels' ? 'clip.mp4' : 'receipt.png');
+    await writeFile(file, 'test-only-bytes');
+    const goto = vi.fn(async () => { throw new Error('unexpected browser effect'); });
+    const page = { goto } as unknown as IPage;
+    const run = () => site === 'midjourney' ? validateLocalReferences([{ kind: 'local', value: file }], 'fixture')
+      : executeAdapter(site === 'mercury' ? 'mercury/reimbursement-draft' : 'wechat-channels/publish', site === 'mercury' ? {
+        receipt: file, amount: '1.00', date: '2026-10-23', merchant: 'Fixture', notes: 'fixture',
+      } : { video: file }, page);
+    try {
+      await expect(run()).rejects.toThrow();
+      expect(goto).not.toHaveBeenCalled();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  // #6826 upload regression; real page upload entry + actual external runtime
+  // path resolver, unit tier. Source workdir is outside the runtime upload root.
+  // Existing screenshot-temp tests never tried a normal adapter upload.
+  it.each([false, true])('stages approved uploads in the runtime root and cleans after failure=%s', async fail => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-upload-test-'));
+    const uploadRoot = path.join(dir, 'uploads');
+    const file = path.join(dir, 'receipt.png');
+    await writeFile(file, 'test-only-image');
+    let staged = '';
+    const page = new OpenCliPage({ targetId: 't', call: async request => {
+      expect(request.action).toBe('upload');
+      staged = request.paths![0];
+      const result = await resolveExistingUploadPaths({ requestedPaths: request.paths!, uploadDir: uploadRoot, inboundMediaDir: path.join(dir, 'inbound') });
+      expect(result.ok).toBe(true);
+      expect(staged).not.toBe(file);
+      expect(await readFile(staged, 'utf8')).toBe('test-only-image');
+      return fail ? { ok: false, action: 'upload', message: 'fixture upload rejected' } : { ok: true, action: 'upload', data: {} };
+    } });
+    try {
+      const running = withRecipeHost(undefined, () => page.setFileInput([file]), {
+        directory: dir, temporaryRoot: uploadRoot, read: readFileSync, open: file => openSync(file, 'r'),
+      });
+      if (fail) await expect(running).rejects.toThrow('fixture upload rejected');
+      else await running;
+      expect(staged).not.toBe('');
+      await expect(access(staged)).rejects.toThrow();
+      expect(await readFile(file, 'utf8')).toBe('test-only-image');
+    } finally { await page.dispose(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  // #6826 resource-limit regression; real article/download production entries,
+  // unit tier with local streams. Old coverage used only a small single image.
+  it('limits article image count and leaves remaining links remote', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-image-test-'));
+    const urls = Array.from({ length: 25 }, (_, i) => `https://example.test/${i}.png`);
+    const fetch = vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockImplementation(async params => ({
+      response: new Response('image'), finalUrl: params.url, release: async () => {},
+    }));
+    try {
+      await withRecipeHost(undefined, () => downloadArticle({ title: 'Fixture', contentHtml: urls.map(url => `<img src="${url}">`).join(''), imageUrls: urls }, { output: dir }), {
+        directory: dir, read: readFileSync, open: file => openSync(file, 'r'), output: file => file,
+      });
+      expect(fetch).toHaveBeenCalledTimes(20);
+      expect(await readdir(path.join(dir, 'Fixture', 'images'))).toHaveLength(20);
+      const md = await readFile(path.join(dir, 'Fixture', 'Fixture.md'), 'utf8');
+      expect(md).toContain(urls[24]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([8, 10])('counts %s MiB progress across image batches without exceeding the article budget', async sizeMiB => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-total-test-'));
+    const urls = Array.from({ length: 16 }, (_, i) => `https://example.test/${i}.png`);
+    // Simulate byte progress through the public downloader callback; actual
+    // stream rejection/cleanup is covered separately without large disk writes.
+    const fetch = vi.spyOn(downloads, 'httpDownload').mockImplementation(async (_url, _path, options) => {
+      options?.onProgress?.(sizeMiB * 1024 * 1024, 0);
+      await Promise.resolve();
+      return { success: true, size: sizeMiB * 1024 * 1024 };
+    });
+    try {
+      await withRecipeHost(undefined, () => downloadArticle({ title: 'Fixture', contentHtml: urls.map(url => `<img src="${url}">`).join(''), imageUrls: urls }, { output: dir }), {
+        directory: dir, read: readFileSync, open: file => openSync(file, 'r'), output: file => file,
+      });
+      expect(fetch).toHaveBeenCalledTimes(sizeMiB === 8 ? 7 : 5);
+      const md = await readFile(path.join(dir, 'Fixture', 'Fixture.md'), 'utf8');
+      expect(md.match(/images\/img_/g)).toHaveLength(sizeMiB === 8 ? 6 : 5);
+      expect(md).toContain(urls[15]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([[true, false], [false, false], [false, true]])('rejects an oversized download before saving (length header=%s, progress rejection=%s)', async (lengthHeader, progressRejection) => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-limit-test-'));
+    const release = vi.fn(async () => {});
+    vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockResolvedValue({
+      response: new Response('12345678', { headers: lengthHeader ? { 'content-length': '8' } : {} }),
+      finalUrl: 'https://example.test/image', release,
+    });
+    try {
+      const result = await withRecipeHost(undefined, () => httpDownload('https://example.test/image', path.join(dir, 'image.png'), {
+        maxBytes: progressRejection ? Infinity : 4,
+        onProgress: progressRejection ? () => { throw new Error('Article image byte limit exceeded'); } : undefined,
+      }), {
+        directory: dir, read: readFileSync, open: file => openSync(file, 'r'), output: file => file,
+      });
+      expect(result).toMatchObject({ success: false, error: expect.stringMatching(/limit/i) });
+      expect(await readdir(dir)).toEqual([]);
+      expect(release).toHaveBeenCalledOnce();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   // #6826 security regression; unit tier. Real download -> real SSRF shell,
   // fake DNS and in-memory HTTP dispatcher. Previously image downloads could
   // reach private literals, private DNS answers and private redirect targets.
@@ -223,7 +336,7 @@ describe("bundled OpenCLI recipes", () => {
       const output = vi.fn(() => { throw new Error('output denied by host'); });
       await expect(executeAdapter('pixiv/novel-download', { ...inputs, output: rejected }, page, undefined, undefined,
         { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output },
-      )).rejects.toThrow('output denied by host');
+      )).rejects.toThrow(/output denied by host|not a safe directory/);
       expect(output).toHaveBeenCalledWith(rejected);
       await expect(access(rejected)).rejects.toThrow();
       const deniedImage = path.join(dir, 'image.png');
@@ -243,7 +356,7 @@ describe("bundled OpenCLI recipes", () => {
         { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output: file => file });
       expect(await readFile(deniedImage, 'utf8')).toBe('image');
       await expect(executeAdapter('pixiv/novel-download', { ...inputs, output: path.join(dir, 'no-host') }, page))
-        .rejects.toThrow('host output file broker');
+        .rejects.toThrow(/host output file broker|not a safe directory/);
       await expect(access(path.join(dir, 'no-host'))).rejects.toThrow();
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
@@ -315,11 +428,11 @@ describe("bundled OpenCLI recipes", () => {
       }));
       const result = await runRecipe(loadRecipes().get('opencli:yollomi/upload')!, { file }, { call });
       expect(result.ok).toBe(false);
-      expect(result.message).toContain('host file broker');
+      expect(result.message).toContain('file broker');
       expect(call.mock.calls.some(([req]) => req.request?.fn?.includes('atob('))).toBe(false);
       const read = vi.fn(() => Buffer.from('approved-image'));
       const approved = await runRecipe(loadRecipes().get('opencli:yollomi/upload')!, { file }, {
-        call, recipeFiles: async () => ({ read, open: () => { throw new Error('unused'); } }),
+        call, recipeFiles: async () => ({ read, output: file => file, open: () => { throw new Error('unused'); } }),
       });
       expect(approved.ok).toBe(true);
       expect(read).toHaveBeenCalledWith(file);

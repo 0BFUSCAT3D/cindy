@@ -24,6 +24,7 @@ export interface DownloadOptions {
   timeout?: number;
   onProgress?: (received: number, total: number) => void;
   maxRedirects?: number;
+  maxBytes?: number;
   /** Include the final response MIME type in the result. */
   includeContentType?: boolean;
 }
@@ -120,7 +121,7 @@ export async function httpDownload(
   redirectCount = 0,
 ): Promise<HttpDownloadResult> {
   const {
-    cookies, headers = {}, timeout = 30000, onProgress, maxRedirects = 10, includeContentType = false,
+    cookies, headers = {}, timeout = 30000, onProgress, maxRedirects = 10, maxBytes = Infinity, includeContentType = false,
   } = options;
 
   const requestHeaders: Record<string, string> = {
@@ -164,12 +165,19 @@ export async function httpDownload(
     }
 
     const totalSize = parseInt(response.headers.get('content-length') || '0', 10);
+    if (totalSize > maxBytes) throw new Error('Download byte limit exceeded');
     let received = 0;
     const progressStream = new Transform({
       transform(chunk, _encoding, callback) {
-        received += chunk.length;
-        if (onProgress) onProgress(received, totalSize);
-        callback(null, chunk);
+        try {
+          if (received + chunk.length > maxBytes) throw new Error('Download byte limit exceeded');
+          received += chunk.length;
+          onProgress?.(received, totalSize);
+          callback(null, chunk);
+        } catch (error) {
+          controller.abort();
+          callback(error instanceof Error ? error : new Error(String(error)));
+        }
       },
     });
 
@@ -331,15 +339,15 @@ export async function ytdlpDownload(
     });
 
     proc.on('close', (code) => {
-      if (code === 0 && fs.existsSync(resolveRecipePath(destPath))) {
-        const stats = fs.statSync(resolveRecipePath(destPath));
+      if (code === 0 && fs.existsSync(recipeOutputPath(destPath))) {
+        const stats = fs.statSync(recipeOutputPath(destPath));
         resolve({ success: true, size: stats.size });
       } else {
         // Check for common yt-dlp output patterns
-        const patterns = fs.readdirSync(resolveRecipePath(dir)).filter(f => f.startsWith(path.basename(destPath, path.extname(destPath))));
+        const patterns = fs.readdirSync(recipeOutputPath(dir)).filter(f => f.startsWith(path.basename(destPath, path.extname(destPath))));
         if (patterns.length > 0) {
           const actualFile = path.join(dir, patterns[0]);
-          const stats = fs.statSync(resolveRecipePath(actualFile));
+          const stats = fs.statSync(recipeOutputPath(actualFile));
           resolve({ success: true, size: stats.size });
         } else {
           resolve({ success: false, size: 0, error: errorOutput.slice(0, 200) || `Exit code ${code}` });

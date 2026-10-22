@@ -267,10 +267,10 @@ export function setReadSyncOverride(fn) {
 export async function tosUpload(options) {
     const { filePath, uploadInfo, credentials, onProgress } = options;
     // Validate file exists
-    if (!fs.existsSync(resolveRecipePath(filePath))) {
+    if (!fs.existsSync(recipeOutputPath(resolveRecipePath(filePath)))) {
         throw new CommandExecutionError(`Video file not found: ${filePath}`, 'Ensure the file path is correct and accessible.');
     }
-    const { size: fileSize } = fs.statSync(resolveRecipePath(filePath));
+    const { size: fileSize } = fs.statSync(recipeOutputPath(resolveRecipePath(filePath)));
     if (fileSize === 0) {
         throw new CommandExecutionError(`Video file is empty: ${filePath}`);
     }

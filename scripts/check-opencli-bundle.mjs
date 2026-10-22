@@ -47,6 +47,9 @@ try {
                 const parts = chain(node.callee);
                 if (fsBindings.has(parts[0])) {
                   const method = (fsBindings.get(parts[0]) || parts.at(-1)).replace(/Sync$/, '');
+                  if (['stat', 'lstat', 'exists', 'access', 'readdir'].includes(method) && !guarded(node.arguments[0])) {
+                    throw new Error(`Unbrokered filesystem inspection in bundled recipe: ${path.relative(root, id)} (${method})`);
+                  }
                   if (method === 'open' && node.arguments[1]?.value !== 'r' && !guarded(node.arguments[0])) {
                     throw new Error(`Unbrokered output descriptor in bundled recipe: ${path.relative(root, id)}`);
                   }

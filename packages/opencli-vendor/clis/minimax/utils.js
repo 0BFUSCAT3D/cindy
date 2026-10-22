@@ -184,11 +184,11 @@ export function reserveAudioFile(dir, model, format, now = new Date()) {
     const staging = `${target}.${process.pid}.${randomUUID()}.tmp`;
     try {
         fs.mkdirSync(recipeOutputPath(dir), { recursive: true });
-        if (!fs.statSync(resolveRecipePath(dir)).isDirectory()) throw new Error('not a directory');
-        fs.accessSync(resolveRecipePath(dir), fs.constants.W_OK);
-        if (fs.existsSync(resolveRecipePath(target))) throw new Error('target already exists');
+        if (!fs.statSync(recipeOutputPath(resolveRecipePath(dir))).isDirectory()) throw new Error('not a directory');
+        fs.accessSync(recipeOutputPath(resolveRecipePath(dir)), fs.constants.W_OK);
+        if (fs.existsSync(recipeOutputPath(resolveRecipePath(target)))) throw new Error('target already exists');
         fs.writeFileSync(recipeOutputPath(lock), String(process.pid), { flag: 'wx', mode: 0o600 });
-        if (fs.existsSync(resolveRecipePath(target))) {
+        if (fs.existsSync(recipeOutputPath(resolveRecipePath(target)))) {
             fs.rmSync(recipeOutputPath(lock), { force: true });
             throw new Error('target appeared during reservation');
         }

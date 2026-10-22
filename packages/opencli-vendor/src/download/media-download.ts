@@ -173,7 +173,7 @@ export async function downloadMedia(
     tracker.finish();
 
     // Auto-cleanup exported cookies file
-    if (cookiesFile && fs.existsSync(resolveRecipePath(cookiesFile))) {
+    if (cookiesFile && fs.existsSync(recipeOutputPath(cookiesFile))) {
       fs.unlinkSync(recipeOutputPath(cookiesFile));
     }
   }

@@ -11,7 +11,7 @@
 import { WebSocket, type RawData } from 'ws';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { readFileSync, statSync } from 'node:fs';
+import { readRecipeFileSync as readFileSync, statRecipeFileSync as statSync } from '@jackwener/opencli/cindy/host';
 import type { BrowserCookie, BrowserEvaluateFunction, IPage, ScreenshotOptions } from '../types.js';
 import type { IBrowserFactory } from '../runtime.js';
 import { buildEvaluateExpression } from './utils.js';

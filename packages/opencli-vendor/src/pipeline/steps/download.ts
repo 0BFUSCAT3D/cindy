@@ -220,14 +220,14 @@ export async function stepDownload(
     const destPath = path.join(dir, filename);
 
     // Check if file exists and skip_existing is true
-    if (skipExisting && fs.existsSync(resolveRecipePath(destPath))) {
+    if (skipExisting && fs.existsSync(recipeOutputPath(destPath))) {
       tracker.onFileComplete(true, true);
       return {
         ...item,
         _download: {
           status: 'skipped',
           path: destPath,
-          size: fs.statSync(resolveRecipePath(destPath)).size,
+          size: fs.statSync(recipeOutputPath(destPath)).size,
         } as DownloadResult,
       };
     }
@@ -329,7 +329,7 @@ export async function stepDownload(
   });
 
   // Cleanup temp cookie file
-  if (cookiesFile && fs.existsSync(resolveRecipePath(cookiesFile))) {
+  if (cookiesFile && fs.existsSync(recipeOutputPath(cookiesFile))) {
     try {
       fs.unlinkSync(recipeOutputPath(cookiesFile));
     } catch {

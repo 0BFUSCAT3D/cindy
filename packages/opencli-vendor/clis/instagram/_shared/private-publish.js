@@ -353,7 +353,7 @@ export function prepareImageAssetForPrivateUpload(filePath) {
     ], {
         encoding: 'utf8',
     });
-    if (result.error || result.status !== 0 || !fs.existsSync(resolveRecipePath(outputPath))) {
+    if (result.error || result.status !== 0 || !fs.existsSync(recipeOutputPath(resolveRecipePath(outputPath)))) {
         const detail = [result.error?.message, result.stderr, result.stdout]
             .map((value) => String(value || '').trim())
             .filter(Boolean)
@@ -387,7 +387,7 @@ export function prepareImageAssetForPrivateStoryUpload(filePath) {
     ], {
         encoding: 'utf8',
     });
-    if (result.error || result.status !== 0 || !fs.existsSync(resolveRecipePath(outputPath))) {
+    if (result.error || result.status !== 0 || !fs.existsSync(recipeOutputPath(resolveRecipePath(outputPath)))) {
         const detail = [result.error?.message, result.stderr, result.stdout]
             .map((value) => String(value || '').trim())
             .filter(Boolean)

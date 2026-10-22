@@ -73,7 +73,7 @@ async function prepareIllustPlan(page, row, outputRoot) {
     throw new CommandExecutionError(`Refusing to overwrite existing Pixiv download: ${finalPath}`);
   }
   const createdDirs = [];
-  for (let cursor = path.dirname(finalPath); !fs.existsSync(resolveRecipePath(cursor)); cursor = path.dirname(cursor)) {
+  for (let cursor = path.dirname(finalPath); !fs.existsSync(recipeOutputPath(resolveRecipePath(cursor))); cursor = path.dirname(cursor)) {
     createdDirs.push(cursor);
     if (path.dirname(cursor) === cursor) break;
   }
@@ -105,7 +105,7 @@ async function commitIllustPlan(plan, cookies) {
         includeContentType: true,
       });
       validateImageDownload(result, file);
-      const stat = fs.lstatSync(resolveRecipePath(destination));
+      const stat = fs.lstatSync(recipeOutputPath(resolveRecipePath(destination)));
       if (stat.isSymbolicLink() || !stat.isFile() || stat.size <= 0) {
         throw new CommandExecutionError(`Pixiv image download did not create a valid file: ${file.filename}`);
       }

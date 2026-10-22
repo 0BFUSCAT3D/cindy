@@ -1,4 +1,4 @@
-import { recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeCopySource, recipeOutputPath, resolveRecipePath, statRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import {
   ArgumentError,
@@ -650,7 +650,7 @@ function sniffMediaMime(buffer) {
 async function existingMedia(filePath, force, expectedMime) {
   if (force) return null;
   try {
-    const stat = await fs.stat(resolveRecipePath(filePath));
+    const stat = await fs.stat(recipeOutputPath(resolveRecipePath(filePath)));
     if (!stat.isFile() || stat.size <= 0) return null;
     const handle = await fs.open(recipeCopySource(filePath), 'r');
     try {
@@ -809,7 +809,7 @@ export async function downloadRenderedVideo(page, jobId, index, kind, outputDir,
     throw new CommandExecutionError(`Midjourney ${kind} download did not complete: ${downloaded?.error || downloaded?.state || 'unknown'}`);
   }
   const sourcePath = resolveRecipePath(String(downloaded.filename));
-  const sourceStat = await fs.stat(resolveRecipePath(sourcePath)).catch(() => null);
+  const sourceStat = await fs.stat(recipeOutputPath(resolveRecipePath(sourcePath))).catch(() => null);
   if (!sourceStat?.isFile() || sourceStat.size <= 0) {
     throw new CommandExecutionError(`Browser reported a completed download but the file is missing: ${sourcePath}`);
   }
@@ -954,7 +954,7 @@ export async function validateLocalReferences(refs, label) {
   for (const ref of refs.filter((item) => item.kind === 'local')) {
     let stat;
     try {
-      stat = await fs.stat(resolveRecipePath(ref.value));
+      stat = statRecipeFileSync(ref.value);
     } catch {
       throw new ArgumentError(`${label} file does not exist: ${ref.value}`);
     }

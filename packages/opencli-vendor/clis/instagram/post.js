@@ -98,7 +98,7 @@ function validateMixedMediaItems(inputs) {
         if (!resolved) {
             throw new ArgumentError('Media path cannot be empty');
         }
-        if (!fs.existsSync(resolveRecipePath(resolved))) {
+        if (!fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))) {
             throw new ArgumentError(`Media file not found: ${resolved}`);
         }
         const ext = path.extname(resolved).toLowerCase();
