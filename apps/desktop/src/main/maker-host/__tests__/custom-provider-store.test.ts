@@ -11,6 +11,7 @@ import { createDbClient } from '../../localDb/client/DbClient.js';
 import { clearCurrentDbClient, setCurrentDbClient } from '../../localDb/client/current.js';
 import * as schema from '../../localDb/schema.js';
 import {
+  clearCodexAccountUltrafast,
   createCustomProvider,
   deleteCustomProvider,
   getCustomProvider,
@@ -119,6 +120,14 @@ describe('custom provider updates through the runtime database proxy', () => {
         { ...current, runtimes: { codex: { ...current.runtimes.codex!, models: refreshed } } });
       expect(buildUserProvider((await getCustomProvider(native.id))!).models.codex![0].supportsUltrafastMode).toBe(false);
     }
+    // Accepted replacement login clears before best-effort discovery. A failed
+    // refresh writes nothing, so a reload must still expose no old entitlement.
+    await updateCustomProvider(native.id, restored);
+    expect(await updateCustomProviderIfUnchanged(native.id, restored,
+      clearCodexAccountUltrafast(restored))).toBe(true);
+    const replaced = (await getCustomProvider(native.id))!;
+    expect(buildUserProvider(replaced).models.codex![0].supportsUltrafastMode).toBe(false);
+    expect(replaced.runtimes.codex!.models[0].discoveredMetadata).toEqual(models[0].discoveredMetadata);
     expect(validateCustomProviderConfig({ ...next, runtimes: { codex: {
       ...next.runtimes.codex, models: [{ ...models[0], supportsUltrafastMode: 'true' }],
     } } }).ok).toBe(false);

@@ -159,6 +159,7 @@ export async function loginCodexAccount(
   reason?: string;
   firstLogin?: boolean;
   previousIdentity?: string;
+  identityChanged?: boolean;
   rollbackCredentials?: () => boolean;
 }> {
   if (!isCodexAccountProvider(providerId)) throw new Error('Unknown Codex account provider');
@@ -263,7 +264,8 @@ export async function loginCodexAccount(
     accountAuthTransitionStarted = true;
     await retireAccount(providerId);
     if (!current()) return { ok: false, reason: 'login_cancelled' };
-    const files = ['auth.json', 'account.json', 'config.toml', 'disconnected', 'invalidated'];
+    const identityChanged = previous?.principal !== identity.principal;
+    const files = ['auth.json', 'account.json', 'config.toml', 'disconnected', 'invalidated', 'models_cache.json'];
     const before = files.map((file) => {
       try {
         return fs.readFileSync(path.join(home, file));
@@ -293,9 +295,11 @@ export async function loginCodexAccount(
     fs.renameSync(path.join(staging, 'auth.json'), path.join(home, 'auth.json'));
     fs.rmSync(path.join(home, 'disconnected'), { force: true });
     fs.rmSync(path.join(home, 'invalidated'), { force: true });
+    // An old identity's model cache must not regrant its account-only tiers.
+    if (identityChanged) fs.rmSync(path.join(home, 'models_cache.json'), { force: true });
     broadcastCodexAccountAuthReady(providerId);
     accountAuthReadySent = true;
-    return { ok: true, firstLogin: previous === null, previousIdentity: previous?.label, rollbackCredentials };
+    return { ok: true, firstLogin: previous === null, previousIdentity: previous?.label, identityChanged, rollbackCredentials };
   } finally {
     onBrowserUrl?.(null);
     if (logins.get(home) === operation) logins.delete(home);

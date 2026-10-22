@@ -1187,6 +1187,7 @@ import {
   runGenericOAuthLogin,
 } from '../maker-host/generic-oauth.js';
 import {
+  clearCodexAccountUltrafast,
   getCustomProvider,
   mergeDiscoveredModelsIntoConfig,
   updateCustomProviderIfUnchanged,
@@ -7373,20 +7374,27 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (method === 'device') throw new Error('Device login is only available for Grok');
       if (isCodexAccountProvider(providerId)) {
         const owner = getActiveAppSession();
-        const current = () => isCurrent() && getActiveAppSession().generation === owner.generation;
+        const sameOwner = () => getActiveAppSession().generation === owner.generation;
+        const current = () => isCurrent() && sameOwner();
         const result = await loginCodexAccount(providerId, isCurrent, onBrowserUrl);
         if (!result.ok) return result;
         return { ...result, afterCommit: async () => {
-          if (!current()) return;
+          // Cancellation after acceptance keeps the new credentials, so it must
+          // not interrupt invalidation of the old identity's entitlement.
+          if (!sameOwner()) return;
           const previous = await getCustomProvider(providerId);
-          if (!current()) return;
+          if (!sameOwner()) return;
           const identity = codexAccountState(providerId).identity;
-          if (previous && identity) {
+          if (previous) {
+            // Cancellation before acceptance rolls credentials back without
+            // invoking afterCommit or changing the saved capabilities.
+            let next = result.identityChanged ? clearCodexAccountUltrafast(previous) : previous;
             const names = new Set(getActiveCatalog().providers.filter((provider) => provider.id !== providerId).map((provider) => provider.name));
-            const name = codexAccountLoginName(previous.name, result.previousIdentity, identity, names);
-            if (name !== undefined) {
-              await updateCustomProviderIfUnchanged(providerId, previous, { ...previous, name });
-              if (!current()) return;
+            const name = identity ? codexAccountLoginName(previous.name, result.previousIdentity, identity, names) : undefined;
+            if (name !== undefined) next = { ...next, name };
+            if (next !== previous) {
+              await updateCustomProviderIfUnchanged(providerId, previous, next);
+              if (!sameOwner()) return;
               await refreshCustomProvidersIntoCatalog();
             }
           }

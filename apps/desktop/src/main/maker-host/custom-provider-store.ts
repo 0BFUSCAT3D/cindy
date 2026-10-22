@@ -770,6 +770,15 @@ export function mergeDiscoveredModelsIntoConfig(
       };
 }
 
+/** Called only after an explicit native login commits a different identity. */
+export function clearCodexAccountUltrafast(config: CustomProviderConfig): CustomProviderConfig {
+  const runtime = config.runtimes.codex;
+  if (config.auth?.native !== 'codex' || !runtime) return config;
+  return { ...config, runtimes: { ...config.runtimes, codex: {
+    ...runtime, models: runtime.models.map(model => ({ ...model, supportsUltrafastMode: false })),
+  } } };
+}
+
 /** 安全解析 auth 列 JSON（坏数据 / 结构不完整兜底为 undefined = API key 历史形态）。 */
 function parseAuth(raw: string | null): CustomProviderConfig['auth'] {
   if (!raw) return undefined;

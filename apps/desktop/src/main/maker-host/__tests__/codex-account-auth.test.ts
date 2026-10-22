@@ -220,6 +220,8 @@ describe('native Codex account credentials', () => {
     await loginCodexAccount('account-a', () => true);
     await loginCodexAccount('account-b', () => true);
     await logoutCodexAccount('account-a');
+    const cache = path.join(codexAccountHome('account-a'), 'models_cache.json');
+    fs.writeFileSync(cache, '{"models":[{"slug":"gpt-6.1-sol","additional_speed_tiers":["ultrafast"]}]}');
     const retire = vi.fn(async () => {
       expect(codexAccountState('account-a').authenticated).toBe(false);
     });
@@ -229,7 +231,9 @@ describe('native Codex account credentials', () => {
       ok: true,
       firstLogin: false,
       previousIdentity: 'person-a@example.test',
+      identityChanged: subject !== 'person-a' || workspace !== 'workspace',
     });
+    expect(fs.existsSync(cache)).toBe(subject === 'person-a' && workspace === 'workspace');
     expect(retire).toHaveBeenCalledExactlyOnceWith('account-a');
     expect(codexAccountState('account-a').identity).toBe(`${subject}@example.test`);
     expect(codexAccountState('account-b').identity).toBe('person-a@example.test');
@@ -247,12 +251,18 @@ describe('native Codex account credentials', () => {
     await logoutCodexAccount('account-a');
     const home = codexAccountHome('account-a');
     const identity = fs.readFileSync(path.join(home, 'account.json'), 'utf8');
+    const cache = path.join(home, 'models_cache.json');
+    const cachedModels = '{"models":[{"slug":"gpt-6.1-sol","additional_speed_tiers":["ultrafast"]}]}';
+    fs.writeFileSync(cache, cachedModels);
     state.raw = credential('person-b');
     const result = await loginCodexAccount('account-a', () => true);
     expect(result.ok).toBe(true);
+    expect(result.identityChanged).toBe(true);
+    expect(fs.existsSync(cache)).toBe(false);
     expect(result.rollbackCredentials?.()).toBe(true);
     expect(codexAccountState('account-a').authenticated).toBe(false);
     expect(fs.readFileSync(path.join(home, 'account.json'), 'utf8')).toBe(identity);
+    expect(fs.readFileSync(cache, 'utf8')).toBe(cachedModels);
     expect(fs.existsSync(path.join(home, 'auth.json'))).toBe(false);
   });
   it('does not commit a replacement cancelled while retiring the old runtime', async () => {
