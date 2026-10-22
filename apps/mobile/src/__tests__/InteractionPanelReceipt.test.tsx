@@ -13,6 +13,10 @@ import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/ch
 import { QuestionReferenceText } from '@/session/QuestionReferenceText';
 import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
 import { i18n } from '@/i18n';
+import { AskCardAuthContext } from '@/session/askCardAuth';
+
+const voiceStarter = vi.hoisted(() => ({ start: vi.fn() }));
+vi.mock('@/session/askCardVoiceStart', () => ({ startAskCardDictation: voiceStarter.start }));
 
 const evidence = vi.hoisted(() => ({ openURL: vi.fn() }));
 // As in LegendList, setters are inert outside a list item. The composer card
@@ -119,6 +123,67 @@ async function type(id: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+// #6785, unit: real card + hook; only native/cloud startup is faked.
+// Existing cases never submitted while listening. The final text arrives at stop.
+it.each([
+  { multiSelect: false, connecting: false },
+  { multiSelect: true, connecting: false },
+  { multiSelect: false, connecting: true },
+])('waits for voice finalization and submits once (%o)', async ({ multiSelect, connecting }) => {
+  let finish!: () => void;
+  const stop = vi.fn();
+  voiceStarter.start.mockImplementation(async (input) => {
+    const run = { stop: () => stop(), cancel: vi.fn(async () => undefined) };
+    let ready: (() => void) | undefined;
+    stop.mockImplementation(() => new Promise<void>((resolve) => { finish = () => { input.setText('完整回答'); ready?.(); resolve(); }; }));
+    input.onRunCreated(run);
+    input.onListening();
+    return connecting ? new Promise((resolve) => { ready = () => resolve(run); }) : run;
+  });
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId, questions: [{ question: 'Answer?', multiSelect }],
+  } }]);
+  await act(async () => root.render(<AskCardAuthContext.Provider value={{
+    getAccessToken: async () => null, refreshAccessToken: async () => null, apiFetch: async () => null,
+  }}><Harness /></AskCardAuthContext.Provider>));
+  await click('interaction.ask.voice');
+  expect(host.querySelector<HTMLButtonElement>('[data-testid="interaction.ask.submitButton"]')!.disabled).toBe(false);
+  await click('interaction.ask.submitButton');
+  await click('interaction.ask.submitButton');
+  expect(stop).toHaveBeenCalledOnce();
+  expect(resolveInteraction).not.toHaveBeenCalled();
+  await act(async () => finish());
+  expect(resolveInteraction).toHaveBeenCalledOnce();
+  expect(JSON.stringify(resolveInteraction.mock.calls[0])).toContain('完整回答');
+});
+
+it.each(['stop', 'live'] as const)('retains text and permits manual correction after a %s failure', async (failure) => {
+  let fail!: () => void;
+  voiceStarter.start.mockImplementation(async (input) => {
+    const run = { stop: async () => { input.setText('保留文字'); throw new Error('识别失败'); }, cancel: async () => undefined };
+    fail = () => { input.setText('保留文字'); input.onError('识别失败'); };
+    input.onRunCreated(run);
+    input.onListening();
+    return run;
+  });
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId, questions: [{ question: 'Answer?' }],
+  } }]);
+  await act(async () => root.render(<AskCardAuthContext.Provider value={{
+    getAccessToken: async () => null, refreshAccessToken: async () => null, apiFetch: async () => null,
+  }}><Harness /></AskCardAuthContext.Provider>));
+  await click('interaction.ask.voice');
+  if (failure === 'stop') await click('interaction.ask.submitButton');
+  else await act(async () => fail());
+  expect(resolveInteraction).not.toHaveBeenCalled();
+  expect(host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.textInput"]')!.value).toBe('保留文字');
+  expect(host.querySelector('[data-testid="interaction.ask.voiceError"]')!.textContent).toBe('识别失败');
+  await type('interaction.ask.textInput', '修改后的回答');
+  await click('interaction.ask.submitButton');
+  expect(resolveInteraction).toHaveBeenCalledOnce();
+  expect(JSON.stringify(resolveInteraction.mock.calls[0])).toContain('修改后的回答');
+});
 
 // Unit regression for PR #6306 review: a signed-out microphone tap used to
 // render hardcoded Chinese. Existing receipt tests never tapped this entry.

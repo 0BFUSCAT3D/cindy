@@ -23,15 +23,20 @@ export function useAskCardVoice(input: {
   getSelection: () => MobileVoiceSelection;
 }): {
   listening: boolean;
+  stopping: boolean;
   error: string | null;
   toggle: () => void;
+  stop: () => Promise<boolean>;
 } {
   const auth = useAskCardAuth();
   const [listening, setListening] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const runRef = useRef<VoiceRun | null>(null);
   const startingRef = useRef(false);
-  const stoppingRef = useRef<Promise<void> | null>(null);
+  const stoppingRef = useRef<Promise<boolean> | null>(null);
+  const failedRef = useRef(false);
+  const mountedRef = useRef(true);
   const startAbortRef = useRef<AbortController | null>(null);
   const inputRef = useRef(input);
   inputRef.current = input;
@@ -39,30 +44,46 @@ export function useAskCardVoice(input: {
   authRef.current = auth;
 
   const stop = useCallback(() => {
-    startingRef.current = false;
-    // Abort the startup so the microphone closes now instead of waiting for a
-    // slow voice-service handshake to finish.
-    startAbortRef.current?.abort();
-    startAbortRef.current = null;
+    if (stoppingRef.current) return stoppingRef.current;
     const run = runRef.current;
-    runRef.current = null;
-    setListening(false);
-    if (!run) return;
-    const stopping = run.stop().catch(() => undefined).finally(() => {
-      if (stoppingRef.current === stopping) stoppingRef.current = null;
+    const abort = startAbortRef.current;
+    if (!run) {
+      startingRef.current = false;
+      abort?.abort();
+      setListening(false);
+      return Promise.resolve(false);
+    }
+    setStopping(true);
+    const finishing = run.stop().then(() => !failedRef.current && !abort?.signal.aborted).catch((error: unknown) => {
+      if (mountedRef.current) setError(error instanceof Error ? error.message : String(error));
+      return false;
+    }).finally(() => {
+      if (runRef.current === run) runRef.current = null;
+      if (stoppingRef.current === finishing) stoppingRef.current = null;
+      startingRef.current = false;
+      abort?.abort();
+      if (mountedRef.current) {
+        setListening(false);
+        setStopping(false);
+      }
     });
-    stoppingRef.current = stopping;
+    stoppingRef.current = finishing;
+    return finishing;
   }, []);
 
   // The card unmounts when the answer is submitted, skipped or the request
   // disappears — the recording must not outlive it.
-  useEffect(() => () => {
-    startingRef.current = false;
-    startAbortRef.current?.abort();
-    startAbortRef.current = null;
-    const run = runRef.current;
-    runRef.current = null;
-    void run?.cancel().catch(() => undefined);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      startingRef.current = false;
+      startAbortRef.current?.abort();
+      startAbortRef.current = null;
+      const run = runRef.current;
+      runRef.current = null;
+      void run?.cancel().catch(() => undefined);
+    };
   }, []);
 
   const toggle = useCallback(() => {
@@ -80,13 +101,15 @@ export function useAskCardVoice(input: {
       return;
     }
     startingRef.current = true;
+    failedRef.current = false;
+    setListening(true);
     setError(null);
     const abort = new AbortController();
     startAbortRef.current = abort;
     void (async () => {
       try {
         const { startAskCardDictation } = await import('@/session/askCardVoiceStart');
-        if (!startingRef.current) return;
+        if (abort.signal.aborted) return;
         const run = await startAskCardDictation({
           deviceId,
           signal: abort.signal,
@@ -94,37 +117,45 @@ export function useAskCardVoice(input: {
           refreshAccessToken: () => currentAuth.refreshAccessToken(),
           apiFetch: currentAuth.apiFetch,
           getText: () => inputRef.current.getText(),
-          setText: (value) => inputRef.current.setText(value),
+          setText: (value) => { if (!abort.signal.aborted) inputRef.current.setText(value); },
           getSelection: () => inputRef.current.getSelection(),
           onListening: () => {
-            if (startingRef.current || runRef.current) setListening(true);
+            if (!abort.signal.aborted && !stoppingRef.current) setListening(true);
           },
+          onRunCreated: (run) => { if (!abort.signal.aborted) runRef.current = run; },
           onError: (message) => {
+            if (abort.signal.aborted) return;
+            failedRef.current = true;
             startingRef.current = false;
-            runRef.current = null;
-            setListening(false);
             setError(message);
+            if (!stoppingRef.current) {
+              const failedRun = runRef.current;
+              runRef.current = null;
+              abort.abort();
+              setListening(false);
+              void failedRun?.cancel().catch(() => undefined);
+            }
           },
         });
-        if (!startingRef.current) {
+        if (abort.signal.aborted) {
           await run.cancel();
           return;
         }
         runRef.current = run;
         startingRef.current = false;
-        setListening(true);
+        if (!stoppingRef.current) setListening(true);
       } catch (error) {
+        if (abort.signal.aborted) return;
         startingRef.current = false;
+        runRef.current = null;
         setListening(false);
         // Stopping during startup is a normal outcome, not a failure.
         if (!(error instanceof Error && error.name === 'AskCardVoiceCancelledError')) {
           setError(error instanceof Error ? error.message : String(error));
         }
-      } finally {
-        if (startAbortRef.current === abort) startAbortRef.current = null;
       }
     })();
   }, [stop]);
 
-  return { listening, error, toggle };
+  return { listening, stopping, error, toggle, stop };
 }

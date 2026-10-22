@@ -990,13 +990,14 @@ type AskUserQuestionCardProps = {
   touchLayout: InteractionTouchLayout;
 };
 
-function AskCardVoiceButton({ listening, onPress }: { listening: boolean; onPress: () => void }) {
+function AskCardVoiceButton({ listening, disabled, onPress }: { listening: boolean; disabled?: boolean; onPress: () => void }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   return (
     <Pressable
       accessibilityLabel={listening ? t('session.common.voiceStopRecording') : t('session.screen.voiceStartInput')}
       accessibilityRole="button"
+      disabled={disabled}
       hitSlop={8}
       onPress={onPress}
       style={{ alignItems: 'center', height: 44, justifyContent: 'center', width: 44 }}
@@ -1059,6 +1060,13 @@ function AskUserQuestionForm({
       return selection;
     },
   });
+  const [voiceSubmitting, setVoiceSubmitting] = useState(false);
+  const voiceSubmitRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const beginVoice = () => {
     if (optionsLengthRef.current > 0 && !showCustomInputRef.current) setShowCustomInput(true);
     voice.toggle();
@@ -1173,14 +1181,25 @@ function AskUserQuestionForm({
     });
   };
 
-  const submitMulti = () => {
-    if (!canSubmitMulti) return;
-    advance(encodeMultiSelectAnswer(options, selectedLabels, customInput));
-  };
-
-  const submitSingle = () => {
-    if (!canSubmitSingle || singleAnswer === undefined) return;
-    advance(singleAnswer);
+  const submitAnswer = async () => {
+    if (busy || voiceSubmitRef.current) return;
+    voiceSubmitRef.current = true;
+    setVoiceSubmitting(voice.listening);
+    try {
+      if (voice.listening && !await voice.stop()) return;
+      if (!mountedRef.current) return;
+      const text = answerTextRef.current;
+      if (isMulti) {
+        if (selectedLabels.size === 0 && !text.trim()) return;
+        advance(encodeMultiSelectAnswer(options, selectedLabels, text));
+      } else {
+        const answer = customModeActive ? text.trim() : existingAnswer;
+        if (answer?.trim()) advance(answer);
+      }
+    } finally {
+      voiceSubmitRef.current = false;
+      if (mountedRef.current) setVoiceSubmitting(false);
+    }
   };
 
   const toggleLabel = (label: string) => {
@@ -1288,7 +1307,7 @@ function AskUserQuestionForm({
                 testID="interaction.ask.customInput"
                 value={customInput}
               />
-              <AskCardVoiceButton listening={voice.listening} onPress={beginVoice} />
+              <AskCardVoiceButton listening={voice.listening} disabled={voice.stopping} onPress={beginVoice} />
             </View>
           ) : (
             <View style={[styles.customInputRow, { gap: touchLayout.actionGap }]}>
@@ -1315,7 +1334,7 @@ function AskUserQuestionForm({
               >
                 <Text style={styles.optionCustom}>{t('interaction.panel.customAnswerButtonText')}</Text>
               </InteractionTouchButton>
-              <AskCardVoiceButton listening={voice.listening} onPress={beginVoice} />
+              <AskCardVoiceButton listening={voice.listening} disabled={voice.stopping} onPress={beginVoice} />
             </View>
           )}
         </View>
@@ -1342,7 +1361,7 @@ function AskUserQuestionForm({
             testID="interaction.ask.textInput"
             value={customInput}
           />
-          <AskCardVoiceButton listening={voice.listening} onPress={beginVoice} />
+          <AskCardVoiceButton listening={voice.listening} disabled={voice.stopping} onPress={beginVoice} />
         </View>
       )}
 
@@ -1392,10 +1411,10 @@ function AskUserQuestionForm({
           <ResolveButton
             accessibilityLabel={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
             busy={busy}
-            disabled={voice.listening}
-            invalidReason={!canSubmitMulti ? t('interaction.panel.answerRequired') : null}
-            label={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
-            onPress={submitMulti}
+            disabled={voiceSubmitting}
+            invalidReason={!voice.listening && !canSubmitMulti ? t('interaction.panel.answerRequired') : null}
+            label={voiceSubmitting ? t('session.presentation.composer.voice.submitting') : isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
+            onPress={() => { void submitAnswer(); }}
             requestId={requestId}
             touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary', companion)}
             testID="interaction.ask.submitButton"
@@ -1405,10 +1424,10 @@ function AskUserQuestionForm({
           <ResolveButton
             accessibilityLabel={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
             busy={busy}
-            disabled={voice.listening}
-            invalidReason={!canSubmitSingle ? t('interaction.panel.answerRequired') : null}
-            label={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
-            onPress={submitSingle}
+            disabled={voiceSubmitting}
+            invalidReason={!voice.listening && !canSubmitSingle ? t('interaction.panel.answerRequired') : null}
+            label={voiceSubmitting ? t('session.presentation.composer.voice.submitting') : isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
+            onPress={() => { void submitAnswer(); }}
             requestId={requestId}
             touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary', companion)}
             testID="interaction.ask.submitButton"
