@@ -298,6 +298,7 @@ export function PendingSendBubble({
   renderImage,
   renderText,
   renderFile,
+  renderReplyQuote,
   screenWidth,
   viewerDeviceId,
   onOpenImage,
@@ -307,6 +308,8 @@ export function PendingSendBubble({
   renderImage: (uri: string | null, sourceUri: string | null, onError: () => void) => ReactNode;
   renderText: (text: string, index: number) => ReactNode;
   renderFile: (name: string, index: number) => ReactNode;
+  /** 伙伴私聊的引用回复块;普通任务不传。 */
+  renderReplyQuote?: (quote: NonNullable<MobilePendingSendItem['replyQuote']>) => ReactNode;
   screenWidth?: number;
   item: MobilePendingSendItem;
   actions: PendingSendBubbleActions;
@@ -535,6 +538,7 @@ export function PendingSendBubble({
               ]}
               testID={`pendingSend.body.${item.clientId}`}
             >
+              {item.replyQuote && renderReplyQuote ? renderReplyQuote(item.replyQuote) : null}
               {rendersSentInlineBody ? (
                 <SentInlineAtomBody
                   interactiveAtoms={false}
