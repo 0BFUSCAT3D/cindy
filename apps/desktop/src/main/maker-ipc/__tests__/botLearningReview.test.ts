@@ -4,6 +4,8 @@ const h = vi.hoisted(() => ({
   owner: 'owner',
   enabled: true,
   visible: true,
+  role: 'canonical',
+  inputMeta: null as string | null,
   meta: { turnCompleted: true } as Record<string, unknown>,
   model: vi.fn(),
   write: vi.fn(),
@@ -39,6 +41,9 @@ vi.mock('../../localDb/client/current.js', () => {
           : h.visible
           ? {
               botId: 'bot',
+              role: h.role,
+              canonicalSessionId: 'main',
+              inputMeta: h.inputMeta,
               capabilities: JSON.stringify({ memory: h.enabled }),
               // 当前回复:上一条完成回复 + 2(中间隔一条用户消息);默认 5。
               rowid: (h.prevCompleted ?? 0) + 2,
@@ -109,6 +114,12 @@ beforeEach(() => {
   h.owner = 'owner';
   h.enabled = true;
   h.visible = true;
+  h.role = 'canonical';
+  h.inputMeta = null;
+  h.prevCompleted = 3;
+  h.turnRows = null;
+  h.gapRows = [];
+  h.floorRowid = null;
   h.meta = { turnCompleted: true };
   h.memories = [];
   h.skills = [];
@@ -119,6 +130,58 @@ beforeEach(() => {
     ok: true,
     text: JSON.stringify({ memories: [proposal], skills: [] }),
   });
+});
+
+// Unit regression: the real review entry used to omit channel/thread replies.
+// Existing cases only exercised canonical text; verify retained owner provenance,
+// post-turn Skill authorization and the separate canonical working-memory cursor.
+it.each(['channel', 'thread'])('learns from an owner %s reply without changing the canonical ledger', async role => {
+  h.role = role;
+  h.inputMeta = JSON.stringify({ imSource: { origin: { sender: { isOwner: true } } } });
+  h.turnRows = [
+    { id: 'user', role: 'user', content: 'Please always summarize the conclusion first.', order: 4, meta: h.inputMeta },
+    // Real agent replies persist as plain text; parsing them as JSON aborts learning.
+    { id: 'reply', role: 'assistant', content: 'Understood.', order: 5 },
+    { id: 'guest', role: 'user', content: JSON.stringify('The owner prefers a totally different format.'), order: 3,
+      meta: JSON.stringify({ imSource: { origin: { sender: { isOwner: false } } } }) },
+  ];
+  const skill = { slug: 'conclusion-first', ...proposal };
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [proposal], skills: [skill] }) });
+  h.saveSkill.mockImplementationOnce(async (_params, deps) => {
+    if (role === 'channel') expect(await deps.resolveBotId()).toEqual({ ok: true, botId: 'bot', canonicalSessionId: 'main' });
+    return { ok: true, created: true, skill: { slug: skill.slug, name: skill.title } };
+  });
+  await reviewTeammateLearning('session', 'reply');
+  expect(h.write).toHaveBeenCalledOnce();
+  expect(h.saveSkill).toHaveBeenCalledOnce();
+  expect(h.writeWorking).not.toHaveBeenCalled();
+  expect(h.refresh).toHaveBeenCalledWith('main', 'resource');
+  expect(h.publish).toHaveBeenCalledWith('reply', [expect.objectContaining({ kind: 'skill' })]);
+  if (role === 'channel') {
+    expect(JSON.parse(h.model.mock.calls[0][1]).messages.map((m: { id: string }) => m.id)).toEqual(['user', 'reply']);
+  }
+});
+
+it.each([false, undefined])('does not learn from a channel reply without verified owner identity (%s)', async isOwner => {
+  h.role = 'channel';
+  h.inputMeta = JSON.stringify({ imSource: { origin: { sender: { isOwner } } } });
+  await reviewTeammateLearning('session', 'reply');
+  expect(h.model).not.toHaveBeenCalled();
+  expect(h.write).not.toHaveBeenCalled();
+  expect(h.saveSkill).not.toHaveBeenCalled();
+});
+
+it('rechecks the durable channel source after the model returns', async () => {
+  h.role = 'channel';
+  h.inputMeta = JSON.stringify({ imSource: { origin: { sender: { isOwner: true } } } });
+  h.turnRows = [{ id: 'user', role: 'user', content: JSON.stringify('Please always summarize the conclusion first.'), order: 4, meta: h.inputMeta }];
+  h.model.mockImplementationOnce(async () => {
+    h.inputMeta = null;
+    return { ok: true, text: JSON.stringify({ memories: [proposal], skills: [{ slug: 'format', ...proposal }] }) };
+  });
+  await reviewTeammateLearning('session', 'reply');
+  expect(h.write).not.toHaveBeenCalled();
+  expect(h.saveSkill).not.toHaveBeenCalled();
 });
 it('applies evidence-backed missing learning and publishes only to the frozen reply ID', async () => {
   await reviewTeammateLearning('session', 'original-reply');
@@ -210,6 +273,7 @@ it('updates an existing Skill using its snapshot version and ignores disabled Sk
   await reviewTeammateLearning('session', 'reply');
   expect(h.saveSkill).toHaveBeenCalledWith(
     expect.objectContaining({ slug: skill.slug, expectedUpdatedAt: 'v1' }),
+    undefined,
   );
   expect(h.publish).toHaveBeenCalledWith('reply', [
     expect.objectContaining({ kind: 'skill', action: 'updated' }),

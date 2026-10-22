@@ -80,19 +80,32 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
     !isAppSessionBoundaryPending() && activeOwnerScopeKey() === owner && getDbClient() === db;
   await drainPersistQueue();
   if (!current()) return;
-  const readOwner = () =>
-    db.queryOne<{ botId: string; capabilities: string; rowid: number; meta: string }>(
+  const readOwner = async () => {
+    const candidate = await db.queryOne<{
+      botId: string; role: string; canonicalSessionId: string | null;
+      capabilities: string; rowid: number; meta: string; inputMeta: string | null;
+    }>(
       `
-    SELECT b.bot_id AS botId, v.capabilities_json AS capabilities, m.rowid, m.agent_meta AS meta
+    SELECT b.bot_id AS botId, b.role, p.canonical_session_id AS canonicalSessionId,
+      v.capabilities_json AS capabilities, m.rowid, m.agent_meta AS meta,
+      (SELECT u.agent_meta FROM messages u WHERE u.session_id=m.session_id
+        AND u.client_id=json_extract(m.agent_meta, '$.replyToClientId') AND u.role='user'
+        AND u.rewind_at IS NULL AND (s.cleared_at IS NULL OR u.created_at > s.cleared_at)) AS inputMeta
     FROM messages m JOIN sessions s ON s.id=m.session_id
     JOIN bot_session_links b ON b.session_id=s.id JOIN bot_profiles p ON p.id=b.bot_id
     JOIN bot_profile_versions v ON v.bot_id=p.id AND v.version=p.current_version
     WHERE m.session_id=? AND m.client_id=? AND m.role='assistant' AND m.rewind_at IS NULL
-      AND b.role='canonical' AND b.archived_at IS NULL AND p.status='active' AND s.source='bot' AND s.status='active'
+      AND b.role IN ('canonical','thread','channel') AND b.archived_at IS NULL AND p.status='active' AND s.source='bot' AND s.status='active'
       AND s.remote_host_id IS NULL AND (s.cleared_at IS NULL OR m.created_at > s.cleared_at)
   `,
       [sessionId, replyId],
     );
+    // The live IM lease is already released when this asynchronous review runs.
+    // Only the host-stamped input of this exact reply can authorize lane learning.
+    if (candidate?.role === 'channel'
+      && JSON.parse(candidate.inputMeta || '{}').imSource?.origin?.sender?.isOwner !== true) return null;
+    return candidate;
+  };
   const row = await readOwner();
   if (!current() || !row) return;
   const meta = JSON.parse(row.meta || '{}');
@@ -121,16 +134,31 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       if (!current() || !(await readOwner())) return;
       const root = ownerScopedUserDataPath();
       // 工作记忆账本随同一次复盘维护(不另起模型调用);读不到按空账本,写入 CAS 失败放弃本轮。
-      const workingBefore = await readBotWorkingMemory(root, row.botId);
-      type Record_ = { id: string; role: string; content: string; order: number };
+      // The existing ledger/watermark belongs to the canonical timeline. Topic
+      // learning shares durable memory, never overwrites that timeline's cursor.
+      const maintainsWorkingMemory = row.role === 'canonical';
+      const workingBefore = maintainsWorkingMemory ? await readBotWorkingMemory(root, row.botId) : null;
+      type Record_ = { id: string; role: string; content: string; order: number; meta?: string };
       // 单条正文按 MESSAGE_CHUNK_CHARS 分块。用户 / 伙伴的消息被截尾即 partial——它们是账本新条目
       // 的证据来源,纠正 / 承诺可能就在长消息的尾部,没看完不能算覆盖;工具结果不是新条目的来源,
       // 截尾只影响 resolved 证据(条目多留一阵),按已覆盖处理,不为它逐块回补。
       const toSnapshot = (m: Record_, offset = 0) => {
-        const parsed: unknown = JSON.parse(m.content);
+        // Message storage accepts both plain text and serialized structured content.
+        let parsed: unknown = m.content;
+        try { parsed = JSON.parse(m.content); } catch { /* Plain text is already the snapshot. */ }
+        const source = JSON.parse(m.meta || '{}').imSource;
         // 交互答复行的正文是用户的决定,归一成文本后按用户消息对待(证据规则同用户消息)。
         const interaction = INTERACTION_ROLES.has(m.role);
-        const full: string = interaction ? interactionText(parsed) : typeof parsed === 'string' ? parsed : m.content;
+        let full: string = interaction ? interactionText(parsed) : typeof parsed === 'string' ? parsed : m.content;
+        if (row.role === 'channel') {
+          // Interaction rows have no durable sender attribution. Quoted/group
+          // context is not the owner's own statement, even in an owner turn.
+          if (interaction || (m.role === 'user' && source?.origin?.sender?.isOwner !== true)) full = '';
+          else if (m.role === 'user') {
+            const text = typeof parsed === 'string' ? parsed : (parsed as { text?: unknown } | null)?.text;
+            full = typeof source.userText === 'string' ? source.userText : typeof text === 'string' ? text : '';
+          }
+        }
         const role = interaction ? 'user' : m.role;
         return {
           id: m.id,
@@ -155,7 +183,7 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // 本轮取材:上一条完成回复之后到当前回复。
       const records = await db.query<Record_>(
         `
-      SELECT client_id AS id, role, content, rowid AS 'order' FROM messages
+      SELECT client_id AS id, role, content, agent_meta AS meta, rowid AS 'order' FROM messages
       WHERE session_id=? AND rewind_at IS NULL AND rowid <= ? AND rowid > ? ${clearedAtFilter}
       AND ${REVIEW_ROLES} ORDER BY CASE WHEN role='user' THEN 0 ELSE 1 END, rowid DESC LIMIT ${TURN_REVIEW_ROWS}
     `,
@@ -200,12 +228,12 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       let gapMessages: ReturnType<typeof toSnapshot>[] = [];
       // 水位停在半条消息里时,哪怕那条消息就是上一条完成回复(后面的轮次被 rewind 掉了),
       // 剩下的部分也得接着补,所以带偏移时取等号。
-      if (floor.rowid < prevCompleted || (floor.offset !== undefined && floor.rowid === prevCompleted)) {
+      if (maintainsWorkingMemory && (floor.rowid < prevCompleted || (floor.offset !== undefined && floor.rowid === prevCompleted))) {
         // 水位停在半条消息里时把那条消息本身也取回来(rowid > x-1 即 rowid >= x)。
         const gapAfter = floor.offset !== undefined ? floor.rowid - 1 : floor.rowid;
         const gapRows = await db.query<Record_>(
           `
-      SELECT client_id AS id, role, content, rowid AS 'order' FROM messages
+      SELECT client_id AS id, role, content, agent_meta AS meta, rowid AS 'order' FROM messages
       WHERE session_id=? AND rewind_at IS NULL AND rowid > ? AND rowid <= ? ${clearedAtFilter}
       AND ${REVIEW_ROLES} ORDER BY rowid ASC LIMIT ?
     `,
@@ -315,7 +343,7 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // 每次校验通过的复盘都写回水位:模型按指令在"本轮没改动"时省略 working,但这一轮同样
       // 已被复盘过,水位必须跟上,否则一句问候就让账本被判不新鲜、70% 换窗悄悄退回 90%。
       // 没有提案时按空提案合并——旧条目原样保留,只推进水位(和 client_id)。
-      if (await readOwner()) {
+      if (maintainsWorkingMemory && await readOwner()) {
         try {
           await writeBotWorkingMemory(
             root,
@@ -382,7 +410,16 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
           description: proposal.description,
           body: proposal.body,
           expectedUpdatedAt: prior?.updatedAt ?? null,
-        });
+        }, row.role === 'channel' ? {
+          // Internal review authority is tied to the durable reply/input, not a
+          // model argument or whichever IM lease happens to be active now.
+          resolveBotId: async () => {
+            const latest = current() ? await readOwner() : null;
+            return latest && current() && latest.botId === row.botId
+              ? { ok: true, botId: latest.botId, canonicalSessionId: latest.canonicalSessionId }
+              : { ok: false, errorCode: 'BOT_SESSION_INACTIVE', message: 'Learning source is no longer active' };
+          },
+        } : undefined);
         if (saved.ok && current())
           publish(replyId, [
             {
@@ -393,7 +430,12 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
             },
           ]);
       }
-      if (memorySaved && current()) await requestBotRuntimeEpochRefresh(sessionId, 'resource');
+      if (memorySaved && current()) {
+        for (const id of new Set([sessionId, row.canonicalSessionId].filter((id): id is string => !!id))) {
+          if (!current()) return;
+          await requestBotRuntimeEpochRefresh(id, 'resource');
+        }
+      }
     });
   running.set(key, job);
   try {

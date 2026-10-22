@@ -2244,6 +2244,38 @@ describe('Bot canonical Session lifecycle', () => {
     });
   });
 
+  // DB regression: shared learning used to leave running chats with the old
+  // memory/Skill index. Exercise hydrate + persisted applied snapshots, not hash
+  // implementation details; the minimal mutation keeps Profile and paths fixed.
+  it.each(['canonical', 'channel', 'thread'])('refreshes shared learned resources in a running %s chat', async role => {
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    h.sqlite!.prepare('UPDATE bot_session_links SET role=? WHERE session_id=?').run(role, created.session.id);
+    const makeOpts = (): MakerSessionCreateOpts => ({
+      id: created.session.id, agentKind: 'codex', workingDir: created.session.workingDir,
+      workspaceKind: 'dialogue', model: 'gpt-5', permissionMode: 'bypassPermissions',
+    });
+    let index = '# Memory\n';
+    let updatedAt = 'v1';
+    const deps = {
+      readMemoryIndex: async () => index,
+      listOwnSkills: async () => ({ pluginRoot: '/skills', skills: [{
+        name: 'report', description: 'A verified report format', path: '/skills/report', updatedAt,
+      }] }),
+    };
+    const initial = await hydrateBotProfileRuntime(makeOpts(), deps);
+    await markBotProfileRuntimeApplied(initial!);
+    expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(false);
+    index += '- [Conclusion first](feedback_conclusion.md)\n';
+    const changed = await hydrateBotProfileRuntime(makeOpts(), deps);
+    expect(changed?.runtimeEpochChanged).toBe(true);
+    await markBotProfileRuntimeApplied(changed!);
+    expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(false);
+    updatedAt = 'v2';
+    expect((await hydrateBotProfileRuntime(makeOpts(), deps))?.runtimeEpochChanged).toBe(true);
+  });
+
   it('refreshes canonical Skill resources in place when their fingerprint changes', async () => {
     await invoke('local-db:bots:update', {
       id: 'bot-1',
