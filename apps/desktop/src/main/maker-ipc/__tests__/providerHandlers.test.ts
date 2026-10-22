@@ -4131,7 +4131,9 @@ describe('provider:oauth mutation ordering', () => {
     const owner = { dataOwnerId: 'owner-a', generation: 1 };
     registerProviderHandlers(harness, makeDeps({
       currentOwnerSession: () => ({ ...owner }),
-      assertTrustedSender: (event: any) => { event.sender.send = send; },
+      assertTrustedSender: (event) => {
+        (event as { sender: { send?: typeof send } }).sender.send = send;
+      },
       oauthLogin: async (_id, _current, onBrowserUrl) => {
         progress = onBrowserUrl!;
         return new Promise(resolve => { finish = resolve; });
@@ -4163,7 +4165,9 @@ describe('provider:oauth mutation ordering', () => {
     const owner = { dataOwnerId: 'owner-a', generation: 1 };
     registerProviderHandlers(harness, makeDeps({
       currentOwnerSession: () => ({ ...owner }),
-      assertTrustedSender: (event: any) => { event.sender.send = send; },
+      assertTrustedSender: (event) => {
+        (event as { sender: { send?: typeof send } }).sender.send = send;
+      },
       oauthLogin: async (_id, _current, _onBrowserUrl, method, onDeviceCode) => {
         receivedMethod = method;
         progress = onDeviceCode!;
