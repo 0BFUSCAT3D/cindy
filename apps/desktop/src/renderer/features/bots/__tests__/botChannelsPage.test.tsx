@@ -112,7 +112,11 @@ describe('BotChannelsPage', () => {
     render(<BotChannelsPage bot={{ ...mia, id: 'bot/1' }} />);
     for (const lane of lanes) {
       const name = lane.kind === 'owner-dm' ? 'bots.channels.lanes.ownerName' : lane.name;
-      fireEvent.click(await screen.findByRole('button', { name: new RegExp(`^${name}`) }));
+      const open = await screen.findByRole('button', { name: new RegExp(`^${name}`) });
+      // globals.css 会用 outline:none !important 盖掉非输入控件的描边，键盘焦点必须走 ring。
+      expect(open.className).toContain('focus-visible:ring-2');
+      expect(open.className).not.toContain('focus-visible:outline');
+      fireEvent.click(open);
       expect(mocks.navigate).toHaveBeenLastCalledWith(`/bots/bot%2F1/history/${encodeURIComponent(lane.sessionId)}`);
     }
     expect(lanesApi.resetLane).not.toHaveBeenCalled();

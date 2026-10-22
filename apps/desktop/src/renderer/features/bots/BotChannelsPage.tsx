@@ -473,7 +473,7 @@ function ConnectionLanes({ connectionId, botId, botName }: { connectionId: strin
             <button
               type="button"
               onClick={() => navigate(`/bots/${encodeURIComponent(botId)}/history/${encodeURIComponent(lane.sessionId)}`)}
-              className="min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
+              className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
             >
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span className="min-w-0 truncate text-12 text-[var(--text-primary)]" title={name}>
