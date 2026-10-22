@@ -144,6 +144,9 @@ const noopLogger: Logger = {
 // Durable approval assertions allow 3s for the 500ms poll and asynchronous delivery.
 // The default 1s wait races the second poll on loaded CI runners; permission assertions stay exact.
 // The same durable store feeds streaming foreground discovery and detached lease inspection.
+// The default 5s test timeout can abort that 3s wait on a loaded Windows runner
+// before Vitest reports the assertion (observed 5157ms, no assertion).
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
 function mockRunDiscovery() {
   const list = vi.spyOn(piSubagentRuns, 'listPiSubagentRuns');
   vi.spyOn(piSubagentRuns, 'scanPiSubagentRuns').mockImplementation(async function* (root) {
