@@ -247,6 +247,15 @@ describe('openRemoteWorker', () => {
       if (supported) {
         expect(result).toMatchObject({ ok: true, model: 'remote-only', agentDeviceId: 'provider-pc', providerId: 'openai' });
         expect(remoteInvoke.mock.calls.find(call => call[1] === 'maker:orca:remote-worker:open')?.[2][0]).toMatchObject({ agentDeviceId: 'provider-pc' });
+        // PR #6787: the transient result used to retain the Agent computer while
+        // the proxy seed lost it. Unit regression through open + association;
+        // the store needs the admitted location to retain it after a refresh.
+        if (!result.ok) throw Error('expected successful open');
+        await workers.recordRemoteWorker({ ...openInput, proxySessionId: result.proxySessionId,
+          proxySession: result.proxySession, remoteSessionId: result.remoteSessionId });
+        expect(store.addRemoteWorker).toHaveBeenCalledWith(expect.objectContaining({
+          proxySession: expect.objectContaining({ agentDeviceId: 'provider-pc' }),
+        }));
       } else {
         expect(result).toMatchObject({ ok: false, errorCode: 'UNSUPPORTED_CAPABILITY' });
         expect(remoteInvoke.mock.calls.some(call => call[1] === 'maker:orca:remote-worker:open')).toBe(false);
