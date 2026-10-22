@@ -1,3 +1,4 @@
+import { forwardedRequestDisplayText } from '@cindy/maker-shared/message-source';
 import { formatDuration } from '@cindy/maker-shared/message-render';
 import { parseMcpAppHistory } from '@cindy/maker-shared/mcp-apps';
 import { collectPluginInvocations, type PluginInvocation } from './pluginInvocations';
@@ -585,7 +586,8 @@ export function normalizeRemoteMessages(
     // 本机 IM 落库的就是用户原文:正文保持完整落库内容,分叉 / 回退据此恢复草稿。
     const body = hookSource && !hookSource.userTextContent
       ? hookSource.userText
-      : message.role === 'assistant' ? stripGoalVerdictBlock(rawBody) : rawBody;
+      : message.role === 'assistant' ? stripGoalVerdictBlock(rawBody)
+        : readRecord(message.agentMeta?.origin)?.kind === 'session' ? forwardedRequestDisplayText(rawBody) : rawBody;
     const turnCost = readTurnCost(message);
     result.push({
       key: messageNormalizeKey(message),

@@ -914,7 +914,7 @@ export function UserMessage({
   // 显示文本推导(Orca JSON 解包 / hook 消息取 userText 或剥 <thread_context>)
   // 与提问导航条预览共用同一实现,规则见 userMessageDisplayText.ts;上面已
   // 解析过的 Orca 结果传入复用,渲染热路径不重复 JSON.parse(Copilot review)。
-  const displayContent = resolveUserDisplayText({ content, hookSource }, orcaCommunication);
+  const displayContent = resolveUserDisplayText({ content, hookSource, automationOrigin }, orcaCommunication);
   const groupContext = useMemo(
     () => resolveHookGroupContext({ content, hookSource }),
     [content, hookSource],
@@ -1062,7 +1062,10 @@ export function UserMessage({
   const projectedSource = projectSlashCommandsInText(ghostBody, slashCommandRanges);
   const copyBody = quotesEncoded ? stripChatQuoteMarkerLines(projectedSource) : projectedSource;
   const visibleSource = quotesEncoded ? stripChatQuoteMarkerLines(ghostBody) : ghostBody;
-  const editSubmitText = quotesEncoded
+  // Display decoding must not change an unedited resend's wire bytes.
+  const editSubmitText = automationOrigin?.kind === 'session' && displayContent !== content
+    ? content
+    : quotesEncoded
     ? ghostBody
     : copyBody !== visibleSource
       ? visibleSource
