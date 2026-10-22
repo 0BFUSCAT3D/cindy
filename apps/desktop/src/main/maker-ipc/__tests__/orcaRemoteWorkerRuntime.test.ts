@@ -519,6 +519,11 @@ describe('orca remote worker runtime', () => {
     { phase: 'dispatch preparation', projection: { autoResumePending: recoveryInfo, turnInProgress: true } },
     { phase: 'vendor running after the idle snapshot', projection: { turnInProgress: true } },
     { phase: 'usage reset wait', projection: { usageLimitWait: { resumeAt: 1_900_000_000_000 } } },
+    { phase: 'queued retry waiting for usage reset', projection: {
+      usageLimitWait: { resumeAt: 1_900_000_000_000 },
+      recovery: { kind: 'queue-head', clientId: 'retry-1' },
+      pendingQueue: [{ clientId: 'retry-1', retrySourceClientId: 'c-1' } as AgentInputProjection['pendingQueue'][number]],
+    } },
   ];
   it.each(recoveringProjections)('holds the dispatch during $phase and reports its recovered final once', async ({ projection }) => {
     const { runtime, deps, state } = setup({ history: [] });
@@ -641,6 +646,33 @@ describe('orca remote worker runtime', () => {
     state.terminalError = true;
     await runtime.pollNow();
     expect(deps.onTurnEnded).toHaveBeenCalledExactlyOnceWith('proxy-1', { status: 'done', finalText: 'Lead final' });
+  });
+
+  // PR #6787 / Orca contract 5a, unit: the active-turn case above misses a phone
+  // input rejected before acceptance. pollNow must report the completed Lead input
+  // once even while that unrelated queue head waits for its provider group quota.
+  it.each([false, true])('reports a completed Lead reply while an unrelated queue head waits for quota (continuation=%s)', async continuation => {
+    const { runtime, deps, state } = setup({ history: [] });
+    await runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'Lead task', clientId: 'c-1' });
+    state.receipts['c-1'] = 'accepted';
+    state.history = [
+      { id: 'lead-input', clientId: 'c-1', role: 'user', content: 'Lead task' },
+      { id: 'lead-final', role: 'assistant', content: 'Lead final' },
+      ...(continuation ? [{ id: 'phone-input', clientId: 'phone-1', role: 'user' as const, content: 'Phone task' }] : []),
+    ];
+    const queued = continuation
+      ? { clientId: 'phone-continue', autoResume: true, retrySourceClientId: 'phone-1' }
+      : { clientId: 'phone-1' };
+    state.inputProjection = {
+      usageLimitWait: { resumeAt: 1_900_000_000_000 },
+      recovery: { kind: 'queue-head', clientId: queued.clientId },
+      pendingQueue: [queued as AgentInputProjection['pendingQueue'][number]],
+    };
+    await runtime.pollNow();
+    await runtime.pollNow();
+    expect(deps.onTurnEnded).toHaveBeenCalledExactlyOnceWith('proxy-1', { status: 'done', finalText: 'Lead final' });
+    expect(deps.saveReport).toHaveBeenLastCalledWith('worker-1', null, 'lead-final');
+    expect(runtime.hasPendingReport('proxy-1')).toBe(false);
   });
 
   it('retains a new dispatch accepted while reading the previous reply', async () => {

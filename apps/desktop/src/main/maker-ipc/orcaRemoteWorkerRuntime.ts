@@ -365,11 +365,17 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
       const sourceId = item.retrySourceClientId ?? item.supersedesUserClientId ?? item.clientId;
       return typeof sourceId !== 'string' || clientIds.includes(sourceId);
     };
+    const pendingQueue = Array.isArray(projection?.pendingQueue) ? projection.pendingQueue : [];
     // An unrelated phone input's recovery must not hold an older completed Lead reply.
     const recovery = projection?.recovery;
-    const ownsRecovery = recovery?.kind !== 'active-turn' || ownsInput(recovery.item);
-    const pendingResume = Array.isArray(projection?.pendingQueue)
-      && projection.pendingQueue.some(item => item?.autoResume === true && ownsInput(item));
+    let ownsRecovery = true;
+    if (recovery?.kind === 'active-turn') {
+      ownsRecovery = ownsInput(recovery.item);
+    } else if (recovery?.kind === 'queue-head') {
+      const queued = pendingQueue.find(item => item?.clientId === recovery.clientId);
+      ownsRecovery = queued ? ownsInput(queued) : clientIds.includes(recovery.clientId);
+    }
+    const pendingResume = pendingQueue.some(item => item?.autoResume === true && ownsInput(item));
     return {
       states,
       // autoResumePending covers backoff and preparation; it is absent while the

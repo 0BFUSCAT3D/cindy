@@ -385,7 +385,8 @@ Worker turn 被 vendor 报终止型 error，但 interrupted-turn auto-resume 仍
 `turnInProgress`、`autoResumePending`、`usageLimitWait` 及队列里的隐藏 `autoResume` 输入。
 退避、排队或派发准备不能因 vendor 暂时空闲而回报进度、清除派活身份或累计缺少回复次数；
 历史读取后复核一次，若恢复已开始则丢弃该次候选和分页游标，待真正结束后从最新历史重读。
-后续插话的恢复按 `retrySourceClientId` / 输入身份隔离；宿主放弃恢复后仍按原错误边界收尾。
+后续插话的恢复按 `retrySourceClientId` / 输入身份隔离；`queue-head` 恢复先用 `clientId` 定位队列项，
+再核对它的原始输入归属，不能用无关插话的额度等待挡住已完成的派活回报。宿主放弃恢复后仍按原错误边界收尾。
 旧端字段缺省保留兼容行为。回归见 `orcaRemoteWorkerRuntime.test.ts` 及
 `agent-input-coordinator.test.ts` 的真实协调器与轮询器组合用例。
 
