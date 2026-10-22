@@ -642,6 +642,14 @@ describe('Cindy durable PI Subagent runner', () => {
       return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
     });
     try {
+      // A PID is published before the fake Pi reads its prompt. Wait until the
+      // runner has consumed its response/tool event before closing that pipe:
+      // otherwise a pending stdout write can kill the intended orphan with
+      // EPIPE, and the recovery scan correctly finds no live child (Linux CI).
+      await waitFor(async () => {
+        const [run] = await listPiSubagentRuns(fixture.root);
+        return (run?.tasks[0]?.toolUses ?? 0) > 0 ? true : null;
+      }, undefined, 'the runner to consume the hanging child prompt response');
       fixture.child.kill('SIGTERM');
       await waitForClose(fixture.child, fixture.stderr);
       const receipt = JSON.parse(await readFile(path.join(fixture.runDir, 'result.json'), 'utf8'));
