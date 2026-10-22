@@ -20,6 +20,13 @@ const parser = unified().use(remarkParse).use(remarkGfm);
 const MAX_BYTES = 100 * 1024 * 1024;
 const unavailable = () => new Error('ATTACHMENT_UNAVAILABLE');
 
+// Match local references, not arbitrary URI schemes or in-message anchors.
+function isFileTarget(value: string): boolean {
+  if (!value || /^[#?]/.test(value)) return false;
+  if (/^(?:file|xdt-file|sandbox):/i.test(value) || /^[A-Za-z]:[\\/]/.test(value)) return true;
+  return !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
+}
+
 /** Only actual Markdown file links are deliveries; code, images and remote URLs are not. */
 export function replyFileLinks(text: string) {
   // The reported reply HTML-escaped the angle brackets around paths with spaces.
@@ -29,7 +36,8 @@ export function replyFileLinks(text: string) {
     const start = node.position?.start.offset, end = node.position?.end.offset;
     if (start === undefined || end === undefined) return;
     const raw = text.slice(start, end);
-    const normalized = raw.replace(/(\[[^\]\n]+\]\()&lt;((?:\/|[A-Za-z]:[\\/]|\.{1,2}\/|xdt-file:\/\/|file:\/\/)[^\n]*?)&gt;(\))/g, '$1<$2>$3');
+    const normalized = raw.replace(/(\[[^\]\n]+\]\()&lt;([^\n]*?)&gt;(\))/g,
+      (match, before, target, after) => isFileTarget(target) ? `${before}<${target}>${after}` : match);
     if (normalized !== raw) escaped.push({ start, end, text: normalized });
   });
   for (const edit of escaped.sort((a, b) => b.start - a.start))
@@ -46,7 +54,7 @@ export function replyFileLinks(text: string) {
   visit(tree, node => {
     if (node.type !== 'link' && node.type !== 'linkReference') return;
     const target = node.type === 'link' ? node : definitions.get(node.identifier);
-    if (!target || !/^(?:\/|[A-Za-z]:[\\/]|\.{1,2}\/|xdt-file:\/\/|file:\/\/)/.test(target.url)) return;
+    if (!target || !isFileTarget(target.url)) return;
     const start = node.position?.start.offset, end = node.position?.end.offset;
     const first = node.children[0]?.position?.start.offset, last = node.children.at(-1)?.position?.end.offset;
     // A linked image belongs to image delivery, not this file path.
@@ -69,9 +77,22 @@ export function replyFileLinks(text: string) {
 
 function localPath(url: string, workDir: string): string {
   let value = url;
-  if (/^(?:xdt-file|file):/.test(url)) {
-    try { value = fileURLToPath(url.replace(/^xdt-file:/, 'file:')); } catch { throw unavailable(); }
-  }
+  try {
+    if (/^sandbox:/i.test(url)) {
+      const match = /^sandbox:\/*(?:([a-z]:[\\/][^\n]*)|(\/[^\n]*))$/i.exec(url);
+      if (!match) throw unavailable();
+      value = match[1] ?? match[2]!;
+    } else if (/^xdt-file:/i.test(url)) {
+      const parsed = new URL(url);
+      // A remote reference must never be interpreted as a path on this machine.
+      if (parsed.searchParams.has('remoteHostId') || parsed.username || parsed.password) throw unavailable();
+      if (parsed.searchParams.has('path')) {
+        if (!['', 'local', 'open'].includes(parsed.hostname)) throw unavailable();
+        value = parsed.searchParams.get('path')!;
+        if (!path.isAbsolute(value) && !/^[A-Za-z]:[\\/]/.test(value)) throw unavailable();
+      } else value = fileURLToPath(url.replace(/^xdt-file:/i, 'file:'));
+    } else if (/^file:/i.test(url)) value = fileURLToPath(url);
+  } catch { throw unavailable(); }
   // Never resolve a network/device path, including on another host platform.
   if (/^[\\/]{2}|^[\\/]\?\?[\\/]/.test(value) || value.includes('\0')) throw unavailable();
   if (/^[A-Za-z]:/.test(value) && process.platform !== 'win32') throw unavailable();
@@ -143,8 +164,9 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
   for (const link of parsed.links) {
     const source = localPath(link.url, scope.workingDir!);
     // /tmp can alias /private/tmp; normalize the trusted workdir prefix without following the file.
-    if (!isPathWithin(path.resolve(scope.workingDir!), source)) throw unavailable();
-    const canonicalSource = path.resolve(root, path.relative(scope.workingDir!, source));
+    const lexicalRoot = path.resolve(scope.workingDir!);
+    if (!isPathWithin(lexicalRoot, source) && !isPathWithin(root, source)) throw unavailable();
+    const canonicalSource = isPathWithin(root, source) ? source : path.resolve(root, path.relative(lexicalRoot, source));
     if (seen.has(canonicalSource)) continue;
     if (attachments.length >= BOT_GROUP_ATTACHMENTS_MAX) throw unavailable();
     seen.add(canonicalSource);

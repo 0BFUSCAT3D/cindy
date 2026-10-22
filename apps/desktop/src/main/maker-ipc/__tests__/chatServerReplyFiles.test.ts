@@ -61,6 +61,57 @@ describe('group reply file delivery', () => {
     expect(await prepareChatReplyFiles('First Second', 'lane', () => {}, 'reply-client')).toEqual({ text: 'First Second', attachments: [] });
   });
 
+  it.each(['pdf', 'html', 'md', 'json'])('delivers bare relative %s links through the production parser', async ext => {
+    await fs.mkdir(path.join(work, 'documents'), { recursive: true });
+    const name = `documents/报告.${ext}`;
+    await fs.writeFile(path.join(work, name), 'report bytes');
+    const result = await prepareChatReplyFiles(`[报告](${name})`, 'lane', () => {});
+    expect(result.text).toBe('报告');
+    expect(result.attachments).toHaveLength(1);
+    expect((await result.attachments[0]!.readBytes!()).toString()).toBe('report bytes');
+  });
+
+  it.each(['local/', 'open'])('accepts canonical xdt-file %s query paths', async host => {
+    const result = await prepareChatReplyFiles(`[报告](xdt-file://${host}?path=${encodeURIComponent(pdf)})`, 'lane', () => {});
+    expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
+  });
+
+  it('accepts sandbox absolute paths within the task', async () => {
+    const result = await prepareChatReplyFiles(`[报告](<sandbox:/${pdf.replaceAll('\\', '/')}>)`, 'lane', () => {});
+    expect(result.attachments).toHaveLength(1);
+    expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
+  });
+
+  it('accepts canonical paths when the task workdir is an alias and deduplicates spellings', async () => {
+    const alias = path.join(root, 'alias');
+    await fs.symlink(work, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+      scope.row.workingDir = alias;
+      const result = await prepareChatReplyFiles(`[real](<${pdf}>) [alias](<${path.join(alias, path.basename(pdf))}>)`, 'lane', () => {});
+      expect(result.attachments).toHaveLength(1);
+      expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
+    } finally { await fs.unlink(alias); }
+  });
+
+  it('keeps remote protocols and anchors out of local file delivery', async () => {
+    scope.snapshot = null;
+    const text = '[anchor](#report) [mail](mailto:a@example.test) [media](cindy-media://blobs/a) [web](https://example.test/report.pdf)';
+    expect(await prepareChatReplyFiles(text, 'lane', () => {})).toEqual({ text, attachments: [] });
+  });
+
+  it('rejects remote xdt-file metadata even when its path exists locally', async () => {
+    const url = `xdt-file://local/?path=${encodeURIComponent(pdf)}&remoteHostId=other-host`;
+    await expect(prepareChatReplyFiles(`[report](${url})`, 'lane', () => {})).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+  });
+
+  it('handles escaped relative links but still rejects traversal and missing files', async () => {
+    const result = await prepareChatReplyFiles('[report](&lt;report 中文.pdf&gt;)', 'lane', () => {});
+    expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
+    await expect(prepareChatReplyFiles('[private](documents/../../private.pdf)', 'lane', () => {})).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+    const missing = await prepareChatReplyFiles('[missing](documents/missing.pdf)', 'lane', () => {});
+    await expect(missing.attachments[0]!.readBytes!()).rejects.toThrow();
+  });
+
   it('does not access session scope for ordinary text, remote links, fenced examples or images', async () => {
     scope.snapshot = null;
     const text = '```md\n[example](./x.pdf)\n```\n![img](cindy-media://blobs/example.png)\n[web](https://example.test)';
