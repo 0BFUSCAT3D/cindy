@@ -3020,12 +3020,17 @@ const DEFAULT_KILL_BUDGET_MS = 8_000;
  * signalling child pids read off disk, which the runner header forbids because
  * of pid reuse.
  */
-async function sweepableRunsUnderRoot(
+interface SweepableRun {
+  runId: string;
+  status: PiSubagentRunStatus | undefined;
+  terminalIdentities?: string[];
+}
+
+async function collectSweepableRunsUnderRoot(
   root: string,
   scope: PiSubagentSweepScope,
-  recoveryDeadline: number,
   startTimeMemo?: ProcessStartTimeMemo,
-): Promise<Array<{ runId: string; status: PiSubagentRunStatus | undefined }>> {
+): Promise<SweepableRun[]> {
   const runIds = await listRunDirectoryIds(root);
   const [listedStatuses, diagnostics] = await Promise.all([
     listPiSubagentRuns(root),
@@ -3035,15 +3040,10 @@ async function sweepableRunsUnderRoot(
   const staleRunIds = new Set(
     diagnostics.filter((diagnostic) => diagnostic.kind === 'stale').map((diagnostic) => diagnostic.runId),
   );
-  const sweepable: Array<{ runId: string; status: PiSubagentRunStatus | undefined }> = [];
-  const recoveryCandidates = new Map<string, string[]>();
+  const sweepable: SweepableRun[] = [];
   for (const runId of runIds) {
     const status = statuses.get(runId);
     if ((status && isPiSubagentTerminal(status.state)) || staleRunIds.has(runId)) continue;
-    if (!status) {
-      const identities = await terminalResultProcessIdentities(root, runId);
-      if (identities) recoveryCandidates.set(runId, identities);
-    }
     if (
       scope.runtimeOwnerId !== undefined
       && status?.runtimeOwnerId !== undefined
@@ -3052,18 +3052,33 @@ async function sweepableRunsUnderRoot(
       continue;
     }
     if (scope.hostPid !== undefined && !isSweepableByHost(status, scope.hostPid, startTimeMemo)) continue;
-    sweepable.push({ runId, status });
+    const terminalIdentities = !status ? await terminalResultProcessIdentities(root, runId) : null;
+    sweepable.push({ runId, status, ...(terminalIdentities ? { terminalIdentities } : {}) });
   }
-  if (recoveryCandidates.size === 0) return sweepable;
-  // Read all candidate receipts BEFORE the inventory. Caching an earlier
-  // inventory while reading later receipts could miss a late runner launch.
-  // This one bounded, read-only probe is shared only within the current pass.
+  return sweepable;
+}
+
+async function sweepableRunsUnderRoots(
+  roots: readonly string[],
+  scope: PiSubagentSweepScope,
+  recoveryDeadline: number,
+  startTimeMemo?: ProcessStartTimeMemo,
+): Promise<Map<string, SweepableRun[]>> {
+  const byRoot = new Map<string, SweepableRun[]>();
+  for (const root of roots) {
+    byRoot.set(root, await collectSweepableRunsUnderRoot(root, scope, startTimeMemo));
+  }
+  if (![...byRoot.values()].some(runs => runs.some(run => run.terminalIdentities))) return byRoot;
+  // Read every root's receipts BEFORE the inventory: an earlier cached query
+  // could miss a later launch. One query per pass also keeps historical roots
+  // from each consuming another slice of the shared recovery deadline.
   const processes = await readRecoveryProcessInventory(recoveryDeadline);
-  if (!processes) return sweepable;
-  return sweepable.filter(({ runId }) => {
-    const identities = recoveryCandidates.get(runId);
-    return !identities || processes.some(command => identities.some(id => command.includes(id)));
-  });
+  if (!processes) return byRoot;
+  for (const [root, runs] of byRoot) {
+    byRoot.set(root, runs.filter(({ terminalIdentities }) => !terminalIdentities
+      || processes.some(command => terminalIdentities.some(id => command.includes(id)))));
+  }
+  return byRoot;
 }
 
 /**
@@ -3243,8 +3258,8 @@ async function stopPiSubagentRunsUnderRoots(
     // meaningfully be recycled, and across passes we must see it if it was.
     const startTimeMemo: ProcessStartTimeMemo = new Map();
     let activeCount = 0;
-    for (const root of roots) {
-      for (const { runId } of await sweepableRunsUnderRoot(root, scope, recoveryDeadline, startTimeMemo)) {
+    for (const [root, runs] of await sweepableRunsUnderRoots(roots, scope, recoveryDeadline, startTimeMemo)) {
+      for (const { runId } of runs) {
         activeCount += 1;
         const key = `${root}:${runId}`;
         if (requested.has(key)) continue;
@@ -3264,10 +3279,9 @@ async function stopPiSubagentRunsUnderRoots(
       if (!scope.killUnresponsiveRunners) return false;
       const killDeadline = Math.min(recoveryDeadline, Date.now() + (scope.killBudgetMs ?? DEFAULT_KILL_BUDGET_MS));
       let killedAll = true;
-      for (const root of roots) {
-        // Re-derived, so a run whose directory vanished in the meantime is gone
-        // from the set and counts as reclaimed.
-        const work = await sweepableRunsUnderRoot(root, scope, killDeadline, startTimeMemo);
+      // Re-read every root and take a fresh inventory for the escalation pass.
+      // A run whose directory vanished is gone from the set and reclaimed.
+      for (const work of (await sweepableRunsUnderRoots(roots, scope, killDeadline, startTimeMemo)).values()) {
         // In parallel: each reclaim is mostly waiting on its own process probe,
         // and serialising them multiplied the worst case by the number of
         // runners — enough to overrun a quit budget with only a few of them.

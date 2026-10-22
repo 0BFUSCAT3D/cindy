@@ -1451,6 +1451,34 @@ describe('PI durable subagent run store', () => {
           : commands.map((command, i) => `${100 + i} ${command}`).join('\n');
       }
 
+      // #6733: global account/exit sweeps share one deadline across parents.
+      // Three complete receipts and a 4s OS probe must fit an 8s budget; the
+      // former per-root query exhausted it. Advance a clock, never really wait.
+      it.each([false, true])('shares the global recovery budget while last-root child alive is %s', async activeLast => {
+        usePlatform('win32');
+        const { agentHome, config, result } = await terminalReceiptHome(async () => {});
+        for (const parent of ['session-2', 'session-3']) {
+          const dir = path.join(piSubagentRunRoot(agentHome, parent), runId);
+          await mkdir(dir, { recursive: true });
+          const tasks = [{ ...config.tasks[0]!, sessionId: `native-${parent}` }];
+          await writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, parentSessionId: parent, runDir: dir, tasks }));
+          await writeFile(path.join(dir, 'result.json'), JSON.stringify({ ...result, tasks: tasks.map(task => ({ ...task, status: 'completed' })) }));
+        }
+        let now = Date.now();
+        const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+        childProcess.spawnSync.mockClear();
+        childProcess.spawnSync.mockImplementation(() => {
+          now += 4_000;
+          return { status: 0, stdout: inventory([activeLast ? 'pi --session-id native-session-3' : 'node unrelated.js']) };
+        });
+        try {
+          await expect(stopAllPiSubagentRunsForExit(agentHome, 0, { killUnresponsiveRunners: true, killBudgetMs: 8_000 }))
+            .resolves.toBe(!activeLast);
+          // A fresh inventory is required for escalation, but never per root.
+          expect(childProcess.spawnSync).toHaveBeenCalledTimes(activeLast ? 2 : 1);
+        } finally { clock.mockRestore(); }
+      });
+
       it.each(['runner', 'orphan child'])('keeps a terminal receipt in scope while its %s is alive', async kind => {
         const { agentHome, dir, config } = await terminalReceiptHome(async () => {});
         const command = kind === 'runner'
