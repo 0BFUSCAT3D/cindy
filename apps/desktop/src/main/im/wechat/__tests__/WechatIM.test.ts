@@ -30,13 +30,13 @@ vi.mock('../mediaStaging', async (importOriginal) => {
 describe('WechatIM host boundary', () => {
 
   // Exercise the durable inbox through the public host lifecycle. Only the
-  // credential-verified owner of a linked companion inherits native permissions.
+  // credential-verified owner can request native permissions on a resolved companion route.
   it.each([
-    { companion: true, peer: 'owner', forcedPolicy: false },
-    { companion: true, peer: 'guest', forcedPolicy: true },
-    { companion: true, peer: '', forcedPolicy: true },
-    { companion: false, peer: 'owner', forcedPolicy: true },
-  ])('preserves the permission boundary: %j', async ({ companion, peer, forcedPolicy }) => {
+    { companion: true, peer: 'owner' },
+    { companion: true, peer: 'guest' },
+    { companion: true, peer: '' },
+    { companion: false, peer: 'owner' },
+  ])('preserves the permission boundary: %j', async ({ companion, peer }) => {
     const { im, db } = restoredConnection(() => 0);
     let leased = false;
     vi.mocked(db.tx).mockImplementation((async (name: string) => {
@@ -52,6 +52,7 @@ describe('WechatIM host boundary', () => {
     }) as DbClient['tx']);
     const dispatchAgentTurn = vi.fn(async (_input: {
       turnPermissionPolicy?: { confirmationSurface: string }; requesterIsOwner?: boolean;
+      inheritCompanionOwnerPermissions?: boolean;
     }) => ({ kind: 'accepted', terminal: Promise.resolve({ kind: 'done' }) }));
     im.attachTurnRuntime({ runner: {
       companionBotIdFor: () => companion ? 'cindy' : undefined,
@@ -61,9 +62,9 @@ describe('WechatIM host boundary', () => {
     try {
       await vi.waitFor(() => expect(dispatchAgentTurn).toHaveBeenCalledOnce());
       const input = dispatchAgentTurn.mock.calls[0]![0];
-      expect(Boolean(input.turnPermissionPolicy)).toBe(forcedPolicy);
+      expect(input.inheritCompanionOwnerPermissions).toBe(true);
       expect(input.requesterIsOwner).toBe(companion ? peer === 'owner' : undefined);
-      if (forcedPolicy) expect(input.turnPermissionPolicy?.confirmationSurface).toBe('channel');
+      expect(input.turnPermissionPolicy?.confirmationSurface).toBe('channel');
     } finally { await im.dispose(); }
   });
 

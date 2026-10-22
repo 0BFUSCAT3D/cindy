@@ -1185,18 +1185,17 @@ export class WechatIM extends BaseIM implements RichChannelIM {
             active.routeSessionId = sessionId;
           }
         },
-        // Only credential-verified companion owners inherit the native mode.
-        // Guests and standalone channels retain the mandatory turn policy.
-        ...(companion && requesterIsOwner ? {} : {
-          turnPermissionPolicy: createWechatTurnPermissionPolicy(task.id, {
-            onInteractionStateChange: (state) => {
-              void this.#requireStore().setWaitingDesktop(
-                task.bindingEpoch,
-                task.id,
-                state === 'waiting',
-              );
-            },
-          }),
+        // The runner decides after resolving the actual route; a stale binding
+        // must not relax permissions on the channel-owned fallback session.
+        inheritCompanionOwnerPermissions: true,
+        turnPermissionPolicy: createWechatTurnPermissionPolicy(task.id, {
+          onInteractionStateChange: (state) => {
+            void this.#requireStore().setWaitingDesktop(
+              task.bindingEpoch,
+              task.id,
+              state === 'waiting',
+            );
+          },
         }),
       });
     } catch (error) {
