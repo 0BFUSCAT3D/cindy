@@ -101,6 +101,13 @@ Pi 明确声明的 `reasoningDefaultEffort` 属于 Harness 默认例外，高于
 
 ### 多连接的身份与隔离
 
+Codex 超快是账号发现能力：`service_tiers` / `additional_speed_tiers`（live 清单为
+`serviceTiers` / `additionalSpeedTiers`）明确声明后，按连接保存 `supportsUltrafastMode`，
+不进入可继承的 `ModelMetadata`，不按套餐名、型号或公共目录授予。
+保存、重读和目录投影须保留该值；成功刷新该型号不再声明超快时清除旧资格。
+仅原生 Codex 账号的 Codex 入口可用，API 同名模型及其它引擎不继承。
+回归见 `custom-provider-store.test.ts` 与 `modelDiscoveryChannels.test.ts`。
+
 同一种供应商可以有多个账号或 API 连接。沿用 `providerId` 标识连接实例，
 `model` 标识该连接下的上游模型，`agentKind` 标识执行 Harness；调用目标由三者
 共同确定。供应商与模型的显示名可以重复，也可以改名，不用于路由、凭证查找或持久化关联。

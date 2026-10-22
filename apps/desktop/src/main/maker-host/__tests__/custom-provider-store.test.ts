@@ -19,7 +19,9 @@ import {
   updateCustomProviderIfUnchanged,
   validateCustomProviderConfig,
 } from '../custom-provider-store.js';
-import type { CustomProviderConfig } from '@cindy/model-providers';
+import { buildUserProvider, mergeDiscoveredRuntimeModels, parseModelsListResponse,
+  type CustomProviderConfig } from '@cindy/model-providers';
+import { mapCodexAppServerModelsToCatalog } from '../codex-model-discovery.js';
 
 const CREATE_SQL = `
   CREATE TABLE custom_providers (
@@ -76,6 +78,52 @@ afterEach(() => {
 });
 
 describe('custom provider updates through the runtime database proxy', () => {
+  // Regression: account model/list -> storage normalization -> reload used to drop
+  // Ultrafast. Exercise real CRUD/CAS and catalog projection, including revocation.
+  it('persists native account speed discovery without granting another account or engine access', async () => {
+    mountDb();
+    const native: CustomProviderConfig = { id: 'openai-one', name: 'Account one',
+      auth: { method: 'oauth', native: 'codex' }, runtimes: { codex: {
+        baseUrl: 'https://chatgpt.com/backend-api/codex', wireProtocol: 'openai-responses',
+        models: [{ id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }],
+      } } };
+    await createCustomProvider(native);
+    await createCustomProvider({ ...native, id: 'openai-two', name: 'Account two' });
+    const before = (await getCustomProvider(native.id))!;
+    const models = mergeDiscoveredRuntimeModels([], mapCodexAppServerModelsToCatalog([{
+      id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT-6.1 Sol',
+      description: '', hidden: false, supportedReasoningEfforts: [],
+      defaultReasoningEffort: 'medium', isDefault: true, inputModalities: ['text'],
+      additionalSpeedTiers: ['fast', 'ultrafast'], serviceTiers: [],
+    }]));
+    const next = { ...before, runtimes: { codex: { ...before.runtimes.codex!, models } } };
+    expect(validateCustomProviderConfig(next).ok).toBe(true);
+    expect(await updateCustomProviderIfUnchanged(native.id, before, next)).toBe(true);
+    const restored = (await getCustomProvider(native.id))!;
+    expect(restored.runtimes.codex!.models[0].supportsUltrafastMode).toBe(true);
+    expect(buildUserProvider(restored).models.codex![0].supportsUltrafastMode).toBe(true);
+    expect(buildUserProvider((await getCustomProvider('openai-two'))!).models.codex![0].supportsUltrafastMode).toBe(false);
+    for (const agent of ['codex', 'claude-code', 'pi'] as const) {
+      expect(buildUserProvider({ id: 'api', name: 'API', runtimes: {
+        [agent]: { baseUrl: 'https://example.test/v1', models: restored.runtimes.codex!.models },
+      } }).models[agent]![0].supportsUltrafastMode).not.toBe(true);
+    }
+    // A real refresh without the entitlement must replace the saved true. The
+    // descriptive name/effort metadata may still use the existing sparse merge.
+    for (const fields of [{ service_tiers: [{ id: 'priority' }] }, {}]) {
+      await updateCustomProvider(native.id, restored);
+      const current = (await getCustomProvider(native.id))!;
+      const refreshed = mergeDiscoveredRuntimeModels(current.runtimes.codex!.models,
+        parseModelsListResponse({ models: [{ slug: 'gpt-6.1-sol', ...fields }] })!);
+      await updateCustomProviderIfUnchanged(native.id, current,
+        { ...current, runtimes: { codex: { ...current.runtimes.codex!, models: refreshed } } });
+      expect(buildUserProvider((await getCustomProvider(native.id))!).models.codex![0].supportsUltrafastMode).toBe(false);
+    }
+    expect(validateCustomProviderConfig({ ...next, runtimes: { codex: {
+      ...next.runtimes.codex, models: [{ ...models[0], supportsUltrafastMode: 'true' }],
+    } } }).ok).toBe(false);
+  });
+
   it('reports an applied model update and rejects a stale snapshot', async () => {
     const worker = await createDbClient({ useInlineWorker: true });
     try {

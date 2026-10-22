@@ -257,6 +257,8 @@ function validateRuntime(agent: string, rt: unknown): ValidationResult {
     )) return invalid(`runtime '${agent}' discoveredCost invalid`);
     if (mm.discoveredMetadata !== undefined && !validModelMetadata(mm.discoveredMetadata))
       return invalid(`runtime '${agent}' discoveredMetadata invalid`);
+    if (mm.supportsUltrafastMode !== undefined && typeof mm.supportsUltrafastMode !== 'boolean')
+      return invalid(`runtime '${agent}' model.supportsUltrafastMode must be a boolean`);
     if (
       mm.contextWindow !== undefined &&
       (typeof mm.contextWindow !== 'number' ||
@@ -595,6 +597,8 @@ function normalizeRuntime(
       name: m.name.trim(),
       ...pickModelMetadata({ ...m, name: m.name.trim() }),
       ...(m.discoveredMetadata ? { discoveredMetadata: m.discoveredMetadata } : {}),
+      ...(typeof m.supportsUltrafastMode === 'boolean'
+        ? { supportsUltrafastMode: m.supportsUltrafastMode } : {}),
       ...(m.discoveredCost ? { discoveredCost: m.discoveredCost } : {}),
       ...(m.nameExplicit === true ? { nameExplicit: true } : {}),
       ...(m.api ? { api: m.api } : {}),
@@ -827,6 +831,8 @@ function parseRuntimes(raw: string): Partial<Record<AgentKind, CustomProviderRun
               ...(validModelMetadata(m.discoveredMetadata)
                 ? { discoveredMetadata: m.discoveredMetadata }
                 : {}),
+              ...(typeof m.supportsUltrafastMode === 'boolean'
+                ? { supportsUltrafastMode: m.supportsUltrafastMode } : {}),
               ...(m.nameExplicit === true ? { nameExplicit: true } : {}),
               ...(typeof m.contextWindow === 'number' &&
               Number.isFinite(m.contextWindow) &&
