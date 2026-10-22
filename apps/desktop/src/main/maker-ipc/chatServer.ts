@@ -16,6 +16,7 @@ import { request as httpsRequest } from 'node:https';
 import { migrateLocalGroups, type ChatContentBlock } from './chatServerMigration.js';
 import { chatErrorDiagnostic, chatGroupFailure, missingGroupCode } from './chatServerErrors.js';
 import { createChatMedia } from './chatServerMedia.js';
+import { prepareChatReplyImages } from './chatServerReplyImages.js';
 import { chatServerWorkspaces } from './chatServerWorkspaces.js';
 import { buildPlanStepBrief } from './botGroupDivision.js';
 import { chatMigrationReceipts } from './chatMigrationReceipts.js';
@@ -90,7 +91,7 @@ interface Running {
   lane?: string;
   laneLookup?: Promise<void>;
   context?: ExecutionContext;
-  settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; retryAt: number; keepLease?: boolean };
+  settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; reply?: { sourceText: string; text: string; attachments: BotGroupAttachment[] }; retryAt: number; keepLease?: boolean };
   delivery?: Promise<void>;
   plan?: ServerPlan;
   workspace?: { workDir: string; branch: string | null; ownerSessionId: string | null };
@@ -1454,9 +1455,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     run.delivery = (async () => {
       try {
         if (!pending.payload) {
-          const terminal = pending.terminal;
-          let text = terminal.resultText;
-          if (!text.trim() && terminal.resultMessageClientId) text = (await readPersistedReplyText(terminal.sessionId, terminal.resultMessageClientId)) ?? '';
+          let terminal = pending.terminal;
+          let text = pending.reply?.sourceText ?? terminal.resultText;
+          if (!pending.reply && !text.trim() && terminal.resultMessageClientId) text = (await readPersistedReplyText(terminal.sessionId, terminal.resultMessageClientId)) ?? '';
           const produced: BotGroupAttachment[] = [];
           if (terminal.outcome !== 'error' && run.workspace && run.beforeFiles && deps.workDir) {
             const files = await deps.workDir.changedFiles(run.workspace.workDir, run.beforeFiles);
@@ -1467,13 +1468,40 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               if (stat.isFile()) produced.push({ id: name, name: path.basename(name), category: 'file', mimeType: 'application/octet-stream', size: stat.size, path: fullPath, url: null });
             }
           }
-          const files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`, produced, run.execution.bot_id);
+          const assertCurrent = () => {
+            if (!current() || running.get(run.execution.id) !== run) throw new Error('STALE_EXECUTOR');
+          };
+          let contentText = text;
+          let files: ChatContentBlock[] = [];
+          const ordinaryReply = !run.plan || run.plan.kind === 'talk';
+          try {
+            if (terminal.outcome !== 'error') {
+              if (ordinaryReply) {
+                pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(text, run.sessionId, assertCurrent) };
+                contentText = pending.reply.text;
+                produced.push(...pending.reply.attachments);
+              }
+              files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`,
+                produced, run.execution.bot_id, ordinaryReply ? assertCurrent : undefined);
+              assertCurrent();
+            }
+          } catch (error) {
+            const { code, status } = chatErrorDiagnostic(error);
+            const permanentMediaResponse = error instanceof ChatResponseError && !retryableResponse(error)
+              && !['AUTH_REQUIRED', 'PERMISSION_DENIED', 'NOT_FOUND', 'GROUP_DISSOLVED', 'GROUP_ARCHIVED'].includes(chatGroupFailure(error).errorCode)
+              && !['STALE_EXECUTOR', 'STALE_EXECUTION', 'EXECUTION_EXPIRED'].includes(code);
+            const permanentUpload = code === 'MEDIA_UPLOAD_FAILED' && status !== undefined
+              && status >= 400 && status < 500 && ![408, 429].includes(status);
+            if (!ordinaryReply || !(fileRefusedHere(error) || permanentMediaResponse || permanentUpload
+              || ['INVALID_MEDIA_URL', 'ERR_INVALID_URL'].includes(code))) throw error;
+            terminal = pending.terminal = { ...terminal, outcome: 'error', failureCode: 'RUNTIME_ERROR' };
+          }
           if (terminal.outcome === 'error') {
             failureCodes.set(`${run.execution.id}:${run.execution.epoch}`, terminal.failureCode ?? 'RUNTIME_ERROR');
             if (failureCodes.size > 1000) failureCodes.delete(failureCodes.keys().next().value!);
           }
           pending.payload = terminal.outcome === 'error' ? { detail: botGroupRuntimeFailureDetail(terminal.failureCode ?? 'RUNTIME_ERROR') }
-            : { ...(isBotGroupNoReplyText(text) && !files.length ? {} : { content: [{ type: 'text', text: text.slice(0, 16000) || '已完成' }, ...files] }),
+            : { ...(isBotGroupNoReplyText(text) && !files.length ? {} : { content: [{ type: 'text', text: contentText.slice(0, 16000) || '已完成' }, ...files] }),
               // A single-speaker server never chains rounds, so there is nothing to continue.
               ...(singleSpeaker ? {} : { continueDiscussion: run.context?.kind !== 'member.joined' && !run.plan && !isBotGroupNoReplyText(text) }) };
         }
@@ -1493,10 +1521,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // or post the private result under a new execution identity.
         const recoveringAuth = error instanceof ChatResponseError && recoverableAuth(error);
         if (!(error instanceof ChatResponseError) || retryableResponse(error)) {
-          const delayed = recoveringAuth || (error instanceof ChatResponseError && error.status === 429);
+          const rateLimited = chatErrorDiagnostic(error).status === 429;
+          const retryAt = rateLimited && error instanceof Error && 'retryAt' in error && typeof error.retryAt === 'number' ? error.retryAt : 0;
+          const delayed = recoveringAuth || rateLimited;
           pending.keepLease = delayed;
           pending.retryAt = delayed
-            ? Math.max(Date.now() + CHAT_AUTH_RETRY_MS, error instanceof ChatResponseError ? error.retryAt ?? 0 : 0)
+            ? Math.max(Date.now() + CHAT_AUTH_RETRY_MS, retryAt)
             : Date.now() + 15000;
           return;
         }
