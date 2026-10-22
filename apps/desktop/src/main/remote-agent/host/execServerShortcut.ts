@@ -63,7 +63,7 @@ function unreachableOnTaskComputer(target: string, layout: ExecServerShortcutLay
   if (isWithin(resolved, mirrorRoot)) {
     if (resolved === mirrorRoot) return true;
     const first = path.relative(mirrorRoot, resolved).split(path.sep)[0];
-    if (MAPPED_TOP_LEVEL.has(first)) return false;
+    if (MAPPED_TOP_LEVEL.has(process.platform === 'win32' ? first.toLowerCase() : first)) return false;
     if (!isWithin(resolved, path.resolve(layout.mappedRoot))) return true;
     return reportedAbsent(resolved, layout.ancestorAbsence);
   }

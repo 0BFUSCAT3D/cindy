@@ -520,6 +520,8 @@ describe('shadow on the other computer', () => {
   // 镜像外的隐藏文件可能在任务电脑同一路径真实存在(#6844 review)，没有确认不存在的一律照常转发。
   it('answers lookups the task computer cannot map on this computer and forwards the rest', async () => {
     const project = path.join(root, 'work', 'proj');
+    const external = path.join(root, 'external');
+    fs.mkdirSync(external);
     write(path.join(project, 'hello.txt'), 'hi');
     write(path.join(root, 'work', '.git', 'HEAD'), 'ref: refs/heads/main\n');
     write(path.join(root, '.bashrc'), 'export TASK_SHELL_CONFIG=1\n');
@@ -553,6 +555,7 @@ describe('shadow on the other computer', () => {
     const handle = await startRemoteAgentSession('claude-code', {
       sessionId: 'task-lookups',
       workingDir: project,
+      extraDirs: [external],
       model: 'claude-opus',
       permissionMode: 'default',
     }, {
@@ -578,14 +581,25 @@ describe('shadow on the other computer', () => {
     });
     const [input] = inputs;
     // 任务所在电脑上的映射(控制端实际使用的那一份)：有对应目录的最上一级是项目的真实根目录。
-    const mapped = new ExecutorWorkspace({ workingDir: project, aliases: shadowAliases({ ...input, virtualWorkspace: true }, project, []) });
+    const mapped = new ExecutorWorkspace({ workingDir: project, aliases: shadowAliases(
+      { ...input, virtualWorkspace: true }, project, [], { extraDirs: [external], writableDirs: [] },
+    ) });
     let top = input.shadowDir;
     while (mapped.localPathFromAgent(path.dirname(top)) !== null && path.dirname(top) !== top) top = path.dirname(top);
     const padded = path.dirname(top);
     expect(padded.startsWith(path.join(input.mirrorRoot, 'workspace'))).toBe(true);
     const parent = path.dirname(input.shadowDir);
     const grandparent = path.dirname(parent);
+    // Windows 的生产路径映射不区分大小写；原矩阵只有小写，遗漏了会把已存在目录误报 -32004 的输入。
+    // 同一 standard fixture 经真实 Host/隧道验证 HOME、TMP、ADDITIONAL，并确认原执行器能解析到现有目录。
+    const mappedCaseVariants = process.platform === 'win32' ? [
+      path.join(input.mirrorRoot, 'HOME'),
+      path.join(input.mirrorRoot, 'TMP'),
+      path.join(input.mirrorRoot, 'ADDITIONAL', 'dir-0'),
+    ] : [];
+    for (const target of mappedCaseVariants) expect(fs.existsSync(mapped.resolve(target))).toBe(true);
     const cases = [
+      ...mappedCaseVariants.map((target) => ({ target, local: false })),
       { target: path.join(input.shadowDir, 'hello.txt'), local: false },
       { target: path.join(input.shadowDir, '.git'), local: false },
       { target: path.join(parent, '.git'), local: false },
