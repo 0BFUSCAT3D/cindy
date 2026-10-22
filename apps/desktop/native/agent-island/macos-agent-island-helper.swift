@@ -1377,6 +1377,7 @@ struct AgentIslandCompanion: Codable, Equatable {
 
 struct AgentIslandSession: Codable, Equatable, Identifiable {
   let sessionId: String
+  var completionToken: String? = nil
   let title: String
   // Older main-process payloads have no companion field.
   var companion: AgentIslandCompanion? = nil
@@ -3336,7 +3337,7 @@ struct ExpandedSessionsView: View {
         },
         onPermissionAction: emitPermissionAction,
         onCompletionAction: { action, requestId in
-          eventSink(["type": "completion-action", "sessionId": current.sessionId, "action": action, "requestId": requestId])
+          eventSink(["type": "completion-action", "sessionId": current.sessionId, "action": action, "requestId": requestId, "completionToken": current.completionToken ?? ""])
         }
       )
       .equatable()
@@ -3379,7 +3380,7 @@ struct ExpandedSessionsView: View {
           },
           onPermissionAction: emitPermissionAction,
           onCompletionAction: { action, requestId in
-            eventSink(["type": "completion-action", "sessionId": session.sessionId, "action": action, "requestId": requestId])
+            eventSink(["type": "completion-action", "sessionId": session.sessionId, "action": action, "requestId": requestId, "completionToken": session.completionToken ?? ""])
           }
         )
         .equatable()
@@ -3418,12 +3419,12 @@ struct ExpandedSessionRow: View, Equatable {
   }
 
   var body: some View {
-    if session.phase == "completed" {
+    if session.phase == "completed", let completionToken = session.completionToken {
       CompletedSessionSwipeRow(strings: strings, canArchive: session.companion == nil,
         onFocus: onFocus, onAction: onCompletionAction) {
         card
       }
-      .id("\(session.sessionId):\(session.lastActivityAt)")
+      .id("\(session.sessionId):\(completionToken)")
     } else {
       card
     }

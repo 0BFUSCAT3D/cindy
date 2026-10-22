@@ -22,6 +22,7 @@ import {
   DEFAULT_AGENT_ISLAND_SOUND_SETTINGS,
   computeAgentIslandContentHeight,
   type AgentIslandDisplayState,
+  type AgentIslandSessionActivity,
   type AgentIslandSoundChoice,
   type AgentIslandSoundSettings,
 } from '../../../shared/agentIsland.js';
@@ -56,6 +57,8 @@ function handleInteractionRequestForTest(
 }
 
 const mocks = vi.hoisted(() => ({
+  attached: vi.fn(),
+  confirmIslandArchive: vi.fn(),
   patchSessionMetaInDb: vi.fn(),
   remoteInvoke: vi.fn(),
   getSessionRowSnapshot: vi.fn<() => Promise<{
@@ -145,6 +148,8 @@ vi.mock('../../localDb/ipc/sessions.js', () => ({
 }));
 
 vi.mock('../../device-link/index.js', () => ({ remoteInvoke: mocks.remoteInvoke }));
+vi.mock('../archiveConfirmation.js', () => ({ confirmIslandArchive: mocks.confirmIslandArchive }));
+vi.mock('../../im/binding.js', () => ({ bindingStore: { findByTarget: mocks.attached } }));
 
 vi.mock('../companionIdentity.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../companionIdentity.js')>()),
@@ -167,6 +172,8 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
 import { resetEpermGuidanceForTest } from '../../file-access/permissions.js';
 
 beforeEach(() => {
+  mocks.attached.mockReset().mockReturnValue(null);
+  mocks.confirmIslandArchive.mockReset().mockResolvedValue(true);
   mocks.patchSessionMetaInDb.mockReset();
   mocks.remoteInvoke.mockReset();
   setDeepLinkMainWindow(null);
@@ -630,20 +637,24 @@ describe('AgentIslandService native publishing', () => {
     service.setEnabled(false);
     const meta = { sessionId: 'swipe-task', agentKind: 'codex' as const };
     service.handleUserPrompt(meta, 'run');
-    await service.handleCompletionAction(meta.sessionId, 'archive');
+    await service.handleCompletionAction(meta.sessionId, 'archive', 'missing');
     expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
     service.handleAgentEvent(meta, doneEvent());
+    const token = (service.getSessionActivitySnapshot(meta.sessionId) as AgentIslandSessionActivity).completionToken!;
     mocks.patchSessionMetaInDb.mockRejectedValueOnce(new Error('offline'));
-    await service.handleCompletionAction(meta.sessionId, 'archive');
+    await service.handleCompletionAction(meta.sessionId, 'archive', token);
     expect(service.getSessionActivitySnapshot(meta.sessionId)).toMatchObject({ attention: true });
     expect(mocks.showMessageBox).toHaveBeenCalled();
     mocks.patchSessionMetaInDb.mockResolvedValueOnce({ status: 'archived' });
-    await service.handleCompletionAction(meta.sessionId, 'archive');
-    expect(mocks.patchSessionMetaInDb).toHaveBeenLastCalledWith(meta.sessionId, { status: 'archived' });
+    await service.handleCompletionAction(meta.sessionId, 'archive', token);
+    expect(mocks.patchSessionMetaInDb).toHaveBeenLastCalledWith(meta.sessionId, { status: 'archived' }, {
+      routeLockHeld: true, beforeWrite: expect.any(Function),
+    });
     expect(service.getSessionActivitySnapshot(meta.sessionId)?.attention ?? false).toBe(false);
     service.handleUserPrompt(meta, 'again');
     service.handleAgentEvent(meta, doneEvent());
-    await service.handleCompletionAction(meta.sessionId, 'mark-read');
+    const nextToken = (service.getSessionActivitySnapshot(meta.sessionId) as AgentIslandSessionActivity).completionToken!;
+    await service.handleCompletionAction(meta.sessionId, 'mark-read', nextToken);
     expect(service.getSessionActivitySnapshot(meta.sessionId)?.attention ?? false).toBe(false);
     expect(mocks.patchSessionMetaInDb).toHaveBeenCalledTimes(2);
     service.resetRuntimeState();
@@ -658,6 +669,7 @@ describe('AgentIslandService native publishing', () => {
     });
     syncEnabledForTest(service, publish);
     const input = { sessionId: 'remote-swipe', deviceId: 'owner-device', deviceName: 'Mac',
+      completionToken: 'owner-completion',
       title: 'Task', workingDir: null, workspaceKind: null, agentKind: 'codex', detail: '' };
     const complete = () => {
       service.setDeviceSessions([{ ...input, phase: 'running' }]);
@@ -665,20 +677,76 @@ describe('AgentIslandService native publishing', () => {
     };
     complete();
     mocks.remoteInvoke.mockResolvedValueOnce({ ok: false, error: { message: 'offline' } });
-    await service.handleCompletionAction(input.sessionId, 'mark-read');
+    await service.handleCompletionAction(input.sessionId, 'mark-read', input.completionToken);
     expect(publish.mock.calls.at(-1)?.[0].sessions).toContainEqual(expect.objectContaining({ sessionId: input.sessionId, attention: true }));
-    mocks.remoteInvoke.mockResolvedValue({ ok: true });
-    await service.handleCompletionAction(input.sessionId, 'mark-read');
-    expect(mocks.remoteInvoke).toHaveBeenLastCalledWith('owner-device', 'notification:clear-session-attention', ['remote-swipe', 'explicit']);
+    mocks.remoteInvoke.mockResolvedValue({ ok: true, result: true });
+    await service.handleCompletionAction(input.sessionId, 'mark-read', input.completionToken);
+    expect(mocks.remoteInvoke).toHaveBeenLastCalledWith('owner-device', 'agent-island:completion-action', ['remote-swipe', 'mark-read', input.completionToken]);
     expect(publish.mock.calls.at(-1)?.[0].sessions.some(s => s.sessionId === input.sessionId && s.attention)).toBe(false);
     complete();
-    await service.handleCompletionAction(input.sessionId, 'archive');
-    expect(mocks.remoteInvoke).toHaveBeenLastCalledWith('owner-device', 'local-db:sessions:patch-meta', ['remote-swipe', { status: 'archived' }]);
+    await service.handleCompletionAction(input.sessionId, 'archive', input.completionToken);
+    expect(mocks.remoteInvoke).toHaveBeenLastCalledWith('owner-device', 'agent-island:completion-action', ['remote-swipe', 'archive', input.completionToken]);
     const count = mocks.remoteInvoke.mock.calls.length;
     service.setDeviceSessions([{ ...input, phase: 'completed', companion: { name: 'Teammate', avatar: '', avatarColor: 'teal' } }]);
-    await service.handleCompletionAction(input.sessionId, 'archive');
+    await service.handleCompletionAction(input.sessionId, 'archive', input.completionToken);
     expect(mocks.remoteInvoke).toHaveBeenCalledTimes(count);
     expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
+    service.resetRuntimeState();
+  });
+
+  // Owner handler + existing send lock: stale network/queue deliveries must not
+  // archive or acknowledge the next completion, even in the same millisecond.
+  it.each(['mark-read', 'archive'] as const)('rejects an old %s on the owning device after its route wait', async action => {
+    const { AgentIslandService } = await import('../service.js');
+    const { setSessionRouteLockImplementation } = await import('../../localDb/sessionRouteLock.js');
+    const service = new AgentIslandService({ getMainWindow: () => null });
+    service.setEnabled(false);
+    service.registerDeviceSessionIpc();
+    const meta = { sessionId: 'owner-race', agentKind: 'codex' as const };
+    const complete = () => { service.handleUserPrompt(meta, 'run'); service.handleAgentEvent(meta, doneEvent()); };
+    complete();
+    const token = (service.getSessionActivitySnapshot(meta.sessionId) as AgentIslandSessionActivity).completionToken!;
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    setSessionRouteLockImplementation(async (_id, task) => { await blocked; return task(); });
+    try {
+      const actionPromise = registeredIpcHandler('agent-island:completion-action')(null, meta.sessionId, action, token);
+      complete();
+      release();
+      expect(await actionPromise).toBe(false);
+      expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
+      expect(service.getSessionActivitySnapshot(meta.sessionId)).toMatchObject({ attention: true });
+      expect((service.getSessionActivitySnapshot(meta.sessionId) as AgentIslandSessionActivity).completionToken).not.toBe(token);
+    } finally {
+      setSessionRouteLockImplementation(null);
+      service.resetRuntimeState();
+    }
+  });
+
+  it('keeps a cancelled archive and rechecks its card after confirmation and worktree waits', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const service = new AgentIslandService({ getMainWindow: () => null });
+    service.setEnabled(false);
+    const meta = { sessionId: 'archive-wait', agentKind: 'codex' as const };
+    const complete = () => { service.handleUserPrompt(meta, 'run'); service.handleAgentEvent(meta, doneEvent()); };
+    complete();
+    const token = () => (service.getSessionActivitySnapshot(meta.sessionId) as AgentIslandSessionActivity).completionToken!;
+    mocks.confirmIslandArchive.mockResolvedValueOnce(false);
+    expect(await service.handleCompletionAction(meta.sessionId, 'archive', token())).toBe(false);
+    expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
+    mocks.confirmIslandArchive.mockImplementationOnce(async () => { complete(); return true; });
+    expect(await service.handleCompletionAction(meta.sessionId, 'archive', token())).toBe(false);
+    expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
+    mocks.attached.mockReturnValueOnce({ channel: 'feishu' });
+    expect(await service.handleCompletionAction(meta.sessionId, 'archive', token())).toBe(false);
+    expect(mocks.patchSessionMetaInDb).not.toHaveBeenCalled();
+    mocks.patchSessionMetaInDb.mockImplementationOnce(async (_id, _patch, options) => {
+      complete();
+      options.beforeWrite();
+      throw new Error('unreachable');
+    });
+    expect(await service.handleCompletionAction(meta.sessionId, 'archive', token())).toBe(false);
+    expect(service.getSessionActivitySnapshot(meta.sessionId)).toMatchObject({ attention: true });
     service.resetRuntimeState();
   });
 

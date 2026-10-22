@@ -43,6 +43,8 @@ export interface AgentIslandCompanionSnapshot {
  * Renderer-facing session snapshot for the macOS Agent Island overlay.
  */
 export interface AgentIslandSessionSnapshot {
+  /** Opaque identity of the completed card, issued by its owning process. */
+  completionToken?: string;
   /** This completion preserves older unread state without requesting a new alert. */
   completionNotification?: 'silent';
   sessionId: string;
@@ -75,6 +77,7 @@ export interface AgentIslandPermissionActionSnapshot {
  */
 export interface AgentIslandSessionActivity
   extends Omit<SessionActivitySnapshot, 'phase' | 'interactionKind'> {
+  completionToken?: string;
   completionNotification?: 'silent';
   phase: AgentIslandSessionPhase;
   interactionKind?: AgentIslandInteractionKind;
@@ -804,6 +807,7 @@ export const AGENT_ISLAND_SET_REMOTE_SESSIONS_CHANNEL = 'agent-island:set-remote
  * 只含 running / needs-interaction / 未读终态;范围由 renderer 按侧栏「任务范围」裁剪。
  */
 export interface AgentIslandRemoteSessionInput {
+  completionToken?: string;
   completionNotification?: 'pending' | 'teammate' | 'silent';
   sessionId: string;
   deviceId: string;
@@ -866,10 +870,12 @@ export function parseAgentIslandRemoteSessions(raw: unknown): AgentIslandRemoteS
       ? record.interactionKind as AgentIslandInteractionKind
       : undefined;
     const workingPhase = readBoundedString(record.workingPhase, 64);
+    const completionToken = readBoundedString(record.completionToken, 128);
     const companion = readRemoteCompanion(record.companion);
     out.push({
       sessionId,
       deviceId,
+      ...(completionToken ? { completionToken } : {}),
       deviceName: readBoundedString(record.deviceName, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH),
       title: readBoundedString(record.title, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH),
       workingDir: readBoundedString(record.workingDir, AGENT_ISLAND_REMOTE_TEXT_MAX_LENGTH * 4),

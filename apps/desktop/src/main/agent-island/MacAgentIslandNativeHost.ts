@@ -70,7 +70,7 @@ interface MacAgentIslandNativeHostOptions {
   onExpand: (displayId?: number | null) => void;
   onCollapse: (displayId?: number | null) => void;
   onFocusSession: (sessionId: string) => void;
-  onCompletionAction?: (sessionId: string, action: 'mark-read' | 'archive') => Promise<boolean>;
+  onCompletionAction?: (sessionId: string, action: 'mark-read' | 'archive', completionToken: string) => Promise<boolean>;
   onOpenSettings: () => void;
   onNewMessage: () => void;
   onToggleSound: () => void;
@@ -122,6 +122,7 @@ type NativePayload = {
   panel?: unknown;
   sessionId?: unknown;
   requestId?: unknown;
+  completionToken?: unknown;
   action?: unknown;
   active?: unknown;
   centerXRatio?: unknown;
@@ -515,8 +516,9 @@ export class MacAgentIslandNativeHost {
       payload.type === 'completion-action' && this.child === child
       && typeof payload.sessionId === 'string' && payload.sessionId.length > 0
       && (payload.action === 'mark-read' || payload.action === 'archive')
+      && typeof payload.completionToken === 'string' && payload.completionToken.length > 0 && payload.completionToken.length <= 128
     ) {
-      const { sessionId, action, requestId } = payload;
+      const { sessionId, action, requestId, completionToken } = payload;
       const reply = (success: boolean): void => {
         if (this.child !== child || typeof requestId !== 'string') return;
         try {
@@ -526,7 +528,7 @@ export class MacAgentIslandNativeHost {
         }
       };
       void Promise.resolve()
-        .then(() => this.options.onCompletionAction?.(sessionId, action) ?? false)
+        .then(() => this.options.onCompletionAction?.(sessionId, action, completionToken) ?? false)
         .then(reply, () => reply(false));
       return;
     }

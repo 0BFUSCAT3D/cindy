@@ -228,10 +228,10 @@ describe('MacAgentIslandNativeHost', () => {
     host.publish(createDisplayState(), createFrame());
     await vi.advanceTimersByTimeAsync(0);
     for (const action of ['mark-read', 'archive', 'delete']) {
-      (child.stdout as PassThrough).write(`${JSON.stringify({ type: 'completion-action', sessionId: 's1', action, requestId: action })}\n`);
+      (child.stdout as PassThrough).write(`${JSON.stringify({ type: 'completion-action', sessionId: 's1', action, requestId: action, completionToken: 'card-1' })}\n`);
     }
     await vi.advanceTimersByTimeAsync(0);
-    expect(options.onCompletionAction.mock.calls).toEqual([['s1', 'mark-read'], ['s1', 'archive']]);
+    expect(options.onCompletionAction.mock.calls).toEqual([['s1', 'mark-read', 'card-1'], ['s1', 'archive', 'card-1']]);
     expect(replies.map(line => JSON.parse(line)).filter(message => message.type === 'completion-action-result')).toEqual([
       { type: 'completion-action-result', requestId: 'mark-read', success: true },
       { type: 'completion-action-result', requestId: 'archive', success: false },
