@@ -9341,7 +9341,10 @@
         "elapsed": "経過 {{time}}",
         "viewProcess": "経過を見る",
         "hideProcess": "経過を閉じる",
-        "stop": "停止"
+        "stop": "停止",
+        "stopMine": "自分の依頼を停止",
+        "stopAll": "すべて停止",
+        "stopAllHint": "他の人の依頼も含みます"
       },
       "header": {
         "stepRunning": "{{name}} がステップ {{step}} を作業中",
@@ -9413,6 +9416,7 @@
         "placeholderPlanProposed": "担当や手順を変えたいときは、そのまま話しかけてください…",
         "placeholderPlanWaiting": "{{name}} に直してほしいことがあれば、そのまま話しかけてください…",
         "placeholderPlanRunning": "送った内容は作業中の {{name}} に届きます…",
+        "placeholderQueueRunning": "送った内容は発言中の {{name}} に届きます…",
         "tooManyAttachments": "添付ファイルが多すぎます。1 件のメッセージにつき最大 {{max}} 個です",
         "attachmentsFailed": "添付ファイルを送信できませんでした。ファイルが残っているか確認するか、削除してから再試行してください",
         "folderNotSupported": "フォルダーは添付できません。中のファイルを選んでください"
@@ -9450,7 +9454,8 @@
         "endPlan": "役割分担を終える",
         "planDone_one": "{{count}} ステップすべて完了しました",
         "planDone_other": "{{count}} ステップすべて完了しました",
-        "planDoneGeneric": "役割分担が完了しました"
+        "planDoneGeneric": "役割分担が完了しました",
+        "endTalk": "終了"
       },
       "notice": {
         "memberJoined": "{{name}}さんがグループに参加しました",
@@ -9558,7 +9563,13 @@
         "keepOneStep": "1 つは残す必要があります",
         "startFailed": "役割分担を開始できませんでした。もう一度お試しください",
         "dismissFailed": "この計画を終了できませんでした。もう一度お試しください",
-        "editFailed": "このステップを変更できませんでした。もう一度お試しください"
+        "editFailed": "このステップを変更できませんでした。もう一度お試しください",
+        "talkTurn": "意見を述べる",
+        "stepSpeaking": "発言中",
+        "stepSpoken": "発言済み",
+        "allTurns_one": "全 {{count}} 人",
+        "allTurns_other": "全 {{count}} 人",
+        "foldTurns": "折りたたむ"
       },
       "speaking": {
         "planning": "役割分担を考えています…"
@@ -12797,6 +12808,12 @@
         "title": "セッションをアーカイブ",
         "description": "このセッションをアーカイブしますか？アーカイブ後はリストから消えます。",
         "dirtyWorktreeWarning": "このセッションのワークツリーには未コミットの変更があります。アーカイブ前に git スナップショットとして自動保存され、後でセッションから復元できます。",
+        "scheduleWarning_one": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
+        "scheduleWarning_other": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
+        "scheduleWarningMany_one": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+        "scheduleWarningMany_other": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+        "scheduleName": "「{{name}}」",
+        "scheduleNameSeparator": "、",
         "confirm": "確認",
         "cancel": "キャンセル"
       },

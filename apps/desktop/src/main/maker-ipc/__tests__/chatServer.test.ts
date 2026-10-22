@@ -1414,6 +1414,152 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deliveries()[0][0]).toContain(nextId);
   });
 
+  // bot-group-chat.md §4/§7: a groupSingleSpeaker server gives each request one teammate; the
+  // lead of an un-addressed request may name who speaks next, in the same answer. Old servers
+  // keep automatic rounds (covered by the claim fallback test below).
+  describe('one teammate per request (groupSingleSpeaker)', () => {
+    const otherBot = '20000000-0000-4000-8000-000000000002';
+    const foreignBot = '20000000-0000-4000-8000-000000000003';
+    const otherHuman = '30000000-0000-4000-8000-000000000002';
+    const member = (id: string, kind: 'human' | 'bot', ownerActorId: string, role = 'member') =>
+      ({ id, kind, name: id === botId ? 'Bot' : 'Peer', displayName: 'Peer', nickname: null, avatar: null, ownerActorId, ownerName: 'Owner', state: 'joined', role, guestAccess: 'chat', accessRevision: 1 });
+    // botRole: the account's own teammate may hold the owner/admin role instead of its human.
+    const members = (role = 'member', botRole = 'member') => [member(selfId, 'human', selfId, role), member(botId, 'bot', selfId), member(otherBot, 'bot', selfId, botRole), member(otherHuman, 'human', otherHuman), member(foreignBot, 'bot', otherHuman)];
+    const message = (id: string, text: string, extra: object = {}) => ({ id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Dash' }, origin: 'user',
+      content: [{ type: 'text', text }], createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId: null, mentions: [], ...extra });
+    function singleSpeaker(extra: (route: string, method?: string, body?: Record<string, unknown>) => unknown = () => undefined, role = 'member', botRole = 'member') {
+      fixture.handle.mockImplementation((route, method, body) => {
+        const override = extra(route, method, body);
+        if (override) return override;
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupSingleSpeaker: 1 } } };
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: members(role, botRole), messages: [], cursor: '1' } };
+        if (route.endsWith('/members')) return { body: members(role, botRole) };
+        return response(route);
+      });
+    }
+    const prompt = () => vi.mocked(deps.dispatch).mock.calls[0][0].message;
+
+    it('posts an un-addressed reply as written and never asks the server to continue a round', async () => {
+      singleSpeaker(route => route.endsWith(`/messages/${execution.source_message_id}`) ? { body: message(execution.source_message_id, 'Let us discuss') } : undefined);
+      await start();
+      await service.settleLaneTurn({ ...terminal, resultText: 'My view.' });
+      const [delivery] = deliveries();
+      expect(delivery[2].content).toEqual([{ type: 'text', text: 'My view.' }]);
+      expect(delivery[2]).not.toHaveProperty('continueDiscussion');
+    });
+
+    // A queue turn reads only its own card; a division of work (every older plan is kind=work after
+    // the server migration) keeps the main-group context it had, including chat-only steps without a workspace.
+    it.each(['talk', 'work'] as const)('gives a %s step the context of its kind', async (kind) => {
+      const planId = '80000000-0000-4000-8000-000000000001';
+      const answerId = '50000000-0000-4000-8000-000000000011', noteId = '50000000-0000-4000-8000-000000000012';
+      const unrelatedFile = '60000000-0000-4000-8000-000000000021', answerFile = '60000000-0000-4000-8000-000000000022';
+      const plan = { id: planId, revision: 3, source_message_id: execution.source_message_id, request_text: 'One reply per message?', organizer_id: otherBot, creator_id: selfId,
+        note_message_ids: [noteId], status: 'running', current_step: 1, kind, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        steps: [{ position: 0, botId: otherBot, botName: 'Peer', task: 'draft', status: 'done', resultMessageId: answerId }, { position: 1, botId, botName: 'Bot', task: 'tests', status: 'running' }] };
+      const file = (mediaId: string, caption: string) => ({ type: 'media', mediaId, caption });
+      singleSpeaker((route, _method, body) => {
+        if (route === '/executions/claim' && !claimed) { claimed = true; return { body: { execution: { ...execution, access_mode: kind === 'talk' ? 'owner' : 'chat', plan_id: planId, plan_step: 1 } } }; }
+        if (route.includes('/plans?ids=')) return { body: [plan] };
+        if (route.includes('/messages?all=true')) return { body: [
+          message('50000000-0000-4000-8000-000000000013', 'unrelated main group chatter', { content: [{ type: 'text', text: 'unrelated main group chatter' }, file(unrelatedFile, 'old.png')] }),
+          message(answerId, 'The first answer', { authorId: otherBot, author: { kind: 'bot', name: 'Peer' }, origin: 'bot', content: [{ type: 'text', text: 'The first answer' }, file(answerFile, 'draft.png')] }),
+          message(noteId, 'Mind the old groups')] };
+        if (route.endsWith(`/messages/${execution.source_message_id}`)) return { body: message(execution.source_message_id, 'One reply per message?') };
+        return body ? undefined : undefined;
+      });
+      fixture.download.mockImplementation(async (_room: string, mediaId: string) => ({ id: mediaId, name: `${mediaId}.png`, category: 'image',
+        mimeType: 'image/png', size: 1, path: `/test/${mediaId}.png`, url: null }));
+      await start();
+      expect(prompt()).toContain('The first answer');
+      expect(prompt()).toContain('Mind the old groups');
+      const downloaded = fixture.download.mock.calls.map(([, mediaId]) => mediaId);
+      if (kind === 'talk') {
+        expect(prompt()).toContain('You are turn 2 of 2. Your focus: tests.');
+        expect(prompt()).not.toContain('unrelated main group chatter');
+        expect(downloaded).toEqual([answerFile]);
+        // A queue turn only talks: no project folder or worktree, its own queue lane rather than a 分工 lane
+        // (an owner-access 分工 lane without a work directory cannot start).
+        expect(deps.ensureLane).toHaveBeenCalledWith(expect.objectContaining({ talkPlanId: planId }));
+        expect(vi.mocked(deps.ensureLane).mock.calls[0][0]).not.toHaveProperty('plan');
+      } else {
+        expect(prompt()).not.toContain('You are turn');
+        expect(prompt()).toContain('unrelated main group chatter');
+        expect(downloaded).toEqual(expect.arrayContaining([answerFile, unrelatedFile]));
+      }
+    });
+
+    it('sends without holding the request for a helper-model arrangement decision', async () => {
+      singleSpeaker();
+      deps.decidePlan = vi.fn() as typeof deps.decidePlan;
+      expect(await service.sendMessage({ groupId: roomId, text: 'Make a draft', clientId: 'single-speaker-send', mentions: { all: false, botIds: [] }, division: true }))
+        .toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      const post = fixture.handle.mock.calls.find(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')!;
+      expect(post[2].deferExecution).toBe(false);
+      expect(deps.decidePlan).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['waiting for 继续: a new request replaces it', 'waiting', `/conversations/${roomId}/messages`],
+      ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
+    ] as const)('with an open queue %s', async (_label, status, route) => {
+      const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
+        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
+      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] } : undefined);
+      expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: `queue-${status}`, mentions: { all: false, botIds: [] } }))
+        .toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.handle.mock.calls.filter(([, method]) => method === 'POST').map(([path]) => path)).toContain(route);
+    });
+
+    it.each([
+      ['a member stops only their own requests and teammates', 'member', undefined, [['own', undefined], ['bot', otherBot]]],
+      ['an owner may stop everyone', 'owner', 'all', [['own', undefined], ['bot', undefined], ['foreign', undefined]]],
+      ['an owner who did not ask for all stops only their own', 'owner', undefined, [['own', undefined], ['bot', otherBot]]],
+      ['a member whose own teammate is admin stops everyone as that teammate', 'member', 'all', [['own', undefined], ['bot', otherBot], ['foreign', otherBot]], 'admin'],
+    ] as const)('%s', async (_label, role, scope, expected, botRole?: string) => {
+      const ids = { own: '40000000-0000-4000-8000-00000000000a', bot: '40000000-0000-4000-8000-00000000000b', foreign: '40000000-0000-4000-8000-00000000000c' };
+      singleSpeaker(route => route === `/conversations/${roomId}/executions` ? { body: [
+        { ...execution, id: ids.own, status: 'queued', bot_id: foreignBot, requester_id: selfId },
+        { ...execution, id: ids.bot, status: 'running', bot_id: otherBot, requester_id: otherHuman },
+        { ...execution, id: ids.foreign, status: 'queued', bot_id: foreignBot, requester_id: otherHuman },
+      ] } : undefined, role, botRole ?? 'member');
+      const from = fixture.requests.length;
+      expect(await service.stopRound(roomId, scope)).toEqual({ ok: true });
+      const stops = fixture.requests.slice(from).filter(r => r.url.endsWith('/control'));
+      expect(stops.map(r => [Object.entries(ids).find(([, id]) => r.url.includes(id))![0], r.actor || undefined])).toEqual(expected);
+    });
+
+    // Without the capability the server still runs rounds: Stop ends the whole round and replies read the full main group.
+    const olderServer = (extra: (route: string) => unknown = () => undefined) =>
+      singleSpeaker(route => route === '/me' ? { body: { actor: { id: selfId } } } : extra(route));
+    it.each([['single-speaker', true], ['older', false]] as const)('offers an owner the stop-scope choice only on a %s server', async (_label, offered) => {
+      if (offered) singleSpeaker(undefined, 'owner'); else singleSpeaker(route => route === '/me' ? { body: { actor: { id: selfId } } } : undefined, 'owner');
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await service.getGroup(roomId);
+      expect(result.ok && !!result.group.canStopAll).toBe(offered);
+    });
+    it('keeps the whole-round stop on an older server', async () => {
+      olderServer(route => route === `/conversations/${roomId}/executions` ? { body: [
+        { ...execution, id: '40000000-0000-4000-8000-00000000000a', status: 'queued', bot_id: foreignBot, requester_id: selfId },
+        { ...execution, id: '40000000-0000-4000-8000-00000000000c', status: 'queued', bot_id: foreignBot, requester_id: otherHuman },
+      ] } : undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      const from = fixture.requests.length;
+      expect(await service.stopRound(roomId)).toEqual({ ok: true });
+      expect(fixture.requests.slice(from).filter(r => r.url.endsWith('/control'))).toHaveLength(2);
+    });
+    it('keeps the full main-group context on an older server', async () => {
+      const history = Array.from({ length: 15 }, (_, n) => message(`50000000-0000-4000-8000-0000000001${String(n).padStart(2, '0')}`, `earlier message ${n}`));
+      olderServer(route => route.includes('/messages?all=true') ? { body: history } : undefined);
+      await start();
+      expect(prompt()).toContain('earlier message 0');
+      expect(prompt()).not.toContain('earlierMessagesOmitted');
+    });
+  });
+
   it('falls back to ordinary claims when an old strict server rejects the added capability', async () => {
     fixture.handle.mockImplementation((route, method, body) => route === '/executions/claim' && body?.memberJoinedVersion
       ? { status: 400, body: { error: { code: 'INVALID_INPUT' } } } : response(route));

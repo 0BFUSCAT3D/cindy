@@ -9341,7 +9341,10 @@
         "elapsed": "已做 {{time}}",
         "viewProcess": "看过程",
         "hideProcess": "收起过程",
-        "stop": "停止"
+        "stop": "停止",
+        "stopMine": "停止我发起的",
+        "stopAll": "全部停止",
+        "stopAllHint": "包括其他人发起的"
       },
       "header": {
         "stepRunning": "{{name}} 正在做第 {{step}} 步",
@@ -9413,6 +9416,7 @@
         "placeholderPlanProposed": "想换人或改步骤，直接说…",
         "placeholderPlanWaiting": "想让{{name}}改改，直接说…",
         "placeholderPlanRunning": "说的话会带给正在做的{{name}}…",
+        "placeholderQueueRunning": "说的话会带给正在说的{{name}}…",
         "tooManyAttachments": "附件太多了，一条消息最多 {{max}} 个",
         "attachmentsFailed": "附件没能发出去，请检查文件是否还在，或移除后重试",
         "folderNotSupported": "文件夹不能作为附件，请选择其中的文件"
@@ -9450,7 +9454,8 @@
         "endPlan": "结束分工",
         "planDone_one": "{{count}} 步都做完了",
         "planDone_other": "{{count}} 步都做完了",
-        "planDoneGeneric": "分工做完了"
+        "planDoneGeneric": "分工做完了",
+        "endTalk": "结束"
       },
       "notice": {
         "memberJoined": "{{name}}加入了群聊",
@@ -9558,7 +9563,13 @@
         "keepOneStep": "至少留一步",
         "startFailed": "没能开始分工，请再试一次",
         "dismissFailed": "没能结束这个安排，请再试一次",
-        "editFailed": "这一步没改成，请再试一次"
+        "editFailed": "这一步没改成，请再试一次",
+        "talkTurn": "说说看法",
+        "stepSpeaking": "正在说",
+        "stepSpoken": "说完了",
+        "allTurns_one": "共 {{count}} 位",
+        "allTurns_other": "共 {{count}} 位",
+        "foldTurns": "收起"
       },
       "speaking": {
         "planning": "正在安排…"
@@ -12797,6 +12808,12 @@
         "title": "归档任务",
         "description": "确定要归档这个任务吗？归档后将从列表中移除。",
         "dirtyWorktreeWarning": "该任务的 worktree 有未提交的更改；归档前会自动保存为 git 快照，之后可在任务内一键恢复。",
+        "scheduleWarning_one": "该任务绑定了自动化{{names}}，归档后将暂停。",
+        "scheduleWarning_other": "该任务绑定了自动化{{names}}，归档后将暂停。",
+        "scheduleWarningMany_one": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+        "scheduleWarningMany_other": "其中 {{count}} 个任务绑定了自动化，归档后这些自动化将暂停。",
+        "scheduleName": "「{{name}}」",
+        "scheduleNameSeparator": "、",
         "confirm": "确认",
         "cancel": "取消"
       },

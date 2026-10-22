@@ -3585,6 +3585,12 @@ function getPendingInteractionsForSession(sessionId: string): PendingInteraction
 
 // 伙伴自主跟进：状态表读「等你的那句话」只取请求本身（不含 persistId 等宿主内部字段）。
 configureBotAutonomyHost({
+  readSessionExecution: (id) => {
+    const session = getMakerIfReady()?.getSession(id);
+    return session ? { instanceId: session.instanceId, generation: session.getTurnGeneration() } : null;
+  },
+  isCompletionHandledByTeammate: (sessionId, botId, execution) => botDelegationServiceHolder
+    ?.isCompletionHandledByTeammate(sessionId, { pendingForBotId: botId, execution }) ?? Promise.resolve(null),
   getPendingInteractions: (sessionId) => getPendingInteractionsForSession(sessionId).map((entry) => entry.request),
 });
 
@@ -4393,7 +4399,7 @@ function shouldPreserveContinuationOnlyAutoResume(
  * Runtime fallback runs inside the already-fired retry callback. A route change
  * may synchronously close the old process before autoRetryLastError can reuse
  * its recovery record, so preserve only that exact callback token across the
- * requested close/rebuild handoff.
+ * requested close/rebuild or cross-harness agent-switch handoff.
  */
 function shouldPreserveSessionRuntimeFallbackAutoResume(
   session: WiredSession,
@@ -5848,6 +5854,11 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     });
   },
 });
+
+/** Called only when the outgoing Maker is actually discarded, not on any error status. */
+export function releaseSessionBindingsForOwnerBoundary(): void {
+  sessionBindings.releaseForOwnerBoundary();
+}
 
 let pluginTaskServiceForCurrentOwner: (() => PluginTaskService) | null = null;
 let drainPluginTaskReceipts: (() => Promise<void>) | null = null;
@@ -12967,9 +12978,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     return botGroupChatServiceHolder ? botGroupChatServiceHolder.continueRound(groupId) : botGroupNotReady;
   });
-  ipcMain.handle(MAKER_INVOKE.BOT_GROUP_STOP, async (event, groupId: unknown) => {
+  ipcMain.handle(MAKER_INVOKE.BOT_GROUP_STOP, async (event, groupId: unknown, scope?: unknown) => {
     assertTrustedAppRendererEvent(event);
-    return botGroupChatServiceHolder ? botGroupChatServiceHolder.stopRound(groupId) : botGroupNotReady;
+    return botGroupChatServiceHolder ? botGroupChatServiceHolder.stopRound(groupId, scope === 'all' ? 'all' : undefined) : botGroupNotReady;
   });
   ipcMain.handle(MAKER_INVOKE.BOT_GROUP_PLAN_START, async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);

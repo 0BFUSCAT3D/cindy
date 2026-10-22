@@ -9375,7 +9375,10 @@
         "elapsed": "{{time}} so far",
         "viewProcess": "Show work",
         "hideProcess": "Hide work",
-        "stop": "Stop"
+        "stop": "Stop",
+        "stopMine": "Stop Mine",
+        "stopAll": "Stop All",
+        "stopAllHint": "Includes other people’s requests"
       },
       "header": {
         "stepRunning": "{{name}} is on step {{step}}",
@@ -9447,6 +9450,7 @@
         "placeholderPlanProposed": "To change who does what, just say so…",
         "placeholderPlanWaiting": "Want {{name}} to change something? Just say so…",
         "placeholderPlanRunning": "What you say goes to {{name}}, who’s working on it…",
+        "placeholderQueueRunning": "What you say goes to {{name}}, who’s speaking…",
         "tooManyAttachments": "Too many attachments. The limit is {{max}} per message.",
         "attachmentsFailed": "Attachments not sent. Check that the files still exist, or remove them and try again.",
         "folderNotSupported": "Folders can’t be attached. Choose the files inside instead."
@@ -9484,7 +9488,8 @@
         "endPlan": "End Work Split",
         "planDone_one": "The step is done",
         "planDone_other": "All {{count}} steps are done",
-        "planDoneGeneric": "Work split finished"
+        "planDoneGeneric": "Work split finished",
+        "endTalk": "End"
       },
       "notice": {
         "memberJoined": "{{name}} joined the group",
@@ -9592,7 +9597,13 @@
         "keepOneStep": "Keep at least one",
         "startFailed": "Couldn’t start the plan. Try again.",
         "dismissFailed": "Couldn’t end this plan. Try again.",
-        "editFailed": "Couldn’t change this step. Try again."
+        "editFailed": "Couldn’t change this step. Try again.",
+        "talkTurn": "Share a view",
+        "stepSpeaking": "Speaking",
+        "stepSpoken": "Done",
+        "allTurns_one": "All {{count}} teammate",
+        "allTurns_other": "All {{count}} teammates",
+        "foldTurns": "Show fewer"
       },
       "speaking": {
         "planning": "Splitting the work…"
@@ -12845,6 +12856,12 @@
         "title": "Archive session",
         "description": "Archive this session? It will be removed from the list.",
         "dirtyWorktreeWarning": "This session's worktree has uncommitted changes; they will be saved as a git snapshot before archiving and can be restored from the session later.",
+        "scheduleWarning_one": "The automation {{names}} linked to this session will be paused after archiving.",
+        "scheduleWarning_other": "The automations {{names}} linked to this session will be paused after archiving.",
+        "scheduleWarningMany_one": "{{count}} of them has linked automations, which will be paused after archiving.",
+        "scheduleWarningMany_other": "{{count}} of them have linked automations, which will be paused after archiving.",
+        "scheduleName": "“{{name}}”",
+        "scheduleNameSeparator": ", ",
         "confirm": "Confirm",
         "cancel": "Cancel"
       },

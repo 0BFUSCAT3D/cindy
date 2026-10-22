@@ -794,6 +794,8 @@ function projectInvokeResultForTunnel(
       manual: row.manual,
       recurring: row.recurring,
       intervalMs: row.intervalMs,
+      // 归档确认据此区分持续会话(归档后换绑新任务继续跑,不会暂停);旧控制端忽略该字段。
+      ...(row.persistentSession === true ? { persistentSession: true } : {}),
     }));
   }
   if (channel !== 'maker:provider:list') return result;

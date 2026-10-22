@@ -5527,7 +5527,7 @@ interface ElectronAPI {
       input: import('../shared/botGroupChat').BotGroupSendInput,
     ) => Promise<import('../shared/botGroupChat').BotGroupSendResult>;
     continueBotGroupRound: (groupId: string) => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
-    stopBotGroupRound: (groupId: string) => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
+    stopBotGroupRound: (groupId: string, scope?: 'all') => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;
     startBotGroupPlan: (
       input: import('../shared/botGroupChat').BotGroupPlanActionInput,
     ) => Promise<import('../shared/botGroupChat').BotGroupMutationResult>;

@@ -2534,6 +2534,20 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 `cindy.group-notice` v1 的 integration 卡映射到已有 plan-failed/member-failed/member-timeout
 展示提示，仅承担文案，不授予执行权限。Mobile 继续消费主机既有群资源投影，无新增原生能力。
 
+### 服务器伙伴群一次一位伙伴（`groupSingleSpeaker`，2026-10-21）
+
+Chat Server `/me` 追加 `capabilities.groupSingleSpeaker: 1`，服务端派发随之改变且对所有客户端生效：
+主群里 @ 多位或没 @ 人都直接建 `kind=talk` 的队列（没 @ 人时排全部伙伴）、不再自动续圈。旧客户端照常可用——
+它们本就声明 `planVersion: 1` 领取安排步骤、渲染安排卡并能「继续」；仍发送的 `deferExecution` /
+`continueDiscussion` 被接受（后者只记录、不续圈），旧的「继续讨论」只叫被 @ 的伙伴或第一位伙伴。
+
+新 Desktop 只在看到该能力时：不再发 `deferExecution`、不做发送前的辅助判断、不发 `continueDiscussion`；
+队列停着等继续时新消息按新请求发送（不作为补充）。队列前 5 位由服务端自动接续，无需客户端参与。
+`chat_plan.kind` 是附加字段，旧客户端忽略；新客户端缺字段时按旧分工卡呈现。
+停止的范围收窄与主群上下文精简都只在看到该能力时启用，旧服务器保留整轮停止与完整主群历史；收窄只在执行端实现（成员只停自己的请求与伙伴，群主或管理员——含本账号拥有的管理员伙伴——可 `all`），沿用既有 control /
+plan action 的服务端权限，IPC `bot-group:stop` 追加可选 `scope`；
+手机经电脑的远程动作不变（停止为本人范围）。发布顺序：服务端整集群先上，再发客户端。
+
 ### 伙伴群聊引用回复（`cindy.quote` v1）
 
 主时间线的引用回复不使用服务器 `replyToId`：现行服务端要求它与 `threadRootId` 指向同一 Thread，
@@ -3032,3 +3046,28 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 点「开始跟进」先弹与设置页同一确认框，完整显示范围及用量（远程时取 Host 下发的文字），确认后才保存；
 「暂不开启」直接保存。Mobile iOS/Android 复用现有设置表单与按钮并显示范围及用量；
 没有原生配置、依赖、指纹或数据库迁移变化。
+
+## 自动化绑定投影的持续会话标记（归档确认）
+
+`maker:schedule:list` 在 `sessionBindings: true` 的投影里新增可选 `persistentSession`（仅为 `true` 时携带，
+`false` 或缺省都不下发）。新控制端读到它才把该自动化视为「归档后会换绑新任务继续跑」，归档前不提示；
+旧控制端的 `parseScheduleBindings` 只取已知字段，忽略新增字段。旧被控端不下发该字段时，新控制端只可能
+对持续会话多弹一次归档提醒，提醒不丢、不误归档，属安全降级。
+
+不新增 channel、能力、服务端 schema、数据库或 Mobile 原生指纹，`maker:schedule:list` 沿用既有白名单。
+桌面远程任务归档时，每台设备总是直取一次带 `sessionBindings: true` 的 `maker:schedule:list`（最多等
+1.5 秒；失败或超时回退本地镜像里已有的快照，没有则按无绑定处理，离线设备因此每次最多多等 1.5 秒）；
+手机归档确认同样只发一次带该投影参数的 `maker:schedule:list`，同样有界。两端都只请求绑定投影，不拉完整列表。
+
+## 原插件设置页的文档来源隔离
+
+`settings:open` 可选返回 `documentIsolation: true`；新手机仅见到明确标记后才在既有
+加密 settings 通道发送 `{ kind: "document", epoch }`。epoch 是单租约内递增的正安全整数，
+相同值幂等、较旧值拒绝；不增加 channel、权限或持久化字段。Host 每代生成的 UUID
+继续使用插件既有 `mobilePageId` 契约，旧来源只保留同租约通知投递资格，不能创建或回答
+新确认、目录选择或其它交互。关闭租约清理全部来源。
+
+旧手机连接新 Host 时忽略新增能力、沿用旧语义；新手机连接旧 Host 时不发新命令，
+配置读取、保存与包内导航照旧，完整跨文档确认隔离须两端都更新。插件本身无需更新，
+不改变已装批准、凭证、KV、版本或原生指纹。实现与时序验证见
+[原配置页协议](../remote-plugin-oauth.md#手机原配置页授权的增量能力)。
