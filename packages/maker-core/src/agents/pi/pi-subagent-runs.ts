@@ -3123,8 +3123,9 @@ async function terminalResultProcessIdentities(
  * Empty/failed/truncated probes are unknown, not proof of absence. Windows can
  * omit command lines for protected processes in other accounts. Use the OS
  * user filter first (tasklist /FI USERNAME, like POSIX ps -u), then require a
- * readable command line for every selected PID. A missing/inaccessible own
- * process keeps recovery closed; PID discovery never authorizes a kill.
+ * readable command line or independent exit confirmation for every selected
+ * PID. An inaccessible live process keeps recovery closed; PID discovery never
+ * authorizes a kill.
  */
 async function readRecoveryProcessInventory(deadline: number): Promise<string[] | null> {
   try {
@@ -3164,11 +3165,25 @@ async function readRecoveryProcessInventory(deadline: number): Promise<string[] 
         'foreach ($item in $items) {',
         '  $number = [int]$item.ProcessId',
         '  if (-not $processIds.ContainsKey($number)) { continue }',
-        '  if ([string]::IsNullOrWhiteSpace($item.CommandLine)) { $complete = $false; break }',
+        '  if ([string]::IsNullOrWhiteSpace($item.CommandLine)) { continue }',
         '  $commands.Add($item.CommandLine)',
         '  $processIds.Remove($number)',
         '}',
-        '@{ complete = ($complete -and $processIds.Count -eq 0); commands = @($commands.ToArray()); count = $count } | ConvertTo-Json -Compress',
+        // Other short-lived processes can exit between tasklist and CIM too.
+        // Missing command lines alone are not exit evidence; independently
+        // check each remaining PID. Only an exited process can leave the count.
+        'foreach ($number in @($processIds.Keys)) {',
+        '  $unreadable = $null',
+        '  try {',
+        '    $unreadable = [System.Diagnostics.Process]::GetProcessById($number)',
+        '    if ($unreadable.HasExited) { $count-- } else { $complete = $false }',
+        '  } catch [System.ArgumentException] {',
+        '    $count--',
+        '  } finally {',
+        '    if ($null -ne $unreadable) { $unreadable.Dispose() }',
+        '  }',
+        '}',
+        '@{ complete = $complete; commands = @($commands.ToArray()); count = $count } | ConvertTo-Json -Compress',
       ].join('\n');
       const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
         encoding: 'utf8', timeout: Math.min(DEFAULT_KILL_BUDGET_MS, remaining), maxBuffer: 4 * 1024 * 1024, windowsHide: true,
