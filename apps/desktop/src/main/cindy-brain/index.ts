@@ -8089,7 +8089,7 @@ export function registerGhostIpc(): void {
       await runtime.spawn(ghost);
       await invokeGhostMobileRelay(ghost, { op: 'connect', pageId, channels });
     },
-    post: async (ghost, pageId, channel, data) => { await invokeGhostMobileRelay(ghost, { op: 'post', pageId, channel, data }); },
+    post: async (ghost, pageId, channel, data, sourceId) => { await invokeGhostMobileRelay(ghost, { op: 'post', pageId, channel, data, sourceId }); },
     poll: async (ghost, pageId, after) => await invokeGhostMobileRelay(ghost, { op: 'poll', pageId, after }) as PluginPagePoll['events'],
     disconnect: async (id, pageId) => {
       const ghost = findGhostForPhysicalStoragePart(id);
