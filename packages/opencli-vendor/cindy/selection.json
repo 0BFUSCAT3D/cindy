@@ -1,6 +1,7 @@
 {
   "excludedCommands": [
     "1688/download", "bilibili/download", "douban/download", "grok/image",
+    "geogebra/triangle", "geogebra/hexagon",
     "instagram/download", "midjourney/download", "pinterest/download",
     "pixiv/bookmark-download", "pixiv/download", "pixiv/novel-download",
     "rednote/download", "suno/download", "twitter/download", "uiverse/preview",

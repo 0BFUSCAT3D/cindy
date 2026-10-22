@@ -3,7 +3,11 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, openSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, isAbsolute, basename } from 'node:path';
 
-/** Lazy allocation: importing the catalog never touches the filesystem. */
+/** Lazy allocation: importing the catalog never touches the filesystem.
+ * The host chooses the parent; mkdtemp creates an unpredictable private directory
+ * (0700 on POSIX). This is ordinary trusted-host temporary storage, not process
+ * isolation from another program already running with the same OS user rights.
+ */
 export function recipeTemporaryDirectory(): string {
   const host = activeHost();
   if (host.temporaryDirectory) return host.temporaryDirectory;

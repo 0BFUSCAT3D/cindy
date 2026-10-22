@@ -33,6 +33,7 @@ export class OpenCliPage extends CDPBasePage {
   constructor(
     private readonly deps: PageDeps,
     private readonly home?: string,
+    private readonly windowMode?: 'foreground' | 'background',
   ) {
     super();
     this.targetId = deps.targetId;
@@ -44,6 +45,7 @@ export class OpenCliPage extends CDPBasePage {
   ): Promise<Record<string, unknown>> {
     const result = await this.deps.call({
       ...request,
+      ...(request.action === 'open' && this.windowMode === 'foreground' ? { background: false } : {}),
       ...((request.targetId ?? this.targetId) ? { targetId: request.targetId ?? this.targetId } : {}),
     });
     if (!result.ok)
@@ -55,6 +57,12 @@ export class OpenCliPage extends CDPBasePage {
       );
     const target = data.targetId ?? data.tabId;
     if (adoptTarget && typeof target === "string") this.targetId = target;
+    // Embedded opens are always background; focus explicitly on both backends.
+    // One navigation boundary covers goto, lazy target creation and newTab.
+    if (this.windowMode === 'foreground' && (request.action === 'open' || request.action === 'navigate')) {
+      if (!this.targetId) throw new Error('Browser did not return a targetId');
+      await this.request({ action: 'focus' }, false);
+    }
     return data;
   }
 
@@ -287,6 +295,7 @@ export async function runOpenCliAdapter(
   const page = new OpenCliPage(
     deps,
     command.domain ? `https://${command.domain}` : undefined,
+    command.defaultWindowMode,
   );
   try {
     const files = await deps.recipeFiles?.();

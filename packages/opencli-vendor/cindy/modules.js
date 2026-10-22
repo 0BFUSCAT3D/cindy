@@ -310,10 +310,8 @@ import "../clis/geogebra/add-line.js";
 import "../clis/geogebra/add-point.js";
 import "../clis/geogebra/add-polygon.js";
 import "../clis/geogebra/eval.js";
-import "../clis/geogebra/hexagon.js";
 import "../clis/geogebra/info.js";
 import "../clis/geogebra/list.js";
-import "../clis/geogebra/triangle.js";
 import "../clis/gitee/auth.js";
 import "../clis/gitee/search.js";
 import "../clis/gitee/trending.js";
@@ -1303,10 +1301,8 @@ export const modules = {
   "geogebra/add-point.js": true,
   "geogebra/add-polygon.js": true,
   "geogebra/eval.js": true,
-  "geogebra/hexagon.js": true,
   "geogebra/info.js": true,
   "geogebra/list.js": true,
-  "geogebra/triangle.js": true,
   "gitee/auth.js": true,
   "gitee/search.js": true,
   "gitee/trending.js": true,

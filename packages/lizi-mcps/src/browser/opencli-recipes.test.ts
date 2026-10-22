@@ -9,7 +9,7 @@ import * as downloads from '@jackwener/opencli/download';
 import { downloadArticle } from '@jackwener/opencli/download/article-download';
 import { resolveExistingUploadPaths } from '../../../browser-control-runtime/src/_generated/extension/src/browser/paths.js';
 import { createBrowserMcpServer } from "./server.js";
-import { OpenCliPage } from "./opencli-page.js";
+import { OpenCliPage, runOpenCliAdapter } from "./opencli-page.js";
 import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
 import { runRecipe } from "./recipe-runner.js";
 import { executeAdapter, type IPage } from '@jackwener/opencli/cindy';
@@ -58,6 +58,50 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 foreground regression, unit tier. Use the real login adapter/page
+  // with an in-memory transport: previous navigation tests omitted metadata.
+  it.each([undefined, 'existing-target'])('focuses interactive login before probing from %s', async targetId => {
+    const calls: BrowserControlRequest[] = [];
+    const result = await runOpenCliAdapter('midjourney/login', {}, { targetId, call: async request => {
+      calls.push(request);
+      const fn = request.request?.fn ?? '';
+      return { ok: true, action: request.action, data: request.action === 'open'
+        ? { targetId: 'login-target' }
+        : { result: fn.includes('location.hostname') ? 'www.midjourney.com'
+          : fn.includes('/api/subscriptions-check') ? { ok: true, status: 200,
+            text: JSON.stringify({ user_id: 'fixture', status: 'active', plan: { type: 'fixture' } }) }
+            : true } };
+    } });
+    expect(result).toMatchObject({ status: 'already_logged_in', logged_in: true });
+    expect(calls.slice(0, 2).map(request => request.action)).toEqual([targetId ? 'navigate' : 'open', 'focus']);
+    expect(calls[1].targetId).toBe(targetId ?? 'login-target');
+    if (!targetId) expect(calls[0].background).toBe(false);
+  });
+
+  it('surfaces a foreground focus failure before login polling starts', async () => {
+    const calls: BrowserControlRequest[] = [];
+    await expect(runOpenCliAdapter('midjourney/login', {}, { targetId: 'login-target', call: async request => {
+      calls.push(request);
+      if (request.action === 'act') throw new Error('probe started before focus');
+      return request.action === 'focus'
+        ? { ok: false, action: request.action, message: 'fixture focus unavailable' }
+        : { ok: true, action: request.action, data: { result: true } };
+    } })).rejects.toThrow('fixture focus unavailable');
+    expect(calls.map(request => request.action)).toEqual(['navigate', 'focus']);
+  });
+
+  // Forced screenshots have no opt-out. Exclusion must happen at discovery
+  // and direct execution, before drawing mutates a user's canvas (unit tier).
+  it.each(['geogebra/triangle', 'geogebra/hexagon'])('defers mandatory file export %s before page effects', async id => {
+    const effect = vi.fn(async () => { throw new Error('unexpected canvas mutation'); });
+    const start = vi.fn();
+    await expect(executeAdapter(id, {}, new Proxy({}, { get: () => effect }) as IPage, undefined, start))
+      .rejects.toThrow('Unknown bundled adapter');
+    expect(loadRecipes().has(`opencli:${id}`)).toBe(false);
+    expect(start).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+  });
+
   // #6826 export-mode recurrence, unit tier. Earlier tests only exercised
   // link flags and web/stdout, missing optional archive/browser-download modes.
   // Every retired argument must disappear and fail before execution begins.
