@@ -155,6 +155,27 @@ describe('native event projection', () => {
       expect(emit.mock.calls[2][0].data).toEqual({ input: 15, cached: 5, output: 2 });
     },
   );
+  it('appends a final-only tail per message and never repeats a diverged snapshot', () => {
+    const emit = vi.fn(),
+      p = createEventProjection(emit);
+    p.begin();
+    for (const event of [
+      // Codex holds a citation-boundary tail out of deltas and only publishes it in completed.
+      { type: 'text', data: { text: 'See ', isFinal: false, agentMessageId: 'a' } },
+      { type: 'text', data: { text: 'See docs.', isFinal: true, agentMessageId: 'a' } },
+      { type: 'text', data: { text: 'Only final', isFinal: true, agentMessageId: 'b' } },
+      { type: 'text', data: { text: 'Hello worxd', isFinal: false, agentMessageId: 'c' } },
+      { type: 'text', data: { text: 'Hello wonderful', isFinal: true, agentMessageId: 'c' } },
+      { type: 'done', data: { result: 'Hello wonderful', status: 'completed' } },
+    ])
+      p.accept(event as any);
+    expect(emit.mock.calls.filter(([e]) => e.type === 'text').map(([e]) => e.data)).toEqual([
+      'See ',
+      'docs.',
+      'Only final',
+      'Hello worxd',
+    ]);
+  });
   it('keeps native tool activity and emits one failure per turn', () => {
     const emit = vi.fn(),
       p = createEventProjection(emit);

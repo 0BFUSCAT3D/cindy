@@ -66,7 +66,7 @@ async function fixture() {
         model: 'model',
         engine: 'pi',
         efforts: ['high'],
-        images: false,
+        images: true,
         isDefault: true,
       },
       access: 'none',
@@ -75,7 +75,13 @@ async function fixture() {
     { url: 'http://127.0.0.1:1/mcp/fixture', token: 'invalid-fixture-token', emit: () => {} },
   );
   cleanups.push(() => runtime.close());
-  return { runtime, maker, first };
+  return { runtime, maker, first, directory };
+}
+const image = { type: 'image', mimeType: 'image/png', data: Buffer.from('png').toString('base64') };
+async function inputFiles(directory: string) {
+  const root = path.join(directory, 'clients', 'grant-a');
+  const inputs = (await fs.readdir(root)).filter((name) => name.startsWith('input-'));
+  return (await Promise.all(inputs.map((name) => fs.readdir(path.join(root, name))))).flat();
 }
 const message = { parts: [{ type: 'text', text: 'hello' }], effort: 'high' };
 
@@ -212,5 +218,18 @@ describe('local client runtime lifecycle', () => {
     await f.runtime.call('send', message);
     await vi.waitFor(() => expect(f.runtime.call('send', message)).resolves.toEqual({}));
     expect(f.first.send).toHaveBeenCalledTimes(2);
+  });
+  it('removes images written for a send that is rejected before the engine takes it', async () => {
+    const f = await fixture();
+    await expect(
+      f.runtime.call('send', { parts: [image, { type: 'unsupported' }] }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    f.first.setEffort.mockRejectedValueOnce(new Error('effort unavailable'));
+    await expect(f.runtime.call('send', { ...message, parts: [image] })).rejects.toThrow(
+      'effort unavailable',
+    );
+    expect(await inputFiles(f.directory)).toEqual([]);
+    await f.runtime.call('send', { parts: [image] });
+    expect(await inputFiles(f.directory)).toHaveLength(1);
   });
 });

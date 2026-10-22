@@ -57,9 +57,11 @@ export function createEventProjection(
     }
   };
   const ignoredTools = new Set<string>();
+  const streamed = new Map<string, string>();
   return {
     begin() {
       textSeen = false;
+      streamed.clear();
       ended = false;
       usageReported = false;
       usage = { input: 0, cached: 0, output: 0 };
@@ -78,9 +80,23 @@ export function createEventProjection(
         return;
       }
       if (event.type === 'text') {
-        if (d.isFinal !== true && string(d.text)) {
-          textSeen = true;
-          emit({ type: 'text', data: d.text });
+        const text = string(d.text),
+          key = string(d.agentMessageId);
+        if (d.isFinal !== true) {
+          if (text) {
+            streamed.set(key, (streamed.get(key) ?? '') + text);
+            textSeen = true;
+            emit({ type: 'text', data: text });
+          }
+        } else {
+          // The wire is append-only: a final snapshot can only supply the tail that
+          // was never streamed (held citation boundary, final-only notices).
+          const sent = streamed.get(key) ?? '';
+          streamed.delete(key);
+          if (text.length > sent.length && text.startsWith(sent)) {
+            textSeen = true;
+            emit({ type: 'text', data: text.slice(sent.length) });
+          }
         }
       } else if (event.type === 'thinking') {
         if (d.stage !== 'final' && string(d.text)) emit({ type: 'thinking', data: d.text });
@@ -123,6 +139,7 @@ export function createEventProjection(
         addEventUsage(d);
         if (!terminal) {
           textSeen = false;
+          streamed.clear();
           return;
         }
         reportUsage();
@@ -267,11 +284,29 @@ export async function openLocalAgentRuntime(
     await fs.rm(temporary, { recursive: true, force: true });
     throw error;
   }
+  // Images are written per message; a message the engine never took must not leave them behind.
+  const discard = async (content: UserMessage) => {
+    if (Array.isArray(content.content))
+      await Promise.all(
+        content.content.map((block) =>
+          block.type === 'image' ? fs.rm(block.path, { force: true }) : undefined,
+        ),
+      ).catch(() => {});
+  };
   const message = async (params: Record<string, unknown>): Promise<UserMessage> => {
     if (!Array.isArray(params.parts) || !params.parts.length || params.parts.length > 64)
       throw new LocalAgentError('INVALID_INPUT', '消息内容无效。');
     const blocks: UserContentBlock[] = [];
-    for (const raw of params.parts) {
+    try {
+      await collect(params.parts, blocks);
+    } catch (error) {
+      await discard({ type: 'user', content: blocks });
+      throw error;
+    }
+    return { type: 'user', content: blocks };
+  };
+  const collect = async (parts: unknown[], blocks: UserContentBlock[]) => {
+    for (const raw of parts) {
       const part = object(raw);
       if (part.type === 'text' && typeof part.text === 'string') {
         // A tool policy is not an input blacklist: paths and slash-prefixed text
@@ -299,16 +334,15 @@ export async function openLocalAgentRuntime(
               'image/gif': '.gif',
             }[string(part.mimeType)] ?? ''),
         );
-        await fs.writeFile(file, bytes, { mode: 0o600 });
         blocks.push({
           type: 'image',
           path: file,
           mimeType: string(part.mimeType),
           pathOrigin: 'desktop-host',
         });
+        await fs.writeFile(file, bytes, { mode: 0o600 });
       } else throw new LocalAgentError('INVALID_INPUT', '所选 Cindy 模型不支持这类输入。');
     }
-    return { type: 'user', content: blocks };
   };
   return {
     get id() {
@@ -348,17 +382,23 @@ export async function openLocalAgentRuntime(
         if (!busy || preparing)
           throw new LocalAgentError('NOT_RUNNING', '当前没有正在运行的回答。');
         const content = await message(params);
-        assertCurrent(current);
-        if (!busy) throw new LocalAgentError('NOT_RUNNING', '当前没有正在运行的回答。');
-        await handle.steer(content);
+        try {
+          assertCurrent(current);
+          if (!busy) throw new LocalAgentError('NOT_RUNNING', '当前没有正在运行的回答。');
+          await handle.steer(content);
+        } catch (error) {
+          await discard(content);
+          throw error;
+        }
         return {};
       }
       if (busy) throw new LocalAgentError('BUSY', '当前回答尚未结束。');
       const current = ++epoch;
       busy = true;
       preparing = true;
+      let content: UserMessage | undefined;
       try {
-        const content = await message(params);
+        content = await message(params);
         assertCurrent(current);
         if (appliedInstructions !== instructionsVersion) {
           const previous = handle;
@@ -374,8 +414,10 @@ export async function openLocalAgentRuntime(
         preparing = false;
         projection.begin();
         // Some harnesses await the entire turn; acceptance must not block tool delivery/control RPCs.
+        const sending = content;
         void (async () => {
-          const result = await handle.send(content);
+          const result = await handle.send(sending);
+          if (!result.accepted) await discard(sending);
           assertSendDispatched(result, 'local-agent/send');
         })().catch(() => {
           if (!closed && epoch === current) {
@@ -389,6 +431,7 @@ export async function openLocalAgentRuntime(
           busy = false;
           preparing = false;
         }
+        if (content) await discard(content);
         throw error;
       }
     },
