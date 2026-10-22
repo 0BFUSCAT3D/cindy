@@ -39,6 +39,11 @@ import { resolveRemoteInvokeTimeoutMs } from '../invokePolicy.js';
 import { SESSION_ACTIVITY_CHANNEL } from '../topics.js';
 import { resolveDesktopIceServers, REMOTE_DESKTOP_ICE_CONFIG_TIMEOUT_MS } from '../remoteDesktopIceConfig.js';
 import { REMOTE_DESKTOP_ICE_SERVERS } from '../remoteDesktopIce.js';
+import type {
+  DeviceLinkDirectChannel,
+  DeviceLinkDirectPathHandle,
+  DeviceLinkPeerPathChanged,
+} from '../directPath.js';
 
 type Handler = (...args: unknown[]) => void;
 
@@ -10481,4 +10486,186 @@ it('stops automatic reconnect after device removal and permits a new login lifec
   expect(h.client.getStatus()).toBe('online');
   expect(h.client.getConnectionIssue()).toBeNull();
   h.client.stop();
+});
+
+/**
+ * 两台设备之间的内存直连通道(模拟 WebRTC DataChannel)。每个方向可单独静默丢帧，
+ * 模拟直连半死；任一端关闭后另一端随即收到 closed()。
+ */
+function connectDirect(
+  left: { id: string; client: DeviceLinkClient },
+  right: { id: string; client: DeviceLinkClient },
+) {
+  const drop = { toLeft: false, toRight: false };
+  const failSend = { left: false, right: false };
+  const frames = { toLeft: [] as Envelope[], toRight: [] as Envelope[] };
+  const closeReasons: string[] = [];
+  let open = true;
+  const handles: { left?: DeviceLinkDirectPathHandle; right?: DeviceLinkDirectPathHandle } = {};
+  const channel = (from: 'left' | 'right'): DeviceLinkDirectChannel => {
+    const direction = from === 'left' ? 'toRight' : 'toLeft';
+    const target = from === 'left' ? 'right' : 'left';
+    return {
+      send(text) {
+        if (!open || failSend[from]) throw new Error('direct channel unavailable');
+        frames[direction].push(JSON.parse(text) as Envelope);
+        if (!drop[direction]) setTimeout(() => handles[target]?.receive(text), 0);
+      },
+      close(reason) {
+        closeReasons.push(reason);
+        if (!open) return;
+        open = false;
+        setTimeout(() => { handles.left?.closed(); handles.right?.closed(); }, 0);
+      },
+    };
+  };
+  handles.left = left.client.attachDirectPath(right.id, channel('left'));
+  handles.right = right.client.attachDirectPath(left.id, channel('right'));
+  return { drop, failSend, frames, closeReasons, handles, isOpen: () => open };
+}
+
+const reliableKinds = (envs: readonly Envelope[] | undefined, kind: Envelope['kind'], src?: string): number =>
+  (envs ?? []).filter(env => env.kind === kind && parseTransportPayload(env.payload) && (!src || env.src === src)).length;
+
+describe('直连优先、中继兜底(Device Link direct path)', () => {
+  it('falls back to relay on a stalled direct path without re-running the command or disturbing another controller', async () => {
+    vi.useFakeTimers();
+    const relay = new MemoryRelay();
+    const sockets = vi.spyOn(relay, 'makeWebSocket');
+    const timing = { transportRetryIntervalMs: 1_000, requestTimeoutMs: 30_000 };
+    // The controller's own ACK deadline must be what detects the stall, not the host's.
+    const host = makeRelayClient(relay, 'desktop', { ...timing, transportRetryIntervalMs: 10_000 });
+    const a = makeRelayClient(relay, 'viewer-a', timing);
+    const b = makeRelayClient(relay, 'viewer-b', timing);
+    const pump = () => relay.settle(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const executed: string[] = [];
+    host.onFrame((env) => {
+      if (env.kind === 'link-open') host.sendLinkAccept(env.src!, env.id!, { appVersion: '1', allowlistHash: 'hash' });
+      if (env.kind !== 'invoke') return;
+      executed.push(`${env.src}:${env.id}`);
+      host.sendInvokeResult(env.src!, env.id!, { ok: true, result: `done-${executed.length}` });
+    });
+    const pathChanges: DeviceLinkPeerPathChanged[] = [];
+    a.onPeerPathChanged(change => pathChanges.push(change));
+    try {
+      for (const client of [host, a, b]) client.start();
+      await pump();
+      for (const client of [a, b]) {
+        const opening = client.openLink('desktop', { controllerName: 'Viewer', protocolVersion: 1, appVersion: '1' });
+        await pump(); await opening;
+      }
+      const directA = connectDirect({ id: 'viewer-a', client: a }, { id: 'desktop', client: host });
+      const directB = connectDirect({ id: 'viewer-b', client: b }, { id: 'desktop', client: host });
+      const relayInvokesBefore = reliableKinds(relay.deliveredTo.get('desktop'), 'invoke');
+
+      // Healthy direct path: the request, its result and both ACK streams bypass the relay.
+      const first = a.invoke('desktop', { channel: 'local-db:sessions:get', args: ['s1'] });
+      await pump();
+      await expect(first).resolves.toMatchObject({ ok: true });
+      expect(reliableKinds(directA.frames.toRight, 'invoke')).toBe(1);
+      expect(reliableKinds(directA.frames.toLeft, 'invoke-result')).toBe(1);
+      expect(reliableKinds(relay.deliveredTo.get('desktop'), 'invoke')).toBe(relayInvokesBefore);
+      expect(reliableKinds(relay.deliveredTo.get('viewer-a'), 'invoke-result')).toBe(0);
+
+      // Host -> viewer-a goes silent: the command reaches the host, but its ACK and result vanish.
+      directA.drop.toLeft = true;
+      let second: unknown;
+      void a.invoke('desktop', { channel: 'local-db:sessions:get', args: ['s2'] }).then(v => { second = v; });
+      await pump();
+      expect(executed).toHaveLength(2);
+      expect(second).toBeUndefined();
+      // Just past the controller's 1s ACK deadline, then let the relay deliver the fallback copy.
+      await vi.advanceTimersByTimeAsync(1_100);
+      await pump();
+
+      expect(second).toMatchObject({ ok: true, result: 'done-2' });
+      // The relay copy of the same seq is acknowledged, never dispatched a second time.
+      expect(reliableKinds(relay.deliveredTo.get('desktop'), 'invoke', 'viewer-a')).toBe(1);
+      expect(executed.filter(entry => entry.startsWith('viewer-a:'))).toHaveLength(2);
+      expect(pathChanges.at(-1)).toMatchObject({ deviceId: 'desktop', path: 'relay', reason: 'ack-timeout', resent: 1 });
+      expect(a.getPeerPath('desktop')).toBe('relay');
+      expect(host.getPeerPath('viewer-a')).toBe('relay');
+      expect(directA.isOpen()).toBe(false);
+
+      // Only that peer's direct path changed: no relay reconnect, other controller stays direct.
+      const third = b.invoke('desktop', { channel: 'local-db:sessions:get', args: ['s3'] });
+      await pump();
+      await expect(third).resolves.toMatchObject({ ok: true });
+      expect(reliableKinds(directB.frames.toRight, 'invoke')).toBe(1);
+      expect(reliableKinds(relay.deliveredTo.get('desktop'), 'invoke', 'viewer-b')).toBe(0);
+      expect(host.getPeerPath('viewer-b')).toBe('direct');
+      expect(a.isLinkReady('desktop')).toBe(true);
+      expect(b.isLinkReady('desktop')).toBe(true);
+      expect(sockets).toHaveBeenCalledTimes(3);
+      for (const result of sockets.mock.results) expect(result.value.closed).toBeNull();
+    } finally {
+      for (const client of [host, a, b]) client.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps link control, scopes and peer identity under relay authority', async () => {
+    vi.useFakeTimers();
+    const relay = new MemoryRelay();
+    const sockets = vi.spyOn(relay, 'makeWebSocket');
+    const timing = { transportRetryIntervalMs: 1_000, requestTimeoutMs: 30_000 };
+    const host = makeRelayClient(relay, 'desktop', timing);
+    const a = makeRelayClient(relay, 'viewer-a', timing);
+    const pump = () => relay.settle(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const hostFrames: Envelope[] = [];
+    host.onFrame((env) => {
+      if (env.kind === 'link-open') host.sendLinkAccept(env.src!, env.id!, { appVersion: '1', allowlistHash: 'hash' });
+      if (env.kind === 'invoke' || env.kind === 'link-close') hostFrames.push(env);
+      if (env.kind === 'invoke') host.sendInvokeResult(env.src!, env.id!, { ok: true, result: 'ok' });
+    });
+    try {
+      host.start(); a.start();
+      await pump();
+      const opening = a.openLink('desktop', { controllerName: 'Viewer', protocolVersion: 1, appVersion: '1' });
+      await pump(); await opening;
+
+      const scopedClose = vi.fn();
+      const scoped = host.attachDirectPath(sharedTaskHostPeer('task-a', 'viewer-a'), { send: vi.fn(), close: scopedClose });
+      expect(scoped.isActive()).toBe(false);
+      expect(scopedClose).toHaveBeenCalledWith('not-eligible');
+
+      const direct = connectDirect({ id: 'viewer-a', client: a }, { id: 'desktop', client: host });
+      const inject = (env: Record<string, unknown>) => direct.handles.right!.receive(JSON.stringify(env));
+      // Link control and unwrapped legacy invokes (even with a forged src) never enter via direct.
+      inject({ v: PROTOCOL_VERSION, kind: 'link-close', dst: 'desktop', payload: { reason: 'revoked' } });
+      inject({ v: PROTOCOL_VERSION, kind: 'invoke', id: 'legacy-1', src: 'viewer-b', dst: 'desktop',
+        payload: { channel: 'local-db:sessions:get', args: [] } });
+      await pump();
+      expect(hostFrames).toHaveLength(0);
+      expect(host.isLinkReady('viewer-a')).toBe(true);
+
+      // A local write failure sends the same request over relay immediately.
+      direct.failSend.left = true;
+      const viaRelay = a.invoke('desktop', { channel: 'local-db:sessions:get', args: ['s1'] });
+      await pump();
+      await expect(viaRelay).resolves.toEqual({ ok: true, result: 'ok' });
+      expect(hostFrames.filter(env => env.kind === 'invoke' && env.src === 'viewer-a')).toHaveLength(1);
+      expect(direct.closeReasons).toContain('send-failed');
+      expect(a.getPeerPath('desktop')).toBe('relay');
+
+      // The relay stays the presence authority: an offline report removes a fresh direct path.
+      const again = connectDirect({ id: 'viewer-a', client: a }, { id: 'desktop', client: host });
+      expect(host.getPeerPath('viewer-a')).toBe('direct');
+      const hostSocket = sockets.mock.results.find(entry => entry.value.ownerId === 'desktop')!.value;
+      hostSocket.push({ v: PROTOCOL_VERSION, kind: 'presence-changed', payload: {
+        deviceId: 'viewer-a', online: false, deviceName: 'viewer-a', platform: 'darwin', appVersion: '1',
+        lastSeenAt: 0, remoteControlEnabled: true, busy: false,
+      } });
+      expect(again.closeReasons).toContain('peer-offline');
+      expect(host.getPeerPath('viewer-a')).toBe('relay');
+
+      const last = connectDirect({ id: 'viewer-a', client: a }, { id: 'desktop', client: host });
+      a.stop();
+      expect(last.closeReasons).toContain('stopped');
+      expect(a.getPeerPath('desktop')).toBe('relay');
+    } finally {
+      host.stop(); a.stop();
+      vi.useRealTimers();
+    }
+  });
 });
