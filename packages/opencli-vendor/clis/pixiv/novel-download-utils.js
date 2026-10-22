@@ -1,4 +1,4 @@
-import { closeRecipeFileSync, openRecipeOutputFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { statRecipeFileSync, recipeFileExistsSync, closeRecipeFileSync, openRecipeOutputFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ArgumentError, CommandExecutionError } from '@jackwener/opencli/errors';
@@ -70,7 +70,7 @@ export function normalizePixivOutputRoot(value, fallback) {
   let ancestorStat;
   while (!ancestorStat) {
     try {
-      ancestorStat = fs.lstatSync(recipeOutputPath(resolveRecipePath(ancestor)));
+      ancestorStat = statRecipeFileSync(resolveRecipePath(ancestor));
     } catch (error) {
       if (error?.code !== 'ENOENT') {
         throw new ArgumentError(`output path is not a safe directory: ${ancestor}`);
@@ -92,7 +92,7 @@ export function normalizePixivOutputRoot(value, fallback) {
   } catch {
     throw new ArgumentError(`output path is not a safe directory: ${ancestor}`);
   }
-  if (!fs.statSync(recipeOutputPath(resolveRecipePath(canonicalAncestor))).isDirectory()) {
+  if (!statRecipeFileSync(resolveRecipePath(canonicalAncestor)).isDirectory()) {
     throw new ArgumentError(`output path is not a safe directory: ${ancestor}`);
   }
   return path.join(canonicalAncestor, ...missingParts);
@@ -100,7 +100,7 @@ export function normalizePixivOutputRoot(value, fallback) {
 
 export function pixivPathEntryExists(target) {
   try {
-    fs.lstatSync(recipeOutputPath(resolveRecipePath(target)));
+    statRecipeFileSync(resolveRecipePath(target));
     return true;
   } catch (error) {
     if (error?.code === 'ENOENT') return false;
@@ -161,7 +161,7 @@ export function prepareNovelFile(body, output, format) {
     throw new CommandExecutionError(`Refusing to overwrite existing Pixiv download: ${destPath}`);
   }
   const createdDirs = [];
-  for (let cursor = outputDir; !fs.existsSync(recipeOutputPath(resolveRecipePath(cursor))); cursor = path.dirname(cursor)) {
+  for (let cursor = outputDir; !recipeFileExistsSync(resolveRecipePath(cursor)); cursor = path.dirname(cursor)) {
     createdDirs.push(cursor);
     if (path.dirname(cursor) === cursor) break;
   }

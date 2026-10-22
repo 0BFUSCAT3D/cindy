@@ -1,4 +1,4 @@
-import { recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -20,7 +20,7 @@ function validateVideoPath(input) {
     if (!resolved) {
         throw new ArgumentError('Video path cannot be empty');
     }
-    if (!fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))) {
+    if (!recipeFileExistsSync(resolveRecipePath(resolved))) {
         throw new ArgumentError(`Video file not found: ${resolved}`);
     }
     const ext = path.extname(resolved).toLowerCase();

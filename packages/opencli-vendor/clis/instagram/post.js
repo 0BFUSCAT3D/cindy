@@ -1,4 +1,4 @@
-import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync, recipeDiagnosticPath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -98,7 +98,7 @@ function validateMixedMediaItems(inputs) {
         if (!resolved) {
             throw new ArgumentError('Media path cannot be empty');
         }
-        if (!fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))) {
+        if (!recipeFileExistsSync(resolveRecipePath(resolved))) {
             throw new ArgumentError(`Media file not found: ${resolved}`);
         }
         const ext = path.extname(resolved).toLowerCase();

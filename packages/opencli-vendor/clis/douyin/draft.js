@@ -5,7 +5,7 @@
  * matches creator center's live upload flow. This command now drives the
  * official upload page directly so it stays aligned with the site.
  */
-import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -307,7 +307,7 @@ cli({
     columns: ['status', 'draft_id'],
     func: async (page, kwargs) => {
         const videoPath = resolveRecipePath(kwargs.video);
-        if (!fs.existsSync(recipeOutputPath(resolveRecipePath(videoPath)))) {
+        if (!recipeFileExistsSync(resolveRecipePath(videoPath))) {
             throw new ArgumentError(`视频文件不存在: ${videoPath}`);
         }
         const ext = path.extname(videoPath).toLowerCase();
@@ -324,7 +324,7 @@ cli({
         }
         const coverPath = kwargs.cover;
         if (coverPath) {
-            if (!fs.existsSync(recipeOutputPath(resolveRecipePath(resolveRecipePath(coverPath))))) {
+            if (!recipeFileExistsSync(resolveRecipePath(resolveRecipePath(coverPath)))) {
                 throw new ArgumentError(`封面文件不存在: ${resolveRecipePath(coverPath)}`);
             }
         }

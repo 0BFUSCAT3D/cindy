@@ -3251,5 +3251,415 @@
     "file": "clis/instagram/_shared/private-publish.js",
     "before": "    const trimmedPath = trimVideoForInstagramStory(filePath, INSTAGRAM_MAX_STORY_VIDEO_DURATION_MS);",
     "after": "    const trimmedPath = trimVideoForInstagramStory(asset.stagedPath, INSTAGRAM_MAX_STORY_VIDEO_DURATION_MS);"
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(cursor)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(cursor))",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "fs.lstatSync(recipeOutputPath(resolveRecipePath(destination)))",
+    "after": "statRecipeFileSync(resolveRecipePath(destination))",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/bookmark-download.js",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, statRecipeFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "fs.lstatSync(recipeOutputPath(resolveRecipePath(ancestor)))",
+    "after": "statRecipeFileSync(resolveRecipePath(ancestor))",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(canonicalAncestor)))",
+    "after": "statRecipeFileSync(resolveRecipePath(canonicalAncestor))",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "fs.lstatSync(recipeOutputPath(resolveRecipePath(target)))",
+    "after": "statRecipeFileSync(resolveRecipePath(target))",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(cursor)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(cursor))",
+    "count": 1
+  },
+  {
+    "file": "clis/pixiv/novel-download-utils.js",
+    "before": "import { closeRecipeFileSync, openRecipeOutputFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeFileExistsSync, closeRecipeFileSync, openRecipeOutputFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/twitter/post.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(absPath)), { throwIfNoEntry: false })",
+    "after": "statRecipeFileSync(resolveRecipePath(absPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/post.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(filePath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(filePath))",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(outputFile)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(outputFile))",
+    "count": 2
+  },
+  {
+    "file": "clis/twitter/likes.js",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(filePath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(filePath))",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(outputFile)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(outputFile))",
+    "count": 2
+  },
+  {
+    "file": "clis/twitter/bookmarks.js",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(absPath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(absPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(absPath)))",
+    "after": "statRecipeFileSync(resolveRecipePath(absPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "import { recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, statRecipeFileSync, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/twitter/archive.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(filePath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(filePath))",
+    "count": 1
+  },
+  {
+    "file": "clis/twitter/archive.js",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/yollomi/upload.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(filePath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(filePath))",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/upload.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/yollomi/utils.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(resolved))",
+    "count": 1
+  },
+  {
+    "file": "clis/yollomi/utils.js",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(dir)))",
+    "after": "statRecipeFileSync(resolveRecipePath(dir))",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(target)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(target))",
+    "count": 2
+  },
+  {
+    "file": "clis/minimax/utils.js",
+    "before": "import { recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeFileExistsSync, recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "fs.stat(recipeOutputPath(resolveRecipePath(filePath)))",
+    "after": "Promise.resolve().then(() => statRecipeFileSync(resolveRecipePath(filePath)))",
+    "count": 1
+  },
+  {
+    "file": "clis/midjourney/utils.js",
+    "before": "fs.stat(recipeOutputPath(resolveRecipePath(sourcePath)))",
+    "after": "Promise.resolve().then(() => statRecipeFileSync(resolveRecipePath(sourcePath)))",
+    "count": 1
+  },
+  {
+    "file": "clis/paperreview/utils.js",
+    "before": "fs.stat(recipeOutputPath(resolveRecipePath(resolvedPath)))",
+    "after": "Promise.resolve().then(() => statRecipeFileSync(resolveRecipePath(resolvedPath)))",
+    "count": 1
+  },
+  {
+    "file": "clis/paperreview/utils.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/notebooklm/add-source.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(abs)))",
+    "after": "statRecipeFileSync(resolveRecipePath(abs))",
+    "count": 1
+  },
+  {
+    "file": "clis/notebooklm/add-source.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/weixin/create-draft.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(absPath)))",
+    "after": "statRecipeFileSync(resolveRecipePath(absPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/weixin/create-draft.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/weibo/publish.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(absPath)), { throwIfNoEntry: false })",
+    "after": "statRecipeFileSync(resolveRecipePath(absPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/weibo/publish.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(absPath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(absPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/xiaohongshu/publish.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(videoPath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(videoPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(videoPath)))",
+    "after": "statRecipeFileSync(resolveRecipePath(videoPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(resolveRecipePath(coverPath))))",
+    "after": "recipeFileExistsSync(resolveRecipePath(resolveRecipePath(coverPath)))",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/publish.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(videoPath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(videoPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(resolveRecipePath(coverPath))))",
+    "after": "recipeFileExistsSync(resolveRecipePath(resolveRecipePath(coverPath)))",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/draft.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/douyin/_shared/imagex-upload.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(imagePath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(imagePath))",
+    "count": 1
+  },
+  {
+    "file": "clis/douyin/_shared/imagex-upload.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/chatgpt/image.js",
+    "before": "fs.existsSync(recipeOutputPath(file))",
+    "after": "recipeFileExistsSync(file)",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/image.js",
+    "before": "import { resolveRecipePath, recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, resolveRecipePath, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(filePath)))",
+    "after": "statRecipeFileSync(resolveRecipePath(filePath))",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/utils.js",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(resolved))",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/reel.js",
+    "before": "import { recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/instagram/story.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(resolved))",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/story.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(resolved))",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/post.js",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "fs.existsSync(recipeOutputPath(resolveRecipePath(outputPath)))",
+    "after": "recipeFileExistsSync(resolveRecipePath(outputPath))",
+    "count": 2
+  },
+  {
+    "file": "clis/instagram/_shared/private-publish.js",
+    "before": "import { recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/xianyu/publish.js",
+    "before": "fs.statSync(recipeOutputPath(resolveRecipePath(absPath)), { throwIfNoEntry: false })",
+    "after": "statRecipeFileSync(resolveRecipePath(absPath))",
+    "count": 1
+  },
+  {
+    "file": "clis/xianyu/publish.js",
+    "before": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "fs.existsSync(recipeOutputPath(destPath))",
+    "after": "recipeFileExistsSync(destPath)",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "fs.statSync(recipeOutputPath(destPath))",
+    "after": "statRecipeFileSync(destPath)",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "fs.existsSync(recipeOutputPath(cookiesFile))",
+    "after": "recipeFileExistsSync(cookiesFile)",
+    "count": 1
+  },
+  {
+    "file": "src/pipeline/steps/download.ts",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, statRecipeFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "src/download/media-download.ts",
+    "before": "fs.existsSync(recipeOutputPath(cookiesFile))",
+    "after": "recipeFileExistsSync(cookiesFile)",
+    "count": 1
+  },
+  {
+    "file": "src/download/media-download.ts",
+    "before": "import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "fs.existsSync(recipeOutputPath(destPath))",
+    "after": "recipeFileExistsSync(destPath)",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "fs.statSync(recipeOutputPath(destPath))",
+    "after": "statRecipeFileSync(destPath)",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "fs.statSync(recipeOutputPath(actualFile))",
+    "after": "statRecipeFileSync(actualFile)",
+    "count": 1
+  },
+  {
+    "file": "src/download/index.ts",
+    "before": "import { closeRecipeFileSync, openRecipeOutputFileSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
+    "after": "import { recipeFileExistsSync, statRecipeFileSync, closeRecipeFileSync, openRecipeOutputFileSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
   }
 ]

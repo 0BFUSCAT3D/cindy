@@ -1,4 +1,12 @@
 {
+  "excludedCommands": [
+    "1688/download", "bilibili/download", "douban/download", "grok/image",
+    "instagram/download", "midjourney/download", "pinterest/download",
+    "pixiv/bookmark-download", "pixiv/download", "pixiv/novel-download",
+    "rednote/download", "suno/download", "twitter/download", "uiverse/preview",
+    "weixin/download", "xiaohongshu/download", "zhihu/download"
+  ],
+  "excludedCommandsReason": "Local file exports are deferred: a checked path string is not an atomic write capability. Full sources are retained; use existing host file tools to save browser results.",
   "excludedSites": {
     "zlibrary": "Not in Cindy's default catalog: copyright enforcement history and unverified mirror ownership (reviewed 2026-10-23).",
     "slock": "Deferred: app.slock.ai redirects to app.raft.build; the adapter still assumes the old origin and token storage. Revalidate before inclusion.",

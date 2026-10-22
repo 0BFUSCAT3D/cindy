@@ -1,4 +1,4 @@
-import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
+import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
@@ -39,7 +39,7 @@ function resolveCoverImage(rawPath) {
     const absPath = resolveRecipePath(value);
     let stat;
     try {
-        stat = fs.statSync(recipeOutputPath(resolveRecipePath(absPath)));
+        stat = statRecipeFileSync(resolveRecipePath(absPath));
     } catch {
         throw new ArgumentError(`weixin create-draft cover-image does not exist: ${absPath}`);
     }

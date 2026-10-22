@@ -1,4 +1,4 @@
-import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
+import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
@@ -30,7 +30,7 @@ function validateImagePaths(raw) {
         if (!SUPPORTED_EXTENSIONS.has(ext)) {
             throw new CommandExecutionError(`Unsupported image format "${ext}". Supported: jpg, png, gif, webp`);
         }
-        const stat = fs.statSync(recipeOutputPath(resolveRecipePath(absPath)), { throwIfNoEntry: false });
+        const stat = statRecipeFileSync(resolveRecipePath(absPath));
         if (!stat || !stat.isFile()) {
             throw new CommandExecutionError(`Not a valid file: ${absPath}`);
         }

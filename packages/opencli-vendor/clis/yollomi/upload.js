@@ -1,4 +1,4 @@
-import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
@@ -32,7 +32,7 @@ cli({
     columns: ['status', 'file', 'size', 'url'],
     func: async (page, kwargs) => {
         const filePath = resolveRecipePath(kwargs.file);
-        if (!fs.existsSync(recipeOutputPath(resolveRecipePath(filePath))))
+        if (!recipeFileExistsSync(resolveRecipePath(filePath)))
             throw new CliError('FILE_NOT_FOUND', `File not found: ${filePath}`, 'Provide a valid file path');
         const ext = path.extname(filePath).toLowerCase();
         const mime = MIME_MAP[ext];

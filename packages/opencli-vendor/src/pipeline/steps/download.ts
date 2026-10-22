@@ -8,7 +8,7 @@
  * - Filename templating and deduplication
  */
 
-import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, statRecipeFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { IPage } from '../../types.js';
@@ -220,14 +220,14 @@ export async function stepDownload(
     const destPath = path.join(dir, filename);
 
     // Check if file exists and skip_existing is true
-    if (skipExisting && fs.existsSync(recipeOutputPath(destPath))) {
+    if (skipExisting && recipeFileExistsSync(destPath)) {
       tracker.onFileComplete(true, true);
       return {
         ...item,
         _download: {
           status: 'skipped',
           path: destPath,
-          size: fs.statSync(recipeOutputPath(destPath)).size,
+          size: statRecipeFileSync(destPath).size,
         } as DownloadResult,
       };
     }
@@ -329,7 +329,7 @@ export async function stepDownload(
   });
 
   // Cleanup temp cookie file
-  if (cookiesFile && fs.existsSync(recipeOutputPath(cookiesFile))) {
+  if (cookiesFile && recipeFileExistsSync(cookiesFile)) {
     try {
       fs.unlinkSync(recipeOutputPath(cookiesFile));
     } catch {

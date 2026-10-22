@@ -29,11 +29,11 @@ try {
     "/packages/opencli-vendor/cindy/index.ts",
   );
   const failures = [];
-  const { upstreamCatalog, excludedSites } = await server.ssrLoadModule('/packages/opencli-vendor/cindy/catalog.ts');
+  const { upstreamCatalog, excludedSites, excludedCommands } = await server.ssrLoadModule('/packages/opencli-vendor/cindy/catalog.ts');
   // Verify even deliberately excluded sources: full import and product selection
   // are separate contracts, and neither may silently lose a command.
   for (const entry of upstreamCatalog) {
-    if (entry.site in excludedSites)
+    if (entry.site in excludedSites || excludedCommands.has(`${entry.site}/${entry.name}`))
       await server.ssrLoadModule(`/packages/opencli-vendor/clis/${entry.modulePath}`);
   }
   for (const entry of catalog) {

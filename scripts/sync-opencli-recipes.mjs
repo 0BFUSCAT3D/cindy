@@ -154,7 +154,8 @@ await writeFile(
 const selection = JSON.parse(await readFile(path.join(target, 'cindy/selection.json'), 'utf8'));
 // Explicit static imports let Vite bundle selected adapters without relying on
 // runtime filesystem paths, npm installs, or importing upstream test helpers.
-const modules = [...new Set(manifest.filter(c => !(c.site in selection.excludedSites)).map((c) => c.modulePath))].sort();
+const modules = [...new Set(manifest.filter(c => !(c.site in selection.excludedSites)
+  && !(selection.excludedCommands ?? []).includes(`${c.site}/${c.name}`)).map((c) => c.modulePath))].sort();
 await mkdir(path.join(target, "cindy"), { recursive: true });
 await rm(path.join(target, "cindy/modules.ts"), { force: true });
 await writeFile(

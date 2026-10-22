@@ -21,7 +21,7 @@ import type { BrowserMcpDeps } from '@cindy/mcps';
 
 import { createLogger } from '../logger.js';
 import { genericOAuthSecretIo } from '../secrets/providerSecretStore.js';
-import { resolveUploadFilesSync, resolveRecipeOutputPath } from './browser-backend/rsb-webview-upload-policy.js';
+import { createRecipeFileBroker } from './browser-backend/rsb-webview-upload-policy.js';
 import { artifactSessionRoot } from './browser-backend/rsb-webview-artifacts.js';
 import { extractBrowserAvailability, type BrowserAvailability } from './browser-availability.js';
 import { loadUserBrowserRecipes, type UserRecipesResult } from '../browser-recipes/loader.js';
@@ -481,17 +481,10 @@ export function getBrowserMcpDeps(): {
         artifactSessionRoot(nodePath.join(app.getPath('temp'), 'cindy-browser-artifacts'), sessionId),
         ...sessionRoots,
       ] : [];
-      const resolve = (file: string) => resolveUploadFilesSync([file], roots)[0];
-      return {
-        read: (file) => fs.readFileSync(resolve(file)),
-        open: (file) => fs.openSync(resolve(file), 'r'),
-        directory: sessionRoots[0],
-        // Each backend consumes invocation copies below its existing upload root.
-        // The recipe host owns the same finally cleanup for both backends.
-        temporaryRoot: sessionId ? (backendController.kind === 'external'
-          ? artifactSessionRoot(browserUploadDirectory, sessionId) : roots[0]) : undefined,
-        output: (file: string) => resolveRecipeOutputPath(file, sessionRoots),
-      };
+      // Both backends keep invocation copies under their existing upload root.
+      // A checked path grants metadata inspection, never subsequent writes.
+      return createRecipeFileBroker(roots, sessionRoots, sessionId ? (backendController.kind === 'external'
+        ? artifactSessionRoot(browserUploadDirectory, sessionId) : roots[0]) : undefined);
     },
     recipeSecrets: {
       read: (key) => genericOAuthSecretIo.readStrict(browserRecipeSecretId(key)),

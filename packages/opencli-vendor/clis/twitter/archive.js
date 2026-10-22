@@ -1,4 +1,4 @@
-import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,7 +36,7 @@ function removeFile(filePath) {
 export function loadJsonlArchiveState(filePath) {
     const seen = new Set();
     let count = 0;
-    if (!filePath || !fs.existsSync(recipeOutputPath(resolveRecipePath(filePath))))
+    if (!filePath || !recipeFileExistsSync(resolveRecipePath(filePath)))
         return { seen, count };
     const text = readRecipeFileSync(filePath, 'utf8');
     for (const [index, line] of text.split('\n').entries()) {

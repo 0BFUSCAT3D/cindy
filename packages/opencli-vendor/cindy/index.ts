@@ -100,7 +100,14 @@ export async function executeAdapter(
 ): Promise<unknown> {
   return withRecipeHost(secrets, async () => {
     const command = await loadAdapter(id);
-    const args = prepareInputs(command.args, inputs);
+    // Discovery and execution use the same selected argument defaults.
+    const args = prepareInputs(entries.get(id)!.args, inputs);
+    if (!files?.output) {
+      const skip = entries.get(id)!.args.find(arg => ['sd', 'skip-download', 'no-download'].includes(arg.name));
+      if ((skip && args[skip.name] !== true) || (id === 'web/read' && args.stdout !== true)) {
+        throw new Error('Local recipe file export is unavailable; keep the link-only or content-only mode');
+      }
+    }
     command.validateArgs?.(args);
     onExecutionStart?.();
     if (

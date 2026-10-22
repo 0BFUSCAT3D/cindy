@@ -648,7 +648,7 @@ function sniffMediaMime(buffer) {
 async function existingMedia(filePath, force, expectedMime) {
   if (force) return null;
   try {
-    const stat = await fs.stat(recipeOutputPath(resolveRecipePath(filePath)));
+    const stat = await Promise.resolve().then(() => statRecipeFileSync(resolveRecipePath(filePath)));
     if (!stat.isFile() || stat.size <= 0) return null;
     const handle = await fs.open(recipeCopySource(filePath), 'r');
     try {
@@ -807,7 +807,7 @@ export async function downloadRenderedVideo(page, jobId, index, kind, outputDir,
     throw new CommandExecutionError(`Midjourney ${kind} download did not complete: ${downloaded?.error || downloaded?.state || 'unknown'}`);
   }
   const sourcePath = resolveRecipePath(String(downloaded.filename));
-  const sourceStat = await fs.stat(recipeOutputPath(resolveRecipePath(sourcePath))).catch(() => null);
+  const sourceStat = await Promise.resolve().then(() => statRecipeFileSync(resolveRecipePath(sourcePath))).catch(() => null);
   if (!sourceStat?.isFile() || sourceStat.size <= 0) {
     throw new CommandExecutionError(`Browser reported a completed download but the file is missing: ${sourcePath}`);
   }

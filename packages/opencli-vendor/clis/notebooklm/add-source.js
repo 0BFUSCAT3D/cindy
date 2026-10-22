@@ -1,4 +1,4 @@
-import { recipeOutputPath } from '@jackwener/opencli/cindy/host';
+import { statRecipeFileSync, recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
@@ -43,7 +43,7 @@ export function readFileForUpload(filePath) {
     const abs = resolveRecipePath(filePath);
     let stat;
     try {
-        stat = fs.statSync(recipeOutputPath(resolveRecipePath(abs)));
+        stat = statRecipeFileSync(resolveRecipePath(abs));
     } catch {
         throw new ArgumentError(`--file path does not exist: ${filePath}`);
     }

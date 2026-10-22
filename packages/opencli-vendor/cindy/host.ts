@@ -42,6 +42,8 @@ export interface RecipeFiles {
   open(file: string): number;
   directory?: string;
   temporaryRoot?: string;
+  /** Optional trusted-host capability. Desktop deliberately does not grant
+   * path-based task writes; only invocation-owned temporary output is enabled. */
   output?(file: string): string;
 }
 
@@ -83,7 +85,7 @@ export function recipeOutputPath(file: string | number): string | number {
   }
   if (typeof file !== 'string') throw new Error('Recipe output must be a local path');
   if (isTemporaryFile(host, file)) return file;
-  if (!host.files?.output) throw new Error('This recipe requires the host output file broker');
+  if (!host.files?.output) throw new Error('Local recipe file export is unavailable; use the browser result or existing file tools');
   return host.files.output(file);
 }
 
@@ -104,9 +106,7 @@ export function closeRecipeFileSync(descriptor: number): void {
 export function recipeCopySource(file: string): string {
   const host = activeHost();
   if (isTemporaryFile(host, file)) return file;
-  const resolved = resolveRecipePath(file);
-  readRecipeFileSync(resolved);
-  return resolved;
+  return stageRecipeUploadFiles([resolveRecipePath(file)])[0];
 }
 
 export function withRecipeHost<T>(
@@ -148,10 +148,15 @@ export function openRecipeFileSync(file: string): number {
 }
 
 /** Inspection uses the same approved file descriptor boundary as reading. */
-export function statRecipeFileSync(file: string): ReturnType<typeof fstatSync> {
+export function statRecipeFileSync(file: string): import('node:fs').Stats {
   const descriptor = openRecipeFileSync(file);
   try { return fstatSync(descriptor); }
   finally { closeRecipeFileSync(descriptor); }
+}
+
+export function recipeFileExistsSync(file: string): boolean {
+  try { statRecipeFileSync(file); return true; }
+  catch { return false; }
 }
 
 /** Secrets only come from the host encrypted store. The legacy path argument

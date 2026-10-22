@@ -1,4 +1,4 @@
-import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -124,7 +124,7 @@ function parseLikes(data, seen) {
     return { tweets, nextCursor, hasTimelineItems };
 }
 function readResumeFile(filePath, expected = null) {
-    if (!filePath || !fs.existsSync(recipeOutputPath(resolveRecipePath(filePath))))
+    if (!filePath || !recipeFileExistsSync(resolveRecipePath(filePath)))
         return null;
     let parsed;
     try {
@@ -279,10 +279,10 @@ cli({
             username,
             outputFile: useOutputFile ? outputFile : null,
         }) : null;
-        if (useOutputFile && resumed && resumed.count > 0 && !fs.existsSync(recipeOutputPath(resolveRecipePath(outputFile)))) {
+        if (useOutputFile && resumed && resumed.count > 0 && !recipeFileExistsSync(resolveRecipePath(outputFile))) {
             throw new CommandExecutionError(`Twitter likes output file is missing for resume state: ${outputFile}`);
         }
-        if (useOutputFile && !resumed && fs.existsSync(recipeOutputPath(resolveRecipePath(outputFile)))) {
+        if (useOutputFile && !resumed && recipeFileExistsSync(resolveRecipePath(outputFile))) {
             throw new ArgumentError(`Refusing to overwrite existing Twitter likes output file: ${outputFile}`);
         }
         const allTweets = useOutputFile ? [] : (resumed?.tweets ? [...resumed.tweets] : []);

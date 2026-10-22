@@ -1,4 +1,4 @@
-import { resolveRecipePath, recipeOutputPath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, resolveRecipePath, recipeOutputPath } from '@jackwener/opencli/cindy/host';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -29,7 +29,7 @@ export function resolveOutputDir(value) {
     return resolveRecipePath(raw);
 }
 
-export function nextAvailablePath(dir, baseName, ext, existsSync = (file) => fs.existsSync(recipeOutputPath(file))) {
+export function nextAvailablePath(dir, baseName, ext, existsSync = (file) => recipeFileExistsSync(file)) {
     let candidate = path.join(dir, `${baseName}${ext}`);
     for (let index = 1; existsSync(candidate); index += 1) {
         candidate = path.join(dir, `${baseName}_${index}${ext}`);

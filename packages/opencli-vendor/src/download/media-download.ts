@@ -7,7 +7,7 @@
  * Flow: MediaItem[] → DownloadProgressTracker → httpDownload/ytdlpDownload → results
  */
 
-import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getErrorMessage } from '../errors.js';
@@ -173,7 +173,7 @@ export async function downloadMedia(
     tracker.finish();
 
     // Auto-cleanup exported cookies file
-    if (cookiesFile && fs.existsSync(recipeOutputPath(cookiesFile))) {
+    if (cookiesFile && recipeFileExistsSync(cookiesFile)) {
       fs.unlinkSync(recipeOutputPath(cookiesFile));
     }
   }

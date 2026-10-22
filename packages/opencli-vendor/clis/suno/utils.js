@@ -15,7 +15,7 @@
  *   - browser-token: {"token":"<base64 of {timestamp: ms}>"} (anti-replay)
  *   - device-id: <uuid> (persistent per browser, found in `suno_device_id` cookie)
  */
-import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { statRecipeFileSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ArgumentError, AuthRequiredError, CommandExecutionError, EmptyResultError, TimeoutError } from '@jackwener/opencli/errors';
@@ -495,7 +495,7 @@ async function writeFromDataUrl(page, url, filePath) {
         return { ok: false, reason: 'empty response body' };
     }
     fs.writeFileSync(recipeOutputPath(filePath), Buffer.from(base64, 'base64'));
-    if (!fs.statSync(recipeOutputPath(resolveRecipePath(filePath))).size) {
+    if (!statRecipeFileSync(resolveRecipePath(filePath)).size) {
         return { ok: false, reason: 'empty file written' };
     }
     return { ok: true };

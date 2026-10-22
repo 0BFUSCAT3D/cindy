@@ -2,7 +2,7 @@
  * Download utilities: HTTP downloads, yt-dlp wrapper, format conversion.
  */
 
-import { closeRecipeFileSync, openRecipeOutputFileSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, statRecipeFileSync, closeRecipeFileSync, openRecipeOutputFileSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -339,15 +339,15 @@ export async function ytdlpDownload(
     });
 
     proc.on('close', (code) => {
-      if (code === 0 && fs.existsSync(recipeOutputPath(destPath))) {
-        const stats = fs.statSync(recipeOutputPath(destPath));
+      if (code === 0 && recipeFileExistsSync(destPath)) {
+        const stats = statRecipeFileSync(destPath);
         resolve({ success: true, size: stats.size });
       } else {
         // Check for common yt-dlp output patterns
         const patterns = fs.readdirSync(recipeOutputPath(dir)).filter(f => f.startsWith(path.basename(destPath, path.extname(destPath))));
         if (patterns.length > 0) {
           const actualFile = path.join(dir, patterns[0]);
-          const stats = fs.statSync(recipeOutputPath(actualFile));
+          const stats = statRecipeFileSync(actualFile);
           resolve({ success: true, size: stats.size });
         } else {
           resolve({ success: false, size: 0, error: errorOutput.slice(0, 200) || `Exit code ${code}` });

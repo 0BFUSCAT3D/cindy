@@ -34,46 +34,6 @@ function isBlockedFile(filePath: string): boolean {
     || sensitiveDirectory;
 }
 
-/** Output files may not exist yet: validate their nearest existing ancestor.
- * Reuse the upload roots and sensitive-file policy, including symlink identity. */
-export function resolveRecipeOutputPath(candidate: string, allowedRoots: string[]): string {
-  const roots = allowedRoots.flatMap((root) => {
-    if (!path.isAbsolute(root)) return [];
-    try {
-      const real = fs.realpathSync(root);
-      return fs.statSync(real).isDirectory() ? [real] : [];
-    } catch { return []; }
-  });
-  if (!roots.length) throw new Error('recipe output requires a local session directory');
-  if (typeof candidate !== 'string' || !candidate || candidate.includes('\0')) {
-    throw new Error('recipe output must be a local file path');
-  }
-  const target = path.resolve(roots[0], candidate);
-  if (isBlockedFile(target)) throw new Error('recipe output blocked for sensitive path');
-  let ancestor = target;
-  const tail: string[] = [];
-  while (true) {
-    try {
-      // lstat distinguishes missing paths from broken links, which grant nothing.
-      fs.lstatSync(ancestor);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      const parent = path.dirname(ancestor);
-      if (parent === ancestor) throw error;
-      tail.unshift(path.basename(ancestor));
-      ancestor = parent;
-      continue;
-    }
-    const real = fs.realpathSync(ancestor);
-    const resolved = path.join(real, ...tail);
-    if (!roots.some((root) => isInside(root, resolved))) {
-      throw new Error('recipe output must stay inside the current session directory');
-    }
-    if (isBlockedFile(resolved)) throw new Error('recipe output blocked for sensitive path');
-    return resolved;
-  }
-}
-
 /**
  * Resolves upload candidates to their filesystem identity and confines every
  * file to a host-provided root. Realpath checks prevent a workdir symlink or
@@ -84,6 +44,55 @@ export async function resolveUploadFiles(
   allowedRoots: string[],
 ): Promise<string[]> {
   return resolveUploadFilesSync(candidates, allowedRoots);
+}
+
+/** Recipes consume the descriptor that was checked, never reopen its path.
+ * The second path check also rejects an ancestor replaced during open. */
+export function openRecipeInputFileSync(candidate: string, allowedRoots: string[]): number {
+  const resolved = resolveUploadFilesSync([candidate], allowedRoots)[0];
+  const expected = fs.lstatSync(resolved, { bigint: true });
+  if (!expected.isFile() || expected.ino === 0n) throw new Error('recipe input identity is unavailable');
+  const descriptor = fs.openSync(resolved, fs.constants.O_RDONLY
+    | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const current = resolveUploadFilesSync([candidate], allowedRoots)[0];
+    if (!opened.isFile() || opened.dev !== expected.dev || opened.ino !== expected.ino
+      || current !== resolved || opened.size > BigInt(MAX_FILE_BYTES)) {
+      throw new Error('recipe input changed during open');
+    }
+    return descriptor;
+  } catch (error) {
+    fs.closeSync(descriptor);
+    throw error;
+  }
+}
+
+export function readRecipeInputFileSync(candidate: string, allowedRoots: string[]): Buffer {
+  const descriptor = openRecipeInputFileSync(candidate, allowedRoots);
+  try {
+    // Bound reads to this descriptor's checked size, including short reads.
+    const size = fs.fstatSync(descriptor, { bigint: true }).size;
+    if (size > BigInt(MAX_FILE_BYTES)) throw new Error('recipe input exceeds the byte limit');
+    const bytes = Buffer.alloc(Number(size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (!count) break;
+      offset += count;
+    }
+    return bytes.subarray(0, offset);
+  } finally { fs.closeSync(descriptor); }
+}
+
+/** Desktop grants reads and metadata, but no path-based local export. */
+export function createRecipeFileBroker(inputRoots: string[], sessionRoots: string[], temporaryRoot?: string) {
+  return {
+    read: (file: string) => readRecipeInputFileSync(file, inputRoots),
+    open: (file: string) => openRecipeInputFileSync(file, inputRoots),
+    directory: sessionRoots[0],
+    temporaryRoot,
+  };
 }
 
 /** Synchronous adapters share exactly the same file policy as native uploads. */

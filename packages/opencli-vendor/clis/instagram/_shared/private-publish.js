@@ -1,4 +1,4 @@
-import { recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -361,7 +361,7 @@ export function prepareImageAssetForPrivateUpload(filePath) {
     ], {
         encoding: 'utf8',
     });
-    if (result.error || result.status !== 0 || !fs.existsSync(recipeOutputPath(resolveRecipePath(outputPath)))) {
+    if (result.error || result.status !== 0 || !recipeFileExistsSync(resolveRecipePath(outputPath))) {
         const detail = [result.error?.message, result.stderr, result.stdout]
             .map((value) => String(value || '').trim())
             .filter(Boolean)
@@ -396,7 +396,7 @@ export function prepareImageAssetForPrivateStoryUpload(filePath) {
     ], {
         encoding: 'utf8',
     });
-    if (result.error || result.status !== 0 || !fs.existsSync(recipeOutputPath(resolveRecipePath(outputPath)))) {
+    if (result.error || result.status !== 0 || !recipeFileExistsSync(resolveRecipePath(outputPath))) {
         const detail = [result.error?.message, result.stderr, result.stdout]
             .map((value) => String(value || '').trim())
             .filter(Boolean)

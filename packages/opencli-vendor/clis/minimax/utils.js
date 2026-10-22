@@ -1,4 +1,4 @@
-import { recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { statRecipeFileSync, recipeFileExistsSync, recipeCopySource, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -184,11 +184,11 @@ export function reserveAudioFile(dir, model, format, now = new Date()) {
     const staging = `${target}.${process.pid}.${randomUUID()}.tmp`;
     try {
         fs.mkdirSync(recipeOutputPath(dir), { recursive: true });
-        if (!fs.statSync(recipeOutputPath(resolveRecipePath(dir))).isDirectory()) throw new Error('not a directory');
+        if (!statRecipeFileSync(resolveRecipePath(dir)).isDirectory()) throw new Error('not a directory');
         fs.accessSync(recipeOutputPath(resolveRecipePath(dir)), fs.constants.W_OK);
-        if (fs.existsSync(recipeOutputPath(resolveRecipePath(target)))) throw new Error('target already exists');
+        if (recipeFileExistsSync(resolveRecipePath(target))) throw new Error('target already exists');
         fs.writeFileSync(recipeOutputPath(lock), String(process.pid), { flag: 'wx', mode: 0o600 });
-        if (fs.existsSync(recipeOutputPath(resolveRecipePath(target)))) {
+        if (recipeFileExistsSync(resolveRecipePath(target))) {
             fs.rmSync(recipeOutputPath(lock), { force: true });
             throw new Error('target appeared during reservation');
         }

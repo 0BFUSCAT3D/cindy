@@ -1,4 +1,4 @@
-import { recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
+import { recipeFileExistsSync, recipeOutputPath, resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import { readRecipeFileSync } from '@jackwener/opencli/cindy/host';
 /**
  * Yollomi API utilities — browser cookie strategy.
@@ -79,7 +79,7 @@ export function resolveImageInput(input) {
         return input;
     }
     const resolved = resolveRecipePath(input);
-    if (!fs.existsSync(recipeOutputPath(resolveRecipePath(resolved)))) {
+    if (!recipeFileExistsSync(resolveRecipePath(resolved))) {
         throw new CliError('FILE_NOT_FOUND', `File not found: ${resolved}`, 'Provide a valid file path or URL');
     }
     const ext = path.extname(resolved).toLowerCase();

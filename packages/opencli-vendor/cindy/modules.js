@@ -9,7 +9,6 @@ import "../clis/12306/train.js";
 import "../clis/12306/trains.js";
 import "../clis/1688/assets.js";
 import "../clis/1688/auth.js";
-import "../clis/1688/download.js";
 import "../clis/1688/item.js";
 import "../clis/1688/search.js";
 import "../clis/1688/store.js";
@@ -69,7 +68,6 @@ import "../clis/bilibili/auth.js";
 import "../clis/bilibili/comment.js";
 import "../clis/bilibili/comments.js";
 import "../clis/bilibili/creator-stats.js";
-import "../clis/bilibili/download.js";
 import "../clis/bilibili/dynamic.js";
 import "../clis/bilibili/favorite.js";
 import "../clis/bilibili/feed.js";
@@ -224,7 +222,6 @@ import "../clis/dongchedi/series.js";
 import "../clis/dongchedi/specs.js";
 import "../clis/douban/auth.js";
 import "../clis/douban/book-hot.js";
-import "../clis/douban/download.js";
 import "../clis/douban/marks.js";
 import "../clis/douban/movie-hot.js";
 import "../clis/douban/photos.js";
@@ -353,7 +350,6 @@ import "../clis/grok/detail.js";
 import "../clis/grok/export-all.js";
 import "../clis/grok/export.js";
 import "../clis/grok/history.js";
-import "../clis/grok/image.js";
 import "../clis/grok/new.js";
 import "../clis/grok/pin.js";
 import "../clis/grok/read.js";
@@ -413,7 +409,6 @@ import "../clis/instagram/auth.js";
 import "../clis/instagram/collection-create.js";
 import "../clis/instagram/collection-delete.js";
 import "../clis/instagram/comment.js";
-import "../clis/instagram/download.js";
 import "../clis/instagram/explore.js";
 import "../clis/instagram/follow.js";
 import "../clis/instagram/followers.js";
@@ -549,7 +544,6 @@ import "../clis/mercury/reimbursement-draft.js";
 import "../clis/mercury/reimbursement-plan.js";
 import "../clis/midjourney/action.js";
 import "../clis/midjourney/describe.js";
-import "../clis/midjourney/download.js";
 import "../clis/midjourney/generate.js";
 import "../clis/midjourney/history.js";
 import "../clis/midjourney/login.js";
@@ -627,7 +621,6 @@ import "../clis/pinterest/board-section-create.js";
 import "../clis/pinterest/board-section-delete.js";
 import "../clis/pinterest/board-sections.js";
 import "../clis/pinterest/board-update.js";
-import "../clis/pinterest/download.js";
 import "../clis/pinterest/pin-create.js";
 import "../clis/pinterest/pin-delete.js";
 import "../clis/pinterest/pin-update.js";
@@ -640,13 +633,10 @@ import "../clis/pinterest/user-boards.js";
 import "../clis/pinterest/user-pins.js";
 import "../clis/pinterest/user.js";
 import "../clis/pixiv/auth.js";
-import "../clis/pixiv/bookmark-download.js";
 import "../clis/pixiv/bookmarks.js";
 import "../clis/pixiv/detail.js";
-import "../clis/pixiv/download.js";
 import "../clis/pixiv/illusts.js";
 import "../clis/pixiv/me.js";
-import "../clis/pixiv/novel-download.js";
 import "../clis/pixiv/novel.js";
 import "../clis/pixiv/novels.js";
 import "../clis/pixiv/ranking.js";
@@ -704,7 +694,6 @@ import "../clis/reddit/user.js";
 import "../clis/reddit/whoami.js";
 import "../clis/rednote/auth.js";
 import "../clis/rednote/comments.js";
-import "../clis/rednote/download.js";
 import "../clis/rednote/feed.js";
 import "../clis/rednote/note.js";
 import "../clis/rednote/notifications.js";
@@ -746,7 +735,6 @@ import "../clis/substack/feed.js";
 import "../clis/substack/publication.js";
 import "../clis/substack/search.js";
 import "../clis/suno/auth.js";
-import "../clis/suno/download.js";
 import "../clis/suno/generate.js";
 import "../clis/suno/list.js";
 import "../clis/suno/status.js";
@@ -808,7 +796,6 @@ import "../clis/twitter/bookmarks.js";
 import "../clis/twitter/collection.js";
 import "../clis/twitter/delete.js";
 import "../clis/twitter/device-follow.js";
-import "../clis/twitter/download.js";
 import "../clis/twitter/follow-batch.js";
 import "../clis/twitter/follow.js";
 import "../clis/twitter/followers.js";
@@ -844,7 +831,6 @@ import "../clis/twitter/unlike.js";
 import "../clis/twitter/unretweet.js";
 import "../clis/uisdc/news.js";
 import "../clis/uiverse/code.js";
-import "../clis/uiverse/preview.js";
 import "../clis/upwork/auth.js";
 import "../clis/upwork/detail.js";
 import "../clis/upwork/feed.js";
@@ -878,7 +864,6 @@ import "../clis/weibo/search.js";
 import "../clis/weibo/user-posts.js";
 import "../clis/weibo/user.js";
 import "../clis/weixin/create-draft.js";
-import "../clis/weixin/download.js";
 import "../clis/weixin/drafts.js";
 import "../clis/weixin/search.js";
 import "../clis/weread-official/book.js";
@@ -932,7 +917,6 @@ import "../clis/xiaohongshu/creator-notes-summary.js";
 import "../clis/xiaohongshu/creator-profile.js";
 import "../clis/xiaohongshu/creator-stats.js";
 import "../clis/xiaohongshu/delete-note.js";
-import "../clis/xiaohongshu/download.js";
 import "../clis/xiaohongshu/draft-clear.js";
 import "../clis/xiaohongshu/draft-delete.js";
 import "../clis/xiaohongshu/draft-open.js";
@@ -1006,7 +990,6 @@ import "../clis/zhihu/auth.js";
 import "../clis/zhihu/collection.js";
 import "../clis/zhihu/collections.js";
 import "../clis/zhihu/comment.js";
-import "../clis/zhihu/download.js";
 import "../clis/zhihu/favorite.js";
 import "../clis/zhihu/follow.js";
 import "../clis/zhihu/followers.js";
@@ -1037,7 +1020,6 @@ export const modules = {
   "12306/trains.js": true,
   "1688/assets.js": true,
   "1688/auth.js": true,
-  "1688/download.js": true,
   "1688/item.js": true,
   "1688/search.js": true,
   "1688/store.js": true,
@@ -1097,7 +1079,6 @@ export const modules = {
   "bilibili/comment.js": true,
   "bilibili/comments.js": true,
   "bilibili/creator-stats.js": true,
-  "bilibili/download.js": true,
   "bilibili/dynamic.js": true,
   "bilibili/favorite.js": true,
   "bilibili/feed.js": true,
@@ -1252,7 +1233,6 @@ export const modules = {
   "dongchedi/specs.js": true,
   "douban/auth.js": true,
   "douban/book-hot.js": true,
-  "douban/download.js": true,
   "douban/marks.js": true,
   "douban/movie-hot.js": true,
   "douban/photos.js": true,
@@ -1381,7 +1361,6 @@ export const modules = {
   "grok/export-all.js": true,
   "grok/export.js": true,
   "grok/history.js": true,
-  "grok/image.js": true,
   "grok/new.js": true,
   "grok/pin.js": true,
   "grok/read.js": true,
@@ -1441,7 +1420,6 @@ export const modules = {
   "instagram/collection-create.js": true,
   "instagram/collection-delete.js": true,
   "instagram/comment.js": true,
-  "instagram/download.js": true,
   "instagram/explore.js": true,
   "instagram/follow.js": true,
   "instagram/followers.js": true,
@@ -1577,7 +1555,6 @@ export const modules = {
   "mercury/reimbursement-plan.js": true,
   "midjourney/action.js": true,
   "midjourney/describe.js": true,
-  "midjourney/download.js": true,
   "midjourney/generate.js": true,
   "midjourney/history.js": true,
   "midjourney/login.js": true,
@@ -1655,7 +1632,6 @@ export const modules = {
   "pinterest/board-section-delete.js": true,
   "pinterest/board-sections.js": true,
   "pinterest/board-update.js": true,
-  "pinterest/download.js": true,
   "pinterest/pin-create.js": true,
   "pinterest/pin-delete.js": true,
   "pinterest/pin-update.js": true,
@@ -1668,13 +1644,10 @@ export const modules = {
   "pinterest/user-pins.js": true,
   "pinterest/user.js": true,
   "pixiv/auth.js": true,
-  "pixiv/bookmark-download.js": true,
   "pixiv/bookmarks.js": true,
   "pixiv/detail.js": true,
-  "pixiv/download.js": true,
   "pixiv/illusts.js": true,
   "pixiv/me.js": true,
-  "pixiv/novel-download.js": true,
   "pixiv/novel.js": true,
   "pixiv/novels.js": true,
   "pixiv/ranking.js": true,
@@ -1732,7 +1705,6 @@ export const modules = {
   "reddit/whoami.js": true,
   "rednote/auth.js": true,
   "rednote/comments.js": true,
-  "rednote/download.js": true,
   "rednote/feed.js": true,
   "rednote/note.js": true,
   "rednote/notifications.js": true,
@@ -1774,7 +1746,6 @@ export const modules = {
   "substack/publication.js": true,
   "substack/search.js": true,
   "suno/auth.js": true,
-  "suno/download.js": true,
   "suno/generate.js": true,
   "suno/list.js": true,
   "suno/status.js": true,
@@ -1836,7 +1807,6 @@ export const modules = {
   "twitter/collection.js": true,
   "twitter/delete.js": true,
   "twitter/device-follow.js": true,
-  "twitter/download.js": true,
   "twitter/follow-batch.js": true,
   "twitter/follow.js": true,
   "twitter/followers.js": true,
@@ -1872,7 +1842,6 @@ export const modules = {
   "twitter/unretweet.js": true,
   "uisdc/news.js": true,
   "uiverse/code.js": true,
-  "uiverse/preview.js": true,
   "upwork/auth.js": true,
   "upwork/detail.js": true,
   "upwork/feed.js": true,
@@ -1906,7 +1875,6 @@ export const modules = {
   "weibo/user-posts.js": true,
   "weibo/user.js": true,
   "weixin/create-draft.js": true,
-  "weixin/download.js": true,
   "weixin/drafts.js": true,
   "weixin/search.js": true,
   "weread-official/book.js": true,
@@ -1960,7 +1928,6 @@ export const modules = {
   "xiaohongshu/creator-profile.js": true,
   "xiaohongshu/creator-stats.js": true,
   "xiaohongshu/delete-note.js": true,
-  "xiaohongshu/download.js": true,
   "xiaohongshu/draft-clear.js": true,
   "xiaohongshu/draft-delete.js": true,
   "xiaohongshu/draft-open.js": true,
@@ -2034,7 +2001,6 @@ export const modules = {
   "zhihu/collection.js": true,
   "zhihu/collections.js": true,
   "zhihu/comment.js": true,
-  "zhihu/download.js": true,
   "zhihu/favorite.js": true,
   "zhihu/follow.js": true,
   "zhihu/followers.js": true,

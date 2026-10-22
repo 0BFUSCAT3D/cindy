@@ -14,7 +14,7 @@ import { loadRecipes, RecipeSchema, type Recipe } from "./recipe-loader.js";
 import { runRecipe } from "./recipe-runner.js";
 import { executeAdapter, type IPage } from '@jackwener/opencli/cindy';
 import { saveBase64ToFile } from '@jackwener/opencli/utils';
-import { withRecipeHost, recipeDiagnosticPath, recipeOutputPath, readRecipeFileSync, readSecretJSON, writeSecretJSON } from '@jackwener/opencli/cindy/host';
+import { withRecipeHost, recipeDiagnosticPath, recipeOutputPath, recipeCopySource, readRecipeFileSync, readSecretJSON, writeSecretJSON } from '@jackwener/opencli/cindy/host';
 import { mkdtemp, mkdir, writeFile, rm, readFile, realpath, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -51,6 +51,27 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 source-copy TOCTOU, unit tier. The shared copy entry must return an
+  // invocation-owned snapshot, not the original path after approving its bytes.
+  // Earlier converter cases did not exercise this separate copy source entry.
+  it('copies approved bytes instead of reopening a replaced source path', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-recipe-copy-test-'));
+    const source = path.join(dir, 'source.png');
+    await writeFile(source, 'approved');
+    let copy = '';
+    try {
+      await withRecipeHost(undefined, async () => {
+        copy = recipeCopySource(source);
+        expect(copy).not.toBe(source);
+        expect(await readFile(copy, 'utf8')).toBe('approved');
+      }, { directory: dir, read: file => {
+        const bytes = readFileSync(file); writeFileSync(file, 'replacement'); return bytes;
+      }, open: file => openSync(file, 'r') });
+      await expect(access(copy)).rejects.toThrow();
+      expect(await readFile(source, 'utf8')).toBe('replacement');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   // #6826 file boundary: actual media preparation / story entry, unit tier.
   // Prior upload tests never exercised converters reopening a checked path.
   // Replace the original immediately after broker approval; subprocess fakes
@@ -430,99 +451,60 @@ describe("bundled OpenCLI recipes", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  // Unsupported export modes must be input failures before any navigation or
-  // click; they used to perform page actions and then fail on waitForDownload.
-  it.each(['video-social', 'gif'])('rejects unsupported export %s before browser execution', async (kind) => {
-    const call = vi.fn();
-    const result = await runRecipe(loadRecipes().get('opencli:midjourney/download')!, {
-      job: '11111111-1111-1111-1111-111111111111', kind,
-    }, { call });
-    expect(result).toMatchObject({ ok: false, failureKind: 'input' });
-    expect(call).not.toHaveBeenCalled();
-  });
-
-  // #6826: argument defaults bypassed the task-relative resolver. Unit tier,
-  // real adapter -> shared writer with fake generation/network; previous novel
-  // coverage did not pass image/download argument defaults through prepareInputs.
-  it.each(['gemini/image', 'qwen/image', 'instagram/download'])('saves %s defaults inside the invoking task', async (id) => {
+  // #6826 output-scope convergence. Real adapter entries, unit tier with
+  // fake browser. Earlier tests granted an output callback that Desktop no
+  // longer provides; defaults must return links without attempting a save.
+  it.each(['gemini/image', 'qwen/image'])('returns %s links without a local export by default', async id => {
     const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'cindy-recipe-default-test-')));
     const url = 'https://example.test/generated.png';
-    const asset = { ok: true, mime: 'image/png', base64: 'aW1hZ2U=' };
     vi.spyOn(gemini, 'startNewGeminiChat').mockResolvedValue(undefined);
     vi.spyOn(gemini, 'getGeminiVisibleImageUrls').mockResolvedValue([]);
     vi.spyOn(gemini, 'sendGeminiMessage').mockResolvedValue(undefined);
     vi.spyOn(gemini, 'waitForGeminiImages').mockResolvedValue([url]);
-    vi.spyOn(gemini, 'exportGeminiImages').mockResolvedValue([{ mimeType: 'image/png', dataUrl: 'data:image/png;base64,aW1hZ2U=' }]);
+    const exportImages = vi.spyOn(gemini, 'exportGeminiImages');
     for (const name of ['ensureOnQianwen', 'dismissLoginModal', 'startNewChat', 'setFeatureToggle'] as const)
       vi.spyOn(qwen, name).mockResolvedValue(undefined);
     vi.spyOn(qwen, 'sendMessage').mockResolvedValue({ ok: true });
     vi.spyOn(qwen, 'hasLoginGate').mockResolvedValue(false);
     vi.spyOn(qwen, 'getMessageBubbles').mockResolvedValue([{ role: 'Assistant', id: 'answer' }]);
-    vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockImplementation(async () => ({
-      response: new Response('image'), finalUrl: url, release: async () => {},
-    }));
-    const outputs: string[] = [];
-    const page = {
-      goto: async () => {}, wait: async () => {},
-      evaluate: async (js: string) => {
-        if (js === 'window.location.href') return 'https://example.test/';
-        if (id === 'instagram/download') return { ok: true, shortcode: 'B', items: [{ type: 'image', url }] };
-        return js.includes('arrayBuffer()') ? asset : [url];
-      },
+    const goto = vi.fn(async () => {});
+    const page = { goto, wait: async () => {}, evaluate: async (js: string) =>
+      js === 'window.location.href' ? 'https://example.test/' : [url],
     } as unknown as IPage;
+    const files = { directory: dir, read: readFileSync, open: (file: string) => openSync(file, 'r') };
     try {
-      await executeAdapter(id, id === 'instagram/download' ? { url: 'https://www.instagram.com/p/B/' } : { prompt: 'fixture' }, page, undefined, undefined, {
-        read: () => Buffer.alloc(0), open: () => -1, directory: dir,
-        output: file => {
-          const relative = path.relative(dir, file);
-          if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('output outside task');
-          outputs.push(file);
-          return file;
-        },
-      });
-      const file = outputs.find(file => /\.(png|jpg)$/.test(file));
-      expect(file).toBeDefined();
-      expect(await readFile(file!, 'utf8')).toBe('image');
+      const result = await executeAdapter(id, { prompt: 'fixture' }, page, undefined, undefined, files);
+      expect(JSON.stringify(result)).toContain('https://example.test/');
+      expect(exportImages).not.toHaveBeenCalled();
+      expect(await readdir(dir)).toEqual([]);
+      goto.mockClear();
+      await expect(executeAdapter(id, { prompt: 'fixture', sd: false }, page, undefined, undefined, files))
+        .rejects.toThrow('Local recipe file export');
+      expect(goto).not.toHaveBeenCalled();
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
-  // #6826 output/diagnostic review. Unit tier; the real adapter and screenshot
-  // entries previously covered reads only. Minimal inputs are one local novel
-  // output and two overlapping screenshots with the same diagnostic name.
-  it('brokers adapter writes and resolves defaults against the invoking task', async () => {
+  // A checked metadata path cannot become a write capability. Real shared
+  // writer/screenshot, unit tier; valid task paths still reject before writing.
+  it('rejects local exports while allowing a content-only web read', async () => {
     const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'cindy-recipe-output-test-')));
-    const page = { goto: async () => {}, evaluate: async () => ({
-      error: false, body: { id: '1', title: 'Fixture', userName: 'Fixture', userId: '2', content: 'local test text', tags: { tags: [] } },
-    }) } as unknown as IPage;
-    const inputs = { 'novel-id': '1', execute: true };
+    const image = path.join(dir, 'image.png');
+    const files = { directory: dir, read: readFileSync, open: (file: string) => openSync(file, 'r'), inspect: (file: string) => file };
+    const page = { goto: vi.fn(async () => {}), wait: async () => {}, evaluate: async () => ({ title: 'Fixture', contentHtml: '<p>local test text</p>' }) } as unknown as IPage;
+    const screenshot = new OpenCliPage({ targetId: 'fixture', call: async request => ({
+      ok: true, action: request.action, data: { data: 'aW1hZ2U=' },
+    }) });
     try {
-      const rejected = path.join(dir, 'rejected');
-      const output = vi.fn(() => { throw new Error('output denied by host'); });
-      await expect(executeAdapter('pixiv/novel-download', { ...inputs, output: rejected }, page, undefined, undefined,
-        { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output },
-      )).rejects.toThrow(/output denied by host|not a safe directory/);
-      expect(output).toHaveBeenCalledWith(rejected);
-      await expect(access(rejected)).rejects.toThrow();
-      const deniedImage = path.join(dir, 'image.png');
-      await expect(withRecipeHost(undefined, () => saveBase64ToFile('aW1hZ2U=', deniedImage),
-        { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output },
-      )).rejects.toThrow('output denied by host');
-      await expect(access(deniedImage)).rejects.toThrow();
-      const result = await executeAdapter('pixiv/novel-download', inputs, page, undefined, undefined,
-        { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output: file => file },
-      ) as Array<{ path: string }>;
-      expect(result[0].path).toBe(path.join(dir, 'pixiv-downloads', 'novels', '1.txt'));
-      expect(await readFile(result[0].path, 'utf8')).toContain('local test text');
-      const screenshot = new OpenCliPage({ targetId: 'fixture', call: async request => ({
-        ok: true, action: request.action, data: { data: 'aW1hZ2U=' },
-      }) });
-      await withRecipeHost(undefined, () => screenshot.screenshot({ path: deniedImage }),
-        { read: () => Buffer.alloc(0), open: () => -1, directory: dir, output: file => file });
-      expect(await readFile(deniedImage, 'utf8')).toBe('image');
-      await expect(executeAdapter('pixiv/novel-download', { ...inputs, output: path.join(dir, 'no-host') }, page))
-        .rejects.toThrow(/host output file broker|not a safe directory/);
-      await expect(access(path.join(dir, 'no-host'))).rejects.toThrow();
-    } finally { await rm(dir, { recursive: true, force: true }); }
+      await expect(withRecipeHost(undefined, () => saveBase64ToFile('aW1hZ2U=', image), files))
+        .rejects.toThrow('Local recipe file export');
+      await expect(withRecipeHost(undefined, () => screenshot.screenshot({ path: image }), files))
+        .rejects.toThrow('Local recipe file export');
+      const result = await executeAdapter('web/read', { url: 'https://example.test' }, page, undefined, undefined, files);
+      expect(JSON.stringify(result)).toContain('local test text');
+      await expect(executeAdapter('web/read', { url: 'https://example.test', stdout: false }, page, undefined, undefined, files))
+        .rejects.toThrow('Local recipe file export');
+      expect(await readdir(dir)).toEqual([]);
+    } finally { await screenshot.dispose(); await rm(dir, { recursive: true, force: true }); }
   });
 
   it('isolates overlapping diagnostics and cleans both fulfilled and rejected calls', async () => {
@@ -592,11 +574,11 @@ describe("bundled OpenCLI recipes", () => {
       }));
       const result = await runRecipe(loadRecipes().get('opencli:yollomi/upload')!, { file }, { call });
       expect(result.ok).toBe(false);
-      expect(result.message).toContain('file broker');
+      expect(result.message).toContain('File not found');
       expect(call.mock.calls.some(([req]) => req.request?.fn?.includes('atob('))).toBe(false);
       const read = vi.fn(() => Buffer.from('approved-image'));
       const approved = await runRecipe(loadRecipes().get('opencli:yollomi/upload')!, { file }, {
-        call, recipeFiles: async () => ({ read, output: file => file, open: () => { throw new Error('unused'); } }),
+        call, recipeFiles: async () => ({ read, open: file => openSync(file, 'r') }),
       });
       expect(approved.ok).toBe(true);
       expect(read).toHaveBeenCalledWith(file);
@@ -865,17 +847,17 @@ describe("bundled OpenCLI recipes", () => {
       expect(JSON.stringify(all)).toContain('open-library-search');
       expect(JSON.stringify(all)).toContain('steam-reviews');
       expect(JSON.stringify(all)).toContain('xiaoyuzhou-podcast');
-      const midjourney = await query('midjourney');
-      expect(midjourney.recipes.find((recipe: { id: string }) => recipe.id === 'opencli:midjourney/download').parameters.kind.choices)
-        .toEqual(['auto', 'image', 'video-raw']);
-      // The public guide must describe the same task-relative defaults used by
-      // execution; otherwise callers can reintroduce an out-of-task path.
+      for (const id of ['instagram/download', 'midjourney/download', 'pixiv/novel-download']) {
+        expect(JSON.stringify(all)).not.toContain(`opencli:${id}`);
+        await expect(executeAdapter(id, {}, {} as IPage)).rejects.toThrow('Unknown bundled adapter');
+      }
+      // Discovery and execution share the selected content/link-only defaults.
       for (const [site, command, arg, expected] of [
-        ['gemini', 'image', 'op', './gemini-images'],
-        ['qwen', 'image', 'op', './qianwen-images'],
-        ['instagram', 'download', 'path', './instagram-downloads'],
-        ['midjourney', 'download', 'output', './midjourney-downloads'],
-      ]) {
+        ['gemini', 'image', 'sd', true],
+        ['qwen', 'image', 'sd', true],
+        ['midjourney', 'generate', 'skip-download', true],
+        ['web', 'read', 'stdout', true],
+      ] as const) {
         const guide = await query(site);
         expect(guide.recipes.find((recipe: { id: string }) => recipe.id === `opencli:${site}/${command}`).parameters[arg].default).toBe(expected);
       }
