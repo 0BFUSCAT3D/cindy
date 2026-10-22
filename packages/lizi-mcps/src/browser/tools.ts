@@ -750,10 +750,7 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           }
           const suspended = failedRecipes.has(id) || persisted?.validation?.state === 'suspended';
           if (!candidate && suspended) return errorResult('recipe', `配方已暂停复用。${recovery}`);
-          if (candidate && (suspended || repairUsed.has(id))) {
-            if (repairUsed.has(id)) return errorResult('recipe', `本任务的修复验证次数已用完。${recovery}`);
-            repairUsed.add(id);
-          }
+          if (candidate && repairUsed.has(id)) return errorResult('recipe', `本任务的修复验证次数已用完。${recovery}`);
           verifiedDrafts.delete(id);
           // Thread the caller's tab/profile routing into every recipe step:
           // step requests from stepToRequest carry no profile/targetId, so
@@ -772,6 +769,9 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           runningRecipes.add(id);
           const runResult = await runRecipe(entry.recipe, args.inputs as Record<string, unknown> | undefined, {
             call: async (req) => {
+              // Input/request preflight can fail before touching the page. Only
+              // an actual browser attempt consumes the single repair trial.
+              if (candidate && suspended) repairUsed.add(id);
               const res = await runtime.call({
                 ...req,
                 ...(args.profile ? { profile: args.profile } : {}),
@@ -787,10 +787,11 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           if (runResult.ok && candidate) {
             verifiedDrafts.set(id, { site: args.site!, content: JSON.stringify(entry.recipe) });
           } else if (!runResult.ok && runResult.failureKind !== 'input' && runResult.failedStep !== undefined) {
-            failedRecipes.add(id);
-            // Keep the last known definition, not a failed candidate. A normal
-            // use failure persists across tasks; missing input does not age a recipe.
-            if (persisted && deps.saveUserRecipe) {
+            // A failed draft is not evidence that the saved active version is
+            // stale. Keep its state, while limiting new/previously failed drafts.
+            if (!candidate || !persisted || suspended) failedRecipes.add(id);
+            // Only failure while using the saved definition can suspend it on disk.
+            if (!candidate && persisted && deps.saveUserRecipe) {
               try {
                 // Bundled recipes predate validation metadata; their guide
                 // supplies the owning site. Never guess from a host substring.

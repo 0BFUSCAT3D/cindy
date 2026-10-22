@@ -1518,13 +1518,13 @@ const UNTORN_DOWN_BROWSER_MESSAGE =
         [
           `import path from "node:path";`,
           `import path from "node:path";
+import { getBrowserControlState } from "../browser-control-state.js";
 import { isManagedLocalCdpConnection } from "openclaw/plugin-sdk/cdp-locality";`,
         ],
         [
           `          const headers = getHeadersWithAuth(target);
           // Bypass proxy for loopback CDP connections (#31219)`,
           `          const headers = getHeadersWithAuth(target);
-          const { getBrowserControlState } = await import("../browser-control-state.js");
           const isLocal = isManagedLocalCdpConnection(
             normalized, target, getBrowserControlState()?.profiles.values() ?? [],
           );

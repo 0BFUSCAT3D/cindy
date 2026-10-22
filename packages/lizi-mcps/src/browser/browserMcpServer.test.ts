@@ -1202,6 +1202,49 @@ describe('recipe on-use maintenance', () => {
       expect((await invoke(h, { action: 'recipe', recipeId: stored.id, inputs: { query: 'test' } })).ok).toBe(true);
     } finally { await h.cleanup(); }
   });
+  // Review #6822: saved-use coverage above did not exercise repair preflight.
+  // MCP entry/unit: all three preflight paths must leave the page and budget untouched.
+  it.each(['missing', 'non-scalar', 'interpolation'] as const)('preserves the repair trial after %s input preflight failure', async (failure) => {
+    const candidate = { ...draft, inputs: { query: { required: true } }, steps: [{ ...draft.steps[0],
+      guard: { url: 'https://example.com/', ...(failure === 'interpolation' ? { selector: '#{{missing}}' } : {}) } }] };
+    const stored = { ...candidate, validation: { site: 'example.com', state: 'suspended' as const } };
+    const saved: unknown[] = [];
+    const h = await makeHarness({
+      getUserRecipes: async () => ({ version: `repair-preflight-${failure}`, recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async (x) => { saved.push(x); return { ok: true }; },
+    }, (_req, i) => ({ result: i === 0 ? true : { title: 'found' } }));
+    const run = { action: 'recipe', site: 'example.com', recipeDraft: candidate };
+    try {
+      const inputs = failure === 'missing' ? undefined : { query: failure === 'non-scalar' ? {} : 'test' };
+      expect((await invoke(h, { ...run, inputs })).ok).toBe(false);
+      expect(h.calls).toHaveLength(0);
+      expect(saved).toHaveLength(0);
+      expect((await invoke(h, { ...run, inputs: { query: 'test', missing: 'account' } })).verified).toBe(true);
+      const calls = h.calls.length;
+      expect((await invoke(h, { ...run, inputs: { query: 'test', missing: 'account' } })).message).toContain('次数已用完');
+      expect(h.calls).toHaveLength(calls);
+    } finally { await h.cleanup(); }
+  });
+  // Review #6822: a draft failure differs from failure of the saved definition.
+  // MCP entry/unit: guard/expect failures must not disable the old working recipe.
+  it.each(['guard', 'expect'] as const)('keeps an active recipe usable after a candidate %s failure', async (failure) => {
+    const stored = { ...draft, validation: { site: 'example.com', state: 'active' as const } };
+    const saved: unknown[] = [];
+    let trial = true;
+    const h = await makeHarness({
+      getUserRecipes: async () => ({ version: `active-draft-${failure}`, recipes: new Map([[stored.id, stored]]), siteGuides: new Map() }),
+      saveUserRecipe: async (x) => { saved.push(x); return { ok: true }; },
+    }, (req) => ({ result: (req.request as { fn?: string })?.fn?.includes('const g =')
+      ? !(trial && failure === 'guard') : { title: trial ? '' : 'found' } }));
+    try {
+      expect((await invoke(h, { action: 'recipe', site: 'example.com', recipeDraft: draft })).failureKind).toBe(failure);
+      expect(saved).toHaveLength(0);
+      trial = false;
+      expect((await invoke(h, { action: 'recipe', recipeId: stored.id })).ok).toBe(true);
+      expect((await invoke(h, { action: 'recipe', site: 'example.com', recipeDraft: draft })).verified).toBe(true);
+      expect(saved).toHaveLength(0);
+    } finally { await h.cleanup(); }
+  });
   it('rejects moving an existing recipe id to a different site', async () => {
     const stored = { ...draft, validation: { site: 'example.com', state: 'active' as const } };
     const h = await makeHarness({

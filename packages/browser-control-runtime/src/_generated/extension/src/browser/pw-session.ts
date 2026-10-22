@@ -9,6 +9,7 @@
  */
 import crypto from "node:crypto";
 import path from "node:path";
+import { getBrowserControlState } from "../browser-control-state.js";
 import { isManagedLocalCdpConnection } from "../../../../shim/cdp-locality.js";
 import {
   isFutureDateTimestampMs,
@@ -946,7 +947,6 @@ async function connectBrowser(cdpUrl: string, ssrfPolicy?: SsrFPolicy): Promise<
         const endpoint = wsUrl ?? normalized;
         const connectEndpoint = async (target: string) => {
           const headers = getHeadersWithAuth(target);
-          const { getBrowserControlState } = await import("../browser-control-state.js");
           const isLocal = isManagedLocalCdpConnection(
             normalized, target, getBrowserControlState()?.profiles.values() ?? [],
           );
