@@ -617,6 +617,43 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deps.dispatch).toHaveBeenCalledOnce();
   });
 
+  it.each(['members', 'heartbeat'].flatMap(boundary =>
+    ['TOKEN_EXPIRED', 'INVALID_TOKEN', 'AUTH_REQUIRED', 'INVALID_CHAT_RESPONSE'].map(code => [boundary, code])))
+  ('retains reply files through refreshable 401 at %s (%s)', async (boundary, code) => {
+    let denied = false;
+    fixture.refresh.mockResolvedValue(false);
+    fixture.handle.mockImplementation((route, _method, body) => {
+      if (route === '/executions/claim') {
+        const next = claimed ? null : { ...execution, requester_id: selfId, access_mode: 'owner' };
+        claimed = true; return { body: { execution: next } };
+      }
+      if (denied && (boundary === 'members' ? route.endsWith('/members') : body?.action === 'heartbeat'))
+        return code === 'INVALID_CHAT_RESPONSE' ? { status: 401, rawBody: '<html>unavailable</html>' }
+          : { status: 401, body: { error: { code } } };
+      if (route.endsWith('/members')) return { body: [
+        { id: botId, kind: 'bot', ownerActorId: selfId, state: 'joined', accessRevision: 1, guestAccess: 'tools' },
+        { id: selfId, kind: 'human', ownerActorId: selfId, state: 'joined' },
+      ] };
+      return response(route);
+    });
+    replyFiles.prepare.mockResolvedValue({ text: 'Report', attachments: [{ id: 'pdf', name: 'report.pdf' }] });
+    await start();
+    denied = true;
+    await service.settleLaneTurn({ ...terminal, resultText: '[Report](./report.pdf)' });
+    expect(fixture.upload).not.toHaveBeenCalled();
+    expect(deliveries()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(58_000);
+    expect(fixture.upload).not.toHaveBeenCalled();
+    denied = false;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fixture.upload).toHaveBeenCalledOnce();
+    expect(deliveries()).toHaveLength(1);
+    expect(replyFiles.prepare).toHaveBeenCalledOnce();
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(deliveries()).toHaveLength(1);
+  });
+
   async function startFileReply() {
     const original = fixture.handle.getMockImplementation()!;
     fixture.handle.mockImplementation((route, method, body) => {

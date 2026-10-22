@@ -1426,7 +1426,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         throw new GroupToolAuthorizationError();
       await updateExecution(run, 'heartbeat');
     } catch (error) {
-      if (error instanceof ChatResponseError && [401, 403, 404, 409, 410].includes(error.status))
+      if (error instanceof ChatResponseError && !recoverableAuth(error) && [401, 403, 404, 409, 410].includes(error.status))
         throw new GroupToolAuthorizationError();
       throw error;
     }
