@@ -40,6 +40,22 @@ describe('chat private media', () => {
     expect(f.fetch).toHaveBeenLastCalledWith('https://upload.example.test/signed', expect.objectContaining({ redirect: 'error', headers: { 'Content-Type': 'image/png' } }));
     expect(vi.mocked(api).mock.calls.at(-1)?.[0]).toBe('/conversations/room/media/media/complete');
   });
+  it('uploads authorized reply bytes and refuses an expired execution before PUT', async () => {
+    f.fetch.mockReset().mockResolvedValue(new Response('', { status: 200 }));
+    const readBytes = vi.fn(async () => Buffer.from('%PDF-1.4'));
+    let valid = true;
+    const file = { ...attachment, name: 'report.pdf', mimeType: 'application/pdf', url: null, path: null, readBytes,
+      assertCurrent: () => { if (!valid) throw new Error('STALE_EXECUTOR'); } };
+    const api = vi.fn(async (route: string) => route.endsWith('/media') ? { id: 'pdf', uploadUrl: 'https://upload.example.test/signed' } : {}) as unknown as ChatApi;
+    const media = createChatMedia(api, () => true);
+    expect(await media.upload('room', 'operation', [file], 'actor')).toEqual([{ type: 'media', mediaId: 'pdf', caption: 'report.pdf' }]);
+    expect(f.fetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ body: new Uint8Array(Buffer.from('%PDF-1.4')) }));
+    f.fetch.mockClear();
+    vi.mocked(api).mockImplementationOnce(async () => { valid = false; return { id: 'pdf', uploadUrl: 'https://upload.example.test/signed' }; });
+    await expect(media.upload('room', 'retry', [file], 'actor')).rejects.toThrow('STALE_EXECUTOR');
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it.each(['prepare', 'upload', 'complete'])('reports the failing %s stage without signed URLs or filenames', async (stage) => {
     f.read.mockResolvedValue({ buffer: Buffer.from('png') });
     const log = { warn: vi.fn() };

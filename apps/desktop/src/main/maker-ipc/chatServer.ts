@@ -1,3 +1,5 @@
+import { prepareChatReplyFiles } from './chatServerReplyFiles.js';
+import type { ChatUploadAttachment } from './chatServerMedia.js';
 import { createConversationListState } from '@cindy/maker-shared/chatConversationList';
 /** Production chat transport. The server owns messages and execution leases;
  * local group rows only supply Agent lane metadata and the upgrade source. */
@@ -91,7 +93,7 @@ interface Running {
   lane?: string;
   laneLookup?: Promise<void>;
   context?: ExecutionContext;
-  settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; reply?: { sourceText: string; text: string; attachments: BotGroupAttachment[] }; retryAt: number; keepLease?: boolean };
+  settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; reply?: { sourceText: string; text: string; attachments: ChatUploadAttachment[] }; fileReply?: Awaited<ReturnType<typeof prepareChatReplyFiles>>; retryAt: number; keepLease?: boolean };
   delivery?: Promise<void>;
   plan?: ServerPlan;
   workspace?: { workDir: string; branch: string | null; ownerSessionId: string | null };
@@ -1458,7 +1460,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           let terminal = pending.terminal;
           let text = pending.reply?.sourceText ?? terminal.resultText;
           if (!pending.reply && !text.trim() && terminal.resultMessageClientId) text = (await readPersistedReplyText(terminal.sessionId, terminal.resultMessageClientId)) ?? '';
-          const produced: BotGroupAttachment[] = [];
+          const produced: ChatUploadAttachment[] = [];
           if (terminal.outcome !== 'error' && run.workspace && run.beforeFiles && deps.workDir) {
             const files = await deps.workDir.changedFiles(run.workspace.workDir, run.beforeFiles);
             for (const name of files) {
@@ -1477,9 +1479,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           try {
             if (terminal.outcome !== 'error') {
               if (ordinaryReply) {
-                pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(text, run.sessionId, assertCurrent) };
+                pending.fileReply ??= await prepareChatReplyFiles(text, run.sessionId, () => {
+                  assertCurrent();
+                  if (run.execution.access_mode === 'chat') throw new Error('ATTACHMENT_UNAVAILABLE');
+                }, !terminal.resultText.trim() ? terminal.resultMessageClientId : undefined);
+                pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(pending.fileReply.text, run.sessionId, assertCurrent) };
                 contentText = pending.reply.text;
-                produced.push(...pending.reply.attachments);
+                produced.push(...pending.reply.attachments, ...pending.fileReply.attachments);
+                if (produced.length > BOT_GROUP_ATTACHMENTS_MAX) throw new Error('ATTACHMENT_UNAVAILABLE');
               }
               files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`,
                 produced, run.execution.bot_id, ordinaryReply ? assertCurrent : undefined);

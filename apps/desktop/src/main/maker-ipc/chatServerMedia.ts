@@ -13,6 +13,12 @@ import { safeAttachmentFileName } from './botGroupAttachments.js';
 import type { BotGroupAttachment } from '../../shared/botGroupChat.js';
 import type { ChatApi, ChatContentBlock } from './chatServerMigration.js';
 
+/** Internal-only readers: never serialized in group messages or IPC. */
+export type ChatUploadAttachment = BotGroupAttachment & {
+  readBytes?: () => Promise<Buffer>;
+  assertCurrent?: () => void;
+};
+
 const MAX_SIZE = 100 * 1024 * 1024;
 /** Files of one send uploaded at once; each holds its bytes in memory until sealed. */
 const UPLOAD_CONCURRENCY = 3;
@@ -30,7 +36,7 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
      * blocks in the files' order. Every file settles before a failure is reported, so no
      * upload keeps running after the send has given up; the first failure in order wins.
      */
-    async upload(roomId: string, source: string, attachments: BotGroupAttachment[], actorId: string, assertCurrent?: () => void): Promise<ChatContentBlock[]> {
+    async upload(roomId: string, source: string, attachments: ChatUploadAttachment[], actorId: string, assertCurrent?: () => void): Promise<ChatContentBlock[]> {
       const checkUpload = () => { check(); assertCurrent?.(); };
       const results: Array<PromiseSettledResult<ChatContentBlock>> = new Array(attachments.length);
       let next = 0;
@@ -46,19 +52,20 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
       if (failed) throw failed.reason;
       return results.map(result => (result as PromiseFulfilledResult<ChatContentBlock>).value);
 
-      async function uploadOne(attachment: BotGroupAttachment): Promise<ChatContentBlock> {
+      async function uploadOne(attachment: ChatUploadAttachment): Promise<ChatContentBlock> {
         let stage = 'read';
         const started = Date.now();
+        const checkFile = () => { checkUpload(); attachment.assertCurrent?.(); };
         try {
-          checkUpload();
+          checkFile();
           if (attachment.size > MAX_SIZE) throw new Error('ATTACHMENT_TOO_LARGE');
-          if (attachment.path) {
-            const stat = await fs.stat(attachment.path); checkUpload();
+          if (attachment.path && !attachment.readBytes) {
+            const stat = await fs.stat(attachment.path); checkFile();
             if (!stat.isFile() || stat.size > MAX_SIZE) throw new Error('ATTACHMENT_TOO_LARGE');
           }
-          const bytes = attachment.url?.startsWith('cindy-media://') ? (await readMedia(attachment.url)).buffer
+          const bytes = attachment.readBytes ? await attachment.readBytes() : attachment.url?.startsWith('cindy-media://') ? (await readMedia(attachment.url)).buffer
             : attachment.path ? await fs.readFile(attachment.path) : null;
-          checkUpload();
+          checkFile();
           if (!bytes || !bytes.length || bytes.length > MAX_SIZE) throw new Error('ATTACHMENT_UNAVAILABLE');
           const key = createHash('sha256').update(source).update(attachment.id).update(bytes).digest('hex');
           // Expired abandoned uploads must get a new prepare receipt, but a successful
@@ -75,13 +82,13 @@ export function createChatMedia(api: ChatApi, current: () => boolean, log?: { wa
               operationId: `media:${key}:${randomUUID()}`, name: attachment.name, type: attachment.mimeType, size: bytes.length,
             }, actorId);
           }
-          checkUpload();
+          checkFile();
           stage = 'upload';
           const response = await net.fetch(signedUrl(upload.uploadUrl), { method: 'PUT', redirect: 'error',
             headers: { 'Content-Type': attachment.mimeType }, body: new Uint8Array(bytes), signal: AbortSignal.timeout(60000) });
           if (!response.ok) throw Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: response.status,
             ...(response.status === 429 ? { retryAt: retryAfterDeadline(response) } : {}) });
-          checkUpload();
+          checkFile();
           stage = 'complete';
           await api(`/conversations/${roomId}/media/${upload.id}/complete`, 'POST', { operationId: `seal:${upload.id}` }, actorId);
           return { type: 'media', mediaId: upload.id, caption: attachment.name };
