@@ -6,7 +6,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { BotLinkedProject } from '../../shared/botWorkbench.js';
-import { projectKeyComparisonKey } from '../../shared/projectKeys.js';
+import { isWindowsPathLike, normalizeWorkingDirForStorage } from '../../shared/workingDir.js';
 
 import { BrowserWindow } from 'electron';
 
@@ -138,6 +138,12 @@ export async function readBotLinkedProjects(userDataDir: string, botId: string):
   return (await readStoredStrict(userDataDir, botId)).directories;
 }
 
+/** Links refer to individual directories, not the repository's sidebar grouping. */
+export function linkedProjectDirectoryKey(directory: string): string {
+  const normalized = normalizeWorkingDirForStorage(directory) ?? directory;
+  return process.platform === 'win32' && isWindowsPathLike(normalized) ? normalized.toLowerCase() : normalized;
+}
+
 export async function setBotLinkedProject(
   userDataDir: string, botId: string, project: Pick<BotLinkedProject, 'path' | 'deviceId'>,
   linked: boolean, guard: () => void,
@@ -146,7 +152,7 @@ export async function setBotLinkedProject(
   await mutate(userDataDir, botId, stored => {
     const same = (entry: BotLinkedProject) => entry.deviceId === project.deviceId && (project.deviceId
       ? entry.path === project.path
-      : projectKeyComparisonKey(`local:${entry.path}`, process.platform) === projectKeyComparisonKey(`local:${project.path}`, process.platform));
+      : linkedProjectDirectoryKey(entry.path) === linkedProjectDirectoryKey(project.path));
     const exists = stored.directories.some(same);
     if (linked && !exists && stored.directories.length >= LEGACY_MAX_DIRECTORIES) throw new Error('PROJECT_LIMIT');
     const directories = linked
