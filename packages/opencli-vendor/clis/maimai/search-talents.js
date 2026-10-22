@@ -52,7 +52,7 @@ cli({
 
     // Navigate to the search page
     await page.goto('https://maimai.cn/ent/talents/discover/search_v2', { waitUntil: 'networkidle' });
-    await page.waitForTimeout(5000);
+    await page.sleep(5);
 
     // Generate random session IDs
     const sessionid = 'b92d0fb5-f3fd-1f4b-fcdc-' + Math.random().toString(16).slice(2, 14);

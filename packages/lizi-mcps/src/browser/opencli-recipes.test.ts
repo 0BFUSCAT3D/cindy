@@ -58,6 +58,73 @@ afterEach(() => {
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 export-mode recurrence, unit tier. Earlier tests only exercised
+  // link flags and web/stdout, missing optional archive/browser-download modes.
+  // Every retired argument must disappear and fail before execution begins.
+  it('rejects retired export arguments before any browser or network effect', async () => {
+    const cases: Array<[string, Record<string, unknown>, string, unknown]> = [
+      ['twitter/bookmarks', { all: true }, 'resume-file', 'resume.json'],
+      ['twitter/bookmarks', { all: true }, 'output-file', 'archive.jsonl'],
+      ['twitter/likes', { username: 'fixture', all: true }, 'resume-file', 'resume.json'],
+      ['twitter/likes', { username: 'fixture', all: true }, 'output-file', 'archive.jsonl'],
+      ['band/post', { band_no: '1', post_no: '2' }, 'output', 'photos'],
+      ['doubao/meeting-transcript', { id: '123' }, 'download', true],
+      ['doubao/meeting-transcript', { id: '123' }, 'download', 'true'],
+      ['web/read', { url: 'https://example.test' }, 'output', 'articles'],
+      ['web/read', { url: 'https://example.test' }, 'download-images', true],
+      ['midjourney/generate', { prompt: 'fixture' }, 'output', 'images'],
+      ...['background', 'edit', 'face-swap', 'generate', 'object-remover', 'remove-bg', 'restore', 'try-on', 'upscale', 'video']
+        .map(name => [`yollomi/${name}`, {}, 'output', 'images'] as [string, Record<string, unknown>, string, unknown]),
+    ];
+    const effect = vi.fn(async () => { throw new Error('unexpected page effect'); });
+    const page = new Proxy({}, { get: () => effect }) as IPage;
+    const start = vi.fn();
+    for (const [id, required, key, value] of cases) {
+      await expect(executeAdapter(id, { ...required, [key]: value }, page, undefined, start))
+        .rejects.toThrow('Local recipe file export');
+      expect(loadRecipes().get(`opencli:${id}`)!.inputs).not.toHaveProperty(key);
+    }
+    expect(start).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('keeps Band photo links and Doubao transcript text available without exports', async () => {
+    const band = { goto: async () => {}, getCookies: async () => [{ name: 'band_session', value: 'invalid-fixture' }],
+      evaluate: async () => ({ text: 'Fixture post', photos: ['https://example.test/photo.png'] }),
+    } as unknown as IPage;
+    expect(await executeAdapter('band/post', { band_no: '1', post_no: '2' }, band))
+      .toMatchObject([{ type: 'post', text: expect.stringContaining('https://example.test/photo.png') }]);
+    const evaluate = vi.fn(async (_js: string) => 'Fixture transcript');
+    const doubao = { goto: async () => {}, wait: async () => {}, evaluate } as unknown as IPage;
+    expect(await executeAdapter('doubao/meeting-transcript', { id: '123' }, doubao))
+      .toEqual([{ Section: 'Transcript', Content: 'Fixture transcript' }]);
+    expect(evaluate.mock.calls.every(args => !String(args[0]).includes('minutes-download-text-btn'))).toBe(true);
+    expect(loadRecipes().get('opencli:mubu/doc')!.inputs).toHaveProperty('output');
+  });
+
+  // Unsupported adapter API regression: real adapter + real OpenCliPage,
+  // fake transport and timers. Old page.waitForTimeout always throws after goto.
+  it('runs Maimai talent search using the supported five-second delay', async () => {
+    vi.useFakeTimers();
+    const calls: BrowserControlRequest[] = [];
+    const page = new OpenCliPage({ targetId: 'fixture', call: async request => {
+      calls.push(request);
+      const method = request.recipeCommand?.method;
+      return { ok: true, action: request.action, data: method === 'Cindy.begin' ? { sessionId: 'fixture-session' }
+        : method === 'Network.getCookies' ? { cookies: [] }
+          : { result: request.request?.fn?.includes('api/ent/discover/search')
+            ? { code: 0, data: { list: [{ name: 'Fixture candidate', company: 'Fixture company' }] } } : true } };
+    } });
+    try {
+      const result = executeAdapter('maimai/search-talents', { query: 'fixture' }, page);
+      const checked = expect(result).resolves.toMatchObject([{ name: 'Fixture candidate', company: 'Fixture company' }]);
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(calls.some(call => call.request?.fn?.includes('api/ent/discover/search'))).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await checked;
+    } finally { await page.dispose(); }
+  });
+
   // #6826 download recurrence, unit tier. Generic downloader tests missed the
   // X composer consumer; real DNS/redirect policy with an in-memory dispatcher.
   it.each(['http://127.0.0.1/private', 'https://private.example/image', 'https://public.example/redirect'])(

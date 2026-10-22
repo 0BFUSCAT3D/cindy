@@ -228,6 +228,9 @@
     },
     "clis/pubmed/utils.js": {
       "upstreamSha256": "ad4e9eff1347b667ec04aaa43bc55a4b65adedac685c55daf11965aec15fe436"
+    },
+    "clis/maimai/search-talents.js": {
+      "upstreamSha256": "f4ebfd01ea433cec410a14a1cccea6928d51b7d5ea43af2ca8ab450fa58c4e19"
     }
   },
   "files": {
@@ -869,7 +872,7 @@
     "clis/lobsters/read.js": "e25827148fadc1811f5c77c9559d8a717d670177e24a6d7cc39bc4fbe47d2809",
     "clis/lobsters/tag.js": "314dfe59ad10de0f7a0766b71a771b0f33a31bc137915ef50b51d1b2f58c68b9",
     "clis/maimai/auth.js": "a9982cf023ce13d34b23014ecee735687bcd21487c61febb8bc80888e9d43f74",
-    "clis/maimai/search-talents.js": "f4ebfd01ea433cec410a14a1cccea6928d51b7d5ea43af2ca8ab450fa58c4e19",
+    "clis/maimai/search-talents.js": "18fc50cd19c3fe5be69785bb3b2466435fbd0e8ccc77f55a156feebe8f64eaba",
     "clis/manus/_utils.js": "d5d8c7ae6f4bc77cd367192d128844372cd2cbe0bdf737752fbfd78a38cdb142",
     "clis/manus/auth.js": "ad526ed7abcbbef890537b0d445e99bc763787f7f3d30420758a14af92d75018",
     "clis/manus/connectors.js": "3114bac64cc4506187598cc42c9cce1bac82c7d46d284930d1689fb297c1bfbe",

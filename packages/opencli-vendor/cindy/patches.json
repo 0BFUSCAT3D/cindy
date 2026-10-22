@@ -3701,5 +3701,10 @@
     "file": "clis/pubmed/utils.js",
     "before": "const delayMs = process.env.NCBI_API_KEY ? 110 : 360;",
     "after": "const delayMs = 360;"
+  },
+  {
+    "file": "clis/maimai/search-talents.js",
+    "before": "await page.waitForTimeout(5000);",
+    "after": "await page.sleep(5);"
   }
 ]

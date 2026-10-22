@@ -7,6 +7,24 @@
     "weixin/download", "xiaohongshu/download", "zhihu/download"
   ],
   "excludedCommandsReason": "Local file exports are deferred: a checked path string is not an atomic write capability. Full sources are retained; use existing host file tools to save browser results.",
+  "excludedArguments": {
+    "band/post": ["output"],
+    "doubao/meeting-transcript": ["download"],
+    "midjourney/generate": ["output"],
+    "twitter/bookmarks": ["resume-file", "output-file"],
+    "twitter/likes": ["resume-file", "output-file"],
+    "web/read": ["output", "download-images"],
+    "yollomi/background": ["output"],
+    "yollomi/edit": ["output"],
+    "yollomi/face-swap": ["output"],
+    "yollomi/generate": ["output"],
+    "yollomi/object-remover": ["output"],
+    "yollomi/remove-bg": ["output"],
+    "yollomi/restore": ["output"],
+    "yollomi/try-on": ["output"],
+    "yollomi/upscale": ["output"],
+    "yollomi/video": ["output"]
+  },
   "excludedSites": {
     "zlibrary": "Not in Cindy's default catalog: copyright enforcement history and unverified mirror ownership (reviewed 2026-10-23).",
     "slock": "Deferred: app.slock.ai redirects to app.raft.build; the adapter still assumes the old origin and token storage. Revalidate before inclusion.",
