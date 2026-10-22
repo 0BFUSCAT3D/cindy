@@ -183,6 +183,76 @@ function volcengineProvider(options: VolcengineProviderOptions): MobileVolcengin
 }
 
 describe('mobileRealtimeAsrProvider', () => {
+  // Empty completions used to discard PCM in both fallback protocols. Exercise
+  // the controller/provider boundary, including Qwen's bound, young unbound,
+  // and missing-commit paths, so reconnecting alone cannot pass this test.
+  it.each(['openai', 'qwen_bound', 'qwen_unbound', 'qwen_no_commit'] as const)(
+    'replays audio after an empty fallback completion and recovers text: %s', async (scenario) => {
+      vi.useFakeTimers();
+      FakeSocket.instances = [];
+      const qwen = scenario !== 'openai';
+      const cred = qwen ? credential({ asr: {
+        provider: 'litellm-qwen3-asr-flash-realtime', model: 'qwen3-asr-flash-realtime',
+        auth: 'api-key', mode: 'realtime-websocket', pcmSampleRate: 16000,
+        endpointPath: '/dashscope/api-ws/v1/realtime?model=qwen3-asr-flash-realtime',
+        protocolProfile: 'qwen-asr-server-vad',
+      } }) : credential();
+      const asr = realtimeProvider({ credential: cred, websocketFactory: FakeSocket, flushTimeoutMs: 100 });
+      const submitted = vi.fn(() => undefined);
+      const onError = vi.fn();
+      const controller = new VoiceInputController({
+        asr, retryEmptyTranscript: true, stableWaitMs: 1,
+        logger: new VoiceTimelineLogger(),
+        callbacks: { onDraftChanged: () => {}, onSubmitted: submitted, onError },
+      });
+      try {
+        const starting = controller.start();
+        await waitForFakeSocketCount(1);
+        const first = FakeSocket.instances[0];
+        first.open();
+        first.message({ type: 'session.updated' });
+        await starting;
+        controller.appendAudio(new Int16Array(qwen ? 3200 : 4800).fill(1000).buffer);
+        if (scenario === 'qwen_bound' || scenario === 'qwen_no_commit') {
+          await vi.advanceTimersByTimeAsync(2000);
+        }
+        const stopping = controller.stop();
+        if (scenario !== 'qwen_no_commit') {
+          first.message({ type: 'input_audio_buffer.committed', item_id: 'empty-item' });
+        }
+        first.message({
+          type: 'conversation.item.input_audio_transcription.completed', item_id: 'empty-item',
+          ...(qwen ? { text: ' \t ' } : { transcript: '' }),
+        });
+        await vi.advanceTimersByTimeAsync(1);
+        expect(FakeSocket.instances).toHaveLength(2);
+        const retry = FakeSocket.instances[1];
+        retry.open();
+        retry.message({ type: 'session.updated' });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(retry.sent.slice(1)).toEqual([
+          expect.objectContaining({
+            type: 'input_audio_buffer.append',
+            audio: (first.sent[1] as { audio: string }).audio,
+          }),
+          expect.objectContaining({ type: qwen ? 'session.finish' : 'input_audio_buffer.commit' }),
+        ]);
+        retry.message({
+          type: 'conversation.item.input_audio_transcription.completed',
+          item_id: 'recovered-item', transcript: '找回备用识别的文字',
+        });
+        await stopping;
+        expect(submitted).toHaveBeenCalledExactlyOnceWith('找回备用识别的文字', expect.any(Object));
+        expect(onError).not.toHaveBeenCalled();
+        expect(controller.currentState).toBe('done');
+        expect(retry.readyState).toBe(3);
+      } finally {
+        await controller.cancel();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('replays the captured PCM after an empty final response and submits the recovered transcript once', async () => {
     vi.useFakeTimers();
     FakeSocket.instances = [];

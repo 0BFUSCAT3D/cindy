@@ -556,7 +556,7 @@ export class MobileRealtimeAsrProvider implements AsrProvider {
     if (this.pendingCommitCount > 0) this.pendingCommitCount -= 1;
     const aggregate = this.aggregateTranscript();
     if (aggregate) this.callback({ type: 'stable', text: aggregate, at: Date.now() });
-    this.clearConfirmedRealtimeAudio(event.item_id);
+    this.finishRealtimeAudio(event.item_id, itemTranscript.trim().length > 0);
     if (this.pendingCommitCount === 0) this.resolveFlushWaiters();
   }
 
@@ -686,25 +686,27 @@ export class MobileRealtimeAsrProvider implements AsrProvider {
     }
   }
 
-  private clearConfirmedRealtimeAudio(itemId: string): void {
+  private finishRealtimeAudio(itemId: string, hasTranscript: boolean): void {
+    // Completion ends the commit bookkeeping, but an empty result does not
+    // confirm its audio. Keep those bytes for the one stop-time replay.
     let commitId = this.audioCommitIdsByItem.get(itemId);
     if (commitId === undefined) {
       const turnId = this.unboundAudioItemTurnIds.get(itemId);
       if (turnId !== undefined) {
         this.unboundAudioItemTurnIds.delete(itemId);
-        this.clearUnboundRealtimeAudioTurn(turnId);
+        if (hasTranscript) this.clearUnboundRealtimeAudioTurn(turnId);
         return;
       }
       commitId = this.pendingAudioCommitIds.shift();
     }
     if (commitId === undefined) {
-      this.trimUnconfirmedAudioOlderThan(Date.now() - CONFIRMED_AUDIO_RETENTION_MS);
+      if (hasTranscript) this.trimUnconfirmedAudioOlderThan(Date.now() - CONFIRMED_AUDIO_RETENTION_MS);
       return;
     }
     this.audioCommitIdsByItem.delete(itemId);
     this.unboundAudioItemTurnIds.delete(itemId);
     this.pendingAudioCommitIds = this.pendingAudioCommitIds.filter((id) => id !== commitId);
-    this.unconfirmedAudio = this.unconfirmedAudio.filter((entry) => entry.commitId !== commitId);
+    if (hasTranscript) this.unconfirmedAudio = this.unconfirmedAudio.filter((entry) => entry.commitId !== commitId);
   }
 
   private clearUnboundRealtimeAudioTurn(turnId: number): void {
