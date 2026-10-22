@@ -1,4 +1,5 @@
 import { generationCapabilities, previousModelGenerations } from './modelGeneration.js';
+import { MODEL_NATIVE_APIS } from './modelAccessBean.js';
 import type { CatalogModel } from "./types.js";
 import type {
   ModelRegistry,
@@ -6,7 +7,7 @@ import type {
   ModelRegistryRoute,
   ModelEffort,
   ModelReferencePriceGroup,
-  ModelAccessWireProtocol,
+  ModelNativeApi,
 } from "./modelAccessBean.js";
 
 // Projection-only provenance; a symbol keeps it out of the public metadata schema
@@ -17,7 +18,7 @@ type ResolvedModelMetadata = ModelMetadata & { [inheritedContextWindow]?: true }
 /** Data only. Membership, credentials, routing and billed prices never inherit. */
 export interface ModelMetadata {
   /** Manufacturer language, independent of the connection's execution protocol. */
-  nativeApi?: ModelAccessWireProtocol | null;
+  nativeApi?: ModelNativeApi | null;
   mode?: string;
   modalities?: { input: string[]; output: string[] };
   officialDocs?: string;
@@ -75,7 +76,7 @@ export function validModelMetadata(value: unknown): value is ModelMetadata {
     if (!(MODEL_METADATA_FIELDS as readonly string[]).includes(key))
       return false;
     if (key === 'nativeApi') return v === null ||
-      ['anthropic-messages', 'openai-responses', 'openai-completions', 'google-generative-ai'].includes(v as string);
+      (MODEL_NATIVE_APIS as readonly unknown[]).includes(v);
     if (key === "mode")
       return typeof v === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(v);
     if (key === "modalities") {
@@ -470,6 +471,8 @@ export function applyModelMetadata(
 export interface DiscoveredModel {
   id: string;
   name: string;
+  /** Account entitlement, never inherited as public model metadata. */
+  supportsUltrafastMode?: boolean;
   contextWindow?: number;
   discoveredCost?: import("./types.js").ModelCost;
   discoveredMetadata?: ModelMetadata;
@@ -487,6 +490,11 @@ export function mergeDiscoveredRuntimeModels(
     if (!model.id || !model.name || seen.has(model.id)) continue;
     seen.add(model.id);
     const index = models.findIndex((m) => m.id === model.id);
+    // Unlike descriptive metadata, a refreshed account entitlement must not stick
+    // when the latest response no longer declares it.
+    const accountCapabilities = model.supportsUltrafastMode !== undefined ||
+      (index >= 0 && models[index].supportsUltrafastMode !== undefined)
+      ? { supportsUltrafastMode: model.supportsUltrafastMode === true } : {};
     const discoveredMetadata = mergeModelMetadata(
       index >= 0 ? models[index].discoveredMetadata : undefined,
       pickModelMetadata(model.discoveredMetadata ?? model),
@@ -502,6 +510,7 @@ export function mergeDiscoveredRuntimeModels(
       added.push({
         id: model.id,
         name: model.name,
+        ...accountCapabilities,
         discoveredMetadata,
         ...(model.discoveredCost ? { discoveredCost: model.discoveredCost } : {}),
         ...(hideNew ? { defaultEnabled: false } : {}),
@@ -509,6 +518,7 @@ export function mergeDiscoveredRuntimeModels(
     else
       models[index] = {
         ...models[index],
+        ...accountCapabilities,
         ...(!models[index].discoveredMetadata ? { nameExplicit: true } : {}),
         discoveredMetadata,
         ...(model.discoveredCost ? { discoveredCost: model.discoveredCost } : {}),

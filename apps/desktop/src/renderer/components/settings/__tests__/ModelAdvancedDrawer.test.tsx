@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildUserProvider, resolveModelMetadata } from '@cindy/model-providers';
 import type { CatalogModel, ProviderView } from '@cindy/model-providers';
 
 const mocks = vi.hoisted(() => ({
@@ -100,6 +100,112 @@ beforeEach(() => {
 });
 
 describe('model advanced editor', () => {
+  // Regression: the details editor must save the Codex-only Ultra intent,
+  // adapting other engines instead of reducing the whole row to their maximum.
+  it.each(['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra'])('saves Ultra from the %s details panel', (id) => {
+    const metadata = resolveModelMetadata(BUNDLED_CATALOG.modelRegistry, 'openai', id, undefined, undefined, 'codex');
+    const primary = { ...model, id, efforts: metadata.efforts!, defaultEffort: 'medium' as const };
+    render(drawer(primary, 'medium', ['low', 'medium', 'high', 'xhigh', 'max']));
+    fireEvent.click(screen.getByRole('radio', { name: 'effortLevels.ultra' }));
+    expect(setProviderModelEffort).toHaveBeenCalledWith('codex', 'openai', id, 'ultra');
+    expect(setProviderModelEffort).toHaveBeenCalledWith('claude-code', 'openai', `chatgpt/${id}`, 'max');
+  });
+
+  it.each([
+    [true, 'supported'], [false, 'unsupported'], [undefined, 'undeclared'],
+  ] as const)('shows account Ultrafast capability %s independently of Fast', (supported, label) => {
+    draw({ ...model, supportsFastMode: true, supportsUltrafastMode: supported });
+    expect(screen.getByText('newChat.modelSelector.speed.ultrafast').parentElement?.textContent)
+      .toContain(`settings.providers.models.advanced.${label}`);
+  });
+
+  it('does not infer Ultrafast support from a non-Codex engine', () => {
+    render(<ModelAdvancedDrawer
+      provider={{ ...provider, agents: ['pi'] }}
+      row={{ id: model.id, name: model.name, avail: ['pi'],
+        byAgent: { pi: { ...model, supportsFastMode: true, supportsUltrafastMode: true } } }}
+      open onOpenChange={vi.fn()} pricePresentationOf={() => null}
+      onDisable={vi.fn()} disabled={false} paymentRequired={false}
+    />);
+    expect(screen.getByText('newChat.modelSelector.speed.ultrafast').parentElement?.textContent)
+      .toContain('settings.providers.models.advanced.unsupported');
+  });
+
+  it.each(['generate', 'edit', 'default'] as const)('saves image capability %s only on the explicit Images connection', async (value) => {
+    const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+    const source = { ...buildUserProvider({ id: 'relay', name: 'Relay', auth: { method: 'apiKey' }, runtimes: {
+      pi: { baseUrl: 'https://chat.example.invalid/v1', models: [{ id: 'private-image', name: 'Image' }] },
+      codex: { baseUrl: 'https://images.example.invalid/v1', imageApi: 'openai-images', models: [{
+        id: 'private-image', name: 'Image', discoveredMetadata: value === 'default'
+          ? { mode: 'image_generation', modalities: { input: ['text'], output: ['image'] } }
+          : { contextWindow: 32768 },
+        ...(value === 'default' ? { mode: 'image_generation' as const, modalities: { input: ['text', 'image'] as ('text' | 'image')[], output: ['image'] as 'image'[] } } : {}),
+      }] },
+    } }), connected: true } as ProviderView;
+    try {
+      if (value !== 'default') expect(source.imageModels).toBeUndefined();
+      render(<ModelAdvancedDrawer provider={source} row={{ id: 'private-image', name: 'Image', avail: ['pi', 'codex'], byAgent: { pi: source.models.pi![0], codex: source.models.codex![0] } }} open
+        onOpenChange={vi.fn()} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+      fireEvent.keyDown(screen.getByRole('button', { name: 'settings.providers.models.advanced.imageCapability.label' }), { key: 'ArrowDown' });
+      fireEvent.click(await screen.findByRole('menuitemradio', { name: `settings.providers.models.advanced.imageCapability.${value}` }));
+      await waitFor(() => expect(update).toHaveBeenCalledOnce());
+      const config = update.mock.calls[0]![0] as Parameters<typeof buildUserProvider>[0];
+      const saved = config.runtimes.codex!.models[0]!;
+      expect(config.runtimes.pi!.models).toEqual([{ id: 'private-image', name: 'Image' }]);
+      expect(saved.discoveredMetadata).toEqual(source.models.codex![0]!.discoveredMetadata);
+      if (value === 'default') {
+        expect(saved.mode).toBeUndefined();
+        expect(saved.modalities).toBeUndefined();
+      } else {
+        expect(saved.mode).toBe('image_generation');
+        expect(saved.modalities).toEqual({ input: value === 'edit' ? ['text', 'image'] : ['text'], output: ['image'] });
+      }
+      const active = buildUserProvider(config);
+      expect(active.imageModels?.[0]?.sourceAgent).toBe('codex');
+      expect(active.imageModels?.[0]?.modalities?.input).toEqual(value === 'edit' ? ['text', 'image'] : ['text']);
+      expect(update.mock.calls[0]![1]).toEqual({});
+    } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+  it.each(['generate', 'edit', 'default'] as const)('saves video capability %s only on the explicit video connection', async (value) => {
+    const update = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+    const previous = window.electronAPI;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: { updateCustomProvider: update } } });
+    const source = { ...buildUserProvider({ id: 'relay', name: 'Relay', auth: { method: 'apiKey' }, runtimes: {
+      pi: { baseUrl: 'https://chat.example.invalid/v1', models: [{ id: 'private-video', name: 'Image' }] },
+      codex: { baseUrl: 'https://images.example.invalid/v1', videoApi: 'xai-videos', models: [{
+        id: 'private-video', name: 'Image', discoveredMetadata: value === 'default'
+          ? { mode: 'video_generation', modalities: { input: ['text'], output: ['video'] } }
+          : { contextWindow: 32768 },
+        ...(value === 'default' ? { mode: 'video_generation' as const, modalities: { input: ['text', 'image'] as ('text' | 'image')[], output: ['video'] as 'video'[] } } : {}),
+      }] },
+    } }), connected: true } as ProviderView;
+    try {
+      if (value !== 'default') expect(source.videoModels).toBeUndefined();
+      render(<ModelAdvancedDrawer provider={source} row={{ id: 'private-video', name: 'Image', avail: ['pi', 'codex'], byAgent: { pi: source.models.pi![0], codex: source.models.codex![0] } }} open
+        onOpenChange={vi.fn()} pricePresentationOf={() => null} onDisable={vi.fn()} disabled={false} paymentRequired={false} />);
+      fireEvent.keyDown(screen.getByRole('button', { name: 'settings.providers.models.advanced.videoCapability.label' }), { key: 'ArrowDown' });
+      fireEvent.click(await screen.findByRole('menuitemradio', { name: `settings.providers.models.advanced.videoCapability.${value}` }));
+      await waitFor(() => expect(update).toHaveBeenCalledOnce());
+      const config = update.mock.calls[0]![0] as Parameters<typeof buildUserProvider>[0];
+      const saved = config.runtimes.codex!.models[0]!;
+      expect(config.runtimes.pi!.models).toEqual([{ id: 'private-video', name: 'Image' }]);
+      expect(saved.discoveredMetadata).toEqual(source.models.codex![0]!.discoveredMetadata);
+      if (value === 'default') {
+        expect(saved.mode).toBeUndefined();
+        expect(saved.modalities).toBeUndefined();
+      } else {
+        expect(saved.mode).toBe('video_generation');
+        expect(saved.modalities).toEqual({ input: value === 'edit' ? ['text', 'image'] : ['text'], output: ['video'] });
+      }
+      const active = buildUserProvider(config);
+      expect(active.videoModels?.[0]?.sourceAgent).toBe('codex');
+      expect(active.videoModels?.[0]?.modalities?.input).toEqual(value === 'edit' ? ['text', 'image'] : ['text']);
+      expect(update.mock.calls[0]![1]).toEqual({});
+    } finally { Object.defineProperty(window, 'electronAPI', { configurable: true, value: previous }); }
+  });
+
   it('rejects ordinary managed GGUF edits above the backend maximum', async () => {
     const previous = window.electronAPI;
     Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {

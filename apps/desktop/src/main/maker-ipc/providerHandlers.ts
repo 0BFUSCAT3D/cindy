@@ -1,4 +1,6 @@
 import { setProviderPresentation, retainProviderPresentationAfterAuthChange } from '../maker-host/provider-presentation-store.js';
+import { pruneProviderGroupBindings } from '../provider-group/bindings.js';
+import { writeProviderGroup } from '../provider-group/store.js';
 /**
  * provider:* IPC handlers。
  *
@@ -287,6 +289,11 @@ export interface ProviderHandlerDeps {
   beginRouteMutation(providerId: string): (() => void) & { commit?: () => void };
   /** CRUD 成功后广播变更（生产 = 向所有窗口 send PROVIDER_CHANGED）。 */
   broadcastChanged(): void;
+  /**
+   * 自定义供应商删除后立即让供应商组转分享同步；删除组配置本身是异步落盘，不能等下一轮轮询。
+   * 生产接线为 providerGroupReshare.kick，单测可注入内存桩。
+   */
+  kickProviderGroupReshare?(reason: string): void;
   /** Non-sensitive spawn-config signature for one custom Provider config. */
   codexCustomProviderConfigSignature?(config: CustomProviderConfig): string;
   /** Force-retire the shared local Codex Host and hold its change guard before mutation. */
@@ -350,6 +357,8 @@ export interface ProviderHandlerDeps {
     ok: boolean;
     reason?: string;
     rollbackCredentials?: () => boolean;
+    /** Required account-state commit. False or failure must roll credentials back. */
+    commitAccountCapabilities?: () => Promise<boolean>;
     /** Publish identity/model changes only after the login is accepted, outside rollback. */
     afterCommit?: () => Promise<void>;
   }>;
@@ -587,6 +596,7 @@ export function registerProviderHandlers(
   deps: ProviderHandlerDeps,
 ): void {
   const oauthMutationGeneration = new Map<string, symbol>();
+  const acceptingOAuthGenerations = new Set<symbol>();
   const beginOAuthMutation = (providerId: string): symbol => {
     // Unique token avoids ABA when a completed entry is deleted and the same provider starts again.
     const generation = Symbol(providerId);
@@ -634,6 +644,7 @@ export function registerProviderHandlers(
   };
   const cancelOwnedProviderOAuth = (owner: ProviderOAuthOwner): void => {
     if (!isOAuthMutationCurrent(owner.providerId, owner.generation)) return;
+    if (acceptingOAuthGenerations.has(owner.generation)) return;
     const cancellationGeneration = beginOAuthMutation(owner.providerId);
     try {
       deps.oauthCancel(owner.providerId);
@@ -1101,9 +1112,20 @@ export function registerProviderHandlers(
         ownerGeneration: ownerAtIngress?.generation ?? 0,
         providers: providers.map((provider) => {
           const safe = withoutProviderHeaderCredentials(provider);
+          const view = {
+            ...safe,
+            ...(safe.models ? {
+              models: Object.fromEntries(
+                Object.entries(safe.models).map(([agent, models]) => [
+                  agent,
+                  models?.map((model) => ({ ...model, effortsUnknown: model.effortsUnknown === true })),
+                ]),
+              ),
+            } : {}),
+          };
           return remoteAccess
-            ? { ...safe, remoteInvocationEnabled: remoteAccess(provider.id) }
-            : safe;
+            ? { ...view, remoteInvocationEnabled: remoteAccess(provider.id) }
+            : view;
         }),
         providerOrder,
         modelVisibilityOverrides,
@@ -2255,6 +2277,18 @@ export function registerProviderHandlers(
             await afterChange(codexHostPrepared, commitRouteMutation);
             assertProviderMutationOwner(ownerAtIngress);
             deps.broadcastPricingChanged();
+            // 删除连接即删除它的供应商组(provider-groups.md §3)：同名重建会得到同一个 id，不能让旧组复活。
+            await writeProviderGroup(providerId, null)
+              .then(() => {
+                deps.kickProviderGroupReshare?.('provider-delete');
+                return pruneProviderGroupBindings(providerId, null);
+              })
+              .catch((error) => {
+                log.warn('provider group cleanup after provider deletion failed', {
+                  providerId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              });
           });
         };
         if (providerId === MANAGED_LLAMACPP_PROVIDER_ID) {
@@ -2452,6 +2486,20 @@ export function registerProviderHandlers(
         });
         if (isOAuthMutationCurrent(id, generation)) {
           if (result.ok) {
+            if (result.commitAccountCapabilities) {
+              // Credentials are installed: close cancellation before committing their
+              // capabilities so cancellation cannot split the accepted account state.
+              acceptingOAuthGenerations.add(generation);
+              let committed = false;
+              try { committed = await result.commitAccountCapabilities(); } catch { /* Roll back below. */ }
+              if (!committed) {
+                if (!result.rollbackCredentials?.()) {
+                  finishRouteMutation.commit?.();
+                  throwIpcError('INTERNAL', 'failed to restore credentials after account capability update');
+                }
+                return { ok: false, reason: 'login_cancelled' };
+              }
+            }
             finishRouteMutation.commit?.();
             try {
               await result.afterCommit?.();
@@ -2476,6 +2524,7 @@ export function registerProviderHandlers(
         if (isIpcError(err)) throw err;
         throwIpcError('INVALID_PARAMS', err instanceof Error ? err.message : String(err));
       } finally {
+        acceptingOAuthGenerations.delete(generation);
         if (codexHostPrepared) deps.cancelCodexCustomProviderHostChange?.();
         if (ownerId && owner) removeProviderOAuthOwner(ownerId, sender ?? undefined, owner);
         finishOAuthMutation(id, generation);
@@ -2590,6 +2639,8 @@ export function registerProviderHandlers(
         if (owner) cancelOwnedProviderOAuth(owner);
         return { ok: true };
       }
+      const currentGeneration = oauthMutationGeneration.get(id);
+      if (currentGeneration && acceptingOAuthGenerations.has(currentGeneration)) return { ok: true };
       clearProviderOAuthOwners(id);
       const generation = beginOAuthMutation(id);
       try {

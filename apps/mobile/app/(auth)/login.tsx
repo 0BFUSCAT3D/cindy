@@ -325,10 +325,9 @@ export function LoginScreen({
       !auth.initialized ||
       (!additionalAccount && auth.isAuthenticated) ||
       initializedLoginRef.current
-    )
-      return;
+    ) return;
     initializedLoginRef.current = true;
-    void auth.dispatchLoginAction({ type: 'reset' });
+    void auth.dispatchLoginAction({ type: 'initialize' });
   }, [additionalAccount, auth]);
 
   useEffect(() => {
@@ -1139,11 +1138,11 @@ export function LoginScreen({
           y={LOGIN_LOADING_RING.yBrowser}
         />
         <LoginPrimaryButton
-          disabled={auth.isBusy}
           label={loginText('cancel')}
           onPress={reset}
           testID="login.cancelBrowserButton"
         />
+        {errorNode}
       </LoginPanel>
     );
   };

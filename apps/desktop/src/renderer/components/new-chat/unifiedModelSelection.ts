@@ -18,6 +18,7 @@
  */
 
 import type { ProviderView, UnifiedAgentCapability, UnifiedModelEntry } from '@cindy/model-providers';
+import { remoteInvocationModels } from '@cindy/model-providers';
 
 import type { AgentKind } from '@/hooks/useAgentCapabilities';
 import type { SelectableVendor } from '@/lib/agentVendors';
@@ -93,7 +94,7 @@ export interface UnifiedRowConfig {
   /** 生效档位;不可调时为 null。 */
   effort: Effort | null;
   /** 生效的 Fast 开关(不具备能力时恒 false —— 不做假按钮)。 */
-  fast: boolean;
+  fast: boolean | 'ultrafast';
   /** 该 (模型, 引擎) 是否真的支持 Fast(目录能力 × agent 运行时能力)。 */
   fastCapable: boolean;
   /** 用户是否在这一行上留下过与推荐不同的配置(行内三元组提亮 / 浮层底栏三态)。 */
@@ -122,7 +123,7 @@ export interface ResolveRowConfigArgs {
   /** 该 (agent, 来源, 模型) 的深度记忆(providerModelMemory 既有槽)。 */
   memoryEffort?: (agent: AgentKind) => Effort | undefined;
   /** 该 (agent, 来源, 模型) 的 Fast 记忆(providerModelMemory 既有槽)。 */
-  memoryFast?: (agent: AgentKind) => boolean | undefined;
+  memoryFast?: (agent: AgentKind) => boolean | 'ultrafast' | undefined;
   /** agent 运行时是否具备 Fast 能力(useAgentCapabilities.hasFastMode);缺省视为具备。 */
   agentFastModeCapable?: (agent: AgentKind) => boolean;
   /**
@@ -200,7 +201,8 @@ export function resolveUnifiedRowConfig(args: ResolveRowConfigArgs): UnifiedRowC
   const effort = pickEffort(capability, memoryEffort?.(agent));
   const fastCapable =
     capability?.supportsFastMode === true && (agentFastModeCapable?.(agent) ?? true);
-  const fast = fastCapable ? (memoryFast?.(agent) ?? false) : false;
+  const requestedFast = memoryFast?.(agent) ?? false;
+  const fast = fastCapable && (requestedFast !== 'ultrafast' || capability?.supportsUltrafastMode) ? requestedFast : false;
   const customized =
     // 「已自定义」是相对**该行此刻的缺省**说的:会话内 pinned 生效时,落在当前引擎上
     // 是缺省而不是自定义(否则会话里几乎每一行都被标成已自定义,提亮就失去信息量)。
@@ -208,7 +210,7 @@ export function resolveUnifiedRowConfig(args: ResolveRowConfigArgs): UnifiedRowC
     // 用户留过的引擎选择仍应提亮。
     (overrideUsable && engineOverride !== baseline) ||
     (effort !== null && capability?.defaultEffort != null && effort !== capability.defaultEffort) ||
-    fast;
+    !!fast;
   return {
     engine,
     agent,
@@ -243,7 +245,7 @@ export function resolveFavoriteRowConfig(args: {
   const effort = pickEffort(capability, item.effort);
   const fastCapable =
     capability?.supportsFastMode === true && (agentFastModeCapable?.(agent) ?? true);
-  const fast = fastCapable && item.fast === true;
+  const fast = fastCapable ? (item.fast === 'ultrafast' && capability?.supportsUltrafastMode ? 'ultrafast' : item.fast === true) : false;
   return {
     engine,
     agent,
@@ -269,7 +271,7 @@ export function favoriteMatchesSelection(args: {
   selected: { providerId: string | null; modelId: string };
   agent: AgentKind | null | undefined;
   effort: Effort | undefined;
-  fast: boolean;
+  fast: boolean | 'ultrafast';
   agentFastModeCapable?: (agent: AgentKind) => boolean;
 }): boolean {
   const { entry, item, selected, agent } = args;
@@ -325,7 +327,7 @@ export type UnifiedRailFilter = UnifiedRailItem;
  * 远程控制那台电脑时照常列全部，不经过这里。
  */
 export function remoteAgentProviders(providers: readonly ProviderView[]): ProviderView[] {
-  return providers.filter((provider) => provider.remoteInvocationEnabled === true);
+  return providers.filter((provider) => provider.remoteInvocationEnabled === true).map(remoteInvocationModels);
 }
 
 /** 该格按哪个供应商筛选(本机或远程供应商格);其余格不按供应商筛。 */
@@ -381,6 +383,38 @@ export interface UnifiedListRow {
   entry: UnifiedModelEntry;
   /** 收藏区行才有;模型行为 undefined。 */
   favorite?: ModelFavoriteItem;
+  /**
+   * 收藏区里「在另一台电脑上运行」的收藏(远程 Agent):entry 来自那台电脑的目录,favorite 的
+   * providerId 已还原成那台的真实 id。没有这个字段 = 本目录的行。
+   */
+  agentDeviceId?: string;
+  /** 那台电脑的目录此刻读不到:行照常列出但不可选(entry 只是按收藏拼出的占位)。 */
+  unavailable?: true;
+}
+
+/** 收藏区里本目录之外的那一条:由调用方按那台电脑的目录解析(见 buildUnifiedListSections)。 */
+export interface ForeignFavoriteRow {
+  entry: UnifiedModelEntry;
+  favorite: ModelFavoriteItem;
+  agentDeviceId: string;
+  unavailable?: true;
+}
+
+/**
+ * 另一台电脑的目录还没读到时,按收藏条目拼一个只用来展示的行(名字 = 模型 id,引擎 = 收藏存的那个,
+ * 没有任何能力):行不可选,目录到了自然换成真条目。
+ */
+export function unavailableFavoriteEntry(item: ModelFavoriteItem): UnifiedModelEntry {
+  const agent = agentKindOfEngine(item.agent);
+  return {
+    providerId: item.providerId,
+    modelId: item.modelId,
+    displayName: item.modelId,
+    candidates: [agent],
+    recommended: agent,
+    nativeAgent: null,
+    capabilities: {},
+  };
 }
 
 export interface UnifiedListSection {
@@ -514,6 +548,12 @@ export function buildUnifiedListSections(args: {
   /** 供应商组间显示顺序(设置页拖动序);缺省 = 入参首见序。 */
   providerOrder?: readonly string[];
   recommendation?: { agent: AgentKind; providerId: string | null; modelId: string };
+  /**
+   * 远程 Agent 浏览任务所在电脑的目录时:收藏里在其他电脑上运行的那几条交给调用方按那台的目录解析。
+   * 返回 null = 本轮不显示(那台的目录里已经没有这个模型 / 不是这类收藏);**不删条目**。
+   * 这些行只出现在 ★ / 全部视图,按本机供应商筛选的视图不列。
+   */
+  resolveForeignFavorite?: (item: ModelFavoriteItem) => ForeignFavoriteRow | null;
 }): UnifiedListSection[] {
   const { entries, favorites, effectiveEngineOf } = args;
   const q = args.query.trim().toLowerCase();
@@ -527,6 +567,31 @@ export function buildUnifiedListSections(args: {
   // ── 收藏区 ── 恒置顶,在任何 rail 视图下都显示;按供应商筛选时只留该来源的收藏。
   const favRows: UnifiedListRow[] = [];
   for (const item of favorites) {
+    const foreign = args.resolveForeignFavorite?.(item);
+    if (foreign) {
+      if (railProviderFilterId(rail) !== null) continue;
+      if (
+        rail.kind === 'engine' &&
+        (effectiveEngineOf
+          ? effectiveEngineOf(foreign.entry, foreign.favorite)
+          : foreign.favorite.agent) !== engineOfAgentKind(rail.agent)
+      )
+        continue;
+      if (!matches(foreign.entry, q)) continue;
+      favRows.push({
+        anchor: {
+          kind: 'fav',
+          uid: item.uid,
+          providerId: foreign.favorite.providerId,
+          modelId: foreign.favorite.modelId,
+        },
+        entry: foreign.entry,
+        favorite: foreign.favorite,
+        agentDeviceId: foreign.agentDeviceId,
+        ...(foreign.unavailable ? { unavailable: true as const } : {}),
+      });
+      continue;
+    }
     // 老收藏可能存的是某个引擎的 wire id(合并行之前的行身份就是 wire id):先按归一化 id
     // 精确命中,失配再按「任一引擎的 wire id」扫一遍 —— 否则升级后老收藏会整条消失。
     const entry =

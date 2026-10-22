@@ -112,6 +112,7 @@ function createSessionHarness(): FakeSessionHarness {
   const listeners: Array<(event: AgentEvent) => void> = [];
   const send = vi.fn<SendImpl>(async (_message, opts) => {
     await opts?.onAccepted?.();
+    opts?.onDispatching?.();
     return { accepted: true };
   });
   // setModel 声明 string 入参(签名与真实 Session.setModel 一致),下面 mockImplementation 才能
@@ -124,6 +125,8 @@ function createSessionHarness(): FakeSessionHarness {
     id: 'scheduler-session',
     agentKind: 'claude-code',
     model: 'claude-sonnet-4-6',
+    stablePermissionModeState: { mode: 'ask' },
+    stablePlanModeState: { enabled: false },
     remoteHostId: null,
     send,
     setModel,
@@ -246,6 +249,8 @@ function createRunnerHarness(
   opts: {
     sessionAlive?: boolean;
     acquirePendingAgentSwitch?: ConstructorParameters<typeof MakerScheduleRunner>[0]['acquirePendingAgentSwitch'];
+    preserveModelPreferences?: ConstructorParameters<typeof MakerScheduleRunner>[0]['preserveModelPreferences'];
+    onModelDispatched?: ConstructorParameters<typeof MakerScheduleRunner>[0]['onModelDispatched'];
     applyPiModelSelectionUnderLock?: ConstructorParameters<typeof MakerScheduleRunner>[0]['applyPiModelSelectionUnderLock'];
     resolveModelSelection?: ConstructorParameters<typeof MakerScheduleRunner>[0]['resolveModelSelection'];
     activeSessions?: Session[];
@@ -288,6 +293,8 @@ function createRunnerHarness(
     checkModelRoute: opts.checkModelRoute,
     ...(opts.isAgentOnOtherDevice ? { isAgentOnOtherDevice: opts.isAgentOnOtherDevice } : {}),
     acquirePendingAgentSwitch: opts.acquirePendingAgentSwitch,
+    preserveModelPreferences: opts.preserveModelPreferences,
+    onModelDispatched: opts.onModelDispatched,
     applyPiModelSelectionUnderLock: opts.applyPiModelSelectionUnderLock ?? (async (_id, targetModel, providerId) => {
       await h.session.setModel(targetModel, { providerId });
       return { status: 'applied' as const };
@@ -323,6 +330,52 @@ describe('MakerScheduleRunner model selection', () => {
     mocks.setSessionFastMode.mockReset();
     mocks.isSessionInTurn.mockReturnValue(false);
     mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active' });
+  });
+
+  // Integration: follow the production runner from model override through completion/failure.
+  // The previous route tests asserted the automation model only, never the next user's choice.
+  it.each([
+    ['legacy', 'success'], ['explicit', 'success'],
+    ['legacy', 'failure'], ['explicit', 'failure'],
+  ] as const)('restores the owner model after %s dispatch %s', async (route, outcome) => {
+    const h = createSessionHarness();
+    const original = h.session.model;
+    const release = vi.fn();
+    const restore = vi.fn(async () => {
+      expect(release).toHaveBeenCalledTimes(1);
+      await h.session.setModel(original);
+    });
+    const preserve = vi.fn(async () => restore);
+    const onModelDispatched = vi.fn(() => {
+      expect(h.session.model).toBe('claude-opus-4-8');
+    });
+    const harness = createRunnerHarness(h, {
+      agentKind: 'claude-code', model: original, effort: 'high', workDir: '/work',
+    }, {
+      sessionAlive: true,
+      preserveModelPreferences: preserve,
+      onModelDispatched,
+      acquirePendingAgentSwitch: async (_id, _signal, selection) => {
+        if (!selection) return release;
+        await h.session.setModel(selection.model);
+        return { release, selection, restore };
+      },
+    });
+    const schedule = baseSchedule({
+      targetSessionId: h.session.id, model: 'claude-opus-4-8',
+      ...(route === 'explicit' ? { modelAgentKind: 'claude-code' as const } : {}),
+    });
+    if (outcome === 'failure') {
+      h.send.mockRejectedValueOnce(new Error('dispatch failed'));
+      await expect(harness.runner.fire(schedule, createFireContext())).rejects.toThrow('Session send failed before dispatch');
+      expect(onModelDispatched).not.toHaveBeenCalled();
+    } else {
+      await fireToCompletion(harness, h, schedule);
+      expect(onModelDispatched).toHaveBeenCalledWith(h.session.id, expect.any(String));
+    }
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(h.session.model).toBe(original);
+    expect(preserve).toHaveBeenCalledTimes(route === 'legacy' ? 1 : 0);
   });
 
   describe('resolved automation selection survives the full fire', () => {
@@ -581,18 +634,31 @@ describe('MakerScheduleRunner model selection', () => {
   });
 
   describe('non-heartbeat (每次新建 session)', () => {
-    it('schedule.model 留空时 Claude 兜底 claude-sonnet-4-6（成本保守,与 UI 空值回退一致）', async () => {
+    it('schedule.model 留空时 Claude 按新建任务默认实时解析 model + 来源,不写死型号', async () => {
       const h = createSessionHarness();
-      const harness = createRunnerHarness(h);
+      const resolveDefaultModelRoute = vi.fn(async () => ({
+        model: 'claude-opus-5-5',
+        providerId: 'anthropic',
+      }));
+      const harness = createRunnerHarness(h, null, { resolveDefaultModelRoute });
 
       const opts = await fireToCompletion(harness, h, baseSchedule({ model: undefined }));
 
-      expect(opts.model).toBe('claude-sonnet-4-6');
+      expect(resolveDefaultModelRoute).toHaveBeenCalledWith('claude-code', null);
+      expect(opts.model).toBe('claude-opus-5-5');
+      expect(harness.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: 'anthropic' }),
+      );
+      expect(mocks.setSessionProvider).toHaveBeenCalledWith('scheduler-session', 'anthropic');
     });
 
-    it('schedule.model 留空时 Codex 兜底 gpt-5.5', async () => {
+    it('schedule.model 留空时 Codex 按新建任务默认实时解析,并把来源写入会话', async () => {
       const h = createSessionHarness();
-      const harness = createRunnerHarness(h);
+      const resolveDefaultModelRoute = vi.fn(async () => ({
+        model: 'gpt-6-astra',
+        providerId: 'openai',
+      }));
+      const harness = createRunnerHarness(h, null, { resolveDefaultModelRoute });
 
       const opts = await fireToCompletion(
         harness,
@@ -600,7 +666,25 @@ describe('MakerScheduleRunner model selection', () => {
         baseSchedule({ model: undefined, agentKind: 'codex' }),
       );
 
-      expect(opts.model).toBe('gpt-5.5');
+      expect(resolveDefaultModelRoute).toHaveBeenCalledWith('codex', null);
+      expect(opts.model).toBe('gpt-6-astra');
+      expect(harness.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: 'openai' }),
+      );
+      expect(mocks.setSessionProvider).toHaveBeenCalledWith('scheduler-session', 'openai');
+    });
+
+    it('schedule.model 留空且没有可用来源时在创建会话前明确失败,不落到写死的型号', async () => {
+      const h = createSessionHarness();
+      const harness = createRunnerHarness(h, null, {
+        resolveDefaultModelRoute: vi.fn(async () => null),
+      });
+
+      await expect(
+        harness.runner.fire(baseSchedule({ model: undefined }), createFireContext()),
+      ).rejects.toThrow('claude-code has no connected model source');
+      expect(harness.createSession).not.toHaveBeenCalled();
+      expect(h.send).not.toHaveBeenCalled();
     });
 
     it('Pi 空模型按同一已连接来源解析 model + providerId，不能落到 Cindy 的 Sonnet 路由', async () => {
@@ -669,7 +753,7 @@ describe('MakerScheduleRunner model selection', () => {
           baseSchedule({ agentKind: 'pi', model: undefined, providerId: undefined }),
           createFireContext(),
         ),
-      ).rejects.toThrow('Pi has no connected model source');
+      ).rejects.toThrow('pi has no connected model source');
       expect(harness.createSession).not.toHaveBeenCalled();
       expect(h.send).not.toHaveBeenCalled();
     });
@@ -1215,13 +1299,19 @@ describe('MakerScheduleRunner model selection', () => {
       );
     });
 
-    it('legacy session meta 无 model 时落兜底 Sonnet 并 setModel + 落库（显式锁定静默升级契约）', async () => {
-      // 历史持续会话可能从未存过 model（meta.model undefined）。此时:
-      // rawModel=undefined → defaultModelFor='claude-sonnet-4-6',
-      // heartbeatModelChanged=true → setModel + backfill 落库。
-      // 这是有意行为（兜底必须与 UI 空值回退一致）,本用例防止未来误改。
+    it('legacy session meta 无 model 时按新建任务默认解析并 setModel + 落库', async () => {
+      // 历史持续会话可能从未存过 model（meta.model undefined）。此时 rawModel=undefined →
+      // 按新建任务口径实时解析默认模型,heartbeatModelChanged=true → setModel + backfill 落库。
       const h = createSessionHarness();
-      const harness = createRunnerHarness(h, { workDir: '/work', sdkSessionId: 'sdk-1' });
+      const resolveDefaultModelRoute = vi.fn(async () => ({
+        model: 'claude-opus-5-5',
+        providerId: 'anthropic',
+      }));
+      const harness = createRunnerHarness(
+        h,
+        { workDir: '/work', sdkSessionId: 'sdk-1' },
+        { resolveDefaultModelRoute },
+      );
 
       const opts = await fireToCompletion(
         harness,
@@ -1229,12 +1319,14 @@ describe('MakerScheduleRunner model selection', () => {
         baseSchedule({ model: undefined, targetSessionId: 'scheduler-session' }),
       );
 
-      expect(opts.model).toBe('claude-sonnet-4-6');
-      expect(h.setModel).toHaveBeenCalledWith('claude-sonnet-4-6');
+      expect(opts.model).toBe('claude-opus-5-5');
+      expect(h.setModel).toHaveBeenCalledWith('claude-opus-5-5');
+      // 解析出的来源与模型成对写入会话,重启后的下一次运行不会退回隐式来源。
+      expect(mocks.setSessionProvider).toHaveBeenCalledWith('scheduler-session', 'anthropic');
       expect(mocks.backfillSessionMeta).toHaveBeenCalledWith(
         expect.anything(),
         'scheduler-session',
-        expect.objectContaining({ model: 'claude-sonnet-4-6' }),
+        expect.objectContaining({ model: 'claude-opus-5-5', providerId: 'anthropic' }),
         expect.anything(),
       );
     });

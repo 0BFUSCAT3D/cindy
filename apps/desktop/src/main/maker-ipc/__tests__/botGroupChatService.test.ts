@@ -24,8 +24,12 @@ import {
   createBotGroupChatService,
   resolveGroupMentions,
   rotateResponders,
+  settleBotGroupLaneTerminal,
   type BotGroupChatServiceDeps,
+  type BotGroupLaneTerminal,
 } from '../botGroupChatService.js';
+import { createProviderGroupHeldWorkerTerminals } from '../../provider-group/heldWorkerTerminals.js';
+import { AutoResumeBookkeeping } from '../autoResumeBookkeeping.js';
 import {
   buildPlanDecisionPrompt,
   buildPlanStepBrief,
@@ -233,6 +237,64 @@ describe('botGroupChatService', () => {
     ]);
   });
 
+  // #6671 / bot-group-chat §4.3–4.4 (unit): a held done-only turn can have
+  // streamed text still queued for persistence. Existing tests covered the
+  // ordinary event path, not release/handback through the real recovery stores.
+  // Read the actual group result so an early empty DB read cannot silently eat it.
+  it.each(['group', 'generic'] as const)('keeps a streamed reply pending until persistence when %s recovery releases it', async recovery => {
+    let written = false;
+    let finishWrite!: () => void;
+    const writing = new Promise<void>(resolve => { finishWrite = () => { written = true; resolve(); }; });
+    const drain = vi.fn(() => writing);
+    const readReplyText = vi.fn(async () => written ? '落库后的实际回复' : null);
+    const harness = createHarness((_bot, _prompt, index) => index === 0 ? null : 'NO_REPLY', { readReplyText });
+    const groupId = await createGroup(harness);
+    await harness.service.sendMessage({ groupId, text: '继续讨论', mentions: { all: true, botIds: [] }, clientId: 'source-input' });
+    await vi.waitFor(() => expect(harness.dispatches).toHaveLength(3));
+    const call = harness.dispatches[0]!;
+    let settlement: Promise<boolean> | undefined;
+    const deliver = (terminal: BotGroupLaneTerminal) => {
+      settlement = settleBotGroupLaneTerminal(harness.service, terminal, drain);
+    };
+    const held = createProviderGroupHeldWorkerTerminals<BotGroupLaneTerminal>({
+      ownerKey: () => 'account', deliver: (_sessionId, terminal) => deliver(terminal),
+    });
+    const book = new AutoResumeBookkeeping({
+      persistSuppressedError: vi.fn(), markOutcome: vi.fn(),
+      rollbackGuardPendingResume: vi.fn(), abandonTakeover: vi.fn(),
+      finalizeBotGroupSuppressedTerminal: deliver,
+    });
+    held.stash(call.sessionId, 3, {
+      sessionId: call.sessionId, activeInputClientId: call.clientId,
+      outcome: 'done', resultText: '', resultMessageClientId: 'queued-reply',
+    });
+    try {
+      if (recovery === 'generic') {
+        book.stashSuppressedError(call.sessionId, { reason: 'upstream-overload' });
+        book.stashBotGroupSuppressedTerminal(call.sessionId, held.takeForRecovery(call.sessionId, 3)!);
+        book.surfaceSuppressedError(call.sessionId);
+        book.surfaceSuppressedError(call.sessionId);
+      }
+      held.release(call.sessionId, 3);
+      held.release(call.sessionId, 3);
+      await Promise.resolve();
+      expect(readReplyText.mock.calls.length).toBe(0);
+      const waiting = await harness.service.getGroup(groupId);
+      expect(waiting.ok && waiting.group.speakingBotIds).toContain(call.botId);
+      finishWrite();
+      await settlement;
+      const group = await waitForIdle(harness, groupId);
+      expect(drain).toHaveBeenCalledOnce();
+      expect(readReplyText).toHaveBeenCalledExactlyOnceWith(call.sessionId, 'queued-reply');
+      expect(group.messages.filter(message => message.authorKind === 'bot').map(message => message.content))
+        .toEqual(['落库后的实际回复']);
+    } finally {
+      finishWrite();
+      await settlement;
+      await waitForIdle(harness, groupId);
+    }
+  });
+
   it('in sequential mode lets every member answer in turn, rotates the next circle, and ends when a circle is silent', async () => {
     const replies: Record<string, string[]> = {
       mimi: ['先定个大框架', 'NO_REPLY'],
@@ -290,7 +352,14 @@ describe('botGroupChatService', () => {
       });
     }
     const group = await waitForIdle(harness, groupId);
-    expect(group.lastReplyAt).toBe(Math.max(...group.messages.filter(m => m.authorKind === 'bot' && m.kind === 'message').map(m => m.createdAt)));
+    expect(group.lastReplyAt).toBe(Math.max(...group.messages.filter(m => m.authorKind === 'bot' && (m.kind === 'message' || m.kind === 'plan')).map(m => m.createdAt)));
+    // Incoming times are the Bots' messages, oldest first, without the owner's own or notices.
+    const incoming = group.messages.filter(m => m.authorKind === 'bot' && (m.kind === 'message' || m.kind === 'plan'))
+      .sort((a, b) => a.sequence - b.sequence).map(m => new Date(m.createdAt).toISOString());
+    expect(incoming.length).toBeGreaterThan(0);
+    expect(group.incomingMessageTimes).toEqual(incoming);
+    const listed = await harness.service.listGroups();
+    expect(listed.ok && listed.groups.find(g => g.id === groupId)?.incomingMessageTimes).toEqual(incoming);
     // Second circle takes turns and sees the whole first circle.
     expect(harness.dispatches.slice(3).map((call) => call.botId)).toEqual(['xiaoman', 'abu', 'mimi']);
     expect(harness.dispatches[3]!.prompt).toContain('咪咪的看法');
@@ -395,6 +464,37 @@ describe('botGroupChatService', () => {
       .toEqual([['member-failed', '咪咪']]);
   });
 
+  it('preserves a safe dispatch failure category for a local-only group', async () => {
+    const harness = createHarness(() => null, {
+      dispatch: async () => ({ ok: false, errorCode: 'INTERNAL', message: 'authentication_failed private credential' }),
+    });
+    const groupId = await createGroup(harness, ['mimi', 'abu']);
+    await harness.service.sendMessage({ groupId, text: '@咪咪 hello', mentions: { all: false, botIds: ['mimi'] }, clientId: 'rejected-input' });
+    const group = await waitForIdle(harness, groupId);
+    expect(group.messages.filter(message => message.kind === 'notice')).toEqual([
+      expect.objectContaining({ noticeCode: 'member-failed', runtimeFailureCode: 'AUTH_REQUIRED' }),
+    ]);
+    expect(JSON.stringify(group.messages)).not.toContain('private credential');
+  });
+
+  it.each([
+    ['NO_MODEL', 'MODEL_UNAVAILABLE'],
+    ['MEMBER_UNAVAILABLE', undefined],
+  ] as const)('preserves the preparation reason %s for a local group without dispatching', async (errorCode, failureCode) => {
+    const harness = createHarness(() => null, {
+      ensureLane: async () => ({ ok: false, errorCode, message: 'private preparation details' }),
+    });
+    const groupId = await createGroup(harness, ['mimi', 'abu']);
+    await harness.service.sendMessage({ groupId, text: '@咪咪 hello', mentions: { all: false, botIds: ['mimi'] }, clientId: 'no-lane' });
+    const group = await waitForIdle(harness, groupId);
+    expect(harness.dispatches).toEqual([]);
+    expect(group.round.speakers).toEqual([]);
+    expect(group.messages.filter(message => message.kind === 'notice')).toEqual([
+      expect.objectContaining({ noticeCode: 'member-unavailable', runtimeFailureCode: failureCode }),
+    ]);
+    expect(JSON.stringify(group.messages)).not.toContain('private preparation details');
+  });
+
   it('a round superseded while a member prepares never dispatches and never steals the new waiter', async () => {
     let releaseSync!: () => void;
     const syncGate = new Promise<void>((resolve) => { releaseSync = resolve; });
@@ -450,6 +550,7 @@ describe('botGroupChatService', () => {
     expect(harness.abortLane).toHaveBeenCalledWith('lane-mimi');
     expect(group.messages.filter((m) => m.kind === 'notice').map((m) => [m.noticeCode, m.authorName]))
       .toEqual([['member-timeout', '咪咪']]);
+    expect(group.messages.find((m) => m.kind === 'notice')?.runtimeFailureCode).toBe('RUNTIME_TIMEOUT');
     expect(harness.dispatches.map((call) => call.botId)).toEqual(['mimi', 'xiaoman', 'abu']);
   });
 
@@ -615,6 +716,13 @@ describe('botGroupChatService 分工', () => {
     const plan = await proposePlan(harness, groupId);
     const group = await detailOf(harness, groupId);
 
+    // The plan card is the newest incoming item: the read position seeded from lastReplyAt
+    // covers it, and the unread list counts it (bot-group-chat.md §5 未读).
+    const planMessage = group.messages.filter(m => m.authorKind === 'bot').sort((a, b) => b.sequence - a.sequence)[0]!;
+    expect(planMessage.kind).toBe('plan');
+    expect(group.lastReplyAt).toBe(planMessage.createdAt);
+    expect(group.incomingMessageTimes?.at(-1)).toBe(new Date(planMessage.createdAt).toISOString());
+
     expect(decidePlan).toHaveBeenCalledTimes(1);
     expect(decidePlan.mock.calls[0]![0]).toMatchObject({
       mode: 'auto',
@@ -703,6 +811,40 @@ describe('botGroupChatService 分工', () => {
     expect(second.steps.map((step) => step.botName)).toEqual(['小满', '阿布']);
     expect(h.sqlite!.prepare('SELECT request_text AS text FROM bot_group_plans WHERE id = ?').get(second.id))
       .toEqual({ text: '帮我给官网做一个介绍页' });
+  });
+
+  it('preserves the timeout category when a local plan step times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const harness = createHarness(() => null, { decidePlan: async () => THREE_STEPS, workDir: fakeWorkDir(), stepTurnTimeoutMs: 1_000 });
+    const groupId = await createGroup(harness);
+    const plan = await proposePlan(harness, groupId);
+    await harness.service.startPlan({ groupId, planId: plan.id });
+    await vi.waitFor(() => expect(harness.dispatches.at(-1)?.sessionId).toBe('plan-mimi'));
+    await vi.advanceTimersByTimeAsync(1_100);
+    const group = await waitForIdle(harness, groupId);
+    expect(harness.abortLane).toHaveBeenCalledWith('plan-mimi');
+    expect(openPlan(group).steps[0].status).toBe('failed');
+    expect(group.messages.find((message) => message.kind === 'notice' && message.planId === plan.id))
+      .toMatchObject({ noticeCode: 'member-timeout', runtimeFailureCode: 'RUNTIME_TIMEOUT', content: '' });
+  });
+
+  it.each([
+    ['NO_MODEL', 'MODEL_UNAVAILABLE'],
+    ['MEMBER_UNAVAILABLE', undefined],
+  ] as const)('preserves the preparation reason %s for a local plan without dispatching', async (errorCode, failureCode) => {
+    const harness = createHarness(() => null, { decidePlan: async () => THREE_STEPS, workDir: fakeWorkDir(),
+      ensureLane: async () => ({ ok: false, errorCode, message: 'private preparation details' }),
+    });
+    const groupId = await createGroup(harness);
+    const plan = await proposePlan(harness, groupId);
+    await harness.service.startPlan({ groupId, planId: plan.id });
+    const group = await waitForIdle(harness, groupId);
+    expect(harness.dispatches).toEqual([]);
+    expect(openPlan(group).status).toBe('waiting');
+    expect(openPlan(group).steps[0].status).toBe('failed');
+    expect(group.messages.find(message => message.kind === 'notice' && message.planId === plan.id))
+      .toMatchObject({ noticeCode: 'member-unavailable', runtimeFailureCode: failureCode, content: '' });
+    expect(JSON.stringify(group.messages)).not.toContain('private preparation details');
   });
 
   it('runs the steps one at a time in the plan work directory and stops after each', async () => {
@@ -836,7 +978,7 @@ describe('botGroupChatService 分工', () => {
       .toEqual(['加上英文版了']);
   });
 
-  it('checks 「@所有人」 and mention-only groups too; only naming a Bot skips the check', async () => {
+  it('checks 「@所有人」 but leaves unaddressed messages idle in mention-only groups', async () => {
     const decidePlan = vi.fn(async (_input: PlanDecisionInput) => ({ needsPlan: false }) as PlanDecision);
     const harness = createHarness(() => 'NO_REPLY', { decidePlan });
     const groupId = await createGroup(harness);
@@ -847,8 +989,11 @@ describe('botGroupChatService 分工', () => {
     await harness.service.updateGroup({ groupId, replyMode: 'mentioned' });
     await harness.service.sendMessage({ groupId, text: '帮我做个海报', mentions: NONE, clientId: 'quiet' });
     await waitForIdle(harness, groupId);
-    expect(decidePlan).toHaveBeenCalledTimes(2);
+    expect(decidePlan).toHaveBeenCalledTimes(1);
     expect(harness.dispatches).toHaveLength(3);
+    await harness.service.sendMessage({ groupId, text: '帮我做个海报', mentions: NONE, clientId: 'explicit', division: true });
+    await waitForIdle(harness, groupId);
+    expect(decidePlan).toHaveBeenCalledTimes(2);
   });
 
   it('an explicit request whose chosen members all became unavailable says so', async () => {

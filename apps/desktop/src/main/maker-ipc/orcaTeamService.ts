@@ -41,7 +41,7 @@ export interface OrcaWorkerRecordSnapshot {
     model: string;
     effort: string | null;
     permissionMode: string;
-    fastMode: boolean;
+    fastMode: boolean | 'ultrafast';
   };
 }
 
@@ -94,6 +94,8 @@ export type DispatchWorkerMessageResult =
   | {
       ok: true;
       mode: 'dispatched' | 'queued' | 'steered';
+      /** Accepting runtime locally; remote delivery reports the execution device's Agent at enqueue. */
+      agentKind?: AgentKind;
       /** 底层 dispatcher 为该消息生成的 clientId;queued 模式下即队列内寻址句柄。 */
       clientId: string;
       dispatchOutcome: CollabDispatchSuccessOutcome | CollabDispatchQueuedOutcome;
@@ -300,8 +302,8 @@ export interface OrcaTeamServiceDeps {
     workerId: string;
     dispatchMeta: { source: string; context: string };
     beforeReserve?: () => Promise<void>;
-    /** Runs synchronously after head insertion and before drain is scheduled. */
-    onReserved?: () => void;
+    /** 同步发起停止；远端适配器等待返回票据，本机仍在 drain 调度前同步调用。 */
+    onReserved?: () => void | Promise<void>;
     onAccepted?: () => void | Promise<void>;
     onAcceptedRollback?: () => void | Promise<void>;
     onAcceptedCommit?: () => void | Promise<void>;
@@ -416,8 +418,13 @@ export interface OrcaTeamService {
   }): Promise<MoveWorkerQueuedMessageResult>;
   captureWorkerText(sessionId: string, text: string, opts?: { isFinal?: boolean }): void;
   clearAutoBridgeState(sessionId: string): void;
+  settleReportedWorker(
+    capture: WorkerTerminalTurnCapture,
+    commit?: (markWorkerDone: boolean) => Promise<boolean>,
+  ): Promise<void>;
   /** True while an accepted worker task still owes this Lead its report. */
   hasPendingWorkerReports(leadSessionId: string): boolean;
+  restoreWorkerPendingReport(sessionId: string, input: { workerId: string; leadSessionId: string }): void;
   handleWorkerTurnStarted(sessionId: string): Promise<void>;
   captureWorkerTerminalTurn(sessionId: string): WorkerTerminalTurnCapture;
   handleWorkerTerminalTurn(params: WorkerTerminalTurnParams): Promise<void>;
@@ -641,7 +648,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     const header =
       turn.status === 'error'
         ? '[Auto-bridged: worker 异常终止]'
-        : '[Auto-bridged: worker 完成但未调 send_to_lead]';
+        : '[Auto-bridged: worker 已完成，系统自动回传结果]';
     const bridgeText = `${header}\n\n${finalText}`;
     try {
       const result = await deps.sendAutoBridgeToLead(
@@ -892,7 +899,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     return {
       dispatched: true,
       dispatchOutcome: result.dispatchOutcome as CollabDispatchSuccessOutcome,
-      agentKind: target.session.agentKind,
+      agentKind: result.agentKind ?? target.session.agentKind,
       wakeKind:
         result.mode === 'steered'
           ? 'steered'
@@ -1064,7 +1071,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
               }
               // Reservation can finish asynchronously; observe an early rejection until it is
               // converted to the truthful unconfirmed result below.
-              void stopPromise.catch(() => undefined);
+              return stopPromise.then(() => undefined, () => undefined);
             },
             onAccepted,
             onAcceptedRollback: rollbackAccepted,
@@ -1746,7 +1753,32 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     clearAutoBridgeState(sessionId) {
       clearRuntimeState(sessionId);
     },
+    async settleReportedWorker(capture, commit) {
+      const link = await deps.getWorkerLinkBySessionId(capture.sessionId);
+      if (!link) return;
+      await withWorkerTransition(link.workerId, async () => {
+        const ownsReport = !!capture.autoBridgeIdentity
+          && autoBridge.get(capture.sessionId) === capture.autoBridgeIdentity;
+        if (commit) {
+          // The remote commit persists pending inputs and status in one SQL update.
+          // All fallible reads happen first; clear memory only after that commit succeeds.
+          if (!await commit(ownsReport) || !ownsReport) return;
+        } else {
+          if (!ownsReport) return;
+          await deps.updateWorkerStatus(link.workerId, 'done');
+        }
+        clearRuntimeState(capture.sessionId);
+        deps.broadcastOrcaWorkerChanged(link.leadSessionId);
+      });
+    },
     hasPendingWorkerReports,
+    restoreWorkerPendingReport(sessionId, input) {
+      if (autoBridge.has(sessionId)) return;
+      const state = setPending(sessionId, input);
+      state.ready = true;
+      // 重启前可能已经写入 done/error，但回报仍未被 Lead 接收。
+      state.retryAfterRejectedDelivery = true;
+    },
     captureWorkerTerminalTurn(sessionId) {
       return {
         sessionId,

@@ -55,6 +55,10 @@ function wrap<T>(p: Promise<T>): Promise<T> {
 const getInFlight = new Map<string, Promise<Session>>();
 
 export type SessionListOptions = {
+  /** Local list continuation; does not change the default capped query. */
+  before?: { updatedAt: number; id: string };
+  /** Local renderer-only exact subset, filtered before sorting and pagination. */
+  ids?: string[];
   includePinned?: boolean;
   /** forceRefresh / status 重拉：绕开 main 侧 in-flight 合并。 */
   fresh?: boolean;
@@ -100,7 +104,7 @@ export async function create(body?: {
   model?: string;
   effort?: string;
   permissionMode?: string;
-  fastMode?: boolean;
+  fastMode?: boolean | 'ultrafast';
   /** 计划模式一级开关(与 permissionMode 正交); 草稿开着计划模式时随建会话落库。 */
   planModeEnabled?: boolean;
   agentKind?: 'cc' | 'codex' | 'pi';
@@ -127,6 +131,11 @@ export async function create(body?: {
    * checkout; the persisted source later drives the `cindy_make` tool injection.
    */
   source?: 'cindy-make';
+  /**
+   * 新建页开始输入时先建出来的未发送任务：只在本机列表可见，清空输入就删掉，
+   * 第一次发送前转为普通任务(见 main/localDb/provisionalSessions.ts)。
+   */
+  provisional?: boolean;
 }): Promise<Session> {
   return wrap(window.electronAPI.localDb.sessions.create(body));
 }
@@ -181,7 +190,7 @@ export async function update(
     model?: string;
     effort?: string;
     permissionMode?: string;
-    fastMode?: boolean;
+    fastMode?: boolean | 'ultrafast';
     /** 计划模式一级开关(与 permissionMode 正交), 与 maker.setPlanMode 双 IPC 协调。 */
     planModeEnabled?: boolean;
     sdkSessionId?: string | null;

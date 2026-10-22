@@ -3,10 +3,12 @@
  * 排序、成员名单、轮次标记与分工（安排、下一步、交接文件）的判定，以及提示 / 报错
  * 该用哪一句文案（各端按自己的 i18n 命名空间拼 key）。只依赖群聊契约，不碰 React 与 IPC。
  */
+import { RichAnswerStream, splitRichAnswer, richMarkdown, richString, richLabel, richResolvedValues, richChart, richOptions, richCalculationUnavailable } from './richAnswer.js';
 import {
   isBotGroupPlanOpen,
   type BotGroupDetail,
   type BotGroupErrorCode,
+  type BotGroupExecutionFailureView,
   type BotGroupMemberView,
   type BotGroupMessageView,
   type BotGroupNoticeCode,
@@ -18,6 +20,19 @@ import {
 /** Only active members can be mentioned, speak, or keep a group sendable. */
 export function isActiveBotGroupMember(member: Pick<BotGroupMemberView, 'status'>): boolean {
   return member.status === 'active';
+}
+
+/** UI affordances only; the server must authorize every mutation against current membership. */
+export function chatGroupMembership(group: Pick<BotGroupSummary, 'serverBacked' | 'members'>) {
+  const self = group.members.find(member => member.isSelf === true);
+  const owned = (member: BotGroupMemberView) => member.isOwned === true || member.isSelf === true;
+  const owner = group.serverBacked === true && group.members.some(member => owned(member) && member.role === 'owner');
+  const manager = owner || (group.serverBacked === true && group.members.some(member => owned(member) && member.role === 'admin'));
+  // Leaving also removes this account's companions. Another owner from this same account
+  // therefore cannot satisfy LAST_OWNER, even when the human is only an ordinary member.
+  const otherOwner = group.members.some(member => member.isOwned === false && !member.isSelf && member.role === 'owner');
+  const canLeave = group.serverBacked === true && !!self?.actorId && (!owner || otherOwner);
+  return { self, owner, manager, canLeave };
 }
 
 /** Latest activity first, like every other chat list. */
@@ -60,33 +75,92 @@ export function continuableRoundEndId(
   return null;
 }
 
-/** Merge an older page under the latest page, keyed by sequence. */
+/** Merge real message pages; current execution state never enters the page cache. */
 export function mergeBotGroupMessages(
   older: readonly BotGroupMessageView[],
   latest: readonly BotGroupMessageView[],
 ): BotGroupMessageView[] {
   const bySequence = new Map<number, BotGroupMessageView>();
-  for (const message of older) bySequence.set(message.sequence, message);
-  for (const message of latest) bySequence.set(message.sequence, message);
+  for (const message of [...older, ...latest]) bySequence.set(message.sequence, message);
   return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
+}
+
+/** Bound each HTTP reconciliation request to 100 displayed sources, without truncating loaded history. */
+export function botGroupExecutionFailureBatches(sourceIds: readonly string[]): string[][] {
+  const unique = [...new Set(sourceIds)];
+  const batches: string[][] = [];
+  for (let offset = 0; offset < unique.length; offset += 100) batches.push(unique.slice(offset, offset + 100));
+  return batches;
+}
+
+/** Derive notices once, after pagination, from the latest authorized execution snapshot. */
+export function projectBotGroupExecutionFailures(
+  messages: readonly BotGroupMessageView[],
+  failures: readonly BotGroupExecutionFailureView[] = [],
+): BotGroupMessageView[] {
+  const bySource = new Map<string, BotGroupExecutionFailureView[]>();
+  for (const failure of failures) {
+    const entries = bySource.get(failure.sourceMessageId) ?? [];
+    entries.push(failure);
+    bySource.set(failure.sourceMessageId, entries);
+  }
+  return messages.flatMap(source => [source, ...(source.deleted ? [] : bySource.get(source.id) ?? []).map((failure): BotGroupMessageView => ({
+    id: `execution-failure:${failure.executionId}:${failure.epoch}`, sequence: source.sequence,
+    kind: 'notice', authorKind: 'system', authorBotId: failure.botId, authorName: failure.botName,
+    content: '', noticeCode: failure.code === 'RUNTIME_TIMEOUT' ? 'member-timeout' : 'member-failed',
+    runtimeFailureCode: failure.code, mentions: { all: false, botIds: [] }, planId: failure.planId,
+    threadRootId: source.threadRootId ?? null, files: [], attachments: [], createdAt: failure.updatedAt ?? source.createdAt,
+  }))]);
 }
 
 /** Copy variant for a refused group action; null keeps the caller's own fallback. */
 export type BotGroupErrorVariant =
+  | 'invalidAttachment'
+  | 'attachmentUnavailable'
+  | 'attachmentTooLarge'
+  | 'mediaUploadFailed'
+  | 'authRequired'
+  | 'chatUnavailable'
+  | 'importPending'
+  | 'requestTimeout'
+  | 'permissionDenied'
+  | 'serviceError'
+  | 'groupArchived'
+  | 'groupDissolved'
+  | 'lifecycleUnavailable'
+  | 'lastOwner'
   | 'memberLimit'
   | 'memberUnavailable'
+  | 'mentionUnavailable'
   | 'notFound'
   | 'hostNotReady'
   | 'planOpen'
-  | 'planClosed';
+  | 'planClosed'
+  | 'quoteUnavailable';
 
 const ERROR_VARIANTS: ReadonlyMap<string, BotGroupErrorVariant> = new Map<BotGroupErrorCode, BotGroupErrorVariant>([
+  ['INVALID_ATTACHMENT', 'invalidAttachment'],
+  ['ATTACHMENT_UNAVAILABLE', 'attachmentUnavailable'],
+  ['ATTACHMENT_TOO_LARGE', 'attachmentTooLarge'],
+  ['MEDIA_UPLOAD_FAILED', 'mediaUploadFailed'],
+  ['AUTH_REQUIRED', 'authRequired'],
+  ['CHAT_UNAVAILABLE', 'chatUnavailable'],
+  ['IMPORT_PENDING', 'importPending'],
+  ['REQUEST_TIMEOUT', 'requestTimeout'],
+  ['PERMISSION_DENIED', 'permissionDenied'],
+  ['SERVICE_ERROR', 'serviceError'],
+  ['GROUP_ARCHIVED', 'groupArchived'],
+  ['GROUP_DISSOLVED', 'groupDissolved'],
+  ['LIFECYCLE_UNAVAILABLE', 'lifecycleUnavailable'],
+  ['LAST_OWNER', 'lastOwner'],
   ['MEMBER_LIMIT', 'memberLimit'],
   ['MEMBER_UNAVAILABLE', 'memberUnavailable'],
+  ['MENTION_UNAVAILABLE', 'mentionUnavailable'],
   ['NOT_FOUND', 'notFound'],
   ['HOST_NOT_READY', 'hostNotReady'],
   ['PLAN_OPEN', 'planOpen'],
   ['PLAN_CLOSED', 'planClosed'],
+  ['QUOTE_UNAVAILABLE', 'quoteUnavailable'],
 ]);
 
 /** Specific error copy when the host names a cause the user can act on. */
@@ -145,7 +219,7 @@ export function botGroupPlanFollowUp(plan: BotGroupPlanView | null): BotGroupPla
 /** Composer copy that follows the open plan (placeholder and the 「安排分工」 gate). */
 export type BotGroupComposerPlanState =
   | { kind: 'proposed' }
-  | { kind: 'running'; botName: string }
+  | { kind: 'running'; botName: string; talk?: boolean }
   | { kind: 'waiting'; botName: string; stepDone: boolean };
 
 export function botGroupComposerPlanState(plan: BotGroupPlanView | null): BotGroupComposerPlanState | null {
@@ -153,7 +227,11 @@ export function botGroupComposerPlanState(plan: BotGroupPlanView | null): BotGro
   if (plan.status === 'proposed') return { kind: 'proposed' };
   const current = currentBotGroupPlanStep(plan);
   const botName = current?.botName.trim() ?? '';
+  // Someone who cannot add to a queue sends a new request: the composer must not promise otherwise.
+  if (plan.status === 'running' && plan.kind === 'talk') return plan.canAdd === false ? null : { kind: 'running', botName, talk: true };
   if (plan.status === 'running') return { kind: 'running', botName };
+  // A queue waiting for 继续 takes a new request, not changes to the last answer (bot-group-chat.md §4.0).
+  if (plan.status === 'waiting' && plan.kind === 'talk') return null;
   if (plan.status === 'waiting') return { kind: 'waiting', botName, stepDone: current?.status === 'done' };
   return null;
 }
@@ -268,4 +346,57 @@ export function botGroupSidebarPlanPreview(group: BotGroupSummary): BotGroupSide
 export function botGroupPathBasename(path: string): string {
   const parts = path.split(/[\\/]+/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
+}
+
+/** Display-only body fragments. Literal component text never becomes Markdown syntax. */
+export function botGroupBodyParts(content: string, authorKind?: BotGroupMessageView['authorKind']): Array<{ kind: 'text' | 'markdown'; content: string }> {
+  if (authorKind !== 'bot') return [{ kind: 'markdown', content }];
+  const parts = splitRichAnswer(content);
+  return parts.flatMap((part, index) => {
+    const source = content.slice(part.key, parts[index + 1]?.key ?? content.length);
+    if (part.kind === 'markdown') return [{ kind: 'markdown' as const, content: source }];
+    const doc = new RichAnswerStream().update(part.source, true);
+    // Preserve malformed or empty answers rather than silently dropping source content.
+    if (doc.issues) return [{ kind: 'markdown' as const, content: source }];
+    const values = richResolvedValues(doc);
+    let unavailableChart = false;
+    const result: Array<{ kind: 'text' | 'markdown'; content: string }> = [];
+    const add = (text: string, kind: 'text' | 'markdown' = 'text') => {
+      if (text.trim()) result.push({ kind, content: text });
+    };
+    const visit = (id: string) => {
+      const node = doc.nodes.get(id);
+      if (!node) return;
+      const label = richString(node, 'label');
+      if (['image', 'video', 'audio', 'svg'].includes(node.kind)) {
+        // Group body has no task-local media authority. Keep its description readable.
+        add([label, richString(node, 'alt'), richString(node, 'caption'), richString(node, 'src')].filter(Boolean).join('\n'));
+      } else {
+        const markdown = richMarkdown(node);
+        if (markdown !== null) {
+          add(markdown, 'markdown');
+          add(richString(node, 'caption'));
+        }
+        else if (['text', 'heading'].includes(node.kind)) add(richLabel(node, values));
+        else if (node.kind === 'stat') add([label, richLabel(node, values)].filter(Boolean).join(': '));
+        else if (node.kind === 'chart') {
+          unavailableChart ||= richCalculationUnavailable(node, values);
+          add([label, ...richChart(node, values).map(item => `${item.label}: ${item.value}`)].filter(Boolean).join('\n'));
+        }
+        else if (node.kind === 'icon') add([label, richString(node, 'text')].filter(Boolean).join('\n'));
+        else if (node.kind === 'divider') add('---', 'markdown');
+        else {
+          // Show authored defaults only; an untouched control is not a user answer.
+          const current = node.props.default;
+          const selected = node.kind === 'select' ? richOptions(node).find(option => option.value === current)?.label : undefined;
+          const display = selected ?? (typeof current === 'string' || typeof current === 'number' || typeof current === 'boolean' ? String(current) : '');
+          add([label, display && display + richString(node, 'suffix')].filter(Boolean).join(': '));
+        }
+      }
+      node.children.forEach(visit);
+    };
+    doc.roots.forEach(visit);
+    // Do not present a partial chart as complete data; preserve its source block.
+    return result.length && !unavailableChart ? result : [{ kind: 'markdown' as const, content: source }];
+  });
 }

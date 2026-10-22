@@ -16,6 +16,11 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FastMode } from '@cindy/maker-shared';
+import { MemoryRouter } from 'react-router-dom';
+import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
+import { CreateWorkerPopover } from '@/features/cc-agent/CreateWorkerPopover';
+import type { AgentCapabilities } from '@/hooks/useAgentCapabilities';
 
 /** 统一面板发起的深度写入带上「面板已串行」标记(见 ModelSelector 的 onEffortChangeLive)。 */
 const FROM_PANEL = { serializedByPanel: true };
@@ -55,12 +60,17 @@ vi.mock('react-i18next', async (importOriginal) => ({
 }));
 
 vi.mock('@/lib/scrollbarAutoHide', () => ({ flashScrollbar: vi.fn() }));
+vi.mock('@/hooks/useModelRouteDevices', () => ({
+  useModelRouteDevices: () => ({ devices: [], leadAgentDeviceId: null }),
+}));
 
+const workerCapabilities = vi.hoisted(() => ({ byAgent: {} as Record<string, AgentCapabilities> }));
 vi.mock('@/hooks/useAgentCapabilities', () => ({
+  getCachedCapabilities: vi.fn(() => null),
   evictDeviceCapabilities: vi.fn(),
   prefetchDeviceCapabilities: vi.fn(async () => {}),
-  useAgentCapabilities: () => ({
-    capabilities: { hasFastMode: true, effortLevels: [], availableModels: [] },
+  useAgentCapabilities: (agent: string) => ({
+    capabilities: workerCapabilities.byAgent[agent] ?? { hasFastMode: true, effortLevels: [], availableModels: [] },
     loading: false,
     error: null,
   }),
@@ -182,6 +192,8 @@ vi.mock('@/hooks/useProviders', () => ({
 }));
 const remoteProvidersRef = vi.hoisted(() => ({ providers: [] as unknown[] }));
 vi.mock('@/hooks/useDeviceProviders', () => ({
+  getCachedDeviceProviders: () => ({ providers: remoteProvidersRef.providers }),
+  subscribeDeviceProviders: () => () => {},
   evictDeviceProviders: vi.fn(),
   prefetchDeviceProviders: vi.fn(async () => {}),
   useDeviceProviders: () => ({
@@ -217,7 +229,11 @@ import {
   addModelFavorite,
   listModelFavorites,
   updateModelFavorite,
+  setModelFavoritesOwner,
 } from '@/state/modelFavorites';
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import { providerShareFavoriteSource, reconcileProviderShareFavorites } from '@/state/providerShareFavorites';
+import { toast } from '@/lib/toast';
 import { setModelEngineOverride } from '@/state/modelEnginePrefs';
 
 const onProviderChange = vi.fn();
@@ -263,6 +279,63 @@ beforeEach(() => {
   onProviderChange.mockClear();
   resetEnginePrefs();
   resetFavorites();
+});
+
+describe('分享模型收藏', () => {
+  const received = {
+    shareId: 's1', memberId: 'm1', providerId: 'anthropic', providerLabel: 'Anthropic',
+    hostDeviceId: 'host', deviceName: 'Host', status: 'active' as const, hostOnline: true, hostCapable: true,
+    owner: { displayName: 'Owner', avatarUrl: null, region: 'global' as const },
+  };
+  beforeEach(() => {
+    setDataOwnerGeneration('recipient', 1);
+    setModelFavoritesOwner('recipient');
+    reconcileProviderShareFavorites({ ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 }, confirmedRegions: ['global'], received: [received] });
+    remoteProvidersRef.providers = providersRef.providers.map((provider) => ({ ...provider as object, remoteInvocationEnabled: true }));
+  });
+  afterEach(() => {
+    remoteProvidersRef.providers = [];
+    setDataOwnerGeneration(null, 0);
+    vi.restoreAllMocks();
+  });
+
+  it('点击收藏后可见、可重新选择，完整配置保存在受邀者账号', async () => {
+    const onUnifiedSelect = vi.fn();
+    renderPanel({ deviceId: 'share:s1', onUnifiedSelect });
+    await act(async () => fireEvent.click(within(rowFor('Opus 5')).getByRole('button', { name: '存为收藏' })));
+    expect(listModelFavorites()).toEqual([expect.objectContaining({
+      providerId: providerShareFavoriteSource(received), modelId: 'claude-opus-5', agent: 'cc', effort: 'medium',
+    })]);
+    fireEvent.click(document.querySelector('[data-rail-item="favorites"]')!);
+    expect(within(screen.getByRole('listbox')).getAllByText('Opus 5')).toHaveLength(1);
+    await act(async () => fireEvent.click(rowFor('Opus 5')));
+    expect(onUnifiedSelect).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'anthropic', modelId: 'claude-opus-5', engine: 'cc', effort: 'medium', fast: false }));
+  });
+
+  it('存储写失败显示提示，收藏区不会出现未保存的条目', async () => {
+    const failed = vi.spyOn(toast, 'error').mockImplementation(() => 'test');
+    renderPanel({ deviceId: 'share:s1' });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    await act(async () => fireEvent.click(within(rowFor('Opus 5')).getByRole('button', { name: '存为收藏' })));
+    expect(failed).toHaveBeenCalledWith('newChat.modelSelector.unified.favoritesSaveFailed');
+    expect(listModelFavorites()).toEqual([]);
+  });
+
+  it('从分享供应商切到收藏侧栏仍保留分享来源，选择回传完整路由', async () => {
+    const onUnifiedSelect = vi.fn();
+    renderPanel({
+      remoteAgent: { devices: [{ deviceId: 'share:s1', name: '来自 Owner 的分享' }], selectedDeviceId: 'share:s1' },
+      onUnifiedSelect,
+    });
+    await act(async () => fireEvent.click(within(rowFor('Opus 5')).getByRole('button', { name: '存为收藏' })));
+    fireEvent.click(document.querySelector('[data-rail-item="favorites"]')!);
+    expect(within(screen.getByRole('listbox')).getAllByText('Opus 5')).toHaveLength(1);
+    await act(async () => fireEvent.click(rowFor('Opus 5')));
+    expect(onUnifiedSelect).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 'anthropic', modelId: 'claude-opus-5', engine: 'cc', effort: 'medium', fast: false,
+      agentDevice: expect.objectContaining({ deviceId: 'share:s1' }),
+    }));
+  });
 });
 
 describe('统一面板 · 打折 GPT-5.6 与 GPT-6 包月互切', () => {
@@ -2593,11 +2666,11 @@ describe('统一面板 · 编辑选中的收藏同步到 live', () => {
  */
 describe('统一面板 · 恢复推荐删记忆键', () => {
   /** 带删除入口的最小记忆实现(本地 providerModelMemory 的形状)。 */
-  function makeMemory(seed?: { effort?: Record<string, string>; fast?: Record<string, boolean> }) {
+  function makeMemory(seed?: { effort?: Record<string, string>; fast?: Record<string, FastMode> }) {
     const keyOf = (agent: string, providerId: string, modelId: string) =>
       `${agent}|${providerId}|${modelId}`;
     const effort = new Map<string, string>(Object.entries(seed?.effort ?? {}));
-    const fast = new Map<string, boolean>(Object.entries(seed?.fast ?? {}));
+    const fast = new Map<string, FastMode>(Object.entries(seed?.fast ?? {}));
     return {
       effort,
       fast,
@@ -2608,7 +2681,7 @@ describe('统一面板 · 恢复推荐删记忆键', () => {
           effort.set(keyOf(a, p, m), e);
         },
         getFast: (a: string, p: string, m: string) => fast.get(keyOf(a, p, m)),
-        setFast: (a: string, p: string, m: string, v: boolean) => {
+        setFast: (a: string, p: string, m: string, v: FastMode) => {
           fast.set(keyOf(a, p, m), v);
         },
         clearEffort: (a: string, p: string, m: string) => {
@@ -4073,8 +4146,86 @@ describe('settings configuration without shared memory', () => {
   });
 });
 
-// Teammate settings must use this real picker, including the portaled config.
-vi.mock('@/hooks/useAvailableAgents', () => ({ useAvailableAgents: () => ({
+// #4286: the old Worker form mocked ModelSelector and selectWorkerModels, so it could
+// not detect SSH removing Pi from the visible union. Unit/jsdom exercises the real
+// popover -> picker -> onCreate route, plus its existing SSH and empty-set guards.
+describe('Worker creation with the real model picker', () => {
+  const originalProviders = providersRef.providers;
+  const apiModel = { id: 'kimi-k2.5', name: 'Worker Pi API', contextWindow: 200000,
+    efforts: ['high'], defaultEffort: 'high' };
+  const subscriptionModels = [
+    { ...apiModel, id: 'chatgpt/gpt-5.6', name: 'Worker ChatGPT subscription' },
+    { ...apiModel, id: 'xai/grok-4', name: 'Worker xAI subscription' },
+  ];
+  const bridgedModel = { ...apiModel, id: 'bridge-only', name: 'Worker local Chat bridge' };
+
+  beforeEach(() => {
+    window.localStorage.removeItem('workerCreationPrefs');
+    window.localStorage.removeItem('xdt:modelPickerLayout:v1');
+    providersRef.providers = [
+      { id: 'worker-api', name: 'Worker API', source: 'user', connected: true, auth: { method: 'api-key' },
+        agents: ['pi'], routing: { pi: {} }, models: { pi: [apiModel] } },
+      { id: 'worker-subscription', name: 'Worker subscriptions', source: 'builtin', connected: true, auth: { method: 'api-key' },
+        agents: ['pi'], routing: { pi: {} }, models: { pi: subscriptionModels } },
+      { id: 'worker-bridge', name: 'Worker bridge', source: 'user', connected: true, auth: { method: 'api-key' },
+        agents: ['codex'], routing: { codex: { wireProtocol: 'openai-chat' } },
+        models: { codex: [bridgedModel] } },
+    ];
+    for (const [agent, models] of Object.entries({ pi: [apiModel, ...subscriptionModels], codex: [bridgedModel] })) {
+      workerCapabilities.byAgent[agent] = {
+        hasFastMode: false, effortLevels: [], permissionModes: [],
+        availableModels: models.map(({ name, ...model }) => ({ ...model, displayName: name })),
+      };
+    }
+  });
+  afterEach(() => {
+    providersRef.providers = originalProviders;
+    workerCapabilities.byAgent = {};
+    window.localStorage.removeItem('workerCreationPrefs');
+    window.localStorage.removeItem('xdt:modelPickerLayout:v1');
+  });
+
+  function renderWorker(sshRemote: boolean, onCreate = vi.fn()) {
+    const view = render(<MemoryRouter><ConfirmDialogProvider>
+      <CreateWorkerPopover open sshRemote={sshRemote} onClose={vi.fn()} onCreate={onCreate} />
+    </ConfirmDialogProvider></MemoryRouter>);
+    fireEvent.click(view.baseElement.querySelector('button[aria-haspopup="listbox"]')!);
+    return onCreate;
+  }
+
+  it.each([true, false])('selects and submits a Pi API route (SSH: %s)', async (sshRemote) => {
+    const onCreate = renderWorker(sshRemote);
+    const list = await screen.findByRole('listbox');
+    for (const restricted of [...subscriptionModels, bridgedModel]) {
+      expect(within(list).queryByText(restricted.name) !== null).toBe(!sshRemote);
+    }
+    await act(async () => { fireEvent.click(within(list).getByText(apiModel.name)); });
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'pi', model: apiModel.id, providerId: 'worker-api', effort: 'high', fast: undefined,
+    })));
+  });
+
+  it('cannot submit an SSH Worker when only prohibited routes remain', async () => {
+    providersRef.providers = providersRef.providers.slice(1);
+    const onCreate = renderWorker(true);
+    const list = await screen.findByRole('listbox');
+    expect(within(list).queryByText(apiModel.name)).toBeNull();
+    for (const restricted of [...subscriptionModels, bridgedModel]) {
+      expect(within(list).queryByText(restricted.name)).toBeNull();
+    }
+    fireEvent.keyDown(list, { key: 'Escape' });
+    const submit = screen.getByRole('button', { name: 'orca.createWorker.submit' });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+});
+
+// Teammate settings and Worker creation use the real picker, including portaled config.
+vi.mock('@/hooks/useAvailableAgents', () => ({
+  useModelPickerAgents: () => ['claude-code', 'codex', 'pi'],
+  useAvailableAgents: () => ({
   availableVendors: new Set(['cc', 'codex', 'pi']), loaded: true,
 }) }));
 vi.mock('@/features/bots/botStore', () => ({ getEffectiveBotModelSettings: () => ({

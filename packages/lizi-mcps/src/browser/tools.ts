@@ -2,11 +2,16 @@ import {
   isPublicHttpResourceUrl,
   parseBrowserProxyServer,
   type BrowserControlRequest,
+  type BrowserControlResult,
   type BrowserControlRuntime,
 } from '@cindy/browser-control-runtime';
 import { z } from 'zod';
 
-import type { BrowserMcpDeps } from '../types.js';
+import {
+  INLINE_IMAGE_TARGET_BYTES,
+  type BrowserMcpDeps,
+  type ResolvedBrowserScreenshot,
+} from '../types.js';
 import type { BrowserToolRegistry } from './tool-registry.js';
 import {
   buildExtractFnSource,
@@ -108,8 +113,36 @@ const ACT_KINDS = [
   'close',
 ] as const;
 
+/** Tools that read page script state, network traffic or console output. */
+function readsPageState(request: BrowserControlRequest): boolean {
+  if (request.action === 'console' || request.action === 'requests' || request.action === 'responseBody') return true;
+  const act = request.request as { kind?: unknown; fn?: unknown } | undefined;
+  return request.action === 'act' && (act?.kind === 'evaluate' || (act?.kind === 'wait' && act.fn !== undefined));
+}
+
 function getRuntime(deps: BrowserMcpDeps): BrowserControlRuntime {
-  return deps.getRuntime();
+  const runtime = deps.getRuntime();
+  const restricted = deps.pageReadsRestricted;
+  if (!restricted) return runtime;
+  // Every path (tool actions, extract, recipes, hints) goes through this check.
+  return {
+    call: async (request) => {
+      if (readsPageState(request)
+        && await restricted({
+          ...(request.profile ? { profile: request.profile } : {}),
+          ...(request.targetId ? { targetId: request.targetId } : {}),
+        }).catch(() => true)) {
+        return {
+          ok: false,
+          action: request.action,
+          errorCode: 'BROWSER_RUNTIME_INVALID_REQUEST',
+          message: 'The owner just entered a password on this page through Cindy. Script evaluation, network and console reads are paused here until the tab leaves this page. Use snapshot or screenshot, or navigate on.',
+          data: { reason: 'secret_entered' },
+        };
+      }
+      return runtime.call(request);
+    },
+  };
 }
 
 function actKindSchema(deps: BrowserMcpDeps) {
@@ -166,6 +199,47 @@ function elementQuerySchema(deps: BrowserMcpDeps) {
 // `extract.limit` are optional + agent-controlled, so this is the backstop.
 const MAX_RESULT_BYTES = 200_000;
 
+/**
+ * 代输入 hint on a page that asks for a password or a one-time code: the
+ * owner should fill it from their own device. A cheap DOM check after a
+ * snapshot; any failure means no hint.
+ */
+const LOGIN_WALL_FN = `() => {
+  const docs = [document];
+  for (const frame of document.querySelectorAll('iframe')) {
+    try { if (frame.contentDocument) docs.push(frame.contentDocument); } catch {}
+  }
+  const has = (selector) => docs.some((doc) => doc.querySelector(selector));
+  return {
+    password: !!has('input[type=password]'),
+    code: !!has('input[autocomplete="one-time-code"]'),
+  };
+}`;
+
+async function detectLoginWall(runtime: BrowserControlRuntime, profile: unknown, targetId: unknown) {
+  try {
+    const checked = await runtime.call({
+      action: 'act',
+      ...(typeof profile === 'string' ? { profile } : {}),
+      ...(typeof targetId === 'string' ? { targetId } : {}),
+      request: { kind: 'evaluate', fn: LOGIN_WALL_FN, timeoutMs: 2000 },
+    } as BrowserControlRequest);
+    const found = (checked.data as { result?: { password?: unknown; code?: unknown } } | undefined)?.result;
+    if (!checked.ok || (found?.password !== true && found?.code !== true)) return null;
+    return {
+      fields: [found.password === true ? 'password' : null, found.code === true ? 'one-time-code' : null].filter(Boolean),
+      hint: 'This page asks for a password or verification code. Do not type it yourself: call request_input_handoff with this browser window so the owner completes the sign-in from their phone or another computer, then continue when it ends.',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readTargetId(result: { data?: unknown }): string | undefined {
+  const id = (result.data as { targetId?: unknown } | undefined)?.targetId;
+  return typeof id === 'string' && id ? id : undefined;
+}
+
 function resultText(value: unknown): string {
   const json = JSON.stringify(value);
   // JSON.stringify returns undefined only for undefined/function inputs; callers
@@ -207,6 +281,164 @@ function errorResult(action: string, message: string): {
       },
     ],
     isError: true,
+  };
+}
+
+function browserScreenshotError(
+  errorCode:
+    | 'BROWSER_SCREENSHOT_INVALID'
+    | 'BROWSER_SCREENSHOT_TOO_LARGE'
+    | 'BROWSER_SCREENSHOT_COMPRESSION_UNAVAILABLE',
+  message: string,
+): {
+  content: Array<{ type: 'text'; text: string }>;
+  isError: true;
+} {
+  return {
+    content: [
+      {
+        type: 'text',
+        text: resultText({ ok: false, action: 'screenshot', errorCode, message }),
+      },
+    ],
+    isError: true,
+  };
+}
+
+function screenshotMetadata(
+  result: BrowserControlResult,
+  mimeType: string,
+  bytes: number,
+  originalBytes: number,
+): Record<string, unknown> {
+  const rawData = result.data && typeof result.data === 'object' && !Array.isArray(result.data)
+    ? result.data as Record<string, unknown>
+    : {};
+  const boundedString = (key: string, maxChars: number): string | undefined => {
+    const value = rawData[key];
+    return typeof value === 'string' ? value.slice(0, maxChars) : undefined;
+  };
+  const boundedCount = (key: string): number | undefined => {
+    const value = rawData[key];
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? Math.floor(value)
+      : undefined;
+  };
+  const annotationCount = Array.isArray(rawData.annotations)
+    ? rawData.annotations.length
+    : undefined;
+  return {
+    ok: true,
+    action: 'screenshot',
+    data: {
+      ...(boundedString('targetId', 512) ? { targetId: boundedString('targetId', 512) } : {}),
+      ...(boundedString('tabId', 512) ? { tabId: boundedString('tabId', 512) } : {}),
+      ...(boundedString('url', 4_096) ? { url: boundedString('url', 4_096) } : {}),
+      ...(typeof rawData.labels === 'boolean' ? { labels: rawData.labels } : {}),
+      ...(boundedCount('labelsCount') !== undefined
+        ? { labelsCount: boundedCount('labelsCount') }
+        : {}),
+      ...(boundedCount('labelsSkipped') !== undefined
+        ? { labelsSkipped: boundedCount('labelsSkipped') }
+        : {}),
+      ...(annotationCount !== undefined ? { annotationCount } : {}),
+      mimeType,
+      bytes,
+      ...(bytes !== originalBytes ? { originalBytes } : {}),
+    },
+  };
+}
+
+async function screenshotToolResult(
+  result: BrowserControlResult,
+  deps: BrowserMcpDeps,
+) {
+  if (!result.ok) {
+    return {
+      content: [{ type: 'text' as const, text: resultText(result) }],
+      isError: true,
+    };
+  }
+  if (!deps.resolveScreenshot) {
+    return browserScreenshotError(
+      'BROWSER_SCREENSHOT_INVALID',
+      '当前 host 无法把浏览器截图解析为模型图片输入。',
+    );
+  }
+
+  let resolved: ResolvedBrowserScreenshot;
+  try {
+    resolved = await deps.resolveScreenshot(result);
+  } catch (err) {
+    // resolver 抛错(路径越界 / Base64 损坏 / MIME 不匹配等)是截图内容校验
+    // 失败,不是 runtime 动作失败:映射到稳定的 BROWSER_SCREENSHOT_INVALID,
+    // 不能穿透到外层被泛化成 BROWSER_RUNTIME_ACTION_FAILED。原始 error 可能
+    // 含文件路径,只进 host 日志,不进模型可见的错误信封。
+    deps.logger?.warn('browser screenshot resolve failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return browserScreenshotError(
+      'BROWSER_SCREENSHOT_INVALID',
+      '浏览器截图内容校验失败，无法作为模型图片输入。',
+    );
+  }
+  const originalBytes = resolved.buffer.byteLength;
+  let buffer = resolved.buffer;
+  let mimeType: string = resolved.mimeType;
+
+  if (buffer.byteLength > INLINE_IMAGE_TARGET_BYTES) {
+    let compressed: Awaited<ReturnType<NonNullable<BrowserMcpDeps['compressInlineImage']>>> = null;
+    try {
+      compressed = (await deps.compressInlineImage?.(buffer, mimeType, {
+        targetBytes: INLINE_IMAGE_TARGET_BYTES,
+      })) ?? null;
+    } catch (err) {
+      // CompressInlineImageFn 契约是永不 throw;真 throw 了按"压缩器不可用"
+      // 降级处理,不让异常穿透成 BROWSER_RUNTIME_ACTION_FAILED。
+      deps.logger?.warn('browser screenshot compression threw, treating as unavailable', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      compressed = null;
+    }
+    // null 是压缩器的契约降级值(sharp 缺失 / 解码失败 / 超时,见
+    // CompressInlineImageFn):不是图片本身超标,不能报 TOO_LARGE。截图仍
+    // 超过内联预算所以必须 fail-closed,但错误码和文案要说真话。
+    if (!compressed) {
+      return browserScreenshotError(
+        'BROWSER_SCREENSHOT_COMPRESSION_UNAVAILABLE',
+        '浏览器截图超过模型内联传输上限，且当前主机图片压缩不可用（压缩器缺失、无法解码或超时），无法安全内联。',
+      );
+    }
+    if (compressed.buffer.byteLength > INLINE_IMAGE_TARGET_BYTES) {
+      return browserScreenshotError(
+        'BROWSER_SCREENSHOT_TOO_LARGE',
+        '浏览器截图压缩后仍超过模型内联传输上限。请缩小窗口后重试。',
+      );
+    }
+    buffer = compressed.buffer;
+    mimeType = compressed.mime;
+  }
+
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType) || buffer.byteLength === 0) {
+    return browserScreenshotError(
+      'BROWSER_SCREENSHOT_INVALID',
+      '浏览器截图没有返回受支持的有效图片。',
+    );
+  }
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: resultText(screenshotMetadata(result, mimeType, buffer.byteLength, originalBytes)),
+      },
+      {
+        type: 'image' as const,
+        data: buffer.toString('base64'),
+        mimeType,
+      },
+    ],
+    isError: false,
   };
 }
 
@@ -668,6 +900,14 @@ export function registerBrowserTools(registry: BrowserToolRegistry, deps: Browse
           } as BrowserControlRequest);
         } else {
           result = await runtime.call(toRuntimeRequest(args));
+        }
+        if (args.action === 'screenshot') {
+          return await screenshotToolResult(result, deps);
+        }
+        if (args.action === 'snapshot' && result.ok) {
+          const loginWall = await detectLoginWall(runtime, args.profile, readTargetId(result) ?? args.targetId);
+          // First key, so it survives truncation of a large snapshot.
+          if (loginWall) result = { loginWall, ...result } as typeof result;
         }
         // For extract, the runtime call may succeed (evaluate ran) while the
         // in-page extract reports ok:false (invalid selector); surface that as an

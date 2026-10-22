@@ -154,6 +154,8 @@ describe('Cindy PI Subagent foreground durable path', () => {
     'waits for the runner and forwards Ask approval through the parent UI',
     async () => {
     const f = await fixture();
+    const cacheRules = [{ provider: 'fixture', id: 'fixture-model', baseUrl: 'https://fixture.invalid/v1' }];
+    await writeFile(path.join(f.configHome, 'pi-cache-compatibility.json'), JSON.stringify(cacheRules));
     const previous = { ...process.env };
     Object.assign(process.env, {
       [CINDY_SUBAGENT_ENV.binary]: process.execPath,
@@ -192,8 +194,8 @@ describe('Cindy PI Subagent foreground durable path', () => {
       );
       process.env[CINDY_SUBAGENT_ENV.binary] = wrapper;
       await chmod(wrapper, 0o700);
-      const extension = require(f.extensionFile).default as (pi: { registerTool: (tool: unknown) => void }) => Promise<void>;
-      await extension({ registerTool: (tool) => Object.assign(registered, tool) });
+      const extension = require(f.extensionFile).default as (pi: { registerTool: (tool: unknown) => void; appendEntry: () => void }) => Promise<void>;
+      await extension({ registerTool: (tool) => Object.assign(registered, tool), appendEntry: vi.fn() });
       expect(registered.execute).toBeTypeOf('function');
       const input = hostInput(f);
       const result = await registered.execute!(
@@ -208,6 +210,7 @@ describe('Cindy PI Subagent foreground durable path', () => {
         `foreground approved result:${expectedRouteToken}`,
       );
       const [runId] = await readdir(f.runRoot);
+      expect(JSON.parse(await readFile(path.join(f.runRoot, runId, 'pi-home', 'pi-cache-compatibility.json'), 'utf8'))).toEqual(cacheRules);
       const configText = await readFile(path.join(f.runRoot, runId, 'config.json'), 'utf8');
       const config = JSON.parse(configText);
       expect(config.tasks[0]).toMatchObject({
@@ -248,8 +251,8 @@ describe('Cindy PI Subagent foreground durable path', () => {
       });
       const registered: { execute?: (...args: unknown[]) => Promise<unknown> } = {};
       try {
-        const extension = require(f.extensionFile).default as (pi: { registerTool: (tool: unknown) => void }) => Promise<void>;
-        await extension({ registerTool: (tool) => Object.assign(registered, tool) });
+        const extension = require(f.extensionFile).default as (pi: { registerTool: (tool: unknown) => void; appendEntry: () => void }) => Promise<void>;
+        await extension({ registerTool: (tool) => Object.assign(registered, tool), appendEntry: vi.fn() });
         const input = hostInput(f);
         const execution = registered.execute!(
           'tool-runner-exit',
@@ -315,8 +318,8 @@ setTimeout(() => process.exit(0), 20000).unref();
       const registered: { execute?: (...args: unknown[]) => Promise<unknown> } = {};
       const controller = new AbortController();
       try {
-        const extension = require(f.extensionFile).default as (pi: { registerTool: (tool: unknown) => void }) => Promise<void>;
-        await extension({ registerTool: (tool) => Object.assign(registered, tool) });
+        const extension = require(f.extensionFile).default as (pi: { registerTool: (tool: unknown) => void; appendEntry: () => void }) => Promise<void>;
+        await extension({ registerTool: (tool) => Object.assign(registered, tool), appendEntry: vi.fn() });
         const input = hostInput(f);
         const startedAt = Date.now();
         const execution = registered.execute!(
@@ -430,8 +433,8 @@ setTimeout(() => process.exit(2), 5000).unref();
       const registered: { execute?: (...args: unknown[]) => Promise<unknown> } = {};
       const controller = new AbortController();
       try {
-        const extension = require(f.extensionFile).default as (pi: { registerTool: (tool: unknown) => void }) => Promise<void>;
-        await extension({ registerTool: (tool) => Object.assign(registered, tool) });
+        const extension = require(f.extensionFile).default as (pi: { registerTool: (tool: unknown) => void; appendEntry: () => void }) => Promise<void>;
+        await extension({ registerTool: (tool) => Object.assign(registered, tool), appendEntry: vi.fn() });
         const input = hostInput(f);
         const execution = registered.execute!(
           'tool-abort-before-status',

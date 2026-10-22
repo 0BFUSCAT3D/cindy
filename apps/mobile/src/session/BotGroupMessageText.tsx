@@ -3,6 +3,8 @@
  * 行内强调 / 代码），与伙伴私聊回看同样是只读文本，不加载任务页的完整消息渲染器；链接只
  * 显示文字，不在群聊里打开。用户自己的消息保留原文，`@名字` 画成点名标记。
  */
+import { botGroupBodyParts } from '@cindy/maker-shared/botGroupPresentation';
+import type { BotGroupAuthorKind } from '@cindy/maker-shared/botGroupChat';
 import { useMemo, type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { splitBotGroupMentionSegments } from '@cindy/maker-shared/botGroupMentions';
@@ -15,6 +17,16 @@ type Styles = ReturnType<typeof makeStyles>;
 
 function renderInlines(inlines: readonly MobileMarkdownInline[], styles: Styles): ReactNode[] {
   return inlines.map((inline, index) => {
+    // 强调里的代码等:外层套一层带强调样式的 Text,嵌套 Text 继承样式。强调里的链接按强调
+    // 纯文本显示:群聊不打开链接,不加下划线,不做出「看着能点却点不动」的样子(DESIGN.md §14.5)。
+    if (inline.marks?.length) {
+      const markStyles = { strong: styles.strong, emphasis: styles.emphasis, strikethrough: styles.strike };
+      return (
+        <Text key={index} style={inline.marks.map((mark) => markStyles[mark])}>
+          {inline.type === 'link' ? inline.text : renderInlines([{ ...inline, marks: undefined }], styles)}
+        </Text>
+      );
+    }
     switch (inline.type) {
       case 'strong': return <Text key={index} style={styles.strong}>{inline.text}</Text>;
       case 'emphasis': return <Text key={index} style={styles.emphasis}>{inline.text}</Text>;
@@ -62,9 +74,11 @@ function renderBlock(block: MobileMarkdownBlock, styles: Styles): ReactNode {
   }
 }
 
-export function BotGroupMarkdownText({ content }: { content: string }) {
+export function BotGroupMarkdownText({ content, authorKind }: { content: string; authorKind?: BotGroupAuthorKind }) {
   const styles = useThemedStyles(makeStyles);
-  const blocks = useMemo(() => parseMobileMarkdown(content), [content]);
+  const blocks = useMemo(() => botGroupBodyParts(content, authorKind).flatMap((part, index): MobileMarkdownBlock[] => part.kind === 'markdown'
+    ? parseMobileMarkdown(part.content).map(block => ({ ...block, key: `${index}:${block.key}` }))
+    : [{ type: 'paragraph', key: String(index), inlines: [{ type: 'text', text: part.content }] }]), [content, authorKind]);
   return <View style={styles.body}>{blocks.map((block) => renderBlock(block, styles))}</View>;
 }
 

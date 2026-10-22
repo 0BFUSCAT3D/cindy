@@ -24,11 +24,15 @@ import type {
 } from '@cindy/maker-core';
 import { resolveMemoryScopeKey } from '@cindy/maker-core';
 
+import { credentialGrantFor } from '../executor/credentialGrants';
 import type { ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
+import type { GuardedFetch } from '../executor/webFetch';
+import { RemoteConnectionPool } from './connectionPool';
 import { remoteAgentEventMapper } from './eventMap';
 import {
   collectAncestorInstructionFiles,
+  collectInstructionImports,
   collectPersonalConfig,
   collectProjectInstructionFiles,
 } from './projectFiles';
@@ -37,6 +41,7 @@ import { RemoteAgentPoller, remoteAgentInvoker } from './runClient';
 import { startRemoteAgentSession, type PreparedRemoteMcp } from './startRemote';
 
 export interface DeviceAgentServiceDeps {
+  readImageDeliveryEpoch?(sessionId: string): Promise<number>;
   remoteInvoke(deviceId: string, channel: string, args: unknown[]): Promise<{ ok: boolean; result?: unknown; error?: { code?: string; message?: string } }>;
   rgPath(): string;
   /** 本机 codex 程序(给对方的 Codex 提供 exec-server 执行环境)。 */
@@ -55,8 +60,40 @@ export interface DeviceAgentServiceDeps {
   mapEvent?: (kind: AgentKind) => ((event: AgentEvent) => AgentEvent) | undefined;
   /** Read 读 PDF 时取文字。 */
   extractPdfText?: PdfTextExtractor;
+  /** 这个任务由供应商组分配(本机的组或另一台电脑上的组)：打开时告诉那台不要再进入它自己的组。 */
+  isGroupAssigned?(sessionId: string): boolean;
+  /**
+   * 供应商组「需要换一台」(分享的人，docs/product-rules/provider-groups.md §6.1)：打开任务时声明支持并带回交接后
+   * 要用的凭证，对方发来的新凭证交回这里。
+   */
+  groupSwitch?: {
+    takeForOpen(sessionId: string): string | undefined;
+    offer(sessionId: string, token: string): void;
+    /** 用户亲自接手后的这次发送开始新的一轮(取走即用掉)。 */
+    takeNewRound?(sessionId: string): boolean;
+  };
+  /** 任务的「Agent 所在电脑」是不是分享来的供应商(受邀者任务)。 */
+  isSharedProviderDevice?(deviceId: string): boolean;
+  /** 受邀者在设置里把这个分享切成了「信任 {分享者}」(每次操作前问一遍)。 */
+  skipSharedProviderCredentialConsent?(deviceId: string): boolean;
+  /** 受邀者任务在本机抓取网页的出站通道(WebFetch)。 */
+  webFetch?: GuardedFetch;
+  /** 受邀者任务里凭证类操作确认卡上的说明(按界面语言)。 */
+  sharedProviderCredentialNotice?(): string;
+  /**
+   * 名额紧张时，闲置满多少分钟的任务可以让出那台电脑上的 Agent 进程(0 = 不让)。缺省时不让，
+   * 与没有连接池时一样。每次判断时读取，设置改了立即生效。
+   */
+  idleReleaseMinutes?(): number;
   logger: Logger;
 }
+
+/** 没有提供界面语言的说明时用的英文说明。 */
+const SHARED_PROVIDER_CREDENTIAL_NOTICE =
+  "This task uses a shared provider, so what the agent reads passes through the sharer's computer or another computer they arrange. "
+  + 'This may involve credentials, so it needs your confirmation. '
+  + 'Always allow for this session skips further shared-provider credential confirmations in this task. '
+  + 'Changing its permission mode or Plan mode, or quitting Cindy, requires confirmation again.';
 
 function mcpTargets(extra: PiExtraSpawnConfig | null): Map<string, LocalMcpTarget> {
   const targets = new Map<string, LocalMcpTarget>();
@@ -93,19 +130,44 @@ async function isGitRepo(workingDir: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * 每台电脑一个拉取器：那台上的全部任务共用一个 poll，不挤占设备互联的其它请求。本机作为控制端的任务
+ * 与供应商组替受邀者中转的任务(remote-agent/host 的 groupRelay)共用同一份，同一台电脑只占一个长等待。
+ * 空闲的拉取器不发任何请求，同账号电脑数量有限，留着复用。
+ */
+const sharedPollers = new WeakMap<DeviceAgentServiceDeps['remoteInvoke'], Map<string, RemoteAgentPoller>>();
+
+export function remoteAgentPollerFor(
+  deviceId: string,
+  remoteInvoke: DeviceAgentServiceDeps['remoteInvoke'],
+  log?: { warn(message: string, meta?: Record<string, unknown>): void },
+): RemoteAgentPoller {
+  let byDevice = sharedPollers.get(remoteInvoke);
+  if (!byDevice) {
+    byDevice = new Map();
+    sharedPollers.set(remoteInvoke, byDevice);
+  }
+  let poller = byDevice.get(deviceId);
+  if (!poller) {
+    poller = new RemoteAgentPoller(remoteAgentInvoker(deviceId, remoteInvoke), log);
+    byDevice.set(deviceId, poller);
+  }
+  return poller;
+}
+
 /** Maker 的 startDeviceAgentSession 实现。 */
 export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
   const log = deps.logger.child('remote-agent');
-  // 每台电脑一个拉取器：那台上的全部任务共用一个 poll，不挤占设备互联的其它请求。
-  const pollers = new Map<string, RemoteAgentPoller>();
-  // 空闲的拉取器不发任何请求，同账号电脑数量有限，留着复用。
-  const pollerFor = (deviceId: string): RemoteAgentPoller => {
-    let poller = pollers.get(deviceId);
-    if (!poller) {
-      poller = new RemoteAgentPoller(remoteAgentInvoker(deviceId, deps.remoteInvoke), log);
-      pollers.set(deviceId, poller);
+  const pollerFor = (deviceId: string): RemoteAgentPoller => remoteAgentPollerFor(deviceId, deps.remoteInvoke, log);
+  // 每台运行 Agent 的电脑一个连接池：对方按这台设备计名额，池里算的是本机在那台上开着的连接。
+  const pools = new Map<string, RemoteConnectionPool>();
+  const poolFor = (deviceId: string): RemoteConnectionPool => {
+    let pool = pools.get(deviceId);
+    if (!pool) {
+      pool = new RemoteConnectionPool({ idleMinutes: () => deps.idleReleaseMinutes?.() ?? 0, log });
+      pools.set(deviceId, pool);
     }
-    return poller;
+    return pool;
   };
   return async (input: { agentKind: AgentKind; deviceId: string; options: StartSessionOptions }): Promise<AgentSessionHandle> => {
     const opts: StartSessionOptions = { ...input.options };
@@ -123,11 +185,44 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
         }
       }
     }
+    const sessionId = opts.sessionId;
+    const groupSwitch = sessionId && deps.groupSwitch ? deps.groupSwitch : null;
+    const switchToken = groupSwitch && sessionId ? groupSwitch.takeForOpen(sessionId) : undefined;
+    // 受邀者任务(分享来的供应商)：内容会经过分享者的电脑。
+    //  - Agent 自带的 WebFetch 在分享者电脑上已关闭，改由本机抓取；
+    //  - 凭证类文件不随启动同步，任务中读写凭证类文件、执行读取凭证的命令不论权限档都要本机确认。
+    // 同账号任务都不提供。
+    const shared = deps.isSharedProviderDevice?.(input.deviceId) === true;
+    const webFetch = deps.webFetch && shared ? deps.webFetch : undefined;
+    const collect = { skipCredentials: shared };
     return startRemoteAgentSession(input.agentKind, opts, {
+      readImageDeliveryEpoch: deps.readImageDeliveryEpoch,
       invoke: poller.invoke,
       poller,
+      pool: poolFor(input.deviceId),
       rgPath: deps.rgPath(),
       codexPath: () => deps.codexPath?.(),
+      ...(sessionId && deps.isGroupAssigned?.(sessionId) ? { groupAssigned: true } : {}),
+      ...(groupSwitch && sessionId
+        ? {
+            groupSwitch: {
+              ...(switchToken ? { token: switchToken } : {}),
+              offer: (token: string) => groupSwitch.offer(sessionId, token),
+              takeNewRound: () => groupSwitch.takeNewRound?.(sessionId) ?? false,
+            },
+          }
+        : {}),
+      ...(webFetch ? { webFetch } : {}),
+      ...(shared
+        ? {
+            credentialConsent: {
+              description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE,
+              // 受邀者在设置里对这个分享选了「信任 {分享者}」：实时读，运行中切换下一步就生效。
+              skip: () => deps.skipSharedProviderCredentialConsent?.(input.deviceId) === true,
+              ...(sessionId ? { grant: credentialGrantFor(sessionId, input.deviceId) } : {}),
+            },
+          }
+        : {}),
       prepareMcp: async ({ kind, opts: startOpts, vendorOptions }): Promise<PreparedRemoteMcp> => {
         const extra = await deps.prepareMcpBridge(deps.mcpProviders(), deps.logger, {
           agentKind: kind,
@@ -156,10 +251,13 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
           noteOpaqueWrite: () => deps.noteOpaqueTurnChange({ sessionId, provider, cwd: startOpts.workingDir }),
         };
       },
-      collectProjectFiles: collectProjectInstructionFiles,
+      collectProjectFiles: (workingDir) => collectProjectInstructionFiles(workingDir, collect),
       // Codex 经执行环境在本机直接读取项目与上级目录的说明，不必同步。
-      collectAncestorFiles: input.agentKind === 'codex' ? undefined : collectAncestorInstructionFiles,
-      collectPersonal: (kind, projectFiles) => collectPersonalConfig(kind, projectFiles),
+      collectAncestorFiles: input.agentKind === 'codex'
+        ? undefined
+        : (workingDir) => collectAncestorInstructionFiles(workingDir, collect),
+      collectPersonal: (kind, projectFiles) => collectPersonalConfig(kind, projectFiles, collect),
+      collectImports: (imports) => collectInstructionImports(imports, collect),
       isGitRepo,
       ...(deps.extractPdfText ? { extractPdfText: deps.extractPdfText } : {}),
       mapEvent: deps.mapEvent ?? remoteAgentEventMapper,

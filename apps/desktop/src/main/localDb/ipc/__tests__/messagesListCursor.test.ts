@@ -3,9 +3,13 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { messages, sessions } from '../../schema';
+import * as taskImages from '../../../cindy-media/taskImageDelivery';
+import * as currentDb from '../../client/current';
 import { runDeviceLinkInvokeContext } from '../../../device-link/invoke-context';
 import { MAX_HISTORY_SCAN_ROWS } from '../historyViewReader';
 import { historyViewLeaves, type HistoryViewPage, type HistoryDetailPage, type HistoryMessageSource } from '@cindy/maker-shared/message-window';
+import type { DbClient } from '../../client/DbClient';
+import { captureMediaUserTurn, refreshMediaUserTurnCost } from '../../../usage/mediaTurnCost';
 
 const h = vi.hoisted(() => ({
   db: null as ReturnType<typeof drizzle> | null,
@@ -102,6 +106,7 @@ function createDb(): Database.Database {
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY,
       cleared_at INTEGER,
+      source TEXT NOT NULL DEFAULT 'desktop',
       parent_session_id TEXT,
       status TEXT NOT NULL DEFAULT 'active',
       created_at INTEGER NOT NULL DEFAULT 0,
@@ -312,6 +317,23 @@ describe('local-db:messages:list cursor', () => {
     } finally { sqlite.close(); }
   });
 
+  // Side-chat fork boundary: inherited history remains readable but cannot authorize new actions.
+  // This real SQLite fixture covers the query predicate missing from ordinary history tests (unit).
+  it('keeps inherited context out of side-chat authorization, including late answers to old cards', async () => {
+    const sqlite = createDb();
+    try {
+      sqlite.prepare("INSERT INTO sessions (id, source, created_at) VALUES ('s1', 'side-chat', 100)").run();
+      insertCostMessage(sqlite, { id: 'parent-grant', role: 'user', createdAt: 10 });
+      insertCostMessage(sqlite, { id: 'parent-card', role: 'ask_user', createdAt: 20,
+        agentMeta: { autoReviewUserText: { text: 'Deploy now', acceptedAt: 150 } } });
+      insertCostMessage(sqlite, { id: 'side-question', role: 'user', createdAt: 100 });
+      expect((await listMessagesForAgentHandoff('s1', null)).map(row => row.clientId))
+        .toEqual(['parent-grant', 'parent-card', 'side-question']);
+      expect((await listMessagesForAgentHandoff('s1', null, undefined, 'authorization')).map(row => row.clientId))
+        .toEqual(['side-question']);
+    } finally { sqlite.close(); }
+  });
+
   it('selects a recently answered old card before limiting authorization history', async () => {
     const sqlite = createDb();
     try {
@@ -446,6 +468,55 @@ describe('local-db:messages:list cursor', () => {
     const rows = await listHandler?.({}, 's1', { limit: 1, after: 'missing' });
 
     expect((rows as Array<{ id: string }>).map((row) => row.id)).toEqual(['row-new']);
+  });
+
+  it.each([
+    ['list', false],
+    ['around', false],
+    ['around-client-id', false],
+    ['around-client-id', true],
+  ] as const)('restores visible images before returning %s (capped=%s)', async (kind, capped) => {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id, cleared_at) VALUES (?, ?)').run('s1', 500);
+    const original = 'Full original Markdown must reach restoration before truncation';
+    for (const [id, createdAt] of [
+      ['cleared', 100], ['before', 1000], ['anchor', 1000], ['after', 1000], ['rewound', 1100],
+    ] as const) insertMessage(sqlite, { id, createdAt, content: original });
+    sqlite.prepare('UPDATE messages SET rewind_at = 1200 WHERE id = ?').run('rewound');
+    const captured = currentDb.getDbClient();
+    const capture = vi.spyOn(currentDb, 'getDbClient').mockReturnValue(captured);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const restore = vi.spyOn(taskImages, 'restoreTaskImageRows').mockImplementation(async (db, rows) => {
+      expect(db).toBe(captured);
+      expect(rows.map((row) => row.id)).toEqual(
+        kind === 'list' ? ['after', 'anchor', 'before'] : ['before', 'anchor', 'after'],
+      );
+      expect(rows.every((row) => row.content === JSON.stringify(original))).toBe(true);
+      await pending;
+      return rows.map((row) => ({ ...row, content: JSON.stringify('restored-image') }));
+    });
+    try {
+      registerMessageIpc();
+      const handler = h.handlers.get(`local-db:messages:${kind}`)!;
+      let finished = false;
+      const response = Promise.resolve(kind === 'list'
+        ? handler({}, 's1', { limit: 10 })
+        : handler({}, 's1', 'anchor', { radius: 10, ...(capped ? { contentCharLimit: 5 } : {}) }))
+        .then((rows) => { finished = true; return rows as Array<{ content: string; rowid: number }>; });
+      await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+      expect(finished).toBe(false);
+      release();
+      const rows = await response;
+      expect(rows).toHaveLength(3);
+      expect(rows.every((row) => row.content === (capped ? '…mage' : 'restored-image'))).toBe(true);
+      expect(rows.map((row) => row.rowid)).toEqual(kind === 'list' ? [4, 3, 2] : [2, 3, 4]);
+    } finally {
+      release();
+      restore.mockRestore();
+      capture.mockRestore();
+      sqlite.close();
+    }
   });
 
   it('keeps around windows stable for same timestamp rows', async () => {
@@ -1364,5 +1435,58 @@ describe('readPriorUserRoundCost', () => {
       costUsd: 0.5,
       hasEstimatedValue: false,
     });
+  });
+});
+
+describe('media user-round costs', () => {
+  const actual = (amount: number) => ({ amount, currency: 'USD', approximate: false, kind: 'actual-cost' });
+  function fixture() {
+    const sqlite = createDb();
+    sqlite.prepare('INSERT INTO sessions (id) VALUES (?)').run('s1');
+    const db = {
+      drizzle: h.db,
+      queryOne: async (query: string, params: unknown[] = []) => sqlite.prepare(query).get(...params),
+      exec: async (query: string, params: unknown[] = []) => sqlite.prepare(query).run(...params),
+    } as unknown as DbClient;
+    return { sqlite, db };
+  }
+
+  it('adds media to the visible round, keeps raw subscription valuation, and does not carry it to the next user', async () => {
+    const { sqlite, db } = fixture();
+    insertCostMessage(sqlite, { id: 'user', role: 'user', createdAt: 1, agentMeta: { mediaCosts: [actual(0.75)] } });
+    insertCostMessage(sqlite, { id: 'segment', role: 'assistant', createdAt: 2, agentMeta: { turnCost: actual(0.25) } });
+    insertCostMessage(sqlite, { id: 'resume', role: 'user', createdAt: 3, agentMeta: { autoResume: true } });
+    insertCostMessage(sqlite, { id: 'final', role: 'assistant', createdAt: 4,
+      agentMeta: { turnCostUsd: 2, turnCostIsEstimate: true, model: 'keep-model' } });
+    expect(await captureMediaUserTurn(db, 's1')).toEqual({ clientId: 'user' });
+    expect(await refreshMediaUserTurnCost(db, 's1', 'user')).toMatchObject({
+      clientId: 'final', userTurnMoney: { amount: 3, kind: 'actual-cost' }, userTurnCostIsEstimate: true,
+    });
+    const meta = JSON.parse((sqlite.prepare("SELECT agent_meta FROM messages WHERE id = 'final'").get() as { agent_meta: string }).agent_meta);
+    expect(meta).toMatchObject({ turnCostUsd: 2, turnCostIsEstimate: true, model: 'keep-model', userTurnCost: { amount: 3 } });
+    // The next real user begins a new round, including for same-millisecond rows.
+    insertCostMessage(sqlite, { id: 'next-user', role: 'user', createdAt: 4 });
+    insertCostMessage(sqlite, { id: 'next-answer', role: 'assistant', createdAt: 4 });
+    expect((await readPriorUserRoundCost('s1', 'next-answer')).money).toBeNull();
+    expect((await refreshMediaUserTurnCost(db, 's1', 'user'))?.clientId).toBe('final');
+  });
+
+  it('projects media-only responses without inventing a chat segment price and ignores clear/rewind', async () => {
+    const { sqlite, db } = fixture();
+    insertCostMessage(sqlite, { id: 'user', role: 'user', createdAt: 10, agentMeta: { mediaCosts: [actual(0.75)] } });
+    expect(await refreshMediaUserTurnCost(db, 's1', 'user')).toBeNull();
+    insertCostMessage(sqlite, { id: 'answer', role: 'assistant', createdAt: 11 });
+    expect(await refreshMediaUserTurnCost(db, 's1', 'user')).toMatchObject({
+      clientId: 'answer', userTurnMoney: actual(0.75), userTurnCostIsEstimate: false,
+    });
+    const meta = JSON.parse((sqlite.prepare("SELECT agent_meta FROM messages WHERE id = 'answer'").get() as { agent_meta: string }).agent_meta);
+    expect(meta.turnCost).toBeUndefined();
+    sqlite.prepare("UPDATE messages SET rewind_at = 12 WHERE id = 'user'").run();
+    expect(await captureMediaUserTurn(db, 's1')).toBeNull();
+    expect(await refreshMediaUserTurnCost(db, 's1', 'user')).toBeNull();
+    sqlite.prepare('UPDATE messages SET rewind_at = NULL').run();
+    sqlite.prepare('UPDATE sessions SET cleared_at = 10').run();
+    expect(await captureMediaUserTurn(db, 's1')).toBeNull();
+    expect(await refreshMediaUserTurnCost(db, 's1', 'user')).toBeNull();
   });
 });

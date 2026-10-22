@@ -373,6 +373,33 @@ describe("cindy_ghosts · ghost_info(单插件精准查询)", () => {
     });
   });
 
+  it("GHOST_AMBIGUOUS 带回 candidates 且把 namespace 传给 host", async () => {
+    const getAwakeGhost = vi.fn(async () => ({
+      ok: false as const,
+      errorCode: "GHOST_AMBIGUOUS" as const,
+      message: "插件 helper 存在多个实例",
+      candidates: [
+        { ghostId: "helper", namespace: null },
+        { ghostId: "helper", namespace: "acme" },
+      ],
+    }));
+    const result = await handleGhostInfo(
+      fakeDeps({ getAwakeGhost }),
+      { ghost_id: "helper", namespace: "acme" },
+    );
+    expect(getAwakeGhost).toHaveBeenCalledWith("helper", "acme");
+    expect(result.isError).toBe(true);
+    expect(parsePayload(result)).toEqual({
+      ok: false,
+      errorCode: "GHOST_AMBIGUOUS",
+      message: "插件 helper 存在多个实例",
+      candidates: [
+        { ghostId: "helper", namespace: null },
+        { ghostId: "helper", namespace: "acme" },
+      ],
+    });
+  });
+
   it.each([
     ["GHOST_ASLEEP", "目标插件未启用"],
     ["GHOST_DISABLED_IN_WORKDIR", "当前工作目录已停用"],
@@ -1239,14 +1266,14 @@ describe("cindy_ghosts · server 构建", () => {
     expect(infoDescription).toContain("完全没有目标线索时才用 ghost_list");
     expect(infoDescription).toContain("不要缓存");
     expect(infoDescription).toContain(
-      "GHOST_NOT_FOUND(不存在、已卸载、当前账号不可用或未提供工具和手册)",
+      "GHOST_AMBIGUOUS",
     );
     expect(infoDescription).toContain("GHOST_DISABLED_IN_WORKDIR");
-    expect(infoDescription).toContain("INTERNAL(内部查询失败)");
+    expect(infoDescription).toContain("INTERNAL");
     const manualDescription =
       server._registeredTools.ghost_manual?.description ?? "";
     expect(server._registeredTools.ghost_list?.description).toContain(
-      "manual 轻量索引",
+      "namespace",
     );
     expect(server._registeredTools.ghost_info?.description).toContain(
       "需要长文时用 ghost_manual",
@@ -1764,6 +1791,17 @@ describe("cindy_ghosts · ghost_forge(锻造)", () => {
 const GHOST_ROSTER_CACHE_PREFIX_BUDGET_CHARS = 8_000;
 
 describe("formatGhostRoster(花名册快照:JSONL 召回数据源)", () => {
+  it('preserves root and organization identities in both prompt and tool roster', async () => {
+    const { buildGhostRosterPrompt, formatGhostRoster } = await import('../ghost/mcpServer');
+    const items = [
+      { id: 'helper', namespace: null, name: 'Root' },
+      { id: 'helper', namespace: 'acme', name: 'Organization' },
+    ];
+    for (const roster of [formatGhostRoster(items), buildGhostRosterPrompt(items)]) {
+      expect(roster).toContain('"namespace":null');
+      expect(roster).toContain('"namespace":"acme"');
+    }
+  });
   it("固定字段序列化;折叠/截断/空清单/条数/预算", async () => {
     const { formatGhostRoster } = await import("../ghost/mcpServer");
     expect(formatGhostRoster([])).toBe("");
@@ -1836,7 +1874,7 @@ describe("formatGhostRoster(花名册快照:JSONL 召回数据源)", () => {
         ],
       }),
     ) as unknown as {
-      _registeredTools: Record<string, { description?: string } | undefined>;
+      _registeredTools: Record<string, { description?: string; inputSchema?: { shape?: Record<string, { description?: string }> } } | undefined>;
     };
 
     const listDesc = server._registeredTools.ghost_list?.description ?? "";
@@ -1856,10 +1894,17 @@ describe("formatGhostRoster(花名册快照:JSONL 召回数据源)", () => {
     // ghost_call 仍保留自身基线描述(去重不等于把描述删空)。
     expect(callDesc).toContain("调用某个插件(Ghost)提供的工具。");
     expect(callDesc).toContain("ghost_info 或 ghost_list");
-    // 权限契约必须进入模型可见描述:本地 Full Access 自动交接,远程/降档
-    // 仍 fail closed，且自动交接不伪装成人工永久授权。
-    expect(callDesc).toContain("Full Access(bypassPermissions)");
-    expect(callDesc).toContain("远程会话仍向用户弹确认卡");
+    // PR #6731 权限协议：原生审核读取真实注册的工具/参数说明；不能因
+    // “之后还有确认卡”的错误承诺放行。旧测试只覆盖 Full Access 总说明，
+    // 漏掉 Auto 与四个参数入口。unit：核验模型可见协议，而非扫描源码。
+    const callTool = server._registeredTools.ghost_call;
+    for (const description of [callDesc, ...['grant_only', 'attachments', 'dir', 'save_dir'].map(
+      (name) => callTool?.inputSchema?.shape?.[name]?.description ?? '',
+    )]) {
+      expect(description).toContain("Auto 沿用实际审批负责人，可能直接交接");
+      expect(description).toContain("Ask 需用户确认");
+      expect(description).toContain("不保证另有确认卡");
+    }
     expect(callDesc).toContain("不写人工永久授权");
   });
 
@@ -2111,6 +2156,8 @@ describe('Cindy market MCP transport', () => {
       await client.callTool({ name: 'ghost_info', arguments: { ghost_id: 'art' } });
       await client.callTool({ name: 'connect_account', arguments: { kind: 'plugin', id: 'art' } });
       expect(connectAccount).toHaveBeenCalledWith({ kind: 'plugin', id: 'art', reauthorize: undefined }, expect.any(AbortSignal));
+      await client.callTool({ name: 'connect_account', arguments: { kind: 'plugin', id: 'art', namespace: null } });
+      expect(connectAccount).toHaveBeenCalledWith({ kind: 'plugin', id: 'art', namespace: null, reauthorize: undefined }, expect.any(AbortSignal));
       expect(callGhostTool).not.toHaveBeenCalled();
       // Host authorization continuation retries the original work through the same gateway.
       await client.callTool({ name: 'ghost_call', arguments: { ghost_id: 'art', tool: 'gen_image', args: {} } });

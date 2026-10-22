@@ -11,6 +11,11 @@ vi.mock('../registry', () => ({
   },
 }));
 
+vi.mock('../customizationScanHost', async () => {
+  const { buildSkillList } = await import('../skillListProjection');
+  return { projectSkillList: vi.fn(async (input) => buildSkillList(input)) };
+});
+
 import {
   isExistingSkillPathGranted,
   listSkillFolderChildren,
@@ -304,6 +309,7 @@ describe('scanAllSkills', () => {
     expect(result.skills).toHaveLength(2);
     expect(result.skills.find((skill) => skill.builtIn)).toMatchObject({
       name: 'cindy-skill-creator',
+      scope: 'global',
       description: 'Cindy copy',
       builtIn: true,
       canUninstall: false,
@@ -312,6 +318,7 @@ describe('scanAllSkills', () => {
     });
     expect(result.skills.find((skill) => !skill.builtIn)).toMatchObject({
       description: 'User copy',
+      scope: 'global',
       canUninstall: true,
     });
   });

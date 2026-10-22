@@ -68,16 +68,23 @@ vi.mock("../useAutoUnlockSettings", () => ({
     };
   },
 }));
-vi.mock("../useLockOnExitPreference", () => ({
-  useRemoteDesktopPreference: () => [false, vi.fn(), true],
-  useLockOnExitPreference: () => [
-    fixture.lockOnExit,
-    (value: boolean) => {
-      fixture.lockOnExit = value;
-    },
-    true,
-  ],
-}));
+vi.mock("../useLockOnExitPreference", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../useLockOnExitPreference")>();
+  return {
+    useRemoteDesktopPreference: () => [false, vi.fn(), true],
+    useLockOnExitPreference: (deviceId: string) =>
+      fixture.lockPreferenceFromStorage
+        ? actual.useLockOnExitPreference(deviceId)
+        : [
+            fixture.lockOnExit,
+            (value: boolean) => {
+              fixture.lockOnExit = value;
+            },
+            true,
+          ],
+  };
+});
 vi.mock("../usePictureInPicturePreference", () => ({
   usePictureInPicturePreference: () => {
     const [enabled, setEnabled] = useState(fixture.pipEnabled);
@@ -106,6 +113,7 @@ const fixture = vi.hoisted(() => ({
   securityBusy: false,
   themeMode: "light",
   lockOnExit: false,
+  lockPreferenceFromStorage: false,
   lockSupported: true,
   alert: vi.fn(),
   resetUnlockAttempt: vi.fn(),
@@ -417,6 +425,7 @@ beforeEach(async () => {
   fixture.maybeUnlock.mockReset().mockResolvedValue(undefined);
   fixture.themeMode = "light";
   fixture.lockOnExit = false;
+  fixture.lockPreferenceFromStorage = false;
   fixture.lockSupported = true;
   fixture.views = {};
   fixture.keyboardListeners = {};
@@ -661,7 +670,7 @@ describe("remote desktop controls", () => {
     return { ...callbacks, render };
   };
   it.each(["unsupported", "no-frame", "control-busy", "settings-busy"])(
-    "ends a detached native lease when PiP admission is refused: %s",
+    "settles detached native PiP admission without stranding the lease: %s",
     async (reason) => {
       fixture.nativeMedia = true;
       fixture.pipEnabled = true;
@@ -728,6 +737,15 @@ describe("remote desktop controls", () => {
         expect(finish).toBeDefined();
       }
       await act(async () => render(false));
+      if (reason === "control-busy") {
+        expect(onEnded).not.toHaveBeenCalled();
+        expect(requests().filter((r) => r.op === "presentation")).toHaveLength(0);
+        await act(async () => finish?.());
+        await nativePresentation("presentation", { active: true });
+        expect(requests().filter((r) => r.op === "presentation" && r.enabled)).toHaveLength(1);
+        expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
+        return;
+      }
       expect(onEnded).toHaveBeenCalledOnce();
       expect(requests().filter((r) => r.op === "stop")).toHaveLength(1);
       expect(requests().find((r) => r.op === "stop")).toMatchObject({
@@ -1017,6 +1035,25 @@ describe("remote desktop controls", () => {
     expect(button("viewOnly").getAttribute("aria-selected")).toBe("false");
     expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
   });
+  // Unit regression: portal/view-only hosts still need to leave the host's
+  // background video mode. Existing fullscreen tests only used canControl:true.
+  it("clears host background viewing immediately on a view-only fullscreen return", async () => {
+    fixture.canControl = false;
+    fixture.hostPlatform = "linux";
+    await retainedViewer();
+    expect(
+      requests().filter((r) => r.op === "presentation" && r.enabled),
+    ).toHaveLength(1);
+    await nativePresentation("presentation", { active: false });
+    const foregroundRequests = () =>
+      requests().filter((r) => r.op === "presentation" && !r.enabled);
+    // No heartbeat advance: returning fullscreen must clear background mode.
+    expect(foregroundRequests()).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(9000));
+    expect(foregroundRequests()).toHaveLength(1);
+    expect(requests().filter((r) => r.op === "control")).toHaveLength(0);
+    expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
+  });
   it("does not select view-only or label the viewer as view-only during actual PiP", async () => {
     await retainedViewer();
     expect(host.textContent).not.toContain("remoteDesktop.viewOnly");
@@ -1028,6 +1065,130 @@ describe("remote desktop controls", () => {
     await nativePresentation("presentation", { active: false });
     expect(button("viewOnly").getAttribute("aria-selected")).toBe("true");
     expect(visibleInputHint()).toBe("remoteDesktop.viewOnlyHint");
+  });
+  // Regression: a failed fullscreen restore consumed the PiP flags, and later
+  // host-false heartbeats never retried. Exercise the real screen with an
+  // in-memory transport (unit); existing PiP tests only covered a granted restore.
+  it.each([
+    "INVOKE_TIMEOUT",
+    "DESKTOP_INPUT_BUSY",
+    "DESKTOP_INPUT_UNAVAILABLE",
+    "refused",
+  ])(
+    "recovers fullscreen input on the existing heartbeat after %s",
+    async (failure) => {
+      await retainedViewer();
+      const original = fixture.invoke.getMockImplementation()!;
+      let attempts = 0;
+      fixture.invoke.mockImplementation((...args) => {
+        const req = args[2][0];
+        if (req.op === "heartbeat")
+          return Promise.resolve({ controlling: attempts > 1 });
+        if (req.op === "control" && req.enabled && ++attempts === 1)
+          return failure === "refused"
+            ? Promise.resolve({ controlling: false })
+            : Promise.reject(new Error(failure));
+        return original(...args);
+      });
+      await nativePresentation("presentation", { active: false });
+      expect(attempts).toBe(1);
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(attempts).toBe(2);
+      expect(
+        sent()
+          .filter((m) => m.type === "control")
+          .at(-1),
+      ).toEqual({
+        type: "control",
+        enabled: true,
+      });
+      expect(requests().filter((r) => r.op === "start")).toHaveLength(1);
+      expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
+    },
+  );
+  it("does not recover input in PiP, but recovers in fullscreen without overriding view only", async () => {
+    await retainedViewer();
+    const original = fixture.invoke.getMockImplementation()!;
+    fixture.invoke.mockImplementation((...args) =>
+      args[2][0].op === "heartbeat"
+        ? Promise.resolve({ controlling: false })
+        : original(...args),
+    );
+    const controls = () =>
+      requests().filter((r) => r.op === "control" && r.enabled).length;
+    const before = controls();
+    await act(async () => vi.advanceTimersByTimeAsync(6000));
+    expect(controls()).toBe(before);
+    act(() => button("operations").click());
+    await act(async () => button("viewOnly").click());
+    await nativePresentation("presentation", { active: false });
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(controls()).toBeGreaterThan(before);
+    expect(button("viewOnly").getAttribute("aria-selected")).toBe("true");
+    expect(
+      sent()
+        .filter((m) => m.type === "control")
+        .at(-1)?.enabled,
+    ).toBe(false);
+  });
+  it.each(["DESKTOP_STOPPED", "DESKTOP_ACCESSIBILITY_PERMISSION"])(
+    "respects a terminal host refusal during fullscreen recovery: %s",
+    async (code) => {
+      await retainedViewer();
+      const original = fixture.invoke.getMockImplementation()!;
+      fixture.invoke.mockImplementation((...args) =>
+        args[2][0].op === "control"
+          ? Promise.reject(new Error(code))
+          : original(...args),
+      );
+      await nativePresentation("presentation", { active: false });
+      const attempts = requests().filter((r) => r.op === "control").length;
+      await act(async () => vi.advanceTimersByTimeAsync(30_000));
+      expect(requests().filter((r) => r.op === "control")).toHaveLength(
+        attempts,
+      );
+      expect(requests().filter((r) => r.op === "start")).toHaveLength(1);
+    },
+  );
+  it("serializes heartbeat recovery with a new Home transition and ignores its late reply after exit", async () => {
+    await retainedViewer();
+    const original = fixture.invoke.getMockImplementation()!;
+    let attempts = 0;
+    let finish!: (value: unknown) => void;
+    fixture.invoke.mockImplementation((...args) => {
+      const req = args[2][0];
+      if (req.op === "heartbeat")
+        return Promise.resolve({ controlling: false });
+      if (req.op === "control" && req.enabled) {
+        if (++attempts === 1)
+          return Promise.reject(new Error("INVOKE_TIMEOUT"));
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }
+      return original(...args);
+    });
+    await nativePresentation("presentation", { active: false });
+    await act(async () => vi.advanceTimersByTimeAsync(9000));
+    expect(attempts).toBe(2);
+    const grants = () =>
+      requests().filter((r) => r.op === "presentation" && r.enabled).length;
+    const before = grants();
+    await act(async () => {
+      AppState.currentState = "inactive";
+      fixture.appState!("inactive");
+    });
+    await nativePresentation("presentation", { active: true });
+    expect(grants()).toBe(before);
+    act(() => button("operations").click());
+    await act(async () => button("disconnect").click());
+    const messages = sent().length;
+    await act(async () => finish({ controlling: true }));
+    expect(grants()).toBe(before);
+    expect(sent().slice(messages)).not.toContainEqual({
+      type: "control",
+      enabled: true,
+    });
   });
   it("waits for actual PiP before navigating back and keeps the connection mounted", async () => {
     const viewer = await retainedViewer();
@@ -1226,14 +1387,22 @@ describe("remote desktop controls", () => {
       expect(button("viewOnly").getAttribute("aria-selected")).toBe("false");
     },
   );
-  it.each(["grant", "timeout"])(
-    "orders rapid Home entry after pending fullscreen restoration: %s",
-    async (outcome) => {
+  it.each([
+    { outcome: "grant", canControl: true },
+    { outcome: "timeout", canControl: true },
+    { outcome: "grant", canControl: false },
+    { outcome: "timeout", canControl: false },
+  ])(
+    "orders rapid Home entry after pending fullscreen restoration: $outcome, canControl=$canControl",
+    async ({ outcome, canControl }) => {
+      fixture.canControl = canControl;
       await retainedViewer();
       let finish!: (value: unknown) => void;
       const original = fixture.invoke.getMockImplementation()!;
       fixture.invoke.mockImplementation((...args) =>
-        args[2][0].op === "control" && args[2][0].enabled
+        (canControl
+          ? args[2][0].op === "control" && args[2][0].enabled
+          : args[2][0].op === "presentation" && !args[2][0].enabled)
           ? new Promise((resolve) => {
               finish = resolve;
             })
@@ -1260,6 +1429,43 @@ describe("remote desktop controls", () => {
       expect(requests().filter((r) => r.op === "stop")).toHaveLength(
         outcome === "grant" ? 0 : 1,
       );
+    },
+  );
+  it.each([true, false])(
+    "restores fullscreen mode after an overlapping sound change, canControl=%s",
+    async (canControl) => {
+      fixture.canControl = canControl;
+      fixture.systemAudio = true;
+      await retainedViewer();
+      const original = fixture.invoke.getMockImplementation()!;
+      let finish!: () => void;
+      fixture.invoke.mockImplementation((...args) =>
+        args[2][0].op === "presentation" && !args[2][0].enabled
+          ? new Promise((resolve) => {
+              finish = () => resolve({});
+            })
+          : original(...args),
+      );
+      act(() => button("operations").click());
+      await act(async () => button("sound").click());
+      const restores = () =>
+        requests().filter((r) =>
+          canControl
+            ? r.op === "control" && r.enabled
+            : r.op === "presentation" && !r.enabled,
+        ).length;
+      const before = restores();
+      await nativePresentation("presentation", { active: false });
+      expect(restores()).toBe(before);
+      await act(async () => finish());
+      // No timer advance: the settings completion resumes the deferred restore.
+      expect(restores()).toBe(before + 1);
+      expect(visibleInputHint()).toBe(
+        canControl
+          ? "remoteDesktop.touchHint"
+          : "remoteDesktop.controlUnavailableHint",
+      );
+      expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
     },
   );
   it("preserves authorized native media while fullscreen signaling reconnects", async () => {
@@ -1536,12 +1742,13 @@ describe("remote desktop controls", () => {
       const first = channelRequest().id;
       await viewer({ type: "channelRequestState", id: first, sent: true });
       await viewer({ type: "fallback", reason: "failed" });
-      // Control is free again right away and the next release uses the relay;
-      // the request the channel took is never sent twice.
-      await release();
-      expect(relayedControl().filter((r) => r.enabled === false)).toHaveLength(
-        1,
-      );
+      // The sent release has an unknown outcome. Reconcile before granting
+      // control, and never replay that release onto a different transport.
+      const original = fixture.invoke.getMockImplementation()!;
+      fixture.invoke.mockImplementation((...args) => args[2][0].op === "heartbeat"
+        ? Promise.resolve({ controlling: false }) : original(...args));
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(relayedControl()).toEqual([{ op: "control", lease: "lease", enabled: true }]);
       expect(channelRequest().id).toBe(first);
     });
 
@@ -1550,7 +1757,7 @@ describe("remote desktop controls", () => {
       await live();
       await release();
       expect(sent().some((m) => m.type === "channelRequest")).toBe(false);
-      expect(relayedControl()).toHaveLength(1);
+      expect(relayedControl().map((r) => r.enabled)).toEqual([false, true]);
     });
 
     it("prefers the native receiver on iOS and falls back to the WebView", async () => {
@@ -1584,6 +1791,7 @@ describe("remote desktop controls", () => {
         request: { op: "control", lease: "lease", enabled: false },
       });
       expect(sent().some((m) => m.type === "channelRequest")).toBe(false);
+      fixture.nativeRequest.mockResolvedValue(false);
       await act(async () =>
         fixture.nativeMessage!({
           nativeEvent: {
@@ -1597,10 +1805,8 @@ describe("remote desktop controls", () => {
           },
         }),
       );
-      fixture.nativeRequest.mockResolvedValue(false);
-      // Leaving view only asks the host again once it no longer controls.
-      await act(async () => button("viewOnly").click());
-      await act(async () => button("viewOnly").click());
+      // Reacquisition follows the acknowledged release immediately, and uses
+      // the WebView when native transport can no longer accept the request.
       expect(channelRequest()).toMatchObject({
         request: { op: "control", lease: "lease", enabled: true },
       });
@@ -1693,7 +1899,7 @@ describe("remote desktop controls", () => {
     await act(async () => vi.advanceTimersByTimeAsync(6000));
     expect(host.textContent).not.toContain("remoteDesktop.upgrade");
     expect(requests().filter((request) => request.op === "start")).toEqual([
-      { op: "start", displayId: "display" },
+      { op: "start", displayId: "display", lockOnExit: false },
     ]);
   });
   it("keeps the video when a fallback input is rejected because control was released", async () => {
@@ -1726,7 +1932,9 @@ describe("remote desktop controls", () => {
     fixture.invoke.mockImplementation((...args) =>
       args[2][0].op === "heartbeat"
         ? Promise.resolve({ controlling: false })
-        : original(...args),
+        : args[2][0].op === "control"
+          ? Promise.reject(new Error("DESKTOP_INPUT_UNAVAILABLE"))
+          : original(...args),
     );
     await act(async () => vi.advanceTimersByTimeAsync(3100));
     expect(
@@ -3107,10 +3315,107 @@ describe("remote desktop controls", () => {
       });
     },
   );
+  it.each([false, true])(
+    "waits for the saved lock policy before starting, enabled=%s",
+    async (enabled) => {
+      act(() => root.unmount());
+      fixture.lockPreferenceFromStorage = true;
+      let finish!: (value: string | null) => void;
+      const original = storage.getItem;
+      const read = vi.spyOn(storage, "getItem").mockImplementation((key) =>
+        key.includes(".lock-on-exit.")
+          ? new Promise<string | null>((resolve) => {
+              finish = resolve;
+            })
+          : original(key),
+      );
+      try {
+        root = createRoot(host);
+        await act(async () => root.render(<RemoteDesktopScreen />));
+        await act(async () =>
+          fixture.message!({ nativeEvent: { data: '{"type":"ready"}' } }),
+        );
+        expect(finish).toBeTypeOf("function");
+        expect(requests().filter((r) => r.op === "start")).toHaveLength(0);
+        await act(async () => finish(String(enabled)));
+        expect(requests().filter((r) => r.op === "start")).toEqual([
+          { op: "start", displayId: "display", lockOnExit: enabled },
+        ]);
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+  it.each([true, false])(
+    "syncs a changed lock policy immediately and retries after failure, enabled=%s",
+    async (enabled) => {
+      act(() => root.unmount());
+      fixture.lockPreferenceFromStorage = true;
+      const key = "cindy.mobile.remote-desktop.lock-on-exit.v1.computer";
+      storage.items.set(key, String(!enabled));
+      root = createRoot(host);
+      await act(async () => root.render(<RemoteDesktopScreen />));
+      await connect();
+      act(() => button("operations").click());
+      act(() => button("security").click());
+      let rejectSync!: (error: Error) => void;
+      const original = fixture.invoke.getMockImplementation()!;
+      fixture.invoke.mockImplementation((...args) =>
+        args[2][0].op === "heartbeat"
+          ? new Promise((_, reject) => {
+              rejectSync = reject;
+            })
+          : original(...args),
+      );
+      const toggle = host.querySelector(
+        '[data-testid="remoteDesktop.lockOnExit"]',
+      ) as HTMLButtonElement;
+      await act(async () => toggle.click());
+      // No timer advance: the first heartbeat must already carry the new value.
+      expect(requests().filter((r) => r.op === "heartbeat")).toEqual([
+        { op: "heartbeat", lease: "lease", lockOnExit: enabled },
+      ]);
+      expect(toggle.getAttribute("aria-checked")).toBe(String(enabled));
+      expect(storage.items.get(key)).toBe(String(enabled));
+      await act(async () => rejectSync(new Error("offline")));
+      expect(toggle.getAttribute("aria-checked")).toBe(String(enabled));
+      let finishRenewal!: (value: unknown) => void;
+      fixture.invoke.mockImplementation((...args) =>
+        args[2][0].op === "heartbeat"
+          ? new Promise((resolve) => {
+              finishRenewal = resolve;
+            })
+          : original(...args),
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(requests().filter((r) => r.op === "heartbeat")).toHaveLength(2);
+      expect(
+        requests().filter((r) => r.op === "heartbeat").at(-1),
+      ).toMatchObject({ lockOnExit: enabled });
+      await act(async () => button("disconnect").click());
+      expect(requests().filter((r) => r.op === "stop")).toEqual([
+        {
+          op: "stop",
+          lease: "lease",
+          ...(enabled ? { lockScreen: true } : {}),
+        },
+      ]);
+      await act(async () => finishRenewal({ controlling: true }));
+      expect(requests().filter((r) => r.op === "start")).toHaveLength(1);
+      expect(goBackGuarded).toHaveBeenCalledTimes(1);
+    },
+  );
   it("requests lock once on explicit exit, independent of automatic unlock", async () => {
     fixture.lockOnExit = true;
     await act(async () => root.render(<RemoteDesktopScreen />));
     await connect();
+    expect(requests().find((r) => r.op === "start")).toMatchObject({
+      lockOnExit: true,
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(
+      requests().filter((r) => r.op === "heartbeat").at(-1),
+    ).toMatchObject({ lockOnExit: true });
     await act(async () => button("back").click());
     expect(requests().filter((r) => r.op === "stop")).toEqual([
       { op: "stop", lease: "lease", lockScreen: true },
@@ -3981,6 +4286,7 @@ describe("remote desktop controls", () => {
     fixture.invoke.mockImplementation((...args) =>
       args[2][0].op === "frame"
         ? new Promise((resolve) =>
+            // real-wait: preserve the remote-frame timeout boundary used by the transport.
             setTimeout(() => resolve({ jpeg: "a".repeat(4000) }), 100),
           )
         : original(...args),
@@ -4072,6 +4378,7 @@ describe("remote desktop controls", () => {
     fixture.invoke.mockImplementation((...args) =>
       args[2][0].op === "heartbeat"
         ? new Promise((_resolve, reject) =>
+            // real-wait: exercise the transport heartbeat timeout boundary.
             setTimeout(
               () =>
                 reject(
@@ -4138,8 +4445,8 @@ describe("remote desktop controls", () => {
     await connect();
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
     expect(requests().filter((r) => r.op === "start")).toEqual([
-      { op: "start", displayId: "display" },
-      { op: "start", displayId: "display", resume: true },
+      { op: "start", displayId: "display", lockOnExit: false },
+      { op: "start", displayId: "display", resume: true, lockOnExit: false },
     ]);
     expect(button("connect")).not.toBeNull();
   });
@@ -4182,7 +4489,7 @@ describe("remote desktop controls", () => {
         requests()
           .filter((r) => r.op === "start")
           .at(-1),
-      ).toEqual({ op: "start", displayId: "second" });
+      ).toEqual({ op: "start", displayId: "second", lockOnExit: false });
       expect(host.textContent).not.toContain("remoteDesktop.upgrade");
       if (native)
         expect(
@@ -4243,6 +4550,7 @@ describe("remote desktop controls", () => {
       op: "start",
       displayId: "display",
       resume: true,
+      lockOnExit: false,
     });
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
     expect(requests().filter((r) => r.op === "start")).toHaveLength(2);
@@ -4253,7 +4561,7 @@ describe("remote desktop controls", () => {
       requests()
         .filter((r) => r.op === "start")
         .at(-1),
-    ).toEqual({ op: "start", displayId: "display" });
+    ).toEqual({ op: "start", displayId: "display", lockOnExit: false });
   });
   it("reloads a viewer that died while permissions were blocked", async () => {
     const original = fixture.invoke.getMockImplementation()!;
@@ -4318,8 +4626,11 @@ describe("remote desktop controls", () => {
     expect(host.textContent).not.toContain("remoteDesktop.reconnecting");
     expect(sent()).toContainEqual({ type: "control", enabled: false });
     act(() => button("operations").click());
-    expect(visibleInputHint()).toBe("remoteDesktop.controlUnavailableHint");
     expect(button("viewOnly").getAttribute("aria-selected")).toBe("false");
+    // Recovery is triggered by the rejection, without advancing a heartbeat.
+    expect(visibleInputHint()).toBe("remoteDesktop.touchHint");
+    // Recovery grants fresh control; it never replays the rejected click.
+    expect(requests().filter((r) => r.op === "input")).toHaveLength(1);
   });
   it("keeps control and the session when an input reply is lost", async () => {
     await connect();
@@ -4348,8 +4659,10 @@ describe("remote desktop controls", () => {
     expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
     expect(host.textContent).not.toContain("remoteDesktop.reconnecting");
   });
-  it("stops input without changing the user's view-only choice when host control is revoked", async () => {
+  it("restores the chosen input mode automatically when host control is revoked", async () => {
     await connect();
+    act(() => button("operations").click());
+    act(() => button("pointer").click());
     const original = fixture.invoke.getMockImplementation()!;
     fixture.invoke.mockImplementation((...args) =>
       args[2][0].op === "heartbeat"
@@ -4360,8 +4673,7 @@ describe("remote desktop controls", () => {
     expect(sent()).toContainEqual({ type: "control", enabled: false });
     expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
     expect(host.textContent).not.toContain("remoteDesktop.reconnecting");
-    act(() => button("operations").click());
-    expect(visibleInputHint()).toBe("remoteDesktop.controlUnavailableHint");
+    expect(visibleInputHint()).toBe("remoteDesktop.pointerHint");
     expect(button("viewOnly").getAttribute("aria-selected")).toBe("false");
   });
   it("releases a stalled input batch instead of rebuilding the session", async () => {
@@ -4384,6 +4696,9 @@ describe("remote desktop controls", () => {
     });
     expect(requests().filter((r) => r.op === "stop")).toHaveLength(0);
     expect(host.textContent).not.toContain("remoteDesktop.reconnecting");
+    expect(
+      requests().filter((r) => r.op === "control").map((r) => r.enabled),
+    ).toEqual([true, false, true]);
   });
   it.each(["resolve", "reject", "native fallback"])("isolates renewed control from an old input %s", async (outcome) => {
     if (outcome === "native fallback") fixture.nativeMedia = true;
@@ -4462,6 +4777,10 @@ describe("remote desktop controls", () => {
   });
   /** The host drops control (overflow release); the phone then enters view only. */
   const dropHostControl = async () => {
+    const original = fixture.invoke.getMockImplementation()!;
+    fixture.invoke.mockImplementation((...args) =>
+      args[2][0].op === "control" && args[2][0].enabled
+        ? Promise.resolve({ controlling: false }) : original(...args));
     await act(async () => {
       fixture.message!({
         nativeEvent: {
@@ -4471,6 +4790,7 @@ describe("remote desktop controls", () => {
     });
     act(() => button("operations").click());
     await act(async () => button("viewOnly").click());
+    fixture.invoke.mockImplementation(original);
   };
   it("finishes a timed-out overflow release before taking control again", async () => {
     await connect();
@@ -4700,6 +5020,46 @@ describe("remote desktop controls", () => {
       expect(sent()).toContainEqual({ type: "control", enabled: true });
       expect(button("keyboard").disabled).toBe(false);
     });
+    it.each(["touch", "pointer"])(
+      "keeps %s input after native playback preparation yields a render",
+      async (inputMode) => {
+        act(() => root.unmount());
+        storage.items.set("cindy.mobile.remote-desktop.input-mode.v1", inputMode);
+        fixture.nativeMedia = true;
+        root = createRoot(host);
+        await act(async () => root.render(<RemoteDesktopScreen />));
+        autoControl();
+        let resumePlayback!: () => void;
+        fixture.playback.mockImplementation((enabled) =>
+          enabled
+            ? new Promise<void>((resolve) => {
+                resumePlayback = resolve;
+              })
+            : Promise.resolve(),
+        );
+        await act(async () => {
+          fixture.message!({ nativeEvent: { data: '{"type":"ready"}' } });
+        });
+        expect(resumePlayback).toBeTypeOf("function");
+        expect(requests().find((request) => request.op === "start")).toMatchObject({
+          control: true,
+        });
+        // React has already published the granted input mode before init.
+        expect(sent().filter((message) => message.type === "mode").at(-1)).toEqual({
+          type: "mode", mode: inputMode,
+        });
+        await act(async () => resumePlayback());
+        const commands = sent();
+        const init = commands.findIndex((message) => message.type === "init");
+        expect(init).toBeGreaterThanOrEqual(0);
+        expect(
+          commands.slice(init).filter((message) => message.type === "mode").at(-1),
+        ).toEqual({ type: "mode", mode: inputMode });
+        expect(commands.slice(init)).toContainEqual({
+          type: "control", enabled: true,
+        });
+      },
+    );
     const viewerInput = (sequence: number, events: object[]) =>
       act(async () =>
         fixture.message!({
@@ -4814,6 +5174,7 @@ describe("remote desktop controls", () => {
       op: "start",
       displayId: "display",
       takeover: true,
+      lockOnExit: false,
     });
   });
   it('resends the upper-pane bounds whenever a folded viewer becomes ready', async () => {

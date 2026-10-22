@@ -26,7 +26,7 @@ export interface OrcaEnableTeamParams {
   label?: string;
   model?: string;
   effort?: OrcaWorkerEffort;
-  fast?: boolean;
+  fast?: boolean | 'ultrafast';
   /** 显式选定的模型来源;语义见 OrcaWorkerCreateParams.providerId。 */
   providerId?: string | null;
   delegateTask?: string;
@@ -34,6 +34,13 @@ export interface OrcaEnableTeamParams {
   deferDelegateTask?: boolean;
   /** 本次首个 Worker 权限；缺省读取 Worker 创建偏好。显式值同时更新后续默认。 */
   workerPermissionMode?: OrcaWorkerPermissionMode;
+  /** 首个 Worker 放到同账号另一台电脑运行；语义见 OrcaWorkerCreateParams.executionDeviceId。 */
+  executionDeviceId?: string;
+  /** 显式工作目录；本机可选项目，指定运行设备时为那台电脑上的路径。 */
+  workingDir?: string;
+  worktree?: OrcaWorkerCreateParams['worktree'];
+  /** 首个 Worker 的 Agent 所在位置(远程供应商)；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
+  agentDeviceId?: string | null;
 }
 
 /** MCP start_team 只建立 lead team，不创建 worker；worker 后续由 create_worker 添加。 */
@@ -154,6 +161,14 @@ function normalizeEnableParams(params: OrcaEnableTeamParams): OrcaWorkerCreatePa
     fast: params.fast,
     providerId: params.providerId,
     initialTask: delegateTask,
+    ...(params.executionDeviceId
+      ? {
+          executionDeviceId: params.executionDeviceId,
+        }
+      : {}),
+    ...(params.workingDir !== undefined ? { workingDir: params.workingDir } : {}),
+    ...(params.worktree ? { worktree: params.worktree } : {}),
+    ...(params.agentDeviceId !== undefined ? { agentDeviceId: params.agentDeviceId } : {}),
   };
 }
 
@@ -336,8 +351,9 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   async function activateLeadTeam(params: {
     leadSessionId: string;
     teamId: string;
-  }): Promise<void> {
+  }, assertCurrent: () => Promise<void>): Promise<void> {
     await deps.setSessionOrcaRole(params.leadSessionId, 'lead');
+    await assertCurrent();
     deps.clearKnownNonOrcaSession(params.leadSessionId);
     await deps.setLeadVendorOptions({
       leadSessionId: params.leadSessionId,
@@ -356,7 +372,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     await assertAdmission();
     if (existing) {
       try {
-        await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: existing.id });
+        await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: existing.id }, assertAdmission);
         await assertAdmission();
       } catch (err) {
         return internalFailure(err);
@@ -368,7 +384,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     initializingTeamIds.add(team.id);
     try {
       await assertAdmission();
-      await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: team.id });
+      await activateLeadTeam({ leadSessionId: params.leadSessionId, teamId: team.id }, assertAdmission);
       await assertAdmission();
     } catch (err) {
       return failCreatedTeamOnly({ teamId: team.id, leadSessionId: params.leadSessionId, err });
@@ -461,10 +477,13 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
       if (normalized.initialTask && !params.deferDelegateTask) {
         dispatchResult = await dispatchInitialTask({
           workerSessionId: created.workerSessionId,
-          message: buildUiAssignmentInitialTask({
-            leadSessionId: params.leadSessionId,
-            initialTask: normalized.initialTask,
-          }),
+          // 远端 Worker 没有读取 Lead 历史的 Worker 桥，只发任务原文。
+          message: created.executionDeviceId
+            ? normalized.initialTask
+            : buildUiAssignmentInitialTask({
+                leadSessionId: params.leadSessionId,
+                initialTask: normalized.initialTask,
+              }),
           context: `enable_collab_mode/${created.workerSessionId}/delegate_task`,
         }, assertCreatedCurrent);
       } else {

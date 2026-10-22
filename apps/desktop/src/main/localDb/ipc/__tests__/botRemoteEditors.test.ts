@@ -37,6 +37,7 @@ function fixture() {
   const deps: BotRemoteEditorDeps = {
     owner: () => owner, assertOwner: captured => { if (captured !== owner) throw Error('OWNER_CHANGED'); },
     read: vi.fn(async () => settings), update: vi.fn(async () => { source.currentVersion++; }),
+    modelDefaults: vi.fn(async () => []),
     create: vi.fn(async () => {}), avatar: vi.fn(async () => {}),
     skills: vi.fn(async () => [skill]), skill: vi.fn(async () => skill), saveSkill: vi.fn(async (_bot, value) => { skill = value; }),
     removeSkill: vi.fn(async () => {}), capabilities: vi.fn(async () => catalog), memory,
@@ -52,6 +53,17 @@ function fixture() {
   return { resource, get, context, send, entries, deps, settings, catalog, memories, teammateWrites, changeSkill: () => { skill = { ...skill, body: '在电脑上修改后的正文。' }; }, owner: (next: string) => { owner = next; } };
 }
 describe('portable teammate editors', () => {
+  it('accepts one explicit creation model without changing the default or losing intent identity', async () => {
+    const f = fixture();
+    const route = { harness: 'pi', model: 'available', providerId: 'provider', effort: '', fastMode: false };
+    const input = { name: 'Nova', avatarImageBase64: 'aGVsbG8=', requestId: 'model-intent-12345678', modelChain: JSON.stringify([route]) };
+    await f.send(await f.resource('create'), input);
+    expect(f.deps.create).toHaveBeenCalledWith(expect.objectContaining({ capabilities: { modelChainOverride: [route] } }));
+    expect(f.deps.update).not.toHaveBeenCalled();
+    await expect(f.send(await f.resource('create'), { ...input, modelChain: '[]' })).rejects.toThrow();
+    await expect(f.send(await f.resource('create'), { ...input, modelChain: JSON.stringify([route, route]) })).rejects.toThrow();
+  });
+
   it('keeps the same durable create identity across a lost ACK, but separates paired controllers and owners', async () => {
     const f = fixture(); const input = { name: '小助手', avatarImageBase64: 'aGVsbG8=', requestId: 'same-intent-12345678' };
     await f.send(await f.resource('create'), input); await f.send(await f.resource('create'), input);
@@ -204,4 +216,29 @@ describe('portable teammate memory pages', () => {
     vi.mocked(f.deps.memory.read).mockImplementationOnce(async () => { f.owner('b'); return { ...f.memories.get('user_coffee.md')! }; });
     await expect(f.resource('settings:bot-a/memory/user_coffee')).rejects.toThrow('OWNER_CHANGED');
   });
+});
+
+// Existing opaque grants must bind follow-up consent to this owner, computer and current choice.
+it('keeps follow-up off until chosen and rejects an invitation made stale by another explicit choice', async () => {
+  const f = fixture();
+  let choice = { schedulerBotId: null as string | null, isCustomized: false, defaults: { schedulerBotId: null } };
+  f.deps.followUp = { get: vi.fn(async () => choice), set: vi.fn(async id => {
+    choice = { ...choice, isCustomized: true, schedulerBotId: id }; return choice;
+  }) };
+  const read = () => f.resource('settings:bot-a/follow-up');
+  const invitation = await read();
+  expect((invitation.blocks![0].data as any).invitationAvailable).toBe(true);
+  expect(f.deps.followUp.set).not.toHaveBeenCalled();
+  await f.send(invitation, {}, 1);
+  expect(choice).toMatchObject({ schedulerBotId: null, isCustomized: true });
+  expect((await read()).blocks![0].data).toMatchObject({ invitationAvailable: false });
+  await expect(f.send(invitation, { enabled: true })).rejects.toThrow();
+  await f.send(await read(), { enabled: true });
+  expect(choice.schedulerBotId).toBe('bot-a');
+  const enabled = await read();
+  expect(enabled.actions![0].confirmation).toBeUndefined();
+  await f.send(enabled, { enabled: false });
+  expect(choice.schedulerBotId).toBeNull();
+  const stale = await read(); f.owner('b');
+  await expect(f.send(stale, { enabled: true })).rejects.toThrow();
 });

@@ -34,6 +34,7 @@ import {
 } from "../shared/sensitive-credential-paths.js";
 import { projectPiPackageCommandDiagnostic, projectPiManagedCommandFailure } from "../base-agent.js";
 import { shellInputRedirectionParserSource } from "../shared/shell-input-redirections.js";
+import { CINDY_SUBAGENT_TOOL_NAME } from "./cindy-subagent-source.js";
 
 const SHELL_INPUT_REDIRECTION_PARSER_SOURCE = shellInputRedirectionParserSource();
 const CREDENTIAL_WORD_BOUNDARY = '\u0001';
@@ -79,7 +80,7 @@ import * as piCodingAgent from '@earendil-works/pi-coding-agent';
 
 // 设备托管(CINDY_PI_HOSTED)：Pi 在本机运行，任务、项目文件与命令在同账号另一台电脑上。
 // 文件与命令工具改走本机隧道上的执行器；工具与提示里的路径都是那台电脑的真实工作目录。
-type CindyHostedConfig = { url: string; token: string; cwd: string; platform: string; shell: string; mirrorRoot: string };
+type CindyHostedConfig = { url: string; token: string; cwd: string; platform: string; shell: string; mirrorRoot: string; guest: boolean };
 const CINDY_HOSTED: CindyHostedConfig | null = (() => {
   try {
     const raw = process.env.CINDY_PI_HOSTED;
@@ -93,11 +94,35 @@ const CINDY_HOSTED: CindyHostedConfig | null = (() => {
       platform: typeof value.platform === 'string' ? value.platform : '',
       shell: typeof value.shell === 'string' ? value.shell : '',
       mirrorRoot: typeof value.mirrorRoot === 'string' ? value.mirrorRoot : '',
+      // 受邀者(供应商分享的另一个账号)的会话。
+      guest: value.guest === true,
     };
   } catch {
     return null;
   }
 })();
+
+/**
+ * 受邀者会话的工具门：只放行 Cindy 扩展注册的工具。Pi 进程以本机用户的身份在本机运行，Pi 自带而
+ * Cindy 没有替换的工具(如 powershell、codemode)、Pi 内置 MCP 的工具，以及 Pi 升级新增的工具都会
+ * 直接作用于本机，一律拦下。返回的 pi 记下经它注册的工具名，其余 API 原样转发。
+ */
+function createCindyGuestToolGate(api: any, seed: string[]): { pi: any; blocks: (toolName: unknown) => boolean } {
+  const names = new Set<string>(seed);
+  const pi = new Proxy(api, {
+    get(target: any, prop: string | symbol) {
+      const value = Reflect.get(target, prop, target);
+      if (prop === 'registerTool' && typeof value === 'function') {
+        return (tool: any, ...rest: unknown[]) => {
+          if (tool && typeof tool.name === 'string') names.add(tool.name);
+          return value.call(target, tool, ...rest);
+        };
+      }
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { pi, blocks: (toolName: unknown) => typeof toolName !== 'string' || !names.has(toolName) };
+}
 
 const PERMISSION_TITLE = 'cindy:permission';
 const TURN_CHANGE_CAPTURE_TITLE = 'cindy:turn-change-capture';
@@ -2558,6 +2583,8 @@ const CINDY_DIRECT_BOT_TOOLS = new Set([
   CINDY_CREATE_TEAMMATE_TOOL,
   'routine_list', 'routine_save', 'routine_sources',
   'routine_history', 'routine_delete', 'routine_run_now', 'schedule_notify_current_run', 'schedule_set_pre_run_hook',
+  // Follow-up loop: a woken companion reads the short task summary first, then its glance.
+  'get_task_digest', 'get_workbench', 'read_workbench_task', 'continue_workbench_task',
 ]);
 
 interface ConnectedMcpTool {
@@ -3011,6 +3038,28 @@ class CindyMcpGateway {
     return this.disclosedSchemas.has(mcpGatewayKey(call.tool.serverName, call.tool.name));
   }
 
+  /**
+   * 该工具是否采用 Cindy 通用 call_tool 的 {name, args} 信封。
+   *
+   * 判据必须用**形状指纹**而不是名字或单个字段：Pi 也接入用户自接的第三方 MCP，它们可能
+   * 同样叫 call_tool（但信封是 {tool_name, arguments}），也可能有个叫 name 的必填字符串
+   * 参数却是文件名（配 content 直传）。所以要求三个信号同时成立 —— properties.name 是
+   * string、properties.args 是 object、且 required 含 name —— 才认定是 Cindy 的信封。
+   * 少一个都不套用这条自纠错说明，让调用按检视到的 schema 原样走到服务端，由服务端报它
+   * 真实的参数要求：普通工具缺字段时不能被引向错误的嵌套形状。
+   */
+  private requiresNameEnvelope(tool: ConnectedMcpTool): boolean {
+    const schema = tool.inputSchema as {
+      required?: unknown;
+      properties?: Record<string, { type?: unknown } | undefined>;
+    } | null;
+    const properties = schema?.properties;
+    return Array.isArray(schema?.required)
+      && schema.required.includes('name')
+      && properties?.name?.type === 'string'
+      && properties?.args?.type === 'object';
+  }
+
   list(serverName?: string): Array<{ server: string; name: string; description: string }> {
     return [...this.tools.values()]
       .filter((tool) => !this.botMemoryFacadeEnabled || tool.serverName !== 'cindy_memory')
@@ -3156,6 +3205,20 @@ class CindyMcpGateway {
   }> {
     const resolved = this.resolveCall(params);
     if (!resolved) throw new Error(this.unknownCallMessage(params));
+    if (this.requiresNameEnvelope(resolved.tool) && typeof recordInput(resolved.args).name !== 'string') {
+      // 该工具的 schema 自己声明了必填的字符串 name(即 Cindy 通用 call_tool 的 {name, args}
+      // 信封), 而模型没给 —— 多半是把内层字段平铺进来了。工具名无法猜, 但正确形态可以一次
+      // 说清, 让模型自纠错, 也省掉一轮往返。判定只看 schema 而不是工具名: 用户自接的第三方
+      // MCP 里可能也有叫 call_tool 的工具, 信封形状不同, 不能按名字连坐。
+      const keys = Object.keys(recordInput(resolved.args));
+      throw new Error(
+        resolved.tool.serverName + '/' + resolved.tool.name +
+        ' expects the envelope {"name": <tool>, "args": {<its parameters>}}; ' +
+        (keys.length > 0
+          ? 'you passed ' + JSON.stringify(keys) + ' directly — put the selected tool name in args.name.'
+          : 'args.name is required.'),
+      );
+    }
     if (!this.isSchemaDisclosed(resolved)) {
       throw new Error(
         'Inspect this tool before execution by calling cindy_mcp_list_tools with ' +
@@ -3425,7 +3488,16 @@ class CindyMcpGateway {
         { name: 'routine_run_now', description: 'Run one of your saved routines now when requested.' },
       ].map((tool) => ({ ...tool, properties: { id: { type: 'string', minLength: 1 } }, required: ['id'] })),
     ];
-    for (const tool of routineTools) {
+    // Follow-up tools use the same direct facade so a routine-woken companion does not need
+    // nested discovery before reading the event's task.
+    const taskIdProperty = { type: 'string', minLength: 1, description: 'Local task ID, or deviceId::sessionId for another computer.' };
+    const followUpTools = [
+      { name: 'get_task_digest', description: 'Read a short (<=2KB) summary of one task: phase, elapsed minutes, last ask and answer, pending question, error, route, suggested next route, PR status and queue. Read this before deciding how to follow up.', properties: { session_id: taskIdProperty }, required: ['session_id'] },
+      { name: 'get_workbench', description: 'Your workbench at a glance: tasks waiting for the owner and tasks in progress, with the last sweep time.', properties: {}, required: [] },
+      { name: 'read_workbench_task', description: 'Read the recent bounded transcript of a task you follow (all tasks if you follow every task).', properties: { task_id: taskIdProperty }, required: ['task_id'] },
+      { name: 'continue_workbench_task', description: 'Send one message into a task you follow so it continues. Use get_task_digest first; never resend after DELIVERY_UNKNOWN without checking.', properties: { task_id: taskIdProperty, message: { type: 'string', minLength: 1, maxLength: 4000 } }, required: ['task_id', 'message'] },
+    ];
+    for (const tool of [...routineTools, ...followUpTools]) {
       if (!this.resolveDirectHelperTool(tool.name, {})) continue;
       pi.registerTool({
         name: tool.name,
@@ -3487,19 +3559,31 @@ class CindyMcpGateway {
       label: 'Call a Cindy MCP tool',
       description:
         'Invoke a tool after inspecting its exact input schema with cindy_mcp_list_tools. Pass the exact server and ' +
-        'tool names plus args as an object. If the server rejects the arguments, the error repeats that schema.',
+        'tool names, then args exactly as that tool\'s inspected schema. When the selected tool is itself a generic ' +
+        'call_tool, its arguments are the envelope {"name": <tool>, "args": {<its parameters>}}; omit the inner args ' +
+        'for tools that take no parameters. If the server rejects the arguments, the error repeats that schema.',
       parameters: {
         type: 'object',
         properties: {
           server: { type: 'string', description: 'Exact server name from cindy_mcp_list_tools.' },
           tool: { type: 'string', description: 'Exact tool name from cindy_mcp_list_tools.' },
+          // args 就是「所选工具自己的参数」, 形状随工具而变, 所以 additionalProperties 保持 true
+          // (直调形态合法)。但通用 call_tool 的信封 {name, args} 在此之前对模型完全不可见 ——
+          // 模型看不到 name/args, 就把内层字段直接塞进 args 并丢掉 name (2026-10-15 实测
+          // MiniMax-M3.1 / deepseek-v4.1-flash / step-5 三会话均复现), 服务端只报 expected
+          // string/name。故把信封形状作为**无类型约束**的提示属性挂出来: 声明结构给模型看,
+          // 不约束任何值, 避免误伤参数名恰好叫 args 或 name 的直调工具。
           args: {
             type: 'object',
-            description: 'Arguments for the selected tool as a JSON object.',
+            description: 'Arguments for the selected tool as a JSON object; omit when the selected tool takes none.',
+            properties: {
+              name: { description: 'Generic call_tool envelope only: the target tool name.' },
+              args: { description: 'Generic call_tool envelope only: the target tool parameters.' },
+            },
             additionalProperties: true,
           },
         },
-        required: ['server', 'tool', 'args'],
+        required: ['server', 'tool'],
         additionalProperties: false,
       },
       execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => this.executeCall(params, signal),
@@ -3864,7 +3948,21 @@ function registerCindyHostedTools(
   });
 }
 
-export default async function cindyBridge(pi: any) {
+export default async function cindyBridge(piApi: any) {
+  // 受邀者：只放行 Cindy 扩展注册的工具(本扩展经下面的 pi 注册的，加上子代理扩展的工具)。
+  const guestToolGate = CINDY_HOSTED && CINDY_HOSTED.guest
+    ? createCindyGuestToolGate(piApi, [${JSON.stringify(CINDY_SUBAGENT_TOOL_NAME)}])
+    : null;
+  const pi = guestToolGate ? guestToolGate.pi : piApi;
+  if (guestToolGate) {
+    // 被拦的工具也不交给模型(例如 Pi 自带的 codemode、tool_search)。
+    pi.on('before_agent_start', () => {
+      if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return;
+      const active: string[] = pi.getActiveTools();
+      const allowed = active.filter((name) => !guestToolGate.blocks(name));
+      if (allowed.length !== active.length) pi.setActiveTools(allowed);
+    });
+  }
   installTextOnlyTurnPolicy(pi);
   const nativeProviderAdapters = await registerCindyNativeProviderAdapters(pi);
   const initialNativeSettings = typeof pi.getSettings === 'function' ? undefined
@@ -3917,9 +4015,22 @@ export default async function cindyBridge(pi: any) {
     },
   });
   if (!currentPermissionState().reviewOnly) registerCindyQuestionTool(pi);
+  function learnedCachePayload(payload, model) {
+    if (model?.api !== 'openai-completions' || !payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    try {
+      const file = path.join(process.env.PI_CODING_AGENT_DIR || '', 'pi-cache-compatibility.json');
+      if (!process.env.PI_CODING_AGENT_DIR || statSync(file).size > 256 * 1024) return payload;
+      const rules = JSON.parse(readFileSync(file, 'utf8'));
+      if (!Array.isArray(rules) || !rules.some((rule) => rule.provider === model.provider && rule.id === model.id && rule.baseUrl === model.baseUrl)) return payload;
+      const next = { ...payload };
+      delete next.prompt_cache_key;
+      delete next.prompt_cache_retention;
+      return next;
+    } catch { return payload; }
+  }
   pi.on('before_provider_request', async (event, ctx) => {
     const payload = astraResponsesPayload(event.payload, ctx.model) ?? event.payload;
-    return (await nativeFastPayload(payload, ctx.model, ctx)) ?? payload;
+    return learnedCachePayload((await nativeFastPayload(payload, ctx.model, ctx)) ?? payload, ctx.model);
   });
   const mcpGateway = new CindyMcpGateway();
   // bash 隔离 home 经 resolveBashPackageHome 解析(首次加载读删 + 防篡改 stash,
@@ -4059,8 +4170,9 @@ export default async function cindyBridge(pi: any) {
 
   // Pi v0.84.3 Windows powershell is the same spawn family as bash. Overlay only
   // on Windows and when the runtime exports the factory so 0.83.0 sessions keep loading.
+  // 受邀者会话不注册：它在本机执行，设备托管没有对应的执行器；Pi 自带的 powershell 由工具门拦下。
   const createPowerShellTool = (piCodingAgent as { createPowerShellTool?: typeof createBashTool }).createPowerShellTool;
-  if (process.platform === 'win32' && typeof createPowerShellTool === 'function') {
+  if (process.platform === 'win32' && typeof createPowerShellTool === 'function' && !guestToolGate) {
     const powershellTool = createPowerShellTool(process.cwd(), {
       exposeSessionEnvironment: false,
       spawnHook: ({ command, cwd, env }) => ({
@@ -4243,6 +4355,9 @@ export default async function cindyBridge(pi: any) {
 
   // ── 权限门 ────────────────────────────────────────────────────────────────
   pi.on('tool_call', async (event: any, ctx: any) => {
+    if (guestToolGate && guestToolGate.blocks(event.toolName)) {
+      return { block: true, reason: 'This tool is not available in a task that uses a shared provider.' };
+    }
     if (toolsDisabledForTurn()) {
       return { block: true, reason: 'Tools are disabled for this host-owned text-only turn.' };
     }

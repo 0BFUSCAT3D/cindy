@@ -33,6 +33,7 @@ const families: ReadonlyArray<readonly [RegExp, string]> = [
   [/^mimo-.*-flash(?:-|$)/, 'everydayWork'],
   [/^mimo-/, 'reasoning'],
   [/^muse-spark-/, 'everydayWork'],
+  [/^muse-wonder-/, 'complexWork'],
   [/^grok-(?:build|code)-/, 'coding'],
   [/^grok-/, 'reasoning'],
 ];
@@ -43,6 +44,10 @@ const categoryKeys: Readonly<Record<string, string>> = {
 };
 
 export function modelDescriptionKey(model: { id: string; group?: string; mode?: string }): string | undefined {
+  if ((model.id === 'auto' || model.id === 'xd/auto') &&
+      (model.mode === undefined || model.mode === 'chat' || model.mode === 'responses')) {
+    return 'automaticRouting';
+  }
   // A vendor grouping like "gpt" must not turn GPT Image into a coding model.
   const inferredCategory = classifyModel({ id: model.id, mode: model.mode });
   const category = model.mode !== undefined || Object.hasOwn(categoryKeys, inferredCategory)
@@ -53,7 +58,7 @@ export function modelDescriptionKey(model: { id: string; group?: string; mode?: 
   let id = model.id.toLowerCase().split('/').at(-1) ?? '';
   // Registry internal XD IDs have flattened route prefixes. Wire IDs usually don't.
   if (model.id.startsWith('xd/')) {
-    id = id.replace(/^(?:codex|z-ai|moonshotai|deepseek|tencent)-(?=gpt-|glm-|kimi-|deepseek-|hy\d)/, '');
+    id = id.replace(/^(?:codex|z-ai|moonshotai|deepseek|tencent|meta)-(?=gpt-|glm-|kimi-|deepseek-|hy\d|muse-)/, '');
   }
   return families.find(([pattern]) => pattern.test(id))?.[1];
 }
