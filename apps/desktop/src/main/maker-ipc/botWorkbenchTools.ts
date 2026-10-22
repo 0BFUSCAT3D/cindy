@@ -8,7 +8,7 @@
  *   跨电脑 send_to_session 的同一条通路),由调用方注入;停止走通用的 stop_session_turn。
  * 2026-10-17 放弃「项目」:不再按目录发现候选、不再现算项目素材、不再导入本机外部会话。
  */
-import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { hasTaskActionAuthorization, assertTaskActionCurrent } from './taskActionAuthorization.js';
 
 import { getDbClient } from '../localDb/client/current.js';
@@ -135,13 +135,33 @@ export async function readBotResponsibilityScope(
   };
 }
 
+/** Creation attribution is not workbench authorization: channel/group conversations can create tasks too. */
+async function resolveBotTaskCreator(callerSessionId: string): Promise<string | null> {
+  const [row] = await getDbClient().drizzle
+    .select({ botId: botSessionLinks.botId })
+    .from(botSessionLinks)
+    .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
+    .innerJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
+    .where(and(
+      eq(botSessionLinks.sessionId, callerSessionId),
+      inArray(botSessionLinks.role, ['canonical', 'thread', 'channel', 'group']),
+      isNull(botSessionLinks.archivedAt),
+      eq(sessions.source, 'bot'),
+      eq(sessions.status, 'active'),
+      isNull(sessions.remoteHostId),
+      eq(botProfiles.status, 'active'),
+    ))
+    .limit(1);
+  return row?.botId ?? null;
+}
+
 /** Capture the creator before a generic create-mode handoff crosses async boundaries. */
 export async function captureBotCreatedTaskResponsibility(callerSessionId?: string) {
   if (!callerSessionId || isAppSessionBoundaryPending()) return null;
   const scope = activeOwnerScopeKey();
   const root = ownerScopedUserDataPath();
-  const caller = await resolveWorkbenchCaller(callerSessionId);
-  if (!caller.ok) return null;
+  const botId = await resolveBotTaskCreator(callerSessionId);
+  if (!botId) return null;
   const assertCurrent = () => {
     if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) throw new Error('OWNER_SCOPE_CHANGED');
   };
@@ -151,8 +171,8 @@ export async function captureBotCreatedTaskResponsibility(callerSessionId?: stri
     const target = await readWorkbenchTarget(sessionId);
     if (!target || target.status !== 'active' || target.botLinked || target.remoteHostId || target.orcaRole === 'worker') return;
     assertCurrent();
-    await setTaskResponsibility(root, caller.botId, sessionId, true, assertCurrent);
-    broadcastBotWorkbenchChanged(caller.botId);
+    await setTaskResponsibility(root, botId, sessionId, true, assertCurrent);
+    broadcastBotWorkbenchChanged(botId);
   };
 }
 
