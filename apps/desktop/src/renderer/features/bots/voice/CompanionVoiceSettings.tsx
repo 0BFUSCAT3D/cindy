@@ -16,6 +16,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { makerChatStore, EMPTY_LIGHT_STATE } from '@/lib/makerChatStore';
+import { providerDisplayName } from '@/lib/providerDisplayName';
 import type {
   SpeechProtocol,
   VoiceConversationModel,
@@ -340,7 +341,15 @@ export function CompanionVoiceSettings(props: Props) {
                 value={selectedModel ? voiceModelKey(selectedModel) : ''}
                 options={pickerModels.map((model) => ({
                   value: voiceModelKey(model),
-                  label: [model.name, model.providerName].filter(Boolean).join(' · '),
+                  label: [
+                    model.name,
+                    providerDisplayName(
+                      { id: model.providerId ?? 'xd', name: model.providerName ?? '' },
+                      t,
+                    ),
+                  ]
+                    .filter(Boolean)
+                    .join(' · '),
                 }))}
                 onValueChange={chooseModel}
                 disabled={loading || !ready || saving || pickerModels.length === 0}
@@ -386,6 +395,8 @@ export function CompanionVoiceSettings(props: Props) {
                   { value: 'openai', label: t('bots.voiceMode.protocolOpenai') },
                   { value: 'elevenlabs', label: 'ElevenLabs' },
                   { value: 'minimax', label: 'MiniMax' },
+                  { value: 'qwen-tts', label: 'Qwen3-TTS (HTTP)' },
+                  { value: 'dashscope-tts', label: 'Qwen-Audio / CosyVoice (HTTP)' },
                 ]}
                 disabled={!ready || saving}
                 onValueChange={(value) => {

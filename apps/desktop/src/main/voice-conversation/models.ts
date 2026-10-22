@@ -1,4 +1,9 @@
 import {
+  isQwenHttpModel,
+  isQwenAudioHttpModel,
+  isCosyVoiceHttpModel,
+} from '../../shared/speechProtocols.js';
+import {
   BUNDLED_CATALOG,
   isLoopbackProviderUrl,
   isModelVisible,
@@ -15,7 +20,7 @@ import {
   type SpeechModelSelection,
   type VoiceConversationSelection,
 } from '../../shared/voiceConversation.js';
-import { referenceSpeechVoices } from '../../shared/speechVoices.js';
+import { gatewayReferenceSpeechVoices, referenceSpeechVoices } from '../../shared/speechVoices.js';
 import type { SpeechConnection } from './speech.js';
 
 export type SpeechCatalogDeps = {
@@ -63,8 +68,9 @@ function nativeProtocol(catalog: Catalog, providerId: string, model: ProviderMed
     : resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, providerId, model.id);
 }
 
-/** Official endpoints fix the adapter, independently of model names or catalog metadata. */
-function endpointProtocol(base: URL): SpeechProtocol | null {
+/** The provider endpoint owns the adapter. Alibaba exposes different APIs on its
+ * platform: also require a documented model/region pair, never a brand prefix. */
+function endpointProtocol(base: URL, modelId: string): SpeechProtocol | null {
   if (base.protocol !== 'https:' || base.port) return null;
   if (base.hostname === 'api.elevenlabs.io') return 'elevenlabs';
   if (
@@ -78,6 +84,20 @@ function endpointProtocol(base: URL): SpeechProtocol | null {
   )
     return 'minimax';
   if (base.hostname === 'api.openai.com') return 'openai';
+  if (
+    ['dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'].includes(base.hostname) &&
+    isQwenHttpModel(modelId)
+  )
+    return 'qwen-tts';
+  const workspace = /^[a-z0-9-]+\.(cn-beijing|ap-southeast-1)\.maas\.aliyuncs\.com$/.exec(
+    base.hostname,
+  );
+  if (
+    workspace &&
+    (isQwenAudioHttpModel(modelId) ||
+      (workspace[1] === 'cn-beijing' && isCosyVoiceHttpModel(modelId)))
+  )
+    return 'dashscope-tts';
   return null;
 }
 
@@ -109,7 +129,12 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
         )
           continue;
         const connection = deps.gatewayConnection();
-        if (!connection.apiKey || !apiBase(connection.baseUrl)) continue;
+        const base = apiBase(connection.baseUrl);
+        if (!connection.apiKey || !base) continue;
+        // Server credentials carry the deployment base shared by chat/media.
+        // Version only Gateway TTS; BYOK keeps its explicitly configured API prefix.
+        if (!base.pathname.endsWith('/v1'))
+          base.pathname = `${base.pathname.replace(/\/+$/, '')}/v1`;
         result.push({
           model: {
             id: media.id,
@@ -118,10 +143,13 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
             providerId: 'xd',
             providerName: provider.name,
             protocol: 'openai',
-            defaultVoice: referenceSpeechVoices(media.id, 'openai')[0] ?? '',
+            defaultVoice:
+              gatewayReferenceSpeechVoices(media.id)[0]?.id ??
+              referenceSpeechVoices(media.id, 'openai')[0] ??
+              '',
           },
           connection: {
-            baseUrl: connection.baseUrl,
+            baseUrl: base.toString().replace(/\/+$/, ''),
             protocol: 'openai',
             headers: { authorization: `Bearer ${connection.apiKey}` },
           },
@@ -142,7 +170,7 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       const base = apiBase(model.route?.baseUrl ?? route.upstream);
       const ownerBase = apiBase(route.upstream);
       if (!base || !ownerBase || base.origin !== ownerBase.origin) continue;
-      const fixedProtocol = endpointProtocol(base);
+      const fixedProtocol = endpointProtocol(base, media.id);
       const detectedProtocol =
         fixedProtocol ?? (declared === 'openai-audio-speech' ? 'openai' : null);
       // A saved override cannot turn an official endpoint into another provider's API.
@@ -150,8 +178,10 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       const protocol = fixedProtocol ?? selection?.protocol ?? detectedProtocol;
       // Official native adapters use their documented origin endpoint. Compatible
       // OpenAI proxies keep the configured prefix (including a non-/v1 API base).
-      if (fixedProtocol && fixedProtocol !== 'openai') base.pathname = '/v1';
-      else if (!base.pathname || base.pathname === '/') base.pathname = '/v1';
+      const nativeBase =
+        protocol === 'qwen-tts' || protocol === 'dashscope-tts' ? '/api/v1' : '/v1';
+      if (fixedProtocol && fixedProtocol !== 'openai') base.pathname = nativeBase;
+      else if (!base.pathname || base.pathname === '/') base.pathname = nativeBase;
       const headers: Record<string, string> = {};
       for (const [name, value] of Object.entries(route.headerOverride ?? {})) {
         const lower = name.toLowerCase();
