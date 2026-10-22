@@ -4,6 +4,7 @@ type HostRecord = {
   options: { creationState: unknown; isCurrent(): boolean; revoke(sharedTaskId: string, memberId?: string): void;
     readSession(sessionId: string): Promise<{ id: string; source?: string | null } | null> };
   restore: ReturnType<typeof vi.fn>;
+  needsAuthorityRefresh: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   closeLocallyForBoundary: ReturnType<typeof vi.fn>;
 };
@@ -36,6 +37,7 @@ vi.mock('../sharedTaskDispatch.js', () => ({ setSharedTaskDispatchHost: state.di
 vi.mock('../sharedTaskHost.js', () => ({
   SharedTaskHost: class {
     restore = vi.fn(async () => undefined);
+    needsAuthorityRefresh = vi.fn(() => false);
     closeLocallyForBoundary = vi.fn(async () => ['sharedTask-a', 'sharedTask-b']);
     // The real Host disposes each existing grant through this callback.
     dispose = vi.fn(async () => { this.options.revoke('sharedTask-a'); });
@@ -54,7 +56,8 @@ import {
 } from '../sharedTaskRuntime';
 
 function start() {
-  const client = { hasServerCapability: () => true, getStatus: () => 'online', start: vi.fn(), stop: vi.fn(), revoke: vi.fn() };
+  const client = { hasServerCapability: () => true, getStatus: () => 'online', getConnectionEpoch: () => 1,
+    start: vi.fn(), stop: vi.fn(), revoke: vi.fn() };
   startSharedTaskRuntime({ client: client as never, revoke: client.revoke, changed: vi.fn() });
   return client;
 }
@@ -132,6 +135,36 @@ describe('shared runtime stable owner recommit', () => {
     expect(state.journalClose).toHaveBeenCalledOnce();
     await closeSharedTaskForTask('session', {});
     expect(state.journalClose).toHaveBeenCalledOnce();
+  });
+  // Every online Desktop runs this; idle hosts must not read the server each tick.
+  it('reads the server once per start or reconnect, then only while the host needs authority', async () => {
+    const relay = start();
+    const host = state.hosts[0];
+    const serverReads = () => host.restore.mock.calls.filter(([network]) => network).length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(serverReads()).toBe(1);
+    expect(host.restore).toHaveBeenCalledTimes(13);
+    host.needsAuthorityRefresh.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(serverReads()).toBe(3);
+    host.needsAuthorityRefresh.mockReturnValue(false);
+    // A reconnect that finished between ticks is never observed offline.
+    relay.getConnectionEpoch = () => 2;
+    host.restore.mockRejectedValueOnce(new Error('offline'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(serverReads()).toBe(4);
+    // A failed sync retries after the server interval, not on every local tick.
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(serverReads()).toBe(4);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(serverReads()).toBe(5);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(serverReads()).toBe(5);
+    // A clock set back an hour must not postpone the next needed read.
+    host.needsAuthorityRefresh.mockReturnValue(true);
+    vi.setSystemTime(Date.now() - 3_600_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(serverReads()).toBe(6);
   });
   it('reconciles profile-local terminal changes while relay is offline', async () => {
     const relay = start();

@@ -12,6 +12,7 @@ import { goBackGuarded } from '@/utils/backGuard';
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent } from '@/auth/authOwnerGeneration';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { useSharedTaskApi } from '@/device-link/useSharedTaskApi';
+import { notifySharedTaskMembershipChanged } from '@/device-link/sharedTaskMembershipSignal';
 import { filterVisibleSharedTasks } from '@/device-link/sharedTaskVisibility';
 import { sharedTaskErrorKey } from '@/device-link/sharedTaskCompatibility';
 import { isSharedTaskGone } from '@/device-link/sharedTaskAccessWatch';
@@ -230,6 +231,7 @@ export default function SharedSessionScreen() {
     const parsed = parseSharedTaskInvitation(input, DEVICE_LINK_API_BASE_URL);
     if (!parsed.ok) { setNotice(t(parsed.reason === 'different-server' ? 'sharedTask.invitationDifferentServer' : 'sharedTask.invalid')); return; }
     const joined = await api.join(parsed.invitation, sharedTaskAccountName(user?.name));
+    notifySharedTaskMembershipChanged();
     if (!current()) return;
     const detail = await api.get(joined.sharedTaskId);
     if (!current()) return;
@@ -292,6 +294,7 @@ export default function SharedSessionScreen() {
           failed.push(item);
         }
       }
+      if (closed.size) notifySharedTaskMembershipChanged();
       if (!current()) return;
       setOwned((value) => value.filter((item) => !closed.has(item.sharedTaskId)));
       const failedCount = failed.length;
@@ -299,6 +302,7 @@ export default function SharedSessionScreen() {
     }, true, { items: items.map((item) => item.title + ' · ' + deviceName(item.hostDeviceId)), note: t('sharedTask.closeAllScopeNote') });
   const leave = () => confirm(t('sharedTask.leaveTitle'), t('sharedTask.leaveBody'), t('sharedTask.leaveKeep'), t('sharedTask.leave'), async (current) => {
     await api.leave(guestId!);
+    notifySharedTaskMembershipChanged();
     if (!current()) return;
     if (guestTarget) { link.closeLink(guestTarget); remoteSessionStore.removeDevice(guestTarget); }
     router.replace('/devices');
@@ -306,6 +310,7 @@ export default function SharedSessionScreen() {
   const taskCard = <View style={styles.taskRow}><FileText size={iconSize.md} color={colors.textTertiary} /><View style={styles.grow}><Text style={styles.taskTitle}>{title}</Text><Text style={styles.metadata}>{task?.deviceLinkDeviceName ?? t('sharedTask.runsOnHostDevice')}</Text></View></View>;
   const leaveListed = (item: SharedTaskListItem) => confirm(t('sharedTask.leaveTitle'), t('sharedTask.leaveBody'), t('sharedTask.leaveKeep'), t('sharedTask.leave'), async current => {
     await api.leave(item.sharedTaskId);
+    notifySharedTaskMembershipChanged();
     if (!current()) return;
     const target = sharedTaskHostPeer(item.sharedTaskId, item.hostDeviceId);
     link.closeLink(target); remoteSessionStore.removeDevice(target);
