@@ -124,6 +124,7 @@ import {
   isActiveInputOwnerAuthored,
   isSessionInTurn,
   wireSessionToIpc,
+  releaseSessionBindingsForOwnerBoundary,
 } from '../maker-ipc/register.js';
 import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { readProviderGroupBinding } from '../provider-group/bindings.js';
@@ -3296,6 +3297,11 @@ export async function preflightBotRuntimeResources(
  * 重置 Maker 单例（切账号 / 测试用）。
  */
 export function resetMaker(): void {
+  // A disconnected remote handle may reject detach without emitting closed.
+  // Retire its Desktop input/turn observers before dropping the owning Maker;
+  // otherwise a relogin inherits the old dispatch-busy and abort boundaries.
+  // Callers keep this Maker when PI teardown is unconfirmed, preserving supervision.
+  releaseSessionBindingsForOwnerBoundary();
   remoteWorkerBridge = null;
   disposeRemoteAgentHost();
   _sessionArchiveSync?.stop();
