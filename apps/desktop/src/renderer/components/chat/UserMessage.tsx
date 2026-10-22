@@ -915,6 +915,9 @@ export function UserMessage({
   // 与提问导航条预览共用同一实现,规则见 userMessageDisplayText.ts;上面已
   // 解析过的 Orca 结果传入复用,渲染热路径不重复 JSON.parse(Copilot review)。
   const displayContent = resolveUserDisplayText({ content, hookSource, automationOrigin }, orcaCommunication);
+  // Only the bubble is decoded. Draft restoration must retain the canonical envelope.
+  const forwardedDraftBody = !hookSource && !orcaCommunication
+    && automationOrigin?.kind === 'session' && displayContent !== content ? content : undefined;
   const groupContext = useMemo(
     () => resolveHookGroupContext({ content, hookSource }),
     [content, hookSource],
@@ -954,13 +957,16 @@ export function UserMessage({
   );
   // 意识指令等既有语义判断只看用户自己的正文,不把引用原文误识别成命令。
   const bubbleBody = useMemo(() => joinChatQuoteTextSegments(quoteSegments), [quoteSegments]);
+  const draftBody = forwardedDraftBody ?? bubbleBody;
   const inlineQuoteCount = quoteSegments.reduce(
     (count, segment) => count + (segment.kind === 'quote' ? 1 : 0),
     0,
   );
   const quoteDraftDocument = useMemo(
-    () => (quotesEncoded ? quoteSegmentsToComposerDocument(quoteSegments) : undefined),
-    [quoteSegments, quotesEncoded],
+    () => forwardedDraftBody !== undefined
+      ? textToTiptapDoc(forwardedDraftBody)
+      : quotesEncoded ? quoteSegmentsToComposerDocument(quoteSegments) : undefined,
+    [forwardedDraftBody, quoteSegments, quotesEncoded],
   );
   // $指令 开头且确认命中意识时,气泡正文渲剥掉指令 token 的余文($token 的
   // 语义由气泡内的召唤标注行承载,正文不重复报幕);普通消息里的 $word 不受
@@ -1063,8 +1069,8 @@ export function UserMessage({
   const copyBody = quotesEncoded ? stripChatQuoteMarkerLines(projectedSource) : projectedSource;
   const visibleSource = quotesEncoded ? stripChatQuoteMarkerLines(ghostBody) : ghostBody;
   // Display decoding must not change an unedited resend's wire bytes.
-  const editSubmitText = automationOrigin?.kind === 'session' && displayContent !== content
-    ? content
+  const editSubmitText = forwardedDraftBody !== undefined
+    ? forwardedDraftBody
     : quotesEncoded
     ? ghostBody
     : copyBody !== visibleSource
@@ -1111,7 +1117,7 @@ export function UserMessage({
     sessionId,
     messageClientId,
     forkBlocked: shouldBlockUserFork(sessionRunning, delivery),
-    draftText: quotesEncoded ? undefined : bubbleBody,
+    draftText: quotesEncoded ? undefined : draftBody,
     draftDocument: quoteDraftDocument,
   });
   const handleDelete = useDeleteMessage({
@@ -1154,7 +1160,7 @@ export function UserMessage({
       // Rewind soft-deletes this row server-side (rewind_at set), so on next
       // reload it disappears from the list; the composer keeps the draft so
       // the user can edit and re-send.
-      const draftText = quoteDraftDocument ?? textToTiptapDoc(bubbleBody);
+      const draftText = quoteDraftDocument ?? textToTiptapDoc(draftBody);
       const probe = rewindSourceProbeRef.current;
       rewindSourceProbeRef.current = null;
       const draftImages = probe && probe.images === images ? probe.imagesForDraft() : images;
@@ -1177,7 +1183,7 @@ export function UserMessage({
       // Force chat store to re-fetch messages (server filters rewind_at).
       makerChatStore.reloadMessages(sessionId);
     },
-    [sessionId, bubbleBody, quoteDraftDocument, images, files],
+    [sessionId, draftBody, quoteDraftDocument, images, files],
   );
 
   // 第一条 user 消息没有可作为锚点的 prior assistant uuid → 后端必抛

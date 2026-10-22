@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 export default {
   name: 'forwarded-request', entry: './forwarded-request-fixture.tsx', viewport: { width: 760, height: 860 },
   real: 'BotDirectMessageView, BotDirectMessageCard, UserMessage and production forwarded-request formatter/display projection',
-  notCovered: 'IPC transport, persistence and native mobile; historical API bodies are supplied by the fixture',
+  notCovered: 'IPC transport, persistence, history reload and native mobile; historical API bodies are supplied by the fixture',
   stubs: {
+    'src/renderer/lib/makerChatStore': { partial: "import { makerChatStore as real } from './src/renderer/lib/makerChatStore'; export const makerChatStore = { ...real, reloadMessages: () => {} };" },
     'src/renderer/voice-input/workletUrl': 'export const getVoiceInputWorkletUrl = () => "";',
     'src/renderer/features/bots/botStore': 'const profiles = []; export const useBotProfiles = () => profiles;',
     'src/renderer/components/chat/GhostToolCard': 'export const CARD_EXPAND_TOGGLE_EVENT = "xdt-card-expand-toggle"; export const GhostToolCard = () => null; export const MailCardEditor = () => null;',
@@ -11,10 +12,12 @@ export default {
   cases: {
     default: { about: 'Historical private-thread body: paragraphs, lists, code and attribution' },
     task: { about: 'Attributed task input uses the same readable projection' },
+    fork: { about: 'Fork restores the original forwarded envelope in the new draft' },
+    rewind: { about: 'Rewind restores the original forwarded envelope in the current draft' },
     card: { about: 'Expand a historical private-thread card' },
   },
   async check(page, ui) {
-    if (ui.case === 'task') {
+    if (['task', 'fork', 'rewind'].includes(ui.case)) {
       const expand = page.getByRole('button', { name: await ui.t('chat.userMessage.expandLongMessage'), exact: true });
       if (await expand.count()) await expand.click();
     }
@@ -24,5 +27,17 @@ export default {
     assert.ok(text.includes('第一段：消息现在正常换行。'));
     assert.ok(text.includes('const newline = "\\n";'));
     assert.ok(!text.includes('第一段：消息现在正常换行。\\n\\n'));
+    if (ui.case === 'fork' || ui.case === 'rewind') {
+      const original = await page.locator('[data-ui-original]').textContent();
+      const actionKey = ui.case === 'fork' ? 'chat.messageActionBar.fork' : 'chat.messageActionBar.rewind';
+      if (ui.case === 'rewind') await page.getByRole('button', { name: await ui.t('chat.messageActionBar.moreActions'), exact: true }).click();
+      await page.getByRole(ui.case === 'rewind' ? 'menuitem' : 'button', { name: await ui.t(actionKey), exact: true }).click();
+      const confirmKey = ui.case === 'fork' ? 'chat.messageActionBar.forkConfirm' : 'chat.rewind.dialog.confirm';
+      await page.getByRole('button', { name: await ui.t(confirmKey), exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('[data-ui-draft]')?.textContent);
+      const draft = JSON.parse(await page.locator('[data-ui-draft]').textContent());
+      assert.equal(draft.content[0].content[0].text, original);
+      await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
+    }
   },
 };

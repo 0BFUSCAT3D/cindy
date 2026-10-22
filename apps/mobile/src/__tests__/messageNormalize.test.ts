@@ -1703,5 +1703,8 @@ it('projects forwarded machine history without rewriting human text or persisted
   ]);
   expect(rows[0].body).toContain('第一段\n\n保留 `\\n`');
   expect(rows[0].source.content).toBe(content);
+  expect(rows[0].draftBody).toBe(content);
+  expect(composerDocumentFromSerializedMessage(rows[0].draftBody!).nodes).toEqual([{ type: 'text', text: content }]);
   expect(rows[1].body).toBe(content);
+  expect(rows[1].draftBody).toBeUndefined();
 });

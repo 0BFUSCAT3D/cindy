@@ -91,6 +91,8 @@ export interface NormalizedRemoteMessage {
   role: RemoteMessageRole;
   label: string;
   body: string;
+  /** Original forwarded envelope for fork / rewind; display-only decoding must not change drafts. */
+  draftBody?: string;
   rawError?: string;
   errorSummaryKey?: string;
   /** user 消息正文包含产品引用编码；驱动跨端 marker/legacy 解析。 */
@@ -596,6 +598,7 @@ export function normalizeRemoteMessages(
       role: message.role,
       label: message.role,
       body,
+      ...(message.role === 'user' && !hookSource && body !== rawBody ? { draftBody: rawBody } : {}),
       attachments: userContent?.attachments,
       ...(userContent?.quotesEncoded === true ? { quotesEncoded: true } : {}),
       sessionReferences: userContent?.sessionReferences,

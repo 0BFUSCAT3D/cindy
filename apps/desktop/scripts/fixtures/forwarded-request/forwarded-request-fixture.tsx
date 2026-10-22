@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from 'react';
+import { getDraft, subscribeDraft } from '../../../src/renderer/lib/composerDraftStore';
 import { Route, Routes } from 'react-router-dom';
 import { AppFrame, mountPage, subscription } from '../../ui-page/harness';
 import { BotDirectMessageView } from '../../../src/renderer/features/bots/BotDirectMessageView';
@@ -8,6 +10,11 @@ import type { SupportedLocale } from '../../../src/shared/locale';
 
 const original = '请检查消息中的换行，保留代码和路径。';
 const supplement = '第一段：消息现在正常换行。\n\n1. 保留段落与列表\n2. 保留有意书写的转义\n\n```js\nconst newline = "\\n";\nconst path = "C:\\\\new\\\\test";\n```\n\n最后一段：只检查，不发布。';
+
+function DraftProbe({ sessionId, content }: { sessionId: string; content: string }) {
+  const draft = useSyncExternalStore(callback => subscribeDraft(sessionId, callback), () => getDraft(sessionId));
+  return <><pre hidden data-ui-draft>{JSON.stringify(draft?.text)}</pre><pre hidden data-ui-original>{content}</pre></>;
+}
 
 void mountPage({
   route: '/bots/bot-a/direct/thread',
@@ -21,13 +28,17 @@ void mountPage({
           recipientBotId: 'bot-b', recipientBotName: 'Filo', content, createdAt: 1792629000000 }],
       } }),
       onBotDirectMessageChanged: subscription('directMessageChanged'),
-      getCapabilities: async () => ({ availableModels: [], effortLevels: [], permissionModes: [], fork: { supported: false }, rewind: { supported: false } }),
+      getCapabilities: async () => ({ availableModels: [], effortLevels: [], permissionModes: [], fork: { supported: true }, rewind: { supported: true } }),
+      fork: async () => ({ id: 'forwarded-fork', updatedAt: new Date().toISOString() }),
+      rewindPreview: async () => ({ canRewind: true, filesChanged: [], conversationOnly: true }),
+      rewindCommit: async () => ({ id: 'forwarded-task', updatedAt: new Date().toISOString() }),
     } };
   },
   render: (ctx) => {
     const content = formatForwardedRequest({ userText: original }, supplement, ctx.locale as SupportedLocale);
-    if (ctx.case === 'task') return <div className="p-4" data-ui-page-subject>
-      <UserMessage workingDir="" content={content} automationOrigin={{ kind: 'session', senderSessionId: 'sender', senderBotName: 'Cindy', senderBotId: 'bot-a' }} />
+    if (['task', 'fork', 'rewind'].includes(ctx.case)) return <div className="p-4" data-ui-page-subject>
+      <DraftProbe sessionId={ctx.case === 'fork' ? 'forwarded-fork' : 'forwarded-task'} content={content} />
+      <UserMessage workingDir="" sessionId="forwarded-task" messageClientId="forwarded-user-2" agentKind="cc" content={content} automationOrigin={{ kind: 'session', senderSessionId: 'sender', senderBotName: 'Cindy', senderBotId: 'bot-a' }} />
     </div>;
     if (ctx.case === 'card') return <div className="p-4" data-ui-page-subject>
       <BotDirectMessageCard data={{ v: 1, threadId: 'thread', viewerBotId: 'bot-a', peerBotId: 'bot-b', peerBotName: 'Filo', direction: 'sent', sequence: 1, preview: content.slice(0, 400) }} />
