@@ -623,6 +623,7 @@ import { requestUtilityText } from '../utility-model/oneShotCandidates.js';
 import { validateExistingLocalProjectDirectory } from '../mcp-integrations/createProject.js';
 import { gitExec } from '../worktree/gitExec.js';
 import { BOT_GROUP_CLIENT_ID_PREFIX } from '../../shared/botGroupChat.js';
+import { syncBotLanePermission, syncBotLinkedLanePermissions } from './botPermissionSync.js';
 import { ensureBotGroupLaneSession } from '../localDb/ipc/bots.js';
 import { restartBotRuntime } from './botRuntimeRestart.js';
 import { registerBotLifecycleHandlers } from './botLifecycleService.js';
@@ -11450,6 +11451,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           message: error instanceof Error ? error.message : String(error),
         };
       }
+      await syncBotLanePermission(targetSessionId);
       await reconcileBotModelRoute(targetSessionId);
       const compactedRuntime = maker.getSession(targetSessionId);
       if (compactedRuntime) await refreshBotCapabilityEpochBeforeSend(compactedRuntime);
@@ -12530,26 +12532,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     closeLanes: async (sessionIds) => {
       await Promise.all(sessionIds.map((id) => maker.closeSession(id).catch(() => undefined)));
     },
-    syncLanePermission: async (laneSessionId, botId) => {
-      const [canonical] = await getDbClient().drizzle
-        .select({ mode: sessions.permissionMode })
-        .from(botSessionLinks)
-        .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
-        .where(and(eq(botSessionLinks.botId, botId), eq(botSessionLinks.role, 'canonical'), isNull(botSessionLinks.archivedAt)))
-        .limit(1);
-      const mode = canonical?.mode;
-      if (!mode || !isSessionPermissionMode(mode)) return;
-      const live = maker.getSession(laneSessionId);
-      if (live) {
-        if (live.stablePermissionModeState?.mode !== mode) {
-          await live.setPermissionMode(mode as 'ask' | 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions');
-        }
-        return;
-      }
-      if (!(await persistPermissionModeWithoutRuntime(laneSessionId, mode))) {
-        throw new Error('Group lane permission could not be persisted');
-      }
-    },
+    syncLanePermission: async (laneSessionId) => syncBotLanePermission(laneSessionId),
     hasPendingInteraction: (sessionId) => hasPendingAgentInteractionForSession(sessionId),
     decidePlan: createBotGroupPlanDecider((prompt, opts) => requestUtilityText(maker, prompt, opts)),
     workDir: botGroupWorkDir,
@@ -17533,6 +17516,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       throwIpcError('PRECONDITION_FAILED', 'Cindy Make is still preparing this task');
     }
     await assertReviewExternalInputAllowed(sessionId);
+    await syncBotLanePermission(sessionId);
     await reconcileBotModelRoute(sessionId);
     const compactedRuntime = maker.getSession(sessionId);
     if (compactedRuntime) await refreshBotCapabilityEpochBeforeSend(compactedRuntime);
@@ -17601,6 +17585,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // TODO(im-bot-companion): IM turns do not yet get the desktop model-chain
     // fallback (botFallbackInputs / coordinator recovery); a failing primary
     // route surfaces as an IM error instead of moving to the next candidate.
+    await syncBotLanePermission(sessionId);
     await reconcileBotModelRoute(sessionId);
     const live = maker.getSession(sessionId);
     if (live) await refreshBotCapabilityEpochBeforeSend(live);
@@ -23554,6 +23539,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // 分享供应商的「本任务总是允许」随权限档变化失效；Agent 实例被回收时执行器收不到这次切换。
         if (row.permissionMode !== mode) forgetCredentialGrants(sessionId);
         broadcastSessionPatched(sessionId, { permissionMode: mode });
+        await syncBotLinkedLanePermissions(sessionId);
         if (remote) {
           const result = {};
           markRemoteSettingPersistedInsideHandler(result);

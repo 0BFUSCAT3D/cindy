@@ -56,6 +56,7 @@ export type DbTxName =
   | 'bots.archiveLifecycle'
   | 'bots.deleteProfile'
   | 'bots.prepareProfileDeletion'
+  | 'bots.reconcileLanePermission'
   | 'bots.persistSessionPermission'
   | 'bots.createGroupLane'
   | 'bots.createChannelLane'
@@ -1434,6 +1435,7 @@ export type DbTxArgsByName = {
   'bots.archiveLifecycle': BotsArchiveLifecycleArgs;
   'bots.deleteProfile': BotsDeleteProfileArgs;
   'bots.prepareProfileDeletion': { botId: string };
+  'bots.reconcileLanePermission': { sessionId: string };
   'bots.persistSessionPermission': { sessionId: string; mode: string };
   'bots.createGroupLane': BotGroupsCreateLaneArgs;
   'bots.createChannelLane': BotsCreateChannelLaneArgs;
@@ -1533,6 +1535,7 @@ export type DbTxResultByName = {
   'bots.archiveLifecycle': { sessions: number };
   'bots.deleteProfile': { sessionIds: string[]; status: 'archived' | 'deleted' };
   'bots.prepareProfileDeletion': undefined;
+  'bots.reconcileLanePermission': { mode: string | null; changed: boolean };
   'bots.persistSessionPermission': { updated: boolean };
   'bots.createGroupLane': BotGroupsCreateLaneResult;
   'bots.createChannelLane': BotGroupsCreateLaneResult;
