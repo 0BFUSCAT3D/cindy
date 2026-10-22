@@ -8,7 +8,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-vi.mock('@cindy/maker-core', () => ({ LOCAL_AGENT_CLIENT: Symbol('local-agent-client') }));
+vi.mock('@cindy/maker-core', () => ({
+  LOCAL_AGENT_CLIENT: Symbol('local-agent-client'),
+  assertSendDispatched: (result: { accepted: boolean }) => {
+    if (!result.accepted) throw new Error('not dispatched');
+  },
+}));
 import { openLocalAgentRuntime } from '../runtime.js';
 import type { AgentEvent } from '@cindy/maker-core';
 
@@ -27,7 +32,7 @@ function handle(id: string) {
   const ended = deferred();
   return {
     sdkSessionId: id,
-    send: vi.fn(async () => {}),
+    send: vi.fn(async () => ({ accepted: true })),
     steer: vi.fn(async () => {}),
     abort: vi.fn(async () => {}),
     setEffort: vi.fn(async () => {}),
@@ -171,5 +176,41 @@ describe('local client runtime lifecycle', () => {
     expect(late.close).toHaveBeenCalledTimes(1);
     expect(late.close).toHaveBeenCalledWith({ reason: 'account-boundary' });
     expect(late.send).not.toHaveBeenCalled();
+  });
+  it('rebuilds again when instructions change while a rebuild is still starting', async () => {
+    const f = await fixture(),
+      entered = deferred(),
+      held = deferred(),
+      second = handle('second'),
+      third = handle('third');
+    cleanups.push(() => second.close(), () => third.close());
+    f.maker.startLocalAgentSession
+      .mockImplementationOnce(async () => {
+        entered.resolve();
+        await held.promise;
+        return second;
+      })
+      .mockImplementationOnce(async () => third);
+    await f.runtime.call('instructions', { instructions: 'first update' });
+    const sending = f.runtime.call('send', message);
+    await entered.promise;
+    await f.runtime.call('instructions', { instructions: 'latest' });
+    held.resolve();
+    await sending;
+    second.getObservedCurrentTurnTerminal.mockReturnValue({ kind: 'done' });
+    second.onEvent.mock.calls[0][0]({ type: 'done', data: { status: 'completed' } });
+    await f.runtime.call('send', message);
+    expect(f.maker.startLocalAgentSession).toHaveBeenLastCalledWith(
+      'pi',
+      expect.objectContaining({ userPrompt: 'latest' }),
+    );
+    expect(third.send).toHaveBeenCalledTimes(1);
+  });
+  it('releases the execution when the engine declines a send before dispatch', async () => {
+    const f = await fixture();
+    f.first.send.mockResolvedValueOnce({ accepted: false });
+    await f.runtime.call('send', message);
+    await vi.waitFor(() => expect(f.runtime.call('send', message)).resolves.toEqual({}));
+    expect(f.first.send).toHaveBeenCalledTimes(2);
   });
 });

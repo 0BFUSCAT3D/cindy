@@ -224,6 +224,8 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       throw new LocalAgentError('GRANT_STORE_INVALID', '本机应用授权记录无法读取，原文件已保留。');
   }
   let persistence = Promise.resolve();
+  // A failed write must not let a revoked grant come back from disk after restart.
+  let unsaved = false;
   const persist = () => {
     const value = JSON.stringify({ version: 2, grants, bindings });
     const write = async () => {
@@ -236,9 +238,12 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       }
       atomicWriteFileSync(grantFile, value);
       legacyStore = undefined;
+      unsaved = false;
     };
     const result = persistence.then(write, write);
-    persistence = result.catch(() => {});
+    persistence = result.catch(() => {
+      unsaved = true;
+    });
     return result;
   };
   const pairs = new Map<string, Pair>();
@@ -380,7 +385,7 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
           '所选模型或供应商已不可用，请在 Cindy 中检查后重新选择。',
         );
       const cwd = text(p.cwd, 32768);
-      if (!path.isAbsolute(cwd) || !(await fs.stat(cwd)).isDirectory())
+      if (!path.isAbsolute(cwd) || !(await fs.stat(cwd).catch(() => undefined))?.isDirectory())
         throw new LocalAgentError('INVALID_WORKSPACE', '工作目录不存在或不是绝对路径。');
       const effort = text(p.effort, 64, true) || undefined;
       if (effort && !model.efforts.includes(effort))
@@ -831,6 +836,10 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
     throw new LocalAgentError('DISCOVERY_UNAVAILABLE', '未能保存本机应用连接信息。');
   }
   const sweep = setInterval(() => {
+    if (unsaved) {
+      unsaved = false;
+      void persist().catch(() => {});
+    }
     for (const [id, pair] of pairs)
       if (pair.expires < Date.now() || pair.scope !== deps.scope()) {
         pair.consent?.abort();
@@ -872,6 +881,7 @@ export async function createLocalAgentServer(deps: LocalAgentServerDeps) {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await persistence;
+      if (unsaved) await persist().catch(() => {});
       try {
         if (JSON.parse(await fs.readFile(discoveryFile, 'utf8')).instance === instanceId)
           await fs.rm(discoveryFile, { force: true });

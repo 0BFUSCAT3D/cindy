@@ -162,8 +162,10 @@ export async function openLocalAgentRuntime(
   let closed = false,
     busy = false,
     preparing = false,
-    dirtyInstructions = false,
     resumed = false;
+  // Instructions are read when a Session starts; only that applied version is clean.
+  let instructionsVersion = 0,
+    appliedInstructions = 0;
   let epoch = 0;
   const assertCurrent = (expected: number) => {
     if (closed) throw new LocalAgentError('SESSION_UNAVAILABLE', 'Cindy 会话已关闭。');
@@ -332,7 +334,7 @@ export async function openLocalAgentRuntime(
       }
       if (method === 'instructions') {
         instructions = typeof params.instructions === 'string' ? params.instructions : undefined;
-        dirtyInstructions = true;
+        instructionsVersion += 1;
         return {};
       }
       if (method !== 'send' && method !== 'steer')
@@ -358,12 +360,13 @@ export async function openLocalAgentRuntime(
       try {
         const content = await message(params);
         assertCurrent(current);
-        if (dirtyInstructions) {
+        if (appliedInstructions !== instructionsVersion) {
           const previous = handle;
           await previous.close();
           assertCurrent(current);
+          const applying = instructionsVersion;
           handle = await start(previous.sdkSessionId, current);
-          dirtyInstructions = false;
+          appliedInstructions = applying;
         }
         if (params.effort !== undefined)
           await handle.setEffort(params.effort as Parameters<Session['setEffort']>[0]);

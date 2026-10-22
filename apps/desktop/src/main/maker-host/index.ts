@@ -1790,9 +1790,15 @@ export function getMaker(): Maker {
         const restricted = { ...catalog, models: catalog.models.map(model => ({...model, apply_patch_tool_type: null, supports_search_tool: false})) };
         const directory = ownerScopedUserDataPath('local-agent', 'codex-catalogs');
         await fs.mkdir(directory, {recursive:true});
-        const target = path.join(directory, `host-tools-only-${createHash('sha256').update(JSON.stringify([modelId, contextWindow])).digest('hex')}.json`);
+        // Content-addressed: an existing identical file is reused, so Windows never has to
+        // replace a catalog another session may still hold or be publishing concurrently.
+        const content = JSON.stringify(restricted);
+        const target = path.join(directory, `host-tools-only-${createHash('sha256').update(content).digest('hex')}.json`);
+        const published = () => fs.readFile(target, 'utf8').then(existing => existing === content, () => false);
+        if (await published()) return target;
         const temporary = target + '.' + randomUUID() + '.tmp';
-        try { await fs.writeFile(temporary, JSON.stringify(restricted), {mode:0o600}); await fs.rename(temporary,target); }
+        try { await fs.writeFile(temporary, content, {mode:0o600}); await fs.rename(temporary,target); }
+        catch (error) { if (!(await published())) throw error; }
         finally { await fs.rm(temporary,{force:true}); }
         return target;
       },
