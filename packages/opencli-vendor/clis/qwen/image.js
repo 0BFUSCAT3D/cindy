@@ -1,3 +1,4 @@
+import { resolveRecipePath } from '@jackwener/opencli/cindy/host';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
@@ -104,7 +105,7 @@ cli({
     defaultFormat: 'plain',
     args: [
         { name: 'prompt', required: true, positional: true, help: 'Image prompt to send' },
-        { name: 'op', default: '~/Pictures/qianwen', help: 'Output directory' },
+        { name: 'op', default: './qianwen-images', help: 'Output directory' },
         { name: 'new', type: 'boolean', default: true, help: 'Start a new chat before generating (default: true)' },
         { name: 'sd', type: 'boolean', default: false, help: 'Skip download; only show the Qianwen link' },
         { name: 'timeout', type: 'int', default: 180, help: 'Max seconds to wait for the image response' },
@@ -113,7 +114,7 @@ cli({
     func: async (page, kwargs) => {
         const prompt = String(kwargs.prompt || '').trim();
         if (!prompt) throw new ArgumentError('prompt is required');
-        const outputDir = String(kwargs.op || '~/Pictures/qianwen').replace(/^~\//, `${os.homedir()}/`);
+        const outputDir = resolveRecipePath(String(kwargs.op || './qianwen-images').replace(/^~\//, `${os.homedir()}/`));
         const startFresh = normalizeBooleanFlag(kwargs.new, true);
         const skipDownload = normalizeBooleanFlag(kwargs.sd, false);
         const timeout = Number(kwargs.timeout ?? 180);

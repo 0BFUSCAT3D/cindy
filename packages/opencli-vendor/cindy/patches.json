@@ -2445,5 +2445,101 @@
     "before": "import * as fs from 'node:fs';",
     "after": "import { recipeOutputPath } from '@jackwener/opencli/cindy/host';\nimport * as fs from 'node:fs';",
     "count": 1
+  },
+  {
+    "file": "clis/gemini/image.js",
+    "before": "~/tmp/gemini-images",
+    "after": "./gemini-images",
+    "count": 1
+  },
+  {
+    "file": "clis/qwen/image.js",
+    "before": "~/Pictures/qianwen",
+    "after": "./qianwen-images",
+    "count": 2
+  },
+  {
+    "file": "clis/qwen/image.js",
+    "before": "import * as os from 'node:os';",
+    "after": "import { resolveRecipePath } from '@jackwener/opencli/cindy/host';\nimport * as os from 'node:os';",
+    "count": 1
+  },
+  {
+    "file": "clis/qwen/image.js",
+    "before": "const outputDir = String(kwargs.op || './qianwen-images').replace(/^~\\//, `${os.homedir()}/`);",
+    "after": "const outputDir = resolveRecipePath(String(kwargs.op || './qianwen-images').replace(/^~\\//, `${os.homedir()}/`));",
+    "count": 1
+  },
+  {
+    "file": "clis/instagram/download.js",
+    "before": "~/Downloads/Instagram",
+    "after": "./instagram-downloads",
+    "count": 1
+  },
+  {
+    "file": "clis/chatgpt/image.js",
+    "before": "default: ~/Pictures/chatgpt",
+    "after": "default: ./chatgpt-images",
+    "count": 1
+  },
+  {
+    "file": "clis/minimax/music.js",
+    "before": "default: ~/Music/minimax",
+    "after": "default: ./minimax-audio",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/download.js",
+    "before": "default: ~/Music/suno",
+    "after": "default: ./suno-audio",
+    "count": 1
+  },
+  {
+    "file": "clis/suno/generate.js",
+    "before": "default: ~/Music/suno",
+    "after": "default: ./suno-audio",
+    "count": 1
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "~/tmp/gemini-images",
+    "after": "./gemini-images",
+    "count": 1
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "~/Pictures/qianwen",
+    "after": "./qianwen-images",
+    "count": 1
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "~/Downloads/Instagram",
+    "after": "./instagram-downloads",
+    "count": 1
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "~/Pictures/Midjourney",
+    "after": "./midjourney-downloads",
+    "count": 2
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "default: ~/Pictures/chatgpt",
+    "after": "default: ./chatgpt-images",
+    "count": 1
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "default: ~/Music/minimax",
+    "after": "default: ./minimax-audio",
+    "count": 1
+  },
+  {
+    "file": "cli-manifest.json",
+    "before": "default: ~/Music/suno",
+    "after": "default: ./suno-audio",
+    "count": 2
   }
 ]

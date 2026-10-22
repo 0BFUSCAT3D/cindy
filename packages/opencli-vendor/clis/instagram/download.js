@@ -347,7 +347,7 @@ cli({
     navigateBefore: false,
     args: [
         { name: 'url', positional: true, required: true, help: 'Instagram post / reel / tv URL' },
-        { name: 'path', default: '~/Downloads/Instagram', help: 'Download directory' },
+        { name: 'path', default: './instagram-downloads', help: 'Download directory' },
     ],
     func: async (page, kwargs) => {
         const browserPage = ensurePage(page);

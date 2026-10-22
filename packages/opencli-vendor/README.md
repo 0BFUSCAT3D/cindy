@@ -10,15 +10,15 @@
 
 - 170 个站点/应用，1,223 条命令（916 read、307 write）。
 - 1,112 个命令模块，所有生产共享代码、JSON 和其他资源一并引入；不引入上游测试。
-- 上游快照完整保留，但默认目录独立选择：排除 Z-Library 2 条和待重新验证的 Slock 44 条，
-  剩余 1,177 条命令、25 个上游别名。原因记录在 [selection.json](cindy/selection.json)，
+- 上游快照完整保留，但默认目录独立选择：排除 Z-Library 2 条、Slock 44 条、Claude.ai 9 条和 Spotify 11 条，
+  剩余 1,157 条命令、25 个上游别名。原因记录在 [selection.json](cindy/selection.json)，
   同步会沿用此选择，排除条目不进入模块导入表和可执行目录。
 - Cindy 原有 56 个 ID：47 个转到新版适配器，7 个保留原流程，两个爬虫练习站移至
   `packages/lizi-mcps/src/browser/recipe-examples`，不再出现在默认列表。
   逐项记录见 [legacy-coverage.json](cindy/legacy-coverage.json)。
 - Cindy 独立增加 App Store 搜索、Google Play 搜索、TapTap 中国站游戏详情、Steam 玩家评价、
   Open Library 书目查询和 Crossref 文献/DOI 查询，共 6 个配方，位于
-  `packages/lizi-mcps/src/browser/cindy-recipes`。共 1,262 个可发现 ID；这个数包含别名和兼容入口。
+  `packages/lizi-mcps/src/browser/cindy-recipes`。共 1,242 个可发现 ID、172 份指南；这个数包含别名和兼容入口。
 - 兼容入口保持输入名，输出改为新版结构化结果；用户本地覆盖层仍优先于内置层。
 
 通过 `browser(action="siteguide")` 查询精简完整目录；传 `site`（域名或上游站点名）
@@ -35,14 +35,17 @@
 - CDP 对象和节点沿用一次配方调用的连接；网络响应按上游格式捕获、读取后清空，结束时
   释放监听和连接。导航、上传仍走 Cindy 原有校验路径；代输入后的页面读取限制仍生效。
 - 通用执行器不自动重放操作。Instagram reel 移除独立 daemon 和整次发布重试。
-- Spotify、小宇宙的新令牌只写宿主加密凭据库。已有 OpenCLI 配置仅在显式执行时读取；
-  不在导入模块时读取用户凭据，不删除旧配置，也不新增明文令牌文件。
-- Spotify OAuth 回调绑定 loopback 并校验 state。文章 stdout 输出改为 MCP 返回值；
+- Claude.ai 站点不进入默认目录，Claude 订阅沿用内置 Claude Code CLI 登录与使用。
+- Spotify 暂不进入默认目录：客户端密钥的明文文件配置尚未接入宿主加密凭据库；
+  保留完整来源，不增加新的凭据配置流程。小宇宙的新令牌只写宿主加密凭据库，
+  既有配置只在显式执行时读取，不删除旧配置或新增明文令牌文件。
+- 文章 stdout 输出改为 MCP 返回值；
   Readability 脚本随构建打包，避免安装包运行时查找源码文件。
 - 主进程使用静态入口加载所选命令及其执行依赖，不在运行期动态导入模块；导入不执行命令。
 - 适配器直接读取文件和分片上传也须通过宿主文件代理，复用原有上传目录、敏感文件和
   realpath 校验；无会话目录或宿主文件代理时拒绝读取。ChatGPT 后端请求只发送自身域的 Cookie。
-- 诊断截图及错误提示使用系统临时目录，兼容 Windows；不依赖固定的 `/tmp` 目录。
+- 图片、音频和下载成果的默认路径与目录参数元数据均使用任务内相对路径；
+  诊断截图及跟踪文件按调用隔离，结束后清理，兼容 Windows。
 - 与配方按使用维护共用暂停状态：适配器参数预检失败不会暂停配方，执行失败才暂停；
   暂停记录可跨任务读取。修订仍须用带 guard/expect 的声明式步骤试跑成功后保存，
   不把适配器返回成功等同于通过页面与结果校验，也不自动重放写操作。

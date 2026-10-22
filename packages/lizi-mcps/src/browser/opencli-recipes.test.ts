@@ -12,13 +12,62 @@ import { withRecipeHost, recipeDiagnosticPath, recipeOutputPath, readRecipeFileS
 import { mkdtemp, writeFile, rm, readFile, realpath, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+// @ts-expect-error Pinned upstream adapter helpers ship JavaScript without declarations.
+import * as gemini from '../../../opencli-vendor/clis/gemini/utils.js';
+// @ts-expect-error Pinned upstream adapter helpers ship JavaScript without declarations.
+import * as qwen from '../../../opencli-vendor/clis/qwen/utils.js';
+import * as network from '../../../opencli-vendor/src/node-network.js';
 
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826: argument defaults bypassed the task-relative resolver. Unit tier,
+  // real adapter -> shared writer with fake generation/network; previous novel
+  // coverage did not pass image/download argument defaults through prepareInputs.
+  it.each(['gemini/image', 'qwen/image', 'instagram/download'])('saves %s defaults inside the invoking task', async (id) => {
+    const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'cindy-recipe-default-test-')));
+    const url = 'https://example.test/generated.png';
+    const asset = { ok: true, mime: 'image/png', base64: 'aW1hZ2U=' };
+    vi.spyOn(gemini, 'startNewGeminiChat').mockResolvedValue(undefined);
+    vi.spyOn(gemini, 'getGeminiVisibleImageUrls').mockResolvedValue([]);
+    vi.spyOn(gemini, 'sendGeminiMessage').mockResolvedValue(undefined);
+    vi.spyOn(gemini, 'waitForGeminiImages').mockResolvedValue([url]);
+    vi.spyOn(gemini, 'exportGeminiImages').mockResolvedValue([{ mimeType: 'image/png', dataUrl: 'data:image/png;base64,aW1hZ2U=' }]);
+    for (const name of ['ensureOnQianwen', 'dismissLoginModal', 'startNewChat', 'setFeatureToggle'] as const)
+      vi.spyOn(qwen, name).mockResolvedValue(undefined);
+    vi.spyOn(qwen, 'sendMessage').mockResolvedValue({ ok: true });
+    vi.spyOn(qwen, 'hasLoginGate').mockResolvedValue(false);
+    vi.spyOn(qwen, 'getMessageBubbles').mockResolvedValue([{ role: 'Assistant', id: 'answer' }]);
+    vi.spyOn(network, 'fetchWithNodeNetwork').mockImplementation(async () => new Response('image'));
+    const outputs: string[] = [];
+    const page = {
+      goto: async () => {}, wait: async () => {},
+      evaluate: async (js: string) => {
+        if (js === 'window.location.href') return 'https://example.test/';
+        if (id === 'instagram/download') return { ok: true, shortcode: 'B', items: [{ type: 'image', url }] };
+        return js.includes('arrayBuffer()') ? asset : [url];
+      },
+    } as unknown as IPage;
+    try {
+      await executeAdapter(id, id === 'instagram/download' ? { url: 'https://www.instagram.com/p/B/' } : { prompt: 'fixture' }, page, undefined, undefined, {
+        read: () => Buffer.alloc(0), open: () => -1, directory: dir,
+        output: file => {
+          const relative = path.relative(dir, file);
+          if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('output outside task');
+          outputs.push(file);
+          return file;
+        },
+      });
+      const file = outputs.find(file => /\.(png|jpg)$/.test(file));
+      expect(file).toBeDefined();
+      expect(await readFile(file!, 'utf8')).toBe('image');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   // #6826 output/diagnostic review. Unit tier; the real adapter and screenshot
   // entries previously covered reads only. Minimal inputs are one local novel
   // output and two overlapping screenshots with the same diagnostic name.
@@ -389,13 +438,24 @@ describe("bundled OpenCLI recipes", () => {
       const all = await query();
       expect(all.ok).toBe(true);
       expect(all.recipeCount).toBe(loadRecipes().size);
-      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'books-list', 'hockey-search']) {
+      for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'opencli:claude/login', 'opencli:claude/ask', 'opencli:spotify/auth', 'opencli:spotify/status', 'books-list', 'hockey-search']) {
         expect(JSON.stringify(all)).not.toContain(id);
         const response = await client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: { action: 'recipe', recipeId: id } } });
         expect(JSON.parse((response.content as Array<{ text: string }>)[0].text).ok).toBe(false);
       }
       expect(JSON.stringify(all)).toContain('open-library-search');
       expect(JSON.stringify(all)).toContain('steam-reviews');
+      // The public guide must describe the same task-relative defaults used by
+      // execution; otherwise callers can reintroduce an out-of-task path.
+      for (const [site, command, arg, expected] of [
+        ['gemini', 'image', 'op', './gemini-images'],
+        ['qwen', 'image', 'op', './qianwen-images'],
+        ['instagram', 'download', 'path', './instagram-downloads'],
+        ['midjourney', 'download', 'output', './midjourney-downloads'],
+      ]) {
+        const guide = await query(site);
+        expect(guide.recipes.find((recipe: { id: string }) => recipe.id === `opencli:${site}/${command}`).parameters[arg].default).toBe(expected);
+      }
       const site = await query("bilibili");
       expect(site.ok).toBe(true);
       expect(

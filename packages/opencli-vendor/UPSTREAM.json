@@ -201,6 +201,21 @@
     },
     "src/utils.ts": {
       "upstreamSha256": "5b6005142f9066690075eb7230cd3e7912bbeae791d49e40079a857569d3fa03"
+    },
+    "clis/qwen/image.js": {
+      "upstreamSha256": "1087351fc07ec3d85db10c46c07a5fb3c2e6a591bc84d1e5777d257b942ef1c2"
+    },
+    "clis/minimax/music.js": {
+      "upstreamSha256": "7e0ed13d0741ba08755a1b4added08f5ccd996b1265f8cc8712cc4947b216a35"
+    },
+    "clis/suno/download.js": {
+      "upstreamSha256": "5e875e965c36946531e416549017cf350b21728d76debc22760b4ea7f33f752f"
+    },
+    "clis/suno/generate.js": {
+      "upstreamSha256": "3455bc68907fd7f3d3c0b5f844799f1d1dbd6c263e30c759b3b01f23c4acb054"
+    },
+    "cli-manifest.json": {
+      "upstreamSha256": "79791f1435dd3fb4c00c9996e2dfea71a644b3a2caeae7ec22f2c1a4f5520758"
     }
   },
   "files": {
@@ -369,7 +384,7 @@
     "clis/chatgpt/deep-research-result.js": "43993ccc844f62d93ff7cc2dce1d2adcc847896df07b1c4599b1045678410a51",
     "clis/chatgpt/detail.js": "8c43571fdc1f3ccd4d2242f5c7eb8e0a7a6069e9230b49c12ca7bf7a2c8ae3b2",
     "clis/chatgpt/history.js": "66d608d3c77d95983f668211c6366c081d9d008aede136062af950aa0fd89785",
-    "clis/chatgpt/image.js": "dae306ac2317b5839bc8cdfd50e53066a2d0f14b67623dc567eef3c4a96314e2",
+    "clis/chatgpt/image.js": "423873d548615fabd55b84c5d417be69601f5300b82d9d571503c2407d050290",
     "clis/chatgpt/model.js": "2c7e4535f07d3fb6091f359dadb64064168772565b188c3ed58dccee4e0b82ac",
     "clis/chatgpt/new.js": "68d2435dc54035ee566e6140e8f9104c368342237474dff5dacd70380e07311d",
     "clis/chatgpt/project-file-add.js": "90bd5b4ff547f7ba1db66d8d5b356d1694eb1a02995f5675f33d61a6f0908fdc",
@@ -574,7 +589,7 @@
     "clis/gemini/deep-research.js": "ec09fee860d4316ed0b29c03a34fb6cde504795548dfabda271d6624e9169502",
     "clis/gemini/detail.js": "db4dba3f6134828baeaf396f15e4f249618967d7e7047e0ed2471b25cbc2cf11",
     "clis/gemini/history.js": "c1b1f7d7c83a34e6d23ba547f5a599473e7196619662bc351ee3265c61d8bff9",
-    "clis/gemini/image.js": "b39ff55275acb876caca39bfc17356fed22893ce89b701c743ecb72b41a6e208",
+    "clis/gemini/image.js": "0e52a2d87b598966fefad39d2253809317088f97bbf7e98c77e39359612442ff",
     "clis/gemini/models.js": "575635dfff9b3055f2aba140c53a669ec04d081fbbd0aaca58e4651facaf0de4",
     "clis/gemini/new.js": "fb98471158fe0babae0310818b2878042142745061402a2eff103ed02a24e59d",
     "clis/gemini/read.js": "0b22dcb9b0f36537bf0fbab10a04b60fd460962fc04e94449e87b2464d7c881c",
@@ -703,7 +718,7 @@
     "clis/instagram/collection-create.js": "6200ac062b163c16112dbf9f4d80ed95f9c032f376feaada3e3b9b15202ca2db",
     "clis/instagram/collection-delete.js": "bf9de03f7f896ca545a13bc8d7add12230c3fb2b10d373f383c66b178a8b007a",
     "clis/instagram/comment.js": "9f72b16f8ac33095fcf8b64cdfec43216550932c3cfdefc7fc778b8063f55573",
-    "clis/instagram/download.js": "13fcb626e5ddaae89b13d6bfa35caff21e354b2e4fbc9b861f56d639304aa685",
+    "clis/instagram/download.js": "37fdb3175a4768e1317e7ee7b3840666f1cc569368ef5cb90eace5c48ca0e5c0",
     "clis/instagram/explore.js": "0b5f5bd7a042e692a22f1f90f6a4e3c999afba4f9f9c48436c8797aee747c8b8",
     "clis/instagram/follow.js": "d552c22579e21d730eaf159dea92c94653d5815c58e262c813b046bdb009989a",
     "clis/instagram/followers.js": "776e0dd994a814796ac38f6f14e8a34adc00474c6d8f6c66c40b17f97454d379",
@@ -877,7 +892,7 @@
     "clis/midjourney/status.js": "1382504f9b9cbe73864bc05f4d3f398ea38ae3fa18a4379428b7cdfee8ecfc2b",
     "clis/midjourney/utils.js": "77df1811a3c54b84e0ac25b00b34de56c5ba53c8c863a1b3d3b459b259096a38",
     "clis/midjourney/whoami.js": "78424e609c5cc0022ec7c2590cc902371f4431207d2f0b1079a9cdf9fa1beea9",
-    "clis/minimax/music.js": "7e0ed13d0741ba08755a1b4added08f5ccd996b1265f8cc8712cc4947b216a35",
+    "clis/minimax/music.js": "a192c07d35827813ca229d4fae2e4136153aaa8e987d2335db33605daaa65837",
     "clis/minimax/utils.js": "c175b6e059568df44be268a4acd92a666ade3ed45f770896be4cf59fd799071d",
     "clis/mubu/doc.js": "8c0e2cbe4ad8246744ed2ab903d54ad0a4fa4f3a4778ab498c5c14f8c01216c2",
     "clis/mubu/docs.js": "1b2b186631e9bfc973140ffbf29d525ee46b66e25488c5b1b13ab908d0c1bfa4",
@@ -1043,7 +1058,7 @@
     "clis/qwen/auth.js": "3a4642958031f1f2f61eb0d0f55fdd434b323f26c50020f07b8fed506ad3c0b4",
     "clis/qwen/detail.js": "7eb6b9b4872b44de2ba1d6b294c8acf8de8b2e05b28ffc953cefe86504efac75",
     "clis/qwen/history.js": "0a8f8110794bf9d881bd3fdc61d21cb73fa156c5716edd308f9d68d1196aaadc",
-    "clis/qwen/image.js": "1087351fc07ec3d85db10c46c07a5fb3c2e6a591bc84d1e5777d257b942ef1c2",
+    "clis/qwen/image.js": "274e9e0cdca7d67546f7d1e69a3276133b442eaf6cf8b837e9143e2fbbdd4272",
     "clis/qwen/new.js": "a5627649838da4121ce42a22287c81283bc316c7e0ea92cf5f8952db3dd5540e",
     "clis/qwen/read.js": "eed8e892c3e35bef9008ece254a8702984978b7eccb6f519874d9e72a72457ab",
     "clis/qwen/send.js": "f6e6de80d9059fd33f8e250db1d56fc50d0d511abf76372451bb527d2c82bf9d",
@@ -1178,8 +1193,8 @@
     "clis/substack/search.js": "bcd0f8c7a5ef6731f8cec64f4daa28e8de1739ae0b73ab5762df9bf7f8a39911",
     "clis/substack/utils.js": "3724631bd99ae11cc7afb285078e1e9787ebe86382cff07327655857b8cc3f0a",
     "clis/suno/auth.js": "591b55a7441dc972063bca3da8561a094a076ca994fd25cb8d7ebff918a2910a",
-    "clis/suno/download.js": "5e875e965c36946531e416549017cf350b21728d76debc22760b4ea7f33f752f",
-    "clis/suno/generate.js": "3455bc68907fd7f3d3c0b5f844799f1d1dbd6c263e30c759b3b01f23c4acb054",
+    "clis/suno/download.js": "c95bc82920127f237ead2a6ca6427208f8a7e7d72a4ccbaab04d03523e6a44e0",
+    "clis/suno/generate.js": "4dd38a391fce74c6df9190832d51988ef5d63e17845d171c4fca98ca77b5767c",
     "clis/suno/list.js": "f4b6f015a9c87547eda1b84adf6d6960c868b8b60c0e8b75f06a1c3367f6212f",
     "clis/suno/status.js": "57559e6773be4f37b65c2ad9bf1590e4b87cbae19db26b59c5601053a3bd5bd7",
     "clis/suno/utils.js": "a955020a49f4eb2bcdc60ecef89380d68e494541dbf49fa5364ddaa055d3dfb5",
@@ -1633,6 +1648,6 @@
     "src/verify.ts": "9ad21f961c94b750dca8db63a6ffc78689dda5186f1d443ab8f912eef30b2fc9",
     "src/version.ts": "7bb1ede5cfc1f796e434cacd08cb9f903022f8c9375b17237aa16ad7d825aa2b",
     "LICENSE": "0210b8b66cf00358242cb921ba2be3a46dfe0190159b1b952388a3880ce1ff54",
-    "cli-manifest.json": "79791f1435dd3fb4c00c9996e2dfea71a644b3a2caeae7ec22f2c1a4f5520758"
+    "cli-manifest.json": "a1824f6c01d76c231682ee1de6626d588d6b274706546743eec6bd20e73f5b87"
   }
 }

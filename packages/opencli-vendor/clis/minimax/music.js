@@ -79,7 +79,7 @@ cli({
         { name: 'instrumental', type: 'boolean', default: false, help: 'Generate instrumental music; requires prompt and forbids lyrics' },
         { name: 'lyrics-optimizer', type: 'boolean', default: false, help: 'Generate lyrics from prompt when --lyrics is omitted' },
         { name: 'aigc-watermark', type: 'boolean', default: false, help: 'CN-only audio watermark' },
-        { name: 'op', help: 'Directory for --output-format hex (default: ~/Music/minimax)' },
+        { name: 'op', help: 'Directory for --output-format hex (default: ./minimax-audio)' },
         { name: 'timeout', type: 'int', default: 600, help: 'HTTP generation timeout in seconds (1-1800)' },
         { name: 'execute', type: 'boolean', default: false, help: 'Submit the billable generation request' },
     ],

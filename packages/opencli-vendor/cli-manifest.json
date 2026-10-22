@@ -5690,7 +5690,7 @@
         "name": "op",
         "type": "str",
         "required": false,
-        "help": "Output directory (default: ~/Pictures/chatgpt)"
+        "help": "Output directory (default: ./chatgpt-images)"
       },
       {
         "name": "sd",
@@ -12372,7 +12372,7 @@
       {
         "name": "op",
         "type": "str",
-        "default": "~/tmp/gemini-images",
+        "default": "./gemini-images",
         "required": false,
         "help": "Output directory shorthand"
       },
@@ -17186,7 +17186,7 @@
       {
         "name": "path",
         "type": "str",
-        "default": "~/Downloads/Instagram",
+        "default": "./instagram-downloads",
         "required": false,
         "help": "Download directory"
       }
@@ -23619,7 +23619,7 @@
       {
         "name": "output",
         "type": "str",
-        "default": "~/Pictures/Midjourney",
+        "default": "./midjourney-downloads",
         "required": false,
         "help": "Output directory"
       },
@@ -23751,7 +23751,7 @@
       {
         "name": "output",
         "type": "str",
-        "default": "~/Pictures/Midjourney",
+        "default": "./midjourney-downloads",
         "required": false,
         "help": "Output directory"
       },
@@ -24142,7 +24142,7 @@
         "name": "op",
         "type": "str",
         "required": false,
-        "help": "Directory for --output-format hex (default: ~/Music/minimax)"
+        "help": "Directory for --output-format hex (default: ./minimax-audio)"
       },
       {
         "name": "timeout",
@@ -29720,7 +29720,7 @@
       {
         "name": "op",
         "type": "str",
-        "default": "~/Pictures/qianwen",
+        "default": "./qianwen-images",
         "required": false,
         "help": "Output directory"
       },
@@ -34284,7 +34284,7 @@
         "name": "op",
         "type": "str",
         "required": false,
-        "help": "Output directory (default: ~/Music/suno)"
+        "help": "Output directory (default: ./suno-audio)"
       },
       {
         "name": "confirm-paid",
@@ -34383,7 +34383,7 @@
         "name": "op",
         "type": "str",
         "required": false,
-        "help": "Output directory (default: ~/Music/suno)"
+        "help": "Output directory (default: ./suno-audio)"
       },
       {
         "name": "timeout",

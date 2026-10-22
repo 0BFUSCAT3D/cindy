@@ -156,14 +156,6 @@ import "../clis/chess/analyze.js";
 import "../clis/chess/game.js";
 import "../clis/chess/games.js";
 import "../clis/chess/stats.js";
-import "../clis/claude/ask.js";
-import "../clis/claude/auth.js";
-import "../clis/claude/detail.js";
-import "../clis/claude/history.js";
-import "../clis/claude/new.js";
-import "../clis/claude/read.js";
-import "../clis/claude/send.js";
-import "../clis/claude/status.js";
 import "../clis/cnki/search.js";
 import "../clis/coingecko/categories.js";
 import "../clis/coingecko/coin.js";
@@ -764,7 +756,6 @@ import "../clis/sinafinance/rolling-news.js";
 import "../clis/sinafinance/stock-rank.js";
 import "../clis/sinafinance/stock.js";
 import "../clis/smzdm/search.js";
-import "../clis/spotify/spotify.js";
 import "../clis/stackoverflow/bounties.js";
 import "../clis/stackoverflow/hot.js";
 import "../clis/stackoverflow/read.js";
@@ -1224,14 +1215,6 @@ export const modules = {
   "chess/game.js": true,
   "chess/games.js": true,
   "chess/stats.js": true,
-  "claude/ask.js": true,
-  "claude/auth.js": true,
-  "claude/detail.js": true,
-  "claude/history.js": true,
-  "claude/new.js": true,
-  "claude/read.js": true,
-  "claude/send.js": true,
-  "claude/status.js": true,
   "cnki/search.js": true,
   "coingecko/categories.js": true,
   "coingecko/coin.js": true,
@@ -1832,7 +1815,6 @@ export const modules = {
   "sinafinance/stock-rank.js": true,
   "sinafinance/stock.js": true,
   "smzdm/search.js": true,
-  "spotify/spotify.js": true,
   "stackoverflow/bounties.js": true,
   "stackoverflow/hot.js": true,
   "stackoverflow/read.js": true,
