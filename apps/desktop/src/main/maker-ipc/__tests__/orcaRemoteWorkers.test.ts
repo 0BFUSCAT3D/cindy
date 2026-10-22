@@ -209,6 +209,26 @@ describe('execution devices', () => {
 });
 
 describe('openRemoteWorker', () => {
+  // Unit: old execution hosts silently discard unknown model-location fields.
+  // Reject before open; a capable host must receive and return the exact route.
+  it.each([false, true])('negotiates the independent model computer (supported=%s)', async supported => {
+    const { workers, remoteInvoke } = setup({ handle: (_device, channel, args) => {
+      if (channel === 'maker:orca:remote-worker:caps') return ok({ version: 1, ...(supported ? { agentDevice: true } : {}) });
+      if (channel === 'maker:orca:remote-worker:open') return ok({ sessionId: (args[0] as {sessionId: string}).sessionId,
+        agentKind: 'codex', model: 'remote-only', workingDir: '/worker', agentDeviceId: 'provider-pc', providerId: 'openai' });
+      return undefined;
+    } });
+    try {
+      const result = await workers.openRemoteWorker({ ...openInput, agentDeviceId: 'provider-pc', model: 'remote-only' });
+      if (supported) {
+        expect(result).toMatchObject({ ok: true, model: 'remote-only', agentDeviceId: 'provider-pc', providerId: 'openai' });
+        expect(remoteInvoke.mock.calls.find(call => call[1] === 'maker:orca:remote-worker:open')?.[2][0]).toMatchObject({ agentDeviceId: 'provider-pc' });
+      } else {
+        expect(result).toMatchObject({ ok: false, errorCode: 'UNSUPPORTED_CAPABILITY' });
+        expect(remoteInvoke.mock.calls.some(call => call[1] === 'maker:orca:remote-worker:open')).toBe(false);
+      }
+    } finally { workers.stop(); }
+  });
   it.each([
     [false, true, false],
     [true, false, true],

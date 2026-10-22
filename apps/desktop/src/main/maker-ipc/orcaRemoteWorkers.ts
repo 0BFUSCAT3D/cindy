@@ -12,9 +12,13 @@ import { createId } from '@paralleldrive/cuid2';
 import {
   DeviceLinkError,
   ORCA_REMOTE_WORKER_CAPS_CHANNEL,
+  ORCA_REMOTE_WORKER_MODELS_CHANNEL,
   ORCA_REMOTE_WORKER_OPEN_CHANNEL,
   type InvokeResultPayload,
   type OrcaExecutionDeviceView,
+  type OrcaRemoteWorkerCaps,
+  type OrcaRemoteWorkerModelsRequest,
+  type OrcaRemoteWorkerModelsResult,
   type OrcaRemoteWorkerOpenResult as DeviceOpenResult,
 } from '@cindy/device-link';
 import { isMobilePlatform } from '@cindy/maker-shared/device-list';
@@ -195,9 +199,9 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
     return devices;
   }
 
-  async function probeSupported(deviceId: string): Promise<boolean | null> {
+  async function probeSupported(deviceId: string): Promise<OrcaRemoteWorkerCaps | false | null> {
     try {
-      await Promise.race([
+      const caps = await Promise.race([
         invoke(deviceId, ORCA_REMOTE_WORKER_CAPS_CHANNEL, []),
         new Promise((_, reject) =>
           setTimeout(
@@ -206,7 +210,8 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
           ).unref?.(),
         ),
       ]);
-      return true;
+      return caps && typeof caps === 'object' && 'version' in caps && caps.version === 1
+        ? caps as OrcaRemoteWorkerCaps : false;
     } catch (err) {
       return codeOf(err) === 'CHANNEL_NOT_ALLOWED' ? false : null;
     }
@@ -352,11 +357,29 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
                   deviceId: device.deviceId,
                   name: device.name,
                   platform: device.platform,
-                  supported: supported[index] === true,
+                  supported: supported[index] !== false,
+                  ...((supported[index] as OrcaRemoteWorkerCaps)?.agentDevice === true ? { supportsAgentDevice: true } : {}),
                 },
               ],
         )
         .sort((a, b) => Number(b.supported) - Number(a.supported) || a.name.localeCompare(b.name));
+    },
+    async readModels(deviceId: string, request: OrcaRemoteWorkerModelsRequest): Promise<OrcaRemoteWorkerModelsResult> {
+      const owner = ownerToken();
+      assertOwner(owner);
+      const devices = await refreshDeviceNames();
+      assertOwner(owner);
+      if (!devices.some(device => device.deviceId === deviceId && isExecutionDeviceCandidate(device))) {
+        throw new Error('[REMOTE_AGENT_DEVICE_UNREACHABLE] Worker execution computer is unavailable');
+      }
+      try {
+        const result = await invoke(deviceId, ORCA_REMOTE_WORKER_MODELS_CHANNEL, [request]) as OrcaRemoteWorkerModelsResult;
+        assertOwner(owner);
+        return result;
+      } catch (error) {
+        if (codeOf(error) === 'CHANNEL_NOT_ALLOWED') throw new Error('[UNSUPPORTED_CAPABILITY] Update the Worker execution computer to select its remote providers');
+        throw error;
+      }
     },
     async openRemoteWorker(
       input: Parameters<NonNullable<OrcaWorkerCreationDeps['openRemoteWorker']>>[0],
@@ -390,6 +413,10 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
           message: `${name} 当前不可达，Worker 没有创建。`,
         };
       }
+      if (input.agentDeviceId !== undefined && supported.agentDevice !== true) {
+        return { ok: false, errorCode: 'UNSUPPORTED_CAPABILITY',
+          message: `${name} 需要更新后才能为跨设备 Worker 选择 Agent 所在电脑。` };
+      }
       const remoteSessionId = createId();
       let opened: DeviceOpenResult | undefined;
       let uncertainOpen = false;
@@ -403,6 +430,7 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
             agentKind: input.agent,
             ...(input.model ? { model: input.model } : {}),
             ...(input.providerId ? { providerId: input.providerId } : {}),
+            ...(input.agentDeviceId !== undefined ? { agentDeviceId: input.agentDeviceId } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.fast !== undefined ? { fastMode: input.fast } : {}),
             permissionMode: input.permissionMode,
@@ -512,6 +540,8 @@ export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
         agent,
         model: opened.model,
         workingDir: opened.workingDir,
+        ...(opened.agentDeviceId !== undefined ? { agentDeviceId: opened.agentDeviceId } : {}),
+        ...(opened.providerId !== undefined ? { providerId: opened.providerId } : {}),
       };
     },
 
