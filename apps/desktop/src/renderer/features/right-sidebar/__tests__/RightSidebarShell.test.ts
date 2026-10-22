@@ -93,6 +93,7 @@ import {
   __resetGlobalTabsForTest,
   addGlobalPluginTab,
   getActiveGlobalTabId,
+  requestRevealSessionTab,
 } from '../globalTabs';
 import { __resetTabGroupsForTest, getTabGroup } from '../tabGroups';
 import { toast } from '@/lib/toast';
@@ -1669,6 +1670,29 @@ describe('RightSidebarShell empty state', () => {
   // - 现有覆盖缺口:相邻用例只覆盖可用性过滤(subagents / retired),没有跨窗口归属。
   // - 最小失败输入:两页签会话 + 镜像标记 active 页签已弹出。
   // - tier:unit(jsdom,进程内 store 与镜像,无 IPC)。
+  // 独立窗口多页签时，main 转来的 reveal 必须改变窗口内部激活位，不写主窗的任务桶。
+  it('selects only hosted tabs when a popped-out window receives a reveal request', async () => {
+    tabsIpc.list.mockResolvedValueOnce({
+      tabs: [
+        { id: 'tab-files', kind: 'file-browser', state: null },
+        { id: 'tab-web', kind: 'web-browser', state: null },
+      ],
+      activeTabId: 'tab-files',
+    });
+    const selected = vi.fn();
+    render(createElement(RightSidebarShell, {
+      sessionId: 's1', workdir: '/tmp/repo', remoteHostId: null, isMac: true,
+      hostedTabIds: new Set(['tab-files', 'tab-web']), onActiveTabChange: selected,
+    }));
+    await waitFor(() => expect(selected).toHaveBeenLastCalledWith('tab-web'));
+    tabsIpc.setActive.mockClear();
+    act(() => requestRevealSessionTab('s1', 'tab-files'));
+    await waitFor(() => expect(selected).toHaveBeenLastCalledWith('tab-files'));
+    act(() => requestRevealSessionTab('s1', 'foreign-tab'));
+    expect(selected).toHaveBeenLastCalledWith('tab-files');
+    expect(tabsIpc.setActive).not.toHaveBeenCalled();
+  });
+
   it('hides popped-out tabs from the sidebar and keeps the solo window on its own tab', async () => {
     registerTabKind({
       kind: 'terminal',

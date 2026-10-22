@@ -2074,7 +2074,7 @@ interface ElectronAPI {
     open?: (
       request: import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest,
     ) => Promise<void>;
-    focus: (tabId: string) => Promise<void>;
+    focus: (tabId: string, options?: { userInitiated?: boolean }) => Promise<void>;
     closeForTab: (tabId: string) => Promise<void>;
     /** 主窗口:把弹在独立窗口里的全局页签交回侧栏(任务页签不支持)。 */
     returnTab?: (tabId: string) => Promise<boolean>;

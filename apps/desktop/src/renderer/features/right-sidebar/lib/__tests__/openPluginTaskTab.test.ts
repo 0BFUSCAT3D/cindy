@@ -10,6 +10,7 @@ import { routeSidebarCommand } from '../detachedSidebarRouting';
 import { subscribeRevealSessionTab } from '../../globalTabs';
 import { openPluginTaskTab } from '../openPluginTaskTab';
 import { _resetSidebarCommandsForTests, onRequestRightSidebarVisibility } from '../sidebarCommands';
+import { __resetSidebarTabWindowsStateForTest, __setSidebarTabWindowsStateForTest } from '@/lib/sidebarTabWindowState';
 
 vi.mock('../detachedSidebarRouting', () => ({ routeSidebarCommand: vi.fn(async () => 'attached') }));
 
@@ -29,6 +30,7 @@ const ipc = {
 const visibility = vi.fn();
 
 beforeEach(() => {
+  __resetSidebarTabWindowsStateForTest();
   _resetStore(); _resetSidebarCommandsForTests();
   rows.clear(); active.clear(); localStorage.clear(); vi.clearAllMocks();
   vi.mocked(routeSidebarCommand).mockResolvedValue('attached');
@@ -41,6 +43,17 @@ const taskTabs = (sessionId: string) =>
   getBucket(sessionId).tabs.filter((tab) => tab.kind === 'plugin-task').map((tab) => tab.state);
 
 describe('openPluginTaskTab', () => {
+  // 弹出窗口自己的激活位与主窗任务桶不同；即使桶已激活目标也必须送选中请求。
+  it('reveals an existing popped-out tab without stealing native focus', async () => {
+    await openPluginTaskTab('task-1', 'sim');
+    const tab = getBucket('task-1').tabs[0];
+    __setSidebarTabWindowsStateForTest({ [tab.id]: { windowId: 'window-1', sessionId: 'task-1', open: true } });
+    const focus = vi.fn(async () => {});
+    window.electronAPI.sidebarTabWindow = { focus } as unknown as Window['electronAPI']['sidebarTabWindow'];
+    await openPluginTaskTab('task-1', 'sim', { userInitiated: false });
+    expect(focus).toHaveBeenCalledWith(tab.id, { userInitiated: false });
+    expect(taskTabs('task-1')).toEqual([{ instanceId: 'sim' }]);
+  });
   it('keeps one task page per plugin per task, refocusing it instead of adding another', async () => {
     const reveal = vi.fn();
     const stop = subscribeRevealSessionTab(reveal);

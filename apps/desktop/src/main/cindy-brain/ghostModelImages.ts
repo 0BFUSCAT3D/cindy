@@ -13,6 +13,7 @@
  */
 import type { GhostModelImage } from '../../shared/ghost.js';
 import { sniffMediaMime } from '../cindy-media/sniffMediaMime.js';
+import { isDecodableInlineImage } from '../mcp-integrations/inlineImageCompressor.js';
 
 export const GHOST_MODEL_IMAGE_MAX_COUNT = 2;
 /** Decoded bytes per image before re-encoding. */
@@ -75,6 +76,10 @@ export async function fitGhostModelImages(
   let omitted = 0;
   for (const image of images) {
     const buffer = Buffer.from(image.data, 'base64');
+    if (!(await isDecodableInlineImage(buffer))) {
+      omitted++;
+      continue;
+    }
     if (buffer.byteLength <= share) {
       out.push(image);
       continue;

@@ -230,6 +230,7 @@ import { toast } from '@/lib/toast';
 import { openUrlInSidebarBrowser } from '@/features/right-sidebar/lib/openInSidebarBrowser';
 import { openPluginTaskTab } from '@/features/right-sidebar/lib/openPluginTaskTab';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
+import { isSecondaryWindow } from '@/lib/secondaryWindow';
 import {
   extractUsageLimitRecoveryHint,
   type UsageLimitRecoveryHint,
@@ -9784,7 +9785,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
-      if (isSidebarWindow()) return;
+      if (isSidebarWindow() || isSecondaryWindow()) return;
       const p = raw as {
         name?: string;
         iconDataUrl?: string;
@@ -9814,7 +9815,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       window.electronAPI.ghosts?.onTaskViewOpen?.(cb),
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
-      if (isSidebarWindow()) return;
+      if (isSidebarWindow() || isSecondaryWindow()) return;
       const p = raw as { instanceId?: unknown; sessionId?: unknown } | null;
       if (!p || typeof p.instanceId !== 'string' || typeof p.sessionId !== 'string') return;
       void openPluginTaskTab(p.sessionId, p.instanceId, { userInitiated: false }).catch(() => {

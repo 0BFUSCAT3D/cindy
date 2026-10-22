@@ -29,7 +29,7 @@ export async function openPluginTaskTab(
     );
     let tabId = existing?.id;
     if (existing) {
-      if (bucket.activeTabId !== existing.id) await setActiveTab(sessionId, existing.id);
+      await setActiveTab(sessionId, existing.id, { userInitiated });
     } else {
       tabId = (await addTab(sessionId, 'plugin-task', { instanceId } satisfies PluginTaskTabState))
         .id;

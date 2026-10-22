@@ -681,13 +681,17 @@ export function RightSidebarShell({
   );
 
   // 程序打开的任务页签(插件任务页)要露出来:与用户点选同口径离开本组的全局页签。
-  const revealContextRef = useRef({ activeGlobalTabId, inGroup, pinnedTabs });
-  revealContextRef.current = { activeGlobalTabId, inGroup, pinnedTabs };
+  const revealContextRef = useRef({ activeGlobalTabId, inGroup, pinnedTabs, hostedTabIds });
+  revealContextRef.current = { activeGlobalTabId, inGroup, pinnedTabs, hostedTabIds };
   useEffect(() => {
-    if (soloMode || !sessionId) return undefined;
+    if (!sessionId) return undefined;
     return subscribeRevealSessionTab((targetSessionId, tabId) => {
       if (targetSessionId !== sessionId) return;
       const context = revealContextRef.current;
+      if (soloMode) {
+        if (context.hostedTabIds?.has(tabId)) setHostedActiveTabId(tabId);
+        return;
+      }
       if (!context.inGroup(tabId)) return;
       setGroupActiveTabId(groupId, sessionId, tabId);
       const activeGlobal = context.activeGlobalTabId;

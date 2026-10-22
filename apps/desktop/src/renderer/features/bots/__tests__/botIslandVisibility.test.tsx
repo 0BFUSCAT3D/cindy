@@ -202,15 +202,15 @@ describe('history ownership gate disposes the clicked island card', () => {
   });
 });
 
-describe('chat as the task in front for plugins', () => {
+describe.each([BotSessionView, BotHistorySessionView])('validated task in front for plugins', (View) => {
   // A companion chat is where someone uses the simulator; plugins were told "no task"
   // there, so "open in the current task" failed. Report it once ownership is proven.
   it('reports the validated chat, never an unowned route, and clears it on leave', async () => {
     mocks.supported = false;
-    const view = render(<BotSessionView />);
+    const view = render(<View />);
     await waitFor(() => expect(focus).toHaveBeenLastCalledWith('chat-a'));
     mocks.params = { botId: 'bot-b', sessionId: 'not-owned' };
-    view.rerender(<BotSessionView />);
+    view.rerender(<View />);
     await act(async () => {});
     expect(focus).not.toHaveBeenCalledWith('not-owned');
     expect(focus).toHaveBeenLastCalledWith(null);
