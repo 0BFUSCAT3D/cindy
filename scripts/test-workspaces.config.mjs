@@ -149,6 +149,8 @@ const mobileGuardInclude = [
 // in the explicit guard tier. Keeping an exact allowlist makes it impossible
 // for a new source scan to silently become part of the ordinary unit gate.
 const desktopGuardInclude = [
+  // Cross-hook voice stop/refine ownership and composer hydration race wiring.
+  'src/renderer/__tests__/voiceInputEnterToSend.test.ts',
   'src/renderer/__tests__/sessionAgentSwitchRemoteRouting.contract.test.ts',
   'src/main/__tests__/deviceLinkVoiceCredentialBootstrap.test.ts',
   'src/main/__tests__/discordExternalization.test.ts',
