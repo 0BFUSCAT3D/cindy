@@ -38,6 +38,12 @@ import { validateLocalReferences } from '../../../opencli-vendor/clis/midjourney
 import { tosUpload } from '../../../opencli-vendor/clis/douyin/_shared/tos-upload.js';
 // @ts-expect-error Pinned upstream JavaScript media helpers have no declarations.
 import * as instagramMedia from '../../../opencli-vendor/clis/instagram/_shared/private-publish.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { downloadRemoteImage, MAX_IMAGE_SIZE_BYTES } from '../../../opencli-vendor/clis/twitter/utils.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { s2Fetch } from '../../../opencli-vendor/clis/semanticscholar/utils.js';
+// @ts-expect-error Pinned upstream JavaScript helpers have no declarations.
+import { buildEutilsUrl } from '../../../opencli-vendor/clis/pubmed/utils.js';
 
 // Wrap the native namespace so tests can replace only the subprocess boundary.
 vi.mock('node:child_process', async importOriginal => ({
@@ -47,10 +53,87 @@ vi.mock('node:child_process', async importOriginal => ({
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 describe("bundled OpenCLI recipes", () => {
+  // #6826 download recurrence, unit tier. Generic downloader tests missed the
+  // X composer consumer; real DNS/redirect policy with an in-memory dispatcher.
+  it.each(['http://127.0.0.1/private', 'https://private.example/image', 'https://public.example/redirect'])(
+    'rejects private X image downloads before exposing upload bytes (%s)', async url => {
+      const agent = new MockAgent();
+      agent.disableNetConnect();
+      agent.get('https://public.example').intercept({ path: '/redirect' })
+        .reply(302, '', { headers: { location: 'http://169.254.169.254/private' } });
+      const original = guardedNetwork.fetchWithSsrFGuard;
+      vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockImplementation(params => original({
+        ...params,
+        lookupFn: (async (host: string) => [{ address: host === 'private.example' ? '10.0.0.1' : '8.8.8.8', family: 4 }]) as unknown as guardedNetwork.LookupFn,
+        dispatcherFactory: () => agent,
+      }));
+      const direct = vi.fn(async () => new Response('private bytes', { headers: { 'content-type': 'image/png' } }));
+      vi.stubGlobal('fetch', direct);
+      try {
+        await expect(withRecipeHost(undefined, () => downloadRemoteImage(url))).rejects.toThrow(/blocked/i);
+        expect(direct).not.toHaveBeenCalled();
+      } finally { await agent.close().catch(() => undefined); }
+    },
+  );
+
+  // First oversized chunk and absent/false length headers: cancel with bounded
+  // pipe read-ahead rather than buffering the full body as the old consumer did.
+  it.each(['missing', 'understated', 'oversized'])('bounds X image streams with %s Content-Length', async header => {
+    const release = vi.fn(async () => {});
+    const cancel = vi.fn();
+    const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+      if (pull.mock.calls.length === 1) controller.enqueue(new Uint8Array(MAX_IMAGE_SIZE_BYTES + 1));
+      else if (pull.mock.calls.length < 4) controller.enqueue(new Uint8Array(1));
+      else controller.close();
+    });
+    const headers: Record<string, string> = { 'content-type': 'image/png' };
+    if (header !== 'missing') headers['content-length'] = header === 'understated' ? '1' : String(MAX_IMAGE_SIZE_BYTES + 1);
+    const response = new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), { headers });
+    vi.stubGlobal('fetch', vi.fn(async () => response));
+    vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockResolvedValue({ response, finalUrl: 'https://cdn.example/image', release });
+    await expect(withRecipeHost(undefined, () => downloadRemoteImage('https://public.example/image'))).rejects.toThrow(/limit/i);
+    if (header === 'oversized') expect(pull).not.toHaveBeenCalled();
+    else expect(pull.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each(['success', 'http-error', 'unsupported-type'])('cleans X image temporary files after %s', async outcome => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cindy-x-image-test-'));
+    const release = vi.fn(async () => {});
+    const response = new Response('public bytes', { status: outcome === 'http-error' ? 500 : 200,
+      headers: { 'content-type': outcome === 'unsupported-type' ? 'text/plain' : 'image/png' } });
+    vi.spyOn(guardedNetwork, 'fetchWithSsrFGuard').mockResolvedValue({ response, finalUrl: 'https://cdn.example/image', release });
+    vi.stubGlobal('fetch', vi.fn(async () => response));
+    try {
+      const running = withRecipeHost(undefined, async () => {
+        const image = await downloadRemoteImage('https://public.example/image');
+        expect(path.extname(image.absPath)).toBe('.png');
+        expect(await readFile(image.absPath, 'utf8')).toBe('public bytes');
+      }, { temporaryRoot: dir, read: readFileSync, open: file => openSync(file, 'r') });
+      if (outcome === 'success') await running;
+      else await expect(running).rejects.toThrow(outcome === 'http-error' ? /500/ : /Unsupported/);
+      expect(release).toHaveBeenCalledOnce();
+      expect(await readdir(dir)).toEqual([]);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  // Credential-family audit, unit tier. Optional public APIs must not inherit
+  // reusable launch-environment keys. Existing tests never supplied such keys.
+  it('keeps public research APIs anonymous even with ambient API keys', async () => {
+    vi.stubEnv('SEMANTIC_SCHOLAR_API_KEY', 'invalid-fixture-s2-key');
+    vi.stubEnv('NCBI_API_KEY', 'invalid-fixture-ncbi-key');
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response('{"data":[]}', { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetch);
+    await s2Fetch('https://api.semanticscholar.org/graph/v1/paper/search?query=fixture', 'fixture');
+    expect(fetch.mock.calls[0][1].headers).not.toHaveProperty('x-api-key');
+    expect(new URL(buildEutilsUrl('esearch', { term: 'fixture' })).searchParams.has('api_key')).toBe(false);
+  });
   // #6826 source-copy TOCTOU, unit tier. The shared copy entry must return an
   // invocation-owned snapshot, not the original path after approving its bytes.
   // Earlier converter cases did not exercise this separate copy source entry.
@@ -838,6 +921,12 @@ describe("bundled OpenCLI recipes", () => {
       const all = await query();
       expect(all.ok).toBe(true);
       expect(all.recipeCount).toBe(loadRecipes().size);
+      for (const id of ['weread-official/book', 'minimax/music', 'jira/search', 'confluence/search']) {
+        expect(JSON.stringify(all)).not.toContain(`opencli:${id}`);
+        const response = await client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: { action: 'recipe', recipeId: `opencli:${id}` } } });
+        expect(JSON.parse((response.content as Array<{ text: string }>)[0].text).ok).toBe(false);
+        await expect(executeAdapter(id, {}, {} as IPage)).rejects.toThrow('Unknown bundled adapter');
+      }
       for (const id of ['opencli:zlibrary/search', 'opencli:slock/task-create', 'opencli:claude/login', 'opencli:claude/ask', 'opencli:spotify/auth', 'opencli:spotify/status', 'opencli:ones/login', 'opencli:ones/token-info', 'opencli:xiaoyuzhou/history', 'opencli:paperreview/submit', 'opencli:paperreview/review', 'opencli:paperreview/feedback', 'opencli:quark/share-tree', 'opencli:quark/save', 'opencli:kimi/storage-get', 'opencli:kimi/storage-keys', 'opencli:kimi/cookies', 'opencli:kimi/idb-list', 'books-list', 'hockey-search']) {
         expect(JSON.stringify(all)).not.toContain(id);
         const response = await client.callTool({ name: 'call_tool', arguments: { name: 'browser', args: { action: 'recipe', recipeId: id } } });

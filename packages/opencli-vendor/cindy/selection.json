@@ -16,6 +16,10 @@
     "xiaoyuzhou": "Deferred: authenticated adapters require manually configured access/refresh tokens without a host secure configuration entry. Plaintext credential fallback is removed; the independent public Cindy recipe remains available.",
     "paperreview": "Deferred: submit returns a reusable review capability token and review/feedback accept it as a model input. Keep capability credentials inside the host before inclusion.",
     "quark": "Deferred: share-tree returns a reusable share capability stoken and save accepts it as a model input. Keep capability credentials inside the host before inclusion.",
-    "kimi": "Deferred: storage-get returns arbitrary Web Storage values and cookies exposes credential previews. Remove these diagnostic credential exits before inclusion; no model-facing raw secrets."
+    "kimi": "Deferred: storage-get returns arbitrary Web Storage values and cookies exposes credential previews. Remove these diagnostic credential exits before inclusion; no model-facing raw secrets.",
+    "weread-official": "Deferred: requires a reusable API key from the process environment without a host secure configuration entry. Keep sources; do not advertise unusable authenticated commands.",
+    "minimax": "Deferred: requires an environment-only API key without a host secure configuration entry. No new credential configuration mechanism in this refresh.",
+    "jira": "Deferred: Atlassian authentication depends on environment-only tokens or passwords without a host secure configuration entry.",
+    "confluence": "Deferred: Atlassian authentication depends on environment-only tokens or passwords without a host secure configuration entry."
   }
 }

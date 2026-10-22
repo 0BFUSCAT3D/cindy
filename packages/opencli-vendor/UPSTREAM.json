@@ -222,6 +222,12 @@
     },
     "clis/midjourney/quota.js": {
       "upstreamSha256": "c9be85847c01d7a0d9673dc45b2ddbadc77a2de885825530b08886fe6e310a0f"
+    },
+    "clis/semanticscholar/utils.js": {
+      "upstreamSha256": "26b61c794be47a4480895e34a36b9e503de8c163c52e854b8b43b339e427c3a8"
+    },
+    "clis/pubmed/utils.js": {
+      "upstreamSha256": "ad4e9eff1347b667ec04aaa43bc55a4b65adedac685c55daf11965aec15fe436"
     }
   },
   "files": {
@@ -1047,7 +1053,7 @@
     "clis/pubmed/related.js": "31e3e2918dc959c9fa9ab9d6a58bc3257cce0c4f1c410708fc8a02d3ea4a3cfd",
     "clis/pubmed/review.js": "e6807193e5be3c190c500d78fc74953aea13516773b80dfb3063571fc063ae74",
     "clis/pubmed/search.js": "1e08fe33fdf27198a1f5353d5cd749dde0c763c9f88223edb5e01a42b08a48fc",
-    "clis/pubmed/utils.js": "ad4e9eff1347b667ec04aaa43bc55a4b65adedac685c55daf11965aec15fe436",
+    "clis/pubmed/utils.js": "f7d71c1d1739cecdd1c5d9eb5423fa1a212b19fb9e4ff5b8ba2b736708ad5a33",
     "clis/pypi/downloads.js": "f3d6e0287a9f266cae363c962e4a86b809cf0c804c55243358b740348a0529b6",
     "clis/pypi/package.js": "fdab2a496b24ab1ada9495f8f24caff7d5ae96f99627b3e58832a875099697bf",
     "clis/pypi/utils.js": "5911bd197bf040efabd9699aaed681ad9d12612b14c475bd8c5d9b7238e99047",
@@ -1116,7 +1122,7 @@
     "clis/semanticscholar/paper.js": "2ff70f855f61e9bf7ca45c6791fbb561af55c94411ca5d2e87708a1b2c1bafda",
     "clis/semanticscholar/recommendations.js": "b78060c985a25088fcad2a7b52a575a24e51b821445ab71f59407b6a64f88b4c",
     "clis/semanticscholar/search.js": "523f125057973cb19bb49ee5e72cfb4c667541c8b9bb41f16666734c8cae6434",
-    "clis/semanticscholar/utils.js": "26b61c794be47a4480895e34a36b9e503de8c163c52e854b8b43b339e427c3a8",
+    "clis/semanticscholar/utils.js": "347d743a451c42fb3974fd79f5a6d865459e00fd0071f3dceeb36335f1f169d4",
     "clis/sinablog/article.js": "af014453ea15d58260c12b3cb4d2f84c79618e876694fd163f1d16d1495e5472",
     "clis/sinablog/hot.js": "3d70e03db1a03498965ff1cda154226c13390d0e4fd0f1ea55e3ab643f248e27",
     "clis/sinablog/search.js": "45cc756b198bb7f862d2811271edf999b4d098a3680084c0c32fd156f734a385",
@@ -1309,7 +1315,7 @@
     "clis/twitter/unlike.js": "183aaf8d883fe57d504e28f41ad46aaaa6e639d7d7c562b87a06f3852fc525c9",
     "clis/twitter/unretweet.js": "207a14240eb519b1be6c5e35ded2a9c3002f3cc42d8ad96d9315df88f706bdaf",
     "clis/twitter/user-timeline.js": "d80d311ca4090a7c63a7ff8c6b33d612f51d7132a6f289665957bcebda321b00",
-    "clis/twitter/utils.js": "18ea1463b29a6dd52d031519b53f6eac25d15782c5e97576ee148e1517e2730a",
+    "clis/twitter/utils.js": "6c73bbe45114c6f4a84e1fd30365f2bc295c6bf24e1f80a0ec0cffba6b0cc0c9",
     "clis/uisdc/news.js": "7450fa65ec39331fbb4e0e911bf6ebb4bf4cd9e43e5f72b59fbba740b723ae32",
     "clis/uiverse/_shared.js": "6318c65c3e3630e843278fc77b87e8da00a387909c78bbee69bfe56803fc0638",
     "clis/uiverse/code.js": "3efffa78519d4c545b4c8fb2bb9c7ff607322b6a9dad8443cc7a3af4df217cd3",

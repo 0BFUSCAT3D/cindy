@@ -3661,5 +3661,45 @@
     "file": "src/download/index.ts",
     "before": "import { closeRecipeFileSync, openRecipeOutputFileSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';",
     "after": "import { recipeFileExistsSync, statRecipeFileSync, closeRecipeFileSync, openRecipeOutputFileSync, recipeCopySource, recipeOutputPath, recipeTemporaryDirectory, resolveRecipePath } from '@jackwener/opencli/cindy/host';"
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "import { ArgumentError } from '@jackwener/opencli/errors';",
+    "after": "import { ArgumentError } from '@jackwener/opencli/errors';\nimport { httpDownload } from '@jackwener/opencli/download';"
+  },
+  {
+    "file": "clis/twitter/utils.js",
+    "before": "export async function downloadRemoteImage(imageUrl) {\n    let parsed;\n    try {\n        parsed = new URL(imageUrl);\n    } catch {\n        throw new ArgumentError(`Invalid image URL: ${imageUrl}`);\n    }\n    if (!/^https?:$/.test(parsed.protocol)) {\n        throw new ArgumentError(`Unsupported image URL protocol: ${parsed.protocol}`);\n    }\n    const response = await fetch(imageUrl);\n    if (!response.ok) {\n        throw new ArgumentError(`Image download failed: HTTP ${response.status}`);\n    }\n    const contentLength = Number(response.headers.get('content-length') || '0');\n    if (contentLength > MAX_IMAGE_SIZE_BYTES) {\n        throw new ArgumentError(`Image too large: ${(contentLength / 1024 / 1024).toFixed(1)} MB (max ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024} MB)`);\n    }\n    const ext = resolveImageExtension(imageUrl, response.headers.get('content-type'));\n    const cleanupDir = fs.mkdtempSync(recipeOutputPath(path.join(recipeTemporaryDirectory(), 'opencli-twitter-')));\n    const absPath = path.join(cleanupDir, `image${ext}`);\n    const buffer = Buffer.from(await response.arrayBuffer());\n    if (buffer.byteLength > MAX_IMAGE_SIZE_BYTES) {\n        fs.rmSync(recipeOutputPath(cleanupDir), { recursive: true, force: true });\n        throw new ArgumentError(`Image too large: ${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB (max ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024} MB)`);\n    }\n    fs.writeFileSync(recipeOutputPath(absPath), buffer);\n    return { absPath, cleanupDir };\n}\n",
+    "after": "export async function downloadRemoteImage(imageUrl) {\n    const cleanupDir = fs.mkdtempSync(recipeOutputPath(path.join(recipeTemporaryDirectory(), 'opencli-twitter-')));\n    const pendingPath = path.join(cleanupDir, 'download');\n    try {\n        // Reuse the shared DNS/IP/redirect policy and streaming byte budget.\n        // Only invocation-owned temporary output is granted to this consumer.\n        const result = await httpDownload(imageUrl, pendingPath, {\n            maxBytes: MAX_IMAGE_SIZE_BYTES,\n            includeContentType: true,\n        });\n        if (!result.success) throw new ArgumentError(`Image download failed: ${result.error}`);\n        const ext = resolveImageExtension(result.finalUrl || imageUrl, result.contentType);\n        const absPath = path.join(cleanupDir, `image${ext}`);\n        fs.renameSync(recipeOutputPath(pendingPath), recipeOutputPath(absPath));\n        return { absPath, cleanupDir };\n    } catch (error) {\n        fs.rmSync(recipeOutputPath(cleanupDir), { recursive: true, force: true });\n        throw error;\n    }\n}\n"
+  },
+  {
+    "file": "clis/semanticscholar/utils.js",
+    "before": "    const apiKey = process.env.SEMANTIC_SCHOLAR_API_KEY;\n    if (apiKey) headers['x-api-key'] = apiKey;",
+    "after": "    // Public mode only; ambient process credentials are not a host binding."
+  },
+  {
+    "file": "clis/semanticscholar/utils.js",
+    "before": "attempt === 0 && !apiKey",
+    "after": "attempt === 0"
+  },
+  {
+    "file": "clis/semanticscholar/utils.js",
+    "before": "Fetch with optional `SEMANTIC_SCHOLAR_API_KEY` header.",
+    "after": "Fetch anonymously without inherited API credentials."
+  },
+  {
+    "file": "clis/semanticscholar/utils.js",
+    "before": "// API. Anonymous traffic caps at roughly 100 requests / 5 minutes; an optional\n// API key (free at https://www.semanticscholar.org/product/api#api-key-form)\n// lifts the limit and is passed via `SEMANTIC_SCHOLAR_API_KEY`. Paper refs",
+    "after": "// API. Cindy uses anonymous traffic without ambient API keys. Paper refs"
+  },
+  {
+    "file": "clis/pubmed/utils.js",
+    "before": "    if (process.env.NCBI_API_KEY) {\n        searchParams.set('api_key', process.env.NCBI_API_KEY);\n    }\n",
+    "after": "    // Public mode only; do not inherit launch-environment API credentials.\n"
+  },
+  {
+    "file": "clis/pubmed/utils.js",
+    "before": "const delayMs = process.env.NCBI_API_KEY ? 110 : 360;",
+    "after": "const delayMs = 360;"
   }
 ]

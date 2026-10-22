@@ -162,10 +162,6 @@ import "../clis/coingecko/exchanges.js";
 import "../clis/coingecko/global.js";
 import "../clis/coingecko/top.js";
 import "../clis/coingecko/trending.js";
-import "../clis/confluence/create.js";
-import "../clis/confluence/page.js";
-import "../clis/confluence/search.js";
-import "../clis/confluence/update.js";
 import "../clis/coupang/add-to-cart.js";
 import "../clis/coupang/auth.js";
 import "../clis/coupang/product.js";
@@ -452,11 +448,6 @@ import "../clis/jimeng/generate.js";
 import "../clis/jimeng/history.js";
 import "../clis/jimeng/new.js";
 import "../clis/jimeng/workspaces.js";
-import "../clis/jira/attachments.js";
-import "../clis/jira/comments.js";
-import "../clis/jira/issue.js";
-import "../clis/jira/links.js";
-import "../clis/jira/search.js";
 import "../clis/juejin/hot.js";
 import "../clis/juejin/recommend.js";
 import "../clis/ke/auth.js";
@@ -551,7 +542,6 @@ import "../clis/midjourney/quota.js";
 import "../clis/midjourney/settings.js";
 import "../clis/midjourney/status.js";
 import "../clis/midjourney/whoami.js";
-import "../clis/minimax/music.js";
 import "../clis/mubu/doc.js";
 import "../clis/mubu/docs.js";
 import "../clis/mubu/notes.js";
@@ -866,14 +856,6 @@ import "../clis/weibo/user.js";
 import "../clis/weixin/create-draft.js";
 import "../clis/weixin/drafts.js";
 import "../clis/weixin/search.js";
-import "../clis/weread-official/book.js";
-import "../clis/weread-official/discover.js";
-import "../clis/weread-official/list-apis.js";
-import "../clis/weread-official/notes.js";
-import "../clis/weread-official/readdata.js";
-import "../clis/weread-official/review.js";
-import "../clis/weread-official/search.js";
-import "../clis/weread-official/shelf.js";
 import "../clis/weread/ai-outline.js";
 import "../clis/weread/auth.js";
 import "../clis/weread/book-search.js";
@@ -1173,10 +1155,6 @@ export const modules = {
   "coingecko/global.js": true,
   "coingecko/top.js": true,
   "coingecko/trending.js": true,
-  "confluence/create.js": true,
-  "confluence/page.js": true,
-  "confluence/search.js": true,
-  "confluence/update.js": true,
   "coupang/add-to-cart.js": true,
   "coupang/auth.js": true,
   "coupang/product.js": true,
@@ -1463,11 +1441,6 @@ export const modules = {
   "jimeng/history.js": true,
   "jimeng/new.js": true,
   "jimeng/workspaces.js": true,
-  "jira/attachments.js": true,
-  "jira/comments.js": true,
-  "jira/issue.js": true,
-  "jira/links.js": true,
-  "jira/search.js": true,
   "juejin/hot.js": true,
   "juejin/recommend.js": true,
   "ke/auth.js": true,
@@ -1562,7 +1535,6 @@ export const modules = {
   "midjourney/settings.js": true,
   "midjourney/status.js": true,
   "midjourney/whoami.js": true,
-  "minimax/music.js": true,
   "mubu/doc.js": true,
   "mubu/docs.js": true,
   "mubu/notes.js": true,
@@ -1877,14 +1849,6 @@ export const modules = {
   "weixin/create-draft.js": true,
   "weixin/drafts.js": true,
   "weixin/search.js": true,
-  "weread-official/book.js": true,
-  "weread-official/discover.js": true,
-  "weread-official/list-apis.js": true,
-  "weread-official/notes.js": true,
-  "weread-official/readdata.js": true,
-  "weread-official/review.js": true,
-  "weread-official/search.js": true,
-  "weread-official/shelf.js": true,
   "weread/ai-outline.js": true,
   "weread/auth.js": true,
   "weread/book-search.js": true,

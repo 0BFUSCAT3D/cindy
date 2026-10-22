@@ -11,15 +11,15 @@
 - 170 个站点/应用，1,223 条命令（916 read、307 write）。
 - 1,112 个命令模块，所有生产共享代码、JSON 和其他资源一并引入；不引入上游测试。
 - 上游快照完整保留，但默认目录独立选择：排除 Z-Library、Slock、Claude.ai、Spotify、ONES、
-  小宇宙适配器、PaperReview、Quark 和 Kimi 共 121 条，另暂缓 17 条直接落盘命令，
-  剩余 1,085 条命令、25 个上游别名。原因记录在 [selection.json](cindy/selection.json)，
+  小宇宙适配器、PaperReview、Quark、Kimi、微信读书官方 API、MiniMax、Jira 和 Confluence 共 139 条，
+  另暂缓 17 条直接落盘命令，剩余 1,067 条命令、25 个上游别名。原因记录在 [selection.json](cindy/selection.json)，
   同步会沿用此选择，排除条目不进入模块导入表和可执行目录。
 - Cindy 原有 56 个 ID：47 个转到新版适配器，7 个保留原流程，两个爬虫练习站移至
   `packages/lizi-mcps/src/browser/recipe-examples`，不再出现在默认列表。
   逐项记录见 [legacy-coverage.json](cindy/legacy-coverage.json)。
 - Cindy 独立增加 App Store 搜索、Google Play 搜索、TapTap 中国站游戏详情、Steam 玩家评价、
   Open Library 书目查询和 Crossref 文献/DOI 查询，共 6 个配方，位于
-  `packages/lizi-mcps/src/browser/cindy-recipes`。共 1,170 个可发现 ID、168 份指南；这个数包含别名和兼容入口。
+  `packages/lizi-mcps/src/browser/cindy-recipes`。共 1,152 个可发现 ID、166 份指南；这个数包含别名和兼容入口。
 - 兼容入口保持输入名，输出改为新版结构化结果；用户本地覆盖层仍优先于内置层。
 
 通过 `browser(action="siteguide")` 查询精简完整目录；传 `site`（域名或上游站点名）
@@ -46,6 +46,9 @@
   登录继续使用已有的通用代输入流程，不新增站点专用配置。
 - Kimi 暂不进入默认目录：存储读取与 Cookie 诊断会把任意存储值或授权材料预览返回模型。
   完整来源保留，不新增秘密键猜测或凭据脱敏机制。
+- 微信读书官方 API、MiniMax、Jira 和 Confluence 的 18 条命令暂缓：长期密钥、令牌或密码
+  依赖进程环境变量，缺少宿主安全配置入口；不新增配置机制。微信读书浏览器适配器仍保留。
+  Semantic Scholar 和 PubMed 保留公开匿名查询，忽略启动环境中的可选 API key。
 - 文章 stdout 输出改为 MCP 返回值；
   Readability 脚本随构建打包，避免安装包运行时查找源码文件。
 - 主进程使用静态入口加载所选命令及其执行依赖，不在运行期动态导入模块；导入不执行命令。
@@ -70,6 +73,8 @@
 - 共享 Node 文件下载复用浏览器运行层的 SSRF fetch：首跳与每次重定向均检查协议、DNS/IP，
   连接固定在已校验的公网地址；跨 origin 移除鉴权头，正文结束或失败后释放连接。
   这条下载路径使用受保护的直连，不读取适配器的代理环境变量；需要代理的站点可沿用浏览器操作。
+- X 引用及回复的远程配图也复用此下载器，沿用既有 20 MiB 上限；响应长度和流式字节双检，
+  不完整缓冲响应。成功后只交接调用内副本，HTTP、格式和限额失败都清理副本并释放连接。
 - 文章自动图片下载最多 20 张，每张 10 MiB，单篇累计接收 50 MiB（包含失败传输）；
   先检查响应长度，再在写入前检查实际流量。超出上限或下载失败的图片保留远程链接。
 - 与配方按使用维护共用暂停状态：适配器参数预检失败不会暂停配方，执行失败才暂停；

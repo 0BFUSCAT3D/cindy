@@ -1,9 +1,7 @@
 // Shared helpers for the Semantic Scholar (`api.semanticscholar.org`) adapter.
 //
 // Semantic Scholar exposes a free Academic Graph + a separate Recommendations
-// API. Anonymous traffic caps at roughly 100 requests / 5 minutes; an optional
-// API key (free at https://www.semanticscholar.org/product/api#api-key-form)
-// lifts the limit and is passed via `SEMANTIC_SCHOLAR_API_KEY`. Paper refs
+// API. Cindy uses anonymous traffic without ambient API keys. Paper refs
 // accept Semantic Scholar paperIds, DOIs, arXiv ids, ACL ids, MAG ids, PMID,
 // or full URLs; they round-trip through `paper <ref>` to `citations <ref>`
 // and `recommendations <ref>`.
@@ -81,14 +79,13 @@ export function requirePaperRef(value) {
 }
 
 /**
- * Fetch with optional `SEMANTIC_SCHOLAR_API_KEY` header. Retries once on 429
+ * Fetch anonymously without inherited API credentials. Retries once on 429
  * after a short pause; anonymous traffic hits the public ~100 req / 5 min
  * cap, and a single retry covers the typical burst-then-cool-down case.
  */
 export async function s2Fetch(url, label) {
     const headers = { 'user-agent': UA, accept: 'application/json' };
-    const apiKey = process.env.SEMANTIC_SCHOLAR_API_KEY;
-    if (apiKey) headers['x-api-key'] = apiKey;
+    // Public mode only; ambient process credentials are not a host binding.
 
     let resp;
     let attempt = 0;
@@ -101,7 +98,7 @@ export async function s2Fetch(url, label) {
                 'Check that api.semanticscholar.org is reachable from this network.',
             );
         }
-        if (resp.status === 429 && attempt === 0 && !apiKey) {
+        if (resp.status === 429 && attempt === 0) {
             attempt += 1;
             await new Promise(resolve => setTimeout(resolve, 1500));
             continue;

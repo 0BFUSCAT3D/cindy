@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ArgumentError } from '@jackwener/opencli/errors';
+import { httpDownload } from '@jackwener/opencli/download';
 
 /**
  * Public read-only Twitter web bearer token used by the GraphQL endpoints we
@@ -85,33 +86,24 @@ export function resolveImageExtension(url, contentType) {
  * @returns {Promise<{ absPath: string, cleanupDir: string }>}
  */
 export async function downloadRemoteImage(imageUrl) {
-    let parsed;
-    try {
-        parsed = new URL(imageUrl);
-    } catch {
-        throw new ArgumentError(`Invalid image URL: ${imageUrl}`);
-    }
-    if (!/^https?:$/.test(parsed.protocol)) {
-        throw new ArgumentError(`Unsupported image URL protocol: ${parsed.protocol}`);
-    }
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-        throw new ArgumentError(`Image download failed: HTTP ${response.status}`);
-    }
-    const contentLength = Number(response.headers.get('content-length') || '0');
-    if (contentLength > MAX_IMAGE_SIZE_BYTES) {
-        throw new ArgumentError(`Image too large: ${(contentLength / 1024 / 1024).toFixed(1)} MB (max ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024} MB)`);
-    }
-    const ext = resolveImageExtension(imageUrl, response.headers.get('content-type'));
     const cleanupDir = fs.mkdtempSync(recipeOutputPath(path.join(recipeTemporaryDirectory(), 'opencli-twitter-')));
-    const absPath = path.join(cleanupDir, `image${ext}`);
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.byteLength > MAX_IMAGE_SIZE_BYTES) {
+    const pendingPath = path.join(cleanupDir, 'download');
+    try {
+        // Reuse the shared DNS/IP/redirect policy and streaming byte budget.
+        // Only invocation-owned temporary output is granted to this consumer.
+        const result = await httpDownload(imageUrl, pendingPath, {
+            maxBytes: MAX_IMAGE_SIZE_BYTES,
+            includeContentType: true,
+        });
+        if (!result.success) throw new ArgumentError(`Image download failed: ${result.error}`);
+        const ext = resolveImageExtension(result.finalUrl || imageUrl, result.contentType);
+        const absPath = path.join(cleanupDir, `image${ext}`);
+        fs.renameSync(recipeOutputPath(pendingPath), recipeOutputPath(absPath));
+        return { absPath, cleanupDir };
+    } catch (error) {
         fs.rmSync(recipeOutputPath(cleanupDir), { recursive: true, force: true });
-        throw new ArgumentError(`Image too large: ${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB (max ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024} MB)`);
+        throw error;
     }
-    fs.writeFileSync(recipeOutputPath(absPath), buffer);
-    return { absPath, cleanupDir };
 }
 
 /**

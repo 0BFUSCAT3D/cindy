@@ -64,9 +64,7 @@ export function buildEutilsUrl(tool, params = {}) {
     if (!params.retmode) {
         searchParams.set('retmode', 'json');
     }
-    if (process.env.NCBI_API_KEY) {
-        searchParams.set('api_key', process.env.NCBI_API_KEY);
-    }
+    // Public mode only; do not inherit launch-environment API credentials.
     if (process.env.NCBI_EMAIL) {
         searchParams.set('email', process.env.NCBI_EMAIL);
     }
@@ -82,7 +80,7 @@ async function waitForRateLimit() {
     if (process.env.NODE_ENV === 'test') {
         return;
     }
-    const delayMs = process.env.NCBI_API_KEY ? 110 : 360;
+    const delayMs = 360;
     const now = Date.now();
     const waitMs = Math.max(0, lastRequestAt + delayMs - now);
     if (waitMs > 0) {
