@@ -1,28 +1,41 @@
 /**
  * 伙伴近况（手机）：点伙伴聊天顶栏的头像打开，与桌面 BotGlancePopover 同三块——电脑 / 待办 / 输出内容；
- * 没内容的块整块不出现。规则见 docs/product-rules/cindy-bots-runtime.md「伙伴近况」。
- * 待办行没有按钮：点一条交给对话（作为待办引用放进输入框），长按只有「删除」，可撤销。
+ * 没内容的块整块不出现。规则见 docs/product-rules/cindy-bots-runtime.md「伙伴近况」，版式按原型
+ * Designs/cindy/teammate-glance（手机 r1.1）：系统 sheet 外壳，内容是 inset grouped 卡片。
+ * 待办行没有按钮：点一条交给对话（作为待办引用放进输入框），长按系统菜单只有「删除」，可撤销。
  */
-import { useMemo, useState } from 'react';
-import { Alert, StyleSheet, View } from 'react-native';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Check, ChevronDown, ChevronUp, Monitor } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import type { BotDelegationListResult } from '@cindy/maker-shared/botDelegation';
 import { todoDateLabel, todoDue, type TeammateTodo } from '@cindy/maker-shared/teammate-todo';
+import type { RemoteResource } from '@cindy/device-link';
 import { useAuth } from '@/auth/AuthContext';
+import { Text } from '@/components/AppText';
+import { FileTypeIcon } from '@/components/FileTypeIcon';
+import { RemoteCompanionAvatar } from '@/components/RemoteCompanionAvatar';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 import { readRemoteCollectionCache, remoteResourceConnectionState } from '@/device-link/remoteResourceAvailability';
-import { iconSize, iconStroke, radius, spacing, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
-import { ContextSheet, ContextSheetGroup, ContextSheetRow } from './ContextSheet';
-import { useRemoteCompanionQuery } from './useRemoteCompanionQuery';
+import { NativePullDownMenu } from '@/platform/chrome/NativePullDownMenu';
+import { fontWeight, iconSize, iconStroke, lineHeight, radius, spacing, typeScale, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
+import { CompanionSheet } from './CompanionSheet';
 import { companionGlanceOutputs } from './companionProfileData';
+import { useRemoteCompanionQuery } from './useRemoteCompanionQuery';
 import type { useCompanionGlanceTodos } from './useCompanionGlanceTodos';
 
 const TODO_PREVIEW = 5;
 const OUTPUT_PREVIEW = 3;
-const DUE_DOT = 6;
 const CINDY_BOT_ID = 'cindy-default';
+/** Header avatar (原型 56pt). */
+const HEADER_AVATAR = 56;
+/** Leading glyph column: rows with an icon start their text (and divider) after it. */
+const ICON_COLUMN = 26;
+const ICON_GLYPH = 22;
+const ROW_GAP = spacing.md + 2;
+const DUE_DOT = 6;
+const PRESENCE_DOT = 8;
 
 type GlanceTodoState = ReturnType<typeof useCompanionGlanceTodos>;
 
@@ -37,12 +50,13 @@ function dayLabel(at: number, language: string): string {
 }
 
 export function CompanionGlanceSheet({
-  visible, onClose, name, botId, deviceId, deviceName, sessionId, online, cloudHome, todos,
+  visible, onClose, name, avatar, botId, deviceId, deviceName, sessionId, online, cloudHome, todos,
   onQuoteTodo, onOpenTask, onOpenCindy, onSwitchHome,
 }: {
   visible: boolean;
   onClose(): void;
   name: string;
+  avatar: RemoteResource['display']['avatar'];
   botId: string;
   deviceId: string;
   deviceName: string;
@@ -57,16 +71,68 @@ export function CompanionGlanceSheet({
   onOpenCindy(hosted: HostedRemoteCollectionItem): void;
   onSwitchHome(): void;
 }) {
-  const { t } = useTranslation();
-  return <ContextSheet visible={visible} onClose={onClose} title={t('devices.glance.open', { name })} keyboardAvoidingBehavior={undefined}
-    testID="companion.glance">
-    <ContextSheetGroup label={t('devices.glance.computers')}>
+  const styles = useThemedStyles(makeStyles);
+  // Row actions that leave the sheet run once it has closed, so nothing is presented over it.
+  const pending = useRef<(() => void) | null>(null);
+  const afterClose = (action: () => void) => { pending.current = action; onClose(); };
+  return <CompanionSheet visible={visible} onClose={onClose} title="" contentScrolls testID="companion.glance"
+    onClosed={() => { const action = pending.current; pending.current = null; action?.(); }}>
+    <ScrollView contentContainerStyle={styles.content}>
+      <View style={styles.header}>
+        <RemoteCompanionAvatar avatar={avatar} name={name} deviceId={deviceId} online={online} size={HEADER_AVATAR} framed />
+        <Text numberOfLines={1} style={styles.headerName}>{name}</Text>
+      </View>
       <Computers botId={botId} deviceId={deviceId} deviceName={deviceName} online={online} cloudHome={cloudHome}
-        onOpenCindy={onOpenCindy} onSwitchHome={onSwitchHome} />
-    </ContextSheetGroup>
-    <Todos todos={todos} online={online} onQuote={onQuoteTodo} />
-    <Outputs botId={botId} deviceId={deviceId} sessionId={sessionId} online={online} onOpenTask={onOpenTask} />
-  </ContextSheet>;
+        onOpenCindy={hosted => afterClose(() => onOpenCindy(hosted))} onSwitchHome={() => afterClose(onSwitchHome)} />
+      <Todos todos={todos} online={online} onQuote={todo => afterClose(() => onQuoteTodo(todo))} />
+      <Outputs botId={botId} deviceId={deviceId} sessionId={sessionId} online={online}
+        onOpenTask={taskId => afterClose(() => onOpenTask(taskId))} />
+    </ScrollView>
+  </CompanionSheet>;
+}
+
+// ---------------------------------------------------------------- 分组与行（原型 inset grouped 卡片）
+
+function Section({ label, children }: { label: string; children: ReactNode }) {
+  const styles = useThemedStyles(makeStyles);
+  return <View style={styles.section}>
+    <Text style={styles.sectionLabel}>{label}</Text>
+    <View style={styles.card}>{children}</View>
+  </View>;
+}
+
+/** Rows separated by a hairline that starts at the text column, like the system list. */
+function joinRows(rows: ReactNode[], inset: boolean, styles: ReturnType<typeof makeStyles>): ReactNode[] {
+  return rows.flatMap((row, index) => index === 0 ? [row]
+    : [<View key={`divider-${index}`} style={[styles.divider, inset && styles.dividerInset]} />, row]);
+}
+
+function Row({ icon, title, meta, trailing, muted = false, onPress, testID }: {
+  icon?: ReactNode; title: string; meta?: string; trailing?: ReactNode; muted?: boolean; onPress?(): void; testID?: string;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const body = <>
+    {icon ? <View style={styles.icon}>{icon}</View> : null}
+    <View style={styles.rowText}>
+      <Text numberOfLines={1} style={[styles.rowTitle, muted && styles.rowTitleMuted]}>{title}</Text>
+      {meta ? <Text numberOfLines={1} style={styles.rowMeta}>{meta}</Text> : null}
+    </View>
+    {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
+  </>;
+  if (!onPress) return <View style={styles.row} testID={testID}>{body}</View>;
+  return <Pressable accessibilityRole="button" accessibilityLabel={meta ? `${title}, ${meta}` : title} onPress={onPress}
+    style={({ pressed }) => [styles.row, pressed && styles.rowPressed]} testID={testID}>{body}</Pressable>;
+}
+
+function FoldRow({ label, open, inset, onPress, testID }: { label: string; open: boolean; inset: boolean; onPress(): void; testID?: string }) {
+  const styles = useThemedStyles(makeStyles);
+  const { colors } = useTheme();
+  const Icon = open ? ChevronUp : ChevronDown;
+  return <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={onPress}
+    style={({ pressed }) => [styles.row, inset && styles.foldInset, pressed && styles.rowPressed]} testID={testID}>
+    <Text style={styles.foldLabel}>{label}</Text>
+    <Icon size={iconSize.lg} strokeWidth={iconStroke.regular} color={colors.textTertiary} />
+  </Pressable>;
 }
 
 // ---------------------------------------------------------------- 电脑
@@ -77,10 +143,10 @@ function Computers({ botId, deviceId, deviceName, online, cloudHome, onOpenCindy
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { user, accountGeneration } = useAuth();
   const { status, getPresenceAvailability } = useDeviceLink();
   const [showOffline, setShowOffline] = useState(false);
-  const icon = <Monitor size={iconSize.lg} strokeWidth={iconStroke.regular} color={colors.textSecondary} />;
   // Cindy runs a copy on each computer: the other copies come from the teammate list already read
   // on this phone (no extra discovery); other teammates only show the computer they run on.
   const copies = useMemo(() => {
@@ -91,25 +157,23 @@ function Computers({ botId, deviceId, deviceName, online, cloudHome, onOpenCindy
   }, [accountGeneration, botId, cloudHome, deviceId, getPresenceAvailability, status, user?.id]);
   const onlineCopies = copies.filter(copy => copy.online);
   const offlineCopies = copies.filter(copy => !copy.online);
-  return <>
-    <ContextSheetRow icon={icon} label={deviceName} detail={online ? t('devices.glance.runningHere') : t('devices.glance.offline')}
-      trailing={<Check size={iconSize.lg} strokeWidth={iconStroke.medium} color={colors.textPrimary} />} onPress={() => undefined}
-      testID="companion.glance.computer.current" />
-    {onlineCopies.map(copy => <ContextSheetRow key={copy.row.key} icon={icon} label={copy.row.host.deviceName} detail={t('devices.glance.online')}
-      dismissBeforePress onPress={() => onOpenCindy(copy.row)} testID={`companion.glance.computer.${copy.row.host.deviceId}`} />)}
-    {offlineCopies.length > 0 ? <ContextSheetRow label={t('devices.glance.offlineCount', { count: offlineCopies.length })}
-      trailing={<FoldIcon open={showOffline} />} onPress={() => setShowOffline(value => !value)} testID="companion.glance.computer.offline" /> : null}
-    {showOffline ? offlineCopies.map(copy => <ContextSheetRow key={copy.row.key} icon={icon} label={copy.row.host.deviceName}
-      detail={t('devices.glance.offline')} disabled onPress={() => undefined} />) : null}
-    {cloudHome && online ? <ContextSheetRow label={t('devices.cloudCompanion.switchAction')} trailing="chevron" dismissBeforePress
-      onPress={onSwitchHome} testID="companion.glance.computer.switch" /> : null}
-  </>;
-}
-
-function FoldIcon({ open }: { open: boolean }) {
-  const { colors } = useTheme();
-  const Icon = open ? ChevronUp : ChevronDown;
-  return <Icon size={iconSize.lg} strokeWidth={iconStroke.regular} color={colors.textTertiary} />;
+  const monitor = (state: 'here' | 'online' | 'offline') => <View>
+    <Monitor size={ICON_GLYPH} strokeWidth={iconStroke.regular} color={state === 'offline' ? colors.textTertiary : colors.textSecondary} />
+    {state === 'here' && online ? <View style={styles.presence} /> : null}
+  </View>;
+  const rows: ReactNode[] = [
+    <Row key="current" icon={monitor('here')} title={deviceName} meta={online ? t('devices.glance.runningHere') : t('devices.glance.offline')}
+      trailing={<Check size={iconSize.lg} strokeWidth={iconStroke.medium} color={colors.textPrimary} />} testID="companion.glance.computer.current" />,
+    ...onlineCopies.map(copy => <Row key={copy.row.key} icon={monitor('online')} title={copy.row.host.deviceName} meta={t('devices.glance.online')}
+      onPress={() => onOpenCindy(copy.row)} testID={`companion.glance.computer.${copy.row.host.deviceId}`} />),
+  ];
+  if (offlineCopies.length > 0) rows.push(<FoldRow key="offline" inset label={t('devices.glance.offlineCount', { count: offlineCopies.length })}
+    open={showOffline} onPress={() => setShowOffline(value => !value)} testID="companion.glance.computer.offline" />);
+  if (showOffline) rows.push(...offlineCopies.map(copy => <Row key={copy.row.key} icon={monitor('offline')} title={copy.row.host.deviceName}
+    meta={t('devices.glance.offline')} muted />));
+  if (cloudHome && online) rows.push(<FoldRow key="switch" inset label={t('devices.cloudCompanion.switchAction')} open={false}
+    onPress={onSwitchHome} testID="companion.glance.computer.switch" />);
+  return <Section label={t('devices.glance.computers')}>{joinRows(rows, true, styles)}</Section>;
 }
 
 // ---------------------------------------------------------------- 待办
@@ -155,30 +219,37 @@ function Todos({ todos, online, onQuote }: { todos: GlanceTodoState; online: boo
       setError(t('devices.glance.undoFailed'));
     }
   };
-  const menu = (todo: TeammateTodo) => Alert.alert(todo.title, undefined, [
-    { text: t('devices.glance.delete'), style: 'destructive', onPress: () => void remove(todo) },
-    { text: t('devices.common.cancel'), style: 'cancel' },
-  ]);
   const row = (todo: TeammateTodo, isDone: boolean) => {
     const due = !isDone && todoDue(todo);
+    const date = isDone ? '' : todoDateLabel(todo, i18n.language);
     const completion = isDone ? todo.history[todo.history.length - 1]?.summary : undefined;
-    return <ContextSheetRow key={todo.id} label={todo.title} detail={completion || sourceText(todo, t)}
-      value={isDone ? undefined : todoDateLabel(todo, i18n.language) || undefined}
-      trailing={due ? <View style={styles.dueDot} accessibilityLabel={t('devices.glance.dueUnseen')} /> : undefined}
-      dismissBeforePress onPress={() => onQuote(todo)} onLongPress={online ? () => menu(todo) : undefined}
-      testID={isDone ? 'companion.glance.todo.done' : 'companion.glance.todo'} />;
+    const content = <Row title={todo.title} meta={completion || sourceText(todo, t)} muted={isDone}
+      trailing={date ? <View style={styles.date}>
+        {due ? <View style={styles.dueDot} accessibilityLabel={t('devices.glance.dueUnseen')} /> : null}
+        <Text style={[styles.dateText, due && styles.dateDue]}>{date}</Text>
+      </View> : undefined}
+      onPress={() => onQuote(todo)} testID={isDone ? 'companion.glance.todo.done' : 'companion.glance.todo'} />;
+    // 长按：系统上下文菜单（行浮起、背景模糊），只有「删除」。
+    return <NativePullDownMenu key={todo.id} longPress disabled={!online} accessibilityLabel={todo.title}
+      actions={[{ id: 'delete', title: t('devices.glance.delete'), destructive: true, image: 'trash' }]}
+      onAction={() => void remove(todo)}>{content}</NativePullDownMenu>;
   };
-  const visible = showAll ? open : open.slice(0, TODO_PREVIEW);
-  return <ContextSheetGroup label={t('devices.glance.todos')} footer={error} footerTone="error">
-    {deleted ? <ContextSheetRow label={t('devices.glance.undo')} detail={t('devices.glance.deleted')} onPress={() => void undo()}
-      testID="companion.glance.todo.undo" /> : null}
-    {visible.map(todo => row(todo, false))}
-    {openTotal > TODO_PREVIEW ? <ContextSheetRow label={showAll ? t('devices.glance.showLess') : t('devices.glance.showMore')}
-      trailing={<FoldIcon open={showAll} />} onPress={() => setShowAll(value => !value)} testID="companion.glance.todo.more" /> : null}
-    {doneTotal > 0 ? <ContextSheetRow label={t('devices.glance.doneCount', { count: doneTotal })} trailing={<FoldIcon open={showDone} />}
-      onPress={() => setShowDone(value => !value)} testID="companion.glance.todo.doneToggle" /> : null}
-    {showDone ? done.map(todo => row(todo, true)) : null}
-  </ContextSheetGroup>;
+  const rows: ReactNode[] = [];
+  if (deleted) rows.push(<Pressable key="undo" accessibilityRole="button" onPress={() => void undo()}
+    style={({ pressed }) => [styles.row, pressed && styles.rowPressed]} testID="companion.glance.todo.undo">
+    <Text numberOfLines={1} style={styles.undoNote}>{t('devices.glance.deleted')}</Text>
+    <Text style={styles.undoAction}>{t('devices.glance.undo')}</Text>
+  </Pressable>);
+  rows.push(...(showAll ? open : open.slice(0, TODO_PREVIEW)).map(todo => row(todo, false)));
+  if (openTotal > TODO_PREVIEW) rows.push(<FoldRow key="more" inset={false} label={showAll ? t('devices.glance.showLess') : t('devices.glance.showMore')}
+    open={showAll} onPress={() => setShowAll(value => !value)} testID="companion.glance.todo.more" />);
+  if (doneTotal > 0) rows.push(<FoldRow key="done" inset={false} label={t('devices.glance.doneCount', { count: doneTotal })}
+    open={showDone} onPress={() => setShowDone(value => !value)} testID="companion.glance.todo.doneToggle" />);
+  if (showDone) rows.push(...done.map(todo => row(todo, true)));
+  return <View>
+    <Section label={t('devices.glance.todos')}>{joinRows(rows, false, styles)}</Section>
+    {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
+  </View>;
 }
 
 // ---------------------------------------------------------------- 输出内容
@@ -187,21 +258,54 @@ function Outputs({ botId, deviceId, sessionId, online, onOpenTask }: {
   botId: string; deviceId: string; sessionId: string; online: boolean; onOpenTask(sessionId: string): void;
 }) {
   const { t, i18n } = useTranslation();
+  const { colors } = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [showAll, setShowAll] = useState(false);
   const { value } = useRemoteCompanionQuery<BotDelegationListResult>(deviceId, 'maker:bot-delegations:list', [sessionId], { enabled: online && !!sessionId });
   const files = useMemo(() => companionGlanceOutputs(value, botId), [botId, value]);
   if (files.length === 0) return null;
-  const visible = showAll ? files : files.slice(0, OUTPUT_PREVIEW);
-  return <ContextSheetGroup label={t('devices.glance.outputs')}>
-    {visible.map(file => <ContextSheetRow key={file.key} label={file.name}
-      detail={t('devices.glance.outputMeta', { time: dayLabel(file.at, i18n.language), task: file.taskTitle })}
-      dismissBeforePress onPress={() => onOpenTask(file.childSessionId)} testID="companion.glance.output" />)}
-    {files.length > OUTPUT_PREVIEW ? <ContextSheetRow label={showAll ? t('devices.glance.showLess') : t('devices.glance.showMore')}
-      trailing={<FoldIcon open={showAll} />} onPress={() => setShowAll(value => !value)} testID="companion.glance.output.more" /> : null}
-  </ContextSheetGroup>;
+  const rows: ReactNode[] = (showAll ? files : files.slice(0, OUTPUT_PREVIEW)).map(file => <Row key={file.key}
+    icon={<FileTypeIcon name={file.name} size={ICON_GLYPH} color={colors.textSecondary} />} title={file.name}
+    meta={t('devices.glance.outputMeta', { time: dayLabel(file.at, i18n.language), task: file.taskTitle })}
+    onPress={() => onOpenTask(file.childSessionId)} testID="companion.glance.output" />);
+  if (files.length > OUTPUT_PREVIEW) rows.push(<FoldRow key="more" inset label={showAll ? t('devices.glance.showLess') : t('devices.glance.showMore')}
+    open={showAll} onPress={() => setShowAll(value => !value)} testID="companion.glance.output.more" />);
+  return <Section label={t('devices.glance.outputs')}>{joinRows(rows, true, styles)}</Section>;
 }
 
 const makeStyles = (colors: ThemeColors) => StyleSheet.create({
-  dueDot: { width: DUE_DOT, height: DUE_DOT, borderRadius: radius.pill, backgroundColor: colors.statusError, marginLeft: spacing.xs },
+  // The sheet host already insets content by 16 (原型 .shbody 0 16).
+  content: { paddingBottom: spacing.xxl },
+  header: { flexDirection: 'row', alignItems: 'center', gap: ROW_GAP, paddingTop: spacing.sm, paddingBottom: spacing.xl - 2, paddingHorizontal: spacing.xs },
+  headerName: { flex: 1, color: colors.textPrimary, fontSize: typeScale.title, lineHeight: lineHeight.title, fontWeight: fontWeight.semibold },
+  section: { marginBottom: spacing.xl - 2 },
+  sectionLabel: {
+    color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, fontWeight: fontWeight.semibold,
+    paddingHorizontal: spacing.lg, paddingBottom: spacing.sm - 1,
+  },
+  // Inset grouped card matching the native sheet Section, which iOS 26 rounds at 26 (registered exemption).
+  card: { backgroundColor: colors.sheetActionSurface, borderRadius: 26, overflow: 'hidden' },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: spacing.lg },
+  dividerInset: { marginLeft: spacing.lg + ICON_COLUMN + ROW_GAP },
+  row: { flexDirection: 'row', alignItems: 'center', gap: ROW_GAP, minHeight: 44, paddingVertical: spacing.md - 1, paddingHorizontal: spacing.lg },
+  rowPressed: { backgroundColor: colors.surfaceChip },
+  icon: { width: ICON_COLUMN, alignItems: 'center' },
+  presence: {
+    position: 'absolute', right: -2, bottom: -1, width: PRESENCE_DOT, height: PRESENCE_DOT, borderRadius: radius.pill,
+    backgroundColor: colors.statusReady, borderWidth: 2, borderColor: colors.sheetActionSurface,
+  },
+  rowText: { flex: 1, minWidth: 0 },
+  rowTitle: { color: colors.textPrimary, fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.medium },
+  rowTitleMuted: { color: colors.textSecondary, fontWeight: fontWeight.regular },
+  rowMeta: { color: colors.textTertiary, fontSize: typeScale.caption, lineHeight: lineHeight.caption },
+  trailing: { flexShrink: 0, alignItems: 'flex-end' },
+  date: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs + 2 },
+  dueDot: { width: DUE_DOT, height: DUE_DOT, borderRadius: radius.pill, backgroundColor: colors.statusError },
+  dateText: { color: colors.textSecondary, fontSize: typeScale.body, lineHeight: lineHeight.body },
+  dateDue: { color: colors.textPrimary },
+  foldInset: { paddingLeft: spacing.lg + ICON_COLUMN + ROW_GAP },
+  foldLabel: { flex: 1, color: colors.textSecondary, fontSize: typeScale.body, lineHeight: lineHeight.body },
+  undoNote: { flex: 1, color: colors.textSecondary, fontSize: typeScale.body, lineHeight: lineHeight.body },
+  undoAction: { color: colors.textPrimary, fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.medium },
+  error: { color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, paddingHorizontal: spacing.lg, marginTop: -spacing.md },
 });
-

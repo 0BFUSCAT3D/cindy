@@ -84,7 +84,7 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
       onOpenIdentity={() => { setGlance(true); dueSeen.markSeen(); void todos.refresh(); }}
       onOpenSettings={() => { setInitialPage('home'); setProfile(true); }}
       settingsLabel={t('devices.companionProfile.settingsTitle')} />
-    <CompanionGlanceSheet visible={glance} onClose={() => setGlance(false)} name={name} botId={resource.ref.id}
+    <CompanionGlanceSheet visible={glance} onClose={() => setGlance(false)} name={name} avatar={resource.display.avatar} botId={resource.ref.id}
       deviceId={deviceId} deviceName={deviceName} sessionId={sessionId} online={online} cloudHome={homed} todos={todos}
       onQuoteTodo={onQuoteTodo}
       onOpenTask={taskId => router.push({ pathname: '/sessions/[sessionId]', params: { sessionId: taskId, deviceId } })}
