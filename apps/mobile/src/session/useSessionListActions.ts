@@ -5,6 +5,9 @@ import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
 import { isExplicitRemoteNotFoundError } from '@/session/newSessionWorktree';
+import { createMobileMakerTransport } from '@/device-link/mobileMakerTransport';
+import { markSessionScheduleRunsRead } from '@/session/scheduleRunRead';
+import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
 import type { SessionMetaPatch } from '@/device-link/mobileMakerTransport';
 import {
   remoteSessionStore,
@@ -255,12 +258,29 @@ export function useSessionListActions(options?: {
     setActionSheetSession(session);
   }, []);
 
+  const markSessionRead = useCallback((session: RemoteSession) => {
+    const devices = resolveSessionWriteDevices(session.id, session, preferredRpcDeviceId);
+    if (!devices) {
+      Alert.alert(t('devices.list.alert.actionFailed'), t('devices.list.error.sessionDeviceNotFound'));
+      return;
+    }
+    const maker = createMobileMakerTransport({ deviceId: devices.rpcDeviceId, invoke });
+    const writes: Promise<unknown>[] = [maker.clearSessionAttention(session.id, 'explicit')];
+    if (sessionMayHaveScheduleRuns(devices.rpcDeviceId, session.id, session.source)) {
+      writes.push(markSessionScheduleRunsRead(maker, session.id, devices.rpcDeviceId));
+    }
+    void Promise.all(writes).catch((err: unknown) => {
+      Alert.alert(t('devices.list.alert.actionFailed'), humanizeRemoteError(err));
+    });
+  }, [invoke, preferredRpcDeviceId, t]);
+
   const sessionSwipeControls = useMemo<SessionSwipeControls>(() => ({
+    onMarkRead: markSessionRead,
     onArchive: archiveSession,
     onShowOptions: showSessionOptions,
     onTogglePin: toggleSessionPinned,
     registry: swipeRegistry,
-  }), [archiveSession, showSessionOptions, swipeRegistry, toggleSessionPinned]);
+  }), [archiveSession, markSessionRead, showSessionOptions, swipeRegistry, toggleSessionPinned]);
 
   return {
     patchSession,
