@@ -2126,6 +2126,51 @@ describe('new-connection identification', () => {
     expect(config.auth?.method ?? 'apiKey').toBe(method);
     expect(keys).toEqual(key ? { pi: key } : {});
   });
+  it('saves refreshed metadata after first discovery and a corrected API key', async () => {
+    const { fetchProviderModels } = await openIdentification();
+    fetchProviderModels.mockResolvedValue({ ok: true, models: [
+      { id: 'private-model', name: 'Model', discoveredMetadata: { contextWindow: 64000 }, discoveredCost: { input: 2, output: 8 } },
+      { id: 'new-model', name: 'Not automatically selected' },
+    ] } as any);
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'fake-corrected' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(fetchProviderModels).toHaveBeenCalledTimes(2);
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.namePlaceholder'), { target: { value: 'Corrected key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.saveProvider' }));
+    await act(async () => {});
+    expect(customProviderMocks.createCustomProvider).toHaveBeenCalledOnce();
+    expect(customProviderMocks.createCustomProvider.mock.calls[0][0].runtimes.pi.models).toEqual([
+      expect.objectContaining({ id: 'private-model', discoveredMetadata: { contextWindow: 64000 }, discoveredCost: { input: 2, output: 8 } }),
+    ]);
+  });
+  it.each(['key', 'endpoint'])('refreshes discovered facts after changing %s without changing selected models or overrides', async change => {
+    vi.useFakeTimers();
+    const detectProvider = vi.fn(async (_spec: any) => ({ candidates: [], reason: 'insufficient_evidence', catalog: { ok: true, models: [
+      { id: 'selected', name: 'Upstream name', discoveredMetadata: { contextWindow: 64000, supportsImageInput: true }, discoveredCost: { input: 2, output: 8 } },
+      { id: 'not-selected', name: 'Do not import again' },
+    ] } }));
+    Object.assign(window.electronAPI.maker, { listProviderPresets: vi.fn(async () => ({ presets: [] })), detectProvider });
+    render(<ProviderConnectionDialog onDetected={vi.fn()} onClose={vi.fn()} onSaved={vi.fn()} draft={{
+      preset, agent: 'pi', apiKey: 'fake-old', keys: { pi: 'fake-old' },
+      config: { id: 'draft', name: 'Refresh regression', runtimes: { pi: {
+        baseUrl: 'https://custom.example/v1', models: [{ id: 'selected', name: 'My name', contextWindow: 32000, defaultEnabled: false,
+          discoveredMetadata: { contextWindow: 16000 }, discoveredCost: { input: 1, output: 4 } }],
+      } } },
+    }} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    fireEvent.change(screen.getByPlaceholderText(change === 'key'
+      ? 'settings.providers.custom.fields.apiKeyPlaceholder' : 'settings.providers.custom.fields.baseUrlPlaceholder'),
+      { target: { value: change === 'key' ? 'fake-corrected' : 'https://other.example/v1' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(detectProvider.mock.calls.filter(args => !(args[0] as any)?.cancel)).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.saveProvider' }));
+    await act(async () => {});
+    expect(customProviderMocks.createCustomProvider).toHaveBeenCalledOnce();
+    expect(customProviderMocks.createCustomProvider.mock.calls[0][0].runtimes.pi.models).toEqual([
+      expect.objectContaining({ id: 'selected', name: 'My name', contextWindow: 32000, defaultEnabled: false,
+        discoveredMetadata: { contextWindow: 64000, supportsImageInput: true }, discoveredCost: { input: 2, output: 8 } }),
+    ]);
+  });
   it('invalidates inferred no-auth when key or destination changes', async () => {
     await openIdentification(preset, 'http://127.0.0.1:1234/v1', '');
     const testConnection = vi.fn(async () => ({ ok: true, latencyMs: 1 }));

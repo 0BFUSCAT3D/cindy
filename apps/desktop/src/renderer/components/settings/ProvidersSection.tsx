@@ -1,4 +1,7 @@
+import { AddSpeechModelsDialog } from './AddSpeechModelsDialog';
+import { providerSpeechSetup } from '../../../shared/speechProviderSetup';
 import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
+import { SubscriptionFastSetting } from '@/features/provider-share/SubscriptionFastSetting';
 import { useCodexRateLimitReset } from '@/hooks/useCodexRateLimitReset';
 import { CodexResetCredits } from '../status/CodexResetCredits';
 import { providerWeeklyQuotaSource } from '../new-chat/useProviderWeeklyQuota';
@@ -867,6 +870,7 @@ function DetailHeader({
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain [&>*]:shrink-0"
       >
         {detail && <div className="px-5 pb-4">{detail}</div>}
+        {provider?.subscriptionFastPolicy && <div className="px-5 pb-4"><SubscriptionFastSetting key={provider.id} provider={provider} /></div>}
         {assetModule ??
           (subscription && (
             <div
@@ -902,7 +906,7 @@ function DetailHeader({
                 }
               >
                 {resetEnabled ? (
-                  <CodexResetCredits key={provider?.id} variant="embedded" snapshot={resetSnapshot} busy={manualReset.busy} canReset={manualReset.canReset} canRetry={manualReset.canRetry} onReset={(credit) => void manualReset.reset(credit)} />
+                  <CodexResetCredits providerId={provider?.id} onChanged={refreshResets} key={provider?.id} variant="embedded" snapshot={resetSnapshot} busy={manualReset.busy} canReset={manualReset.canReset} canRetry={manualReset.canRetry} onReset={(credit) => void manualReset.reset(credit)} />
                 ) : null}
               </QuotaHoverCard>
             </div>
@@ -2496,6 +2500,7 @@ export function ProvidersSection() {
     ids: Set<string>;
   }>({ dataOwnerId, ids: new Set<string>() });
   // 向导:null = 关;{ entry } = 打开(entry 指定直达的供应商,来自检测建议)。
+  const [speechProvider, setSpeechProvider] = useState<{ provider: ProviderView; owner: string | null; generation: number | null } | null>(null);
   const [wizard, setWizard] = useState<null | { entry?: WizardEntry; detected?: DetectedProviderDraft }>(null);
   // 自定义供应商完整表单(编辑,或从向导「自定义端点」进入新建)。
   const [dialog, setDialog] = useState<
@@ -3409,6 +3414,11 @@ export function ProvidersSection() {
                         )}
                         <UnifiedModelList
                           provider={effectiveSelected}
+                          onAddSpeechModels={providerSpeechSetup(effectiveSelected) ? () => {
+                            const setup = providerSpeechSetup(effectiveSelected)!;
+                            if (setup.needsApiKey) setWizard({ entry: { kind: 'preset', presetId: setup.presetId, speechOnly: true } });
+                            else setSpeechProvider({ provider: effectiveSelected, owner: dataOwnerId, generation: ownerGeneration });
+                          } : undefined}
                           focusModelId={
                             focusedModel?.providerId === effectiveSelected.id
                               ? focusedModel.modelId
@@ -3510,6 +3520,11 @@ export function ProvidersSection() {
 
       </>)}
 
+      {speechProvider && speechProvider.owner === dataOwnerId && speechProvider.generation === ownerGeneration && (
+        <AddSpeechModelsDialog key={`${dataOwnerId}:${ownerGeneration}:${speechProvider.provider.id}`}
+          provider={speechProvider.provider} onClose={() => setSpeechProvider(null)}
+          onSaved={() => { setSpeechProvider(null); void refetch(); }} />
+      )}
       {wizard && (
         <AddProviderWizard
           providers={providers}

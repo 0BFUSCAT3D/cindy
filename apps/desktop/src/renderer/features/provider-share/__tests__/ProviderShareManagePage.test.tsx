@@ -4,11 +4,14 @@ import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderView } from '@cindy/model-providers';
 import { toast } from '@/lib/toast';
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 
 import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
 import type { ProviderOwnUsageView, ProviderShareOwnerState, ProviderUsageHistoryView } from '../../../../shared/providerShare';
 import { __testing as localGroupsTesting } from '../../provider-group/useLocalProviderGroups';
+import { ProviderShareVisibilitySection } from '../ProviderShareVisibilitySection';
 import { ProviderShareManagePage } from '../ProviderShareManagePage';
+import { SubscriptionFastSetting } from '../SubscriptionFastSetting';
 import {
   getProviderSharePendingRequests,
   getProviderSharePendingReshares,
@@ -196,6 +199,8 @@ beforeEach(() => {
   vi.mocked(toast.success).mockClear();
   command.mockReset();
   command.mockImplementation(async (cmd: { action: string }) => {
+    if (cmd.action === 'get-model-access') return { version: 1, models: null, providerModels: null, availableModels: [] };
+    if (cmd.action === 'get-visibility') return { quota: false, usage: false };
     if (cmd.action === 'owned') return owned();
     if (cmd.action === 'own-usage') return ownUsage();
     if (cmd.action === 'usage-history') return usageHistory();
@@ -224,7 +229,7 @@ beforeEach(() => {
             if (action === 'owned') return owned();
             if (action === 'own-usage') return ownUsage();
             if (action === 'usage-history') return usageHistory();
-            if (action === 'get-run-limits') return command(cmd.request?.command);
+            if (action === 'get-run-limits' || action === 'get-visibility') return command(cmd.request?.command);
             if (action === 'approve' || action === 'reject') return { ok: true };
           }
           return { providerId: cmd.providerId, config: null, members: [] };
@@ -236,6 +241,46 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+// Review R12: real setting + management IPC adapter, using this page's host
+// fixture. Prior page cases do not interleave a catalog push with save failure.
+// Unit tier: defer the IPC, refresh allowFast, then reject; the warning must
+// survive value refresh while identity/owner/unmount boundaries still discard it.
+describe('SubscriptionFastSetting save feedback', () => {
+  const subscription = (id = 'openai', allowFast = true) => ({
+    id, subscriptionFastPolicy: { allowFast },
+  } as ProviderView);
+
+  it('keeps the native failure warning after the committed catalog value arrives', async () => {
+    vi.mocked(toast.error).mockClear();
+    let reject!: (error: Error) => void;
+    command.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const view = render(<SubscriptionFastSetting provider={subscription()} />);
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByRole('switch'));
+    expect(command).toHaveBeenCalledWith({ action: 'set-fast-policy', providerId: 'openai', allowFast: false });
+    view.rerender(<SubscriptionFastSetting provider={subscription('openai', false)} />);
+    await act(async () => { reject(new Error('native busy')); });
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false');
+    expect(vi.mocked(toast.error)).toHaveBeenCalledExactlyOnceWith('subscriptionFastPolicy.saveFailed');
+    expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each(['provider', 'device', 'owner', 'unmount'])('discards a late failure across the %s boundary', async boundary => {
+    vi.mocked(toast.error).mockClear();
+    setDataOwnerGeneration('fast-owner-a');
+    let reject!: (error: Error) => void;
+    command.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const view = render(<SubscriptionFastSetting provider={subscription()} />);
+    fireEvent.click(screen.getByRole('switch'));
+    if (boundary === 'provider') view.rerender(<SubscriptionFastSetting provider={subscription('anthropic')} />);
+    if (boundary === 'device') view.rerender(<SubscriptionFastSetting provider={subscription()} deviceId="other-computer" />);
+    if (boundary === 'owner') setDataOwnerGeneration('fast-owner-b');
+    if (boundary === 'unmount') view.unmount();
+    await act(async () => { reject(new Error('old native busy')); });
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+  });
+});
 
 /** 「你自己」一行先出来；分享的人等分享读到后才有。 */
 async function findMemberRow(memberId = 'mem-1'): Promise<HTMLElement> {
@@ -267,6 +312,25 @@ function renderPage(
 }
 
 describe('ProviderShareManagePage', () => {
+  // Verify the person's row opens a grant for that member, rather than editing the provider-wide policy.
+  it('opens and saves the selected person’s model grant from their row menu', async () => {
+    const respond = command.getMockImplementation()!;
+    const models = { version: 1, models: null, providerModels: null,
+      availableModels: [{ id: 'small', name: 'Small' }, { id: 'large', name: 'Large' }] };
+    command.mockImplementation(async (cmd) => {
+      if (cmd.action === 'get-model-access' || cmd.action === 'set-model-access') return models;
+      return respond(cmd);
+    });
+    renderPage();
+    fireEvent.click(within(await findMemberRow()).getByRole('button', { name: 'providerShare.modelAccess.memberTitle' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(await within(dialog).findByRole('checkbox', { name: 'Large' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'settings.providers.custom.save' }));
+    await waitFor(() => expect(command).toHaveBeenCalledWith({
+      action: 'set-model-access', providerId: 'xd', memberId: 'mem-1', models: ['small'],
+    }));
+  });
+
   /* 测试价值：2026-10-19 用户备注；生产页面的新增入口、保存/清空、原用户名与筛选同步显示。
    * 现有测试只有暂停/删除。最小输入：一个成员，分别在本机和 studio 管理。tier: unit。
    * 单文件实测 17.21 秒，其中导入 7.16 秒、30 用例 8.61 秒；复用既有页面与完整用量图表 fixture，
@@ -850,5 +914,34 @@ describe('ProviderShareManagePage', () => {
       expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false),
     );
     expect(screen.getByTestId('provider-share-claude-email-callout')).toBeTruthy();
+  });
+});
+
+/* 可见性保存要到供应商所在电脑；旧读不能覆盖刚写成功的开关。tier: unit。 */
+describe('share visibility switches', () => {
+  it('saves through remote management without changing the control computer', async () => {
+    const remote = vi.spyOn(window.electronAPI.providerGroup, 'command').mockImplementation(async (raw) => {
+      if (raw.action !== 'remote-manage' || raw.request.action !== 'manage-share') throw new Error('unexpected route');
+      return raw.request.command.action === 'set-visibility' ? { quota: true, usage: false } : { quota: false, usage: false };
+    });
+    await act(async () => { render(<ProviderShareVisibilitySection providerId="xd" deviceId="studio" />); });
+    await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' })); });
+    expect(remote).toHaveBeenCalledWith({ action: 'remote-manage', deviceId: 'studio', request: { action: 'manage-share', command: { action: 'set-visibility', providerId: 'xd', visibility: { quota: true } } } });
+    expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'set-visibility' }));
+    expect(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' }).getAttribute('aria-checked')).toBe('true');
+  });
+  it('keeps the saved value when an older poll completes afterwards', async () => {
+    vi.useFakeTimers();
+    try {
+      command.mockResolvedValue({ quota: false, usage: false });
+      await act(async () => { render(<ProviderShareVisibilitySection providerId="xd" />); });
+      let finish!: (value: { quota: boolean; usage: boolean }) => void;
+      command.mockImplementation(async (cmd) => cmd.action === 'get-visibility'
+        ? new Promise((resolve) => { finish = resolve; }) : { quota: true, usage: false });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' })); });
+      await act(async () => { finish({ quota: false, usage: false }); });
+      expect(screen.getByRole('switch', { name: 'providerShare.insights.allowQuota' }).getAttribute('aria-checked')).toBe('true');
+    } finally { vi.useRealTimers(); }
   });
 });

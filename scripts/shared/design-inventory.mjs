@@ -361,7 +361,7 @@ export function extractViewEntries(mainEntrySource) {
 
 /**
  * 从 renderer/index.tsx 抽出模块图分发入口：`urlParams.get('<param>')` 条件决定
- * 加载哪个 entry 模块（resource-usage / sidebar-window / ghost-panel / main）。
+ * 加载哪个 entry 模块（resource-usage / sidebar-window / main）。
  * 返回「参数名 → 入口模块」映射——只核参数名不够：参数保留但分支改加载别的入口
  * 时（换窗口实现），catalog 的 productionEntry / styleRoots 仍指向旧窗口，
  * --check 却照样通过。映射核对与路由组件核对同构。
@@ -574,6 +574,7 @@ export function catalogSurfaces() {
         '/bots/roster',
         '/bots/groups/:groupId',
         '/bots/remote/:deviceId/:botId',
+        '/bots/remote/:deviceId/:botId/history/:sessionId',
       ],
       routeEntryComponents: {
         '/bots': 'BotsHomeView',
@@ -586,6 +587,7 @@ export function catalogSurfaces() {
         '/bots/roster': 'BotRosterView',
         '/bots/groups/:groupId': 'BotGroupChatView',
         '/bots/remote/:deviceId/:botId': 'RemoteBotSessionView',
+        '/bots/remote/:deviceId/:botId/history/:sessionId': 'BotHistorySessionView',
       },
     },
     {
@@ -770,25 +772,6 @@ export function catalogSurfaces() {
       routerPaths: ['/sidebar-window'],
       rendererEntryModules: { sidebarWindow: './sidebar-window-entry' },
       routeEntryComponents: { '/sidebar-window': 'SidebarWindowLayout' },
-    },
-    {
-      id: 'desktop.window.ghost-panel',
-      platform: 'desktop',
-      title: '插件面板独立窗口',
-      productionEntry:
-        '`?ghostPanelWindow=<id>` → renderer/ghost-panel-window-entry.tsx；hash `/ghost-panel-window`',
-      reachableComponents: ['GhostPanelWindowLayout'],
-      styleRoots: [
-        'apps/desktop/src/renderer/ghost-panel-window-entry.tsx',
-        'apps/desktop/src/renderer/components/layout/GhostPanelWindowLayout.tsx',
-        'apps/desktop/src/main/ghost-panel-window',
-        // ghost-panel-window-entry.tsx 直接导入 globals.css（同侧栏窗理由）。
-        'apps/desktop/src/renderer/styles/globals.css',
-        'apps/desktop/src/renderer/styles/generated/tokens.css',
-      ],
-      routerPaths: ['/ghost-panel-window'],
-      rendererEntryModules: { ghostPanelWindow: './ghost-panel-window-entry' },
-      routeEntryComponents: { '/ghost-panel-window': 'GhostPanelWindowLayout' },
     },
     {
       id: 'desktop.window.resource-usage',
@@ -1426,9 +1409,10 @@ export function mobileCatalogSurfaces() {
     ['companions.cloud', '云端伙伴：主力电脑离线时的对话与换电脑', ['companions/cloud/[actorId].tsx']],
     ['chat.session', '任务内容与输入', ['sessions/[sessionId].tsx']],
     ['chat.sharing', '共享任务邀请与成员；供应商分享链接提示', ['shared-session.tsx', 'provider-share.tsx']],
+    ['chat.incoming-share', '外部分享内容预览与任务、伙伴目标选择', ['incoming-share.tsx']],
     ['chat.new', '新建任务', ['sessions/new.tsx']],
     ['files', '任务文件与预览', ['files/[sessionId].tsx', 'files/preview/[sessionId].tsx']],
-    ['settings', '设置（含调试与日志上传可见入口）', ['settings.tsx', 'settings/device-name.tsx', 'settings/user-bubble.tsx', 'settings/voice-dictionary.tsx', 'settings/voice-speaker-filter.tsx']],
+    ['settings', '设置（含调试与日志上传可见入口）', ['settings.tsx', 'settings/developer.tsx', 'settings/device-name.tsx', 'settings/user-bubble.tsx', 'settings/voice-dictionary.tsx', 'settings/voice-speaker-filter.tsx']],
     ['auth', '登录与添加账号', ['(auth)/login.tsx', 'add-account.tsx']],
     ['account-deletion', '账号注销', ['account-deletion.tsx']],
   ];
@@ -1455,6 +1439,7 @@ export function mobileRouteCoverage(repoRoot, catalog = mobileCatalogSurfaces())
     ['+native-intent.ts', 'native intent routing; no screen'],
     ['automations/[deviceId].tsx', 'legacy automation link redirect; no screen'],
     ['splash-preview.tsx', 'MOBILE_VISUAL_MOCK_ENABLED preview; not production UI'],
+    ['plugin-management-preview.tsx', 'gated plugin settings visual fixture; not production UI'],
     ['listperf.tsx', '__DEV__ list performance harness; not production UI'],
   ]);
   const owners = new Map(catalog.flatMap(s => (s.mobileRoutes ?? []).map(r => [r, s.id])));
@@ -1465,6 +1450,9 @@ export function mobileRouteCoverage(repoRoot, catalog = mobileCatalogSurfaces())
     if (excluded.has(route)) {
       // Keep dev exclusions honest: removing their gate cannot silently hide a screen.
       if (route === 'splash-preview.tsx' && !source.includes('if (!MOBILE_VISUAL_MOCK_ENABLED)')) missing.push(file);
+      if (route === 'plugin-management-preview.tsx' &&
+        (!source.includes('if (!MOBILE_VISUAL_MOCK_ENABLED && !demosEnabled)') ||
+          !source.includes('__DEV__ && process.env.EXPO_PUBLIC_CINDY_PLUGIN_DEMOS === "1"'))) missing.push(file);
       if (route === 'listperf.tsx' && !source.includes('if (!__DEV__)')) missing.push(file);
       exclusions.push({ path: file, reason: excluded.get(route) });
       continue;

@@ -1,3 +1,4 @@
+import { assertProviderE2EProfile } from './provider-e2e-profile.mjs';
 // Real isolated Desktop IPC + persistence + loopback HTTP. No host mocks or real keys.
 // Start with XDT_CDP_PORT=19427 pnpm restart:desktop:remote --region=global --isolated=@worktree --passive
 import assert from 'node:assert/strict';
@@ -70,6 +71,7 @@ let page;
 const created = [];
 try {
   browser = await chromium.connectOverCDP(process.env.E2E_CDP_URL ?? 'http://127.0.0.1:19427');
+  await assertProviderE2EProfile(browser, process.env.E2E_DB);
   page = browser.contexts()[0].pages().find(p => /\/#\/settings/.test(p.url()));
   assert.ok(page, 'Open the isolated Desktop Settings / Providers page first');
   page.setDefaultTimeout(20000);

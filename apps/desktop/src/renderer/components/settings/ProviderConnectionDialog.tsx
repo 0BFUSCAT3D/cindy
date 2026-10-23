@@ -1091,11 +1091,19 @@ export function ProviderConnectionDialog({
         if (catalog?.ok && catalog.models) {
           const first = !importedOnce.current.has(agent);
           importedOnce.current.add(agent);
-          if (first) setRtSynced(prev => ({ ...prev, [agent]: { ...prev[agent], models: [
-            ...prev[agent].models.filter(m => m.id.trim()),
-            ...catalog.models!.filter(m => !prev[agent].models.some(row => row.id === m.id) && isAgentSelectableModel({ id: m.id, mode: m.discoveredMetadata?.mode })).map(m => ({
+          setRtSynced(prev => ({ ...prev, [agent]: { ...prev[agent], models: [
+            ...prev[agent].models.filter(m => m.id.trim()).map(model => {
+              const fresh = catalog.models!.find(m => m.id === model.id);
+              // Refresh discovered facts after credentials/endpoint changes, without
+              // replacing explicit overrides or reselecting models the user removed.
+              return fresh ? { ...model,
+                discoveredMetadata: fresh.discoveredMetadata ?? { contextWindow: fresh.contextWindow },
+                discoveredCost: fresh.discoveredCost,
+              } : model;
+            }),
+            ...(first ? catalog.models!.filter(m => !prev[agent].models.some(row => row.id === m.id) && isAgentSelectableModel({ id: m.id, mode: m.discoveredMetadata?.mode })).map(m => ({
               id: m.id, name: m.name, discoveredMetadata: m.discoveredMetadata ?? { contextWindow: m.contextWindow }, discoveredCost: m.discoveredCost,
-            })),
+            })) : []),
           ] } }));
         }
         if (preset && !AGENTS.some(a => preset!.runtimes[a] &&

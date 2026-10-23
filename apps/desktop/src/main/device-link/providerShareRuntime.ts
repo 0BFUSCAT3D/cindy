@@ -1,11 +1,17 @@
 import { isRemoteAgentLimitsPatch } from '../../shared/remoteAgentLimits.js';
+import { supportsSubscriptionFastPolicy } from '@cindy/model-providers';
+import { providerFastPolicy } from '../maker-host/provider-fast-policy-store.js';
+import { notifySubscriptionFastPolicyChanged } from '../maker-host/subscription-fast-policy.js';
+import { notifyProviderShareCatalogChanged } from './dispatch.js';
+import { DEVICE_LINK_PUSH } from '../../shared/deviceLinkIpc.js';
 import { readRemoteAgentLimitsState, saveRemoteAgentLimits } from '../remote-agent/host/limitsStore.js';
-import { remoteAgentLimitUsage } from './dispatch.js';
+import { remoteAgentLimitUsage, revalidateRemoteModelAccess } from './dispatch.js';
 /**
  * 供应商分享的本机接线：分享者与受邀者两侧运行时的起停、推送给 Renderer、系统通知，以及
  * Renderer 的命令通道。账号操作只接受本机应用窗口，不能经设备互联从别的电脑调用。
  */
 import { app, BrowserWindow, ipcMain, Notification } from 'electron';
+import { PROVIDER_MEDIA_FIELDS } from '@cindy/model-providers';
 
 import {
   PROVIDER_SHARE_LINK_TTL_MS,
@@ -34,7 +40,14 @@ import {
   type ProviderUsageDayView,
   type ProviderUsageHistoryView,
 } from '../../shared/providerShare.js';
-import { getDeviceId } from '../authManager.js';
+import { getAuthState, getDeviceId } from '../authManager.js';
+import { parseProviderShareInsights, PROVIDER_SHARE_INSIGHTS_CHANNEL } from '../../shared/providerShareInsights.js';
+import { isProviderGroupProviderId } from '../../shared/providerGroup.js';
+import { providerShareVisibility } from './providerShareVisibility.js';
+import { remoteModelAccess } from './remoteModelAccess.js';
+import { isRemoteModelSelection, type RemoteModelAccessView } from '../../shared/remoteModelAccess.js';
+import { createProviderShareInsightsReader } from './providerShareInsights.js';
+import { readProviderShareQuota, readProviderShareQuotaAccount } from './providerShareQuota.js';
 import { isDataOwnerPushStamp } from '../../shared/dataOwnerPush.js';
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
@@ -45,7 +58,7 @@ import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricing.js';
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
-import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { normalizeProviderShareMemberNote, PROVIDER_SHARE_MEMBER_NOTE_MAX_LENGTH } from '../../shared/providerShareMemberNote.js';
 import { providerShareMemberNotes } from './providerShareMemberNotes.js';
 import { captureProviderManagementScope } from '../provider-group/managementScope.js';
@@ -60,10 +73,14 @@ import {
   setProviderShareAccess,
 } from './dispatch.js';
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
+import { tapWindowBroadcast } from './broadcast-tap.js';
+import { MAKER_PUSH } from '../maker-ipc/channels.js';
+import { broadcast as broadcastLocal } from './index.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
 import { configureProviderShareApprovalWindows } from './providerShareApprovalWindows.js';
 import {
   findReceivedShare,
+  providerShareReceivedRevision,
   getReceivedShares,
   isReceivedSharesReady,
   getReceivedSharesSnapshot,
@@ -92,6 +109,7 @@ import {
   getProviderShareWatchedRequests,
   markProviderShareHostActive,
   providerShareGuestAccess,
+  providerShareAccessRevision,
   providerShareGuestDenial,
   providerShareMemberMatcher,
   quietProviderShareRequests,
@@ -288,6 +306,7 @@ export function startProviderShareRuntime(broadcast: Broadcast, options: { invok
     },
   }, { readWatchedShares: readInvoke ? (hostDeviceId) => readProviderManagementShares(readInvoke, hostDeviceId) : undefined });
   startProviderShareGuest({
+    catalogChanged(deviceId) { emit(DEVICE_LINK_PUSH.REMOTE_PUSH, { deviceId, channel: 'maker:provider:changed', payload: {} }); },
     changed(received) {
       emit(PROVIDER_SHARE_IPC.RECEIVED_CHANGED, received);
     },
@@ -336,6 +355,39 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throwIpcError('INVALID_PARAMS', 'Invalid command');
   const value = raw as Record<string, unknown>;
   switch (value.action) {
+    case 'get-fast-policy':
+    case 'set-fast-policy': {
+      if (!isProviderGroupProviderId(value.providerId)) throwIpcError('INVALID_PARAMS', 'Invalid providerId');
+      if (value.action === 'get-fast-policy') return { action: value.action, providerId: value.providerId };
+      if (typeof value.allowFast !== 'boolean') throwIpcError('INVALID_PARAMS', 'allowFast must be a boolean');
+      return { action: value.action, providerId: value.providerId, allowFast: value.allowFast };
+    }
+    case 'get-model-access':
+    case 'set-model-access': {
+      if (!isProviderGroupProviderId(value.providerId)) throwIpcError('INVALID_PARAMS', 'Invalid providerId');
+      const memberId = value.memberId === undefined ? undefined : text(value.memberId, 'memberId', 128);
+      const scope = { providerId: value.providerId, ...(memberId !== undefined ? { memberId } : {}) };
+      if (value.action === 'get-model-access') return { action: value.action, ...scope };
+      if (!isRemoteModelSelection(value.models)) throwIpcError('INVALID_PARAMS', 'Invalid remote model selection');
+      return { action: value.action, ...scope, models: value.models === null ? null : [...value.models] };
+    }
+    case 'get-visibility':
+    case 'quota-account':
+      if (!isProviderGroupProviderId(value.providerId)) throwIpcError('INVALID_PARAMS', 'Invalid providerId');
+      return { action: value.action, providerId: value.providerId };
+    case 'set-visibility': {
+      if (!isProviderGroupProviderId(value.providerId)) throwIpcError('INVALID_PARAMS', 'Invalid providerId');
+      const patch = value.visibility;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)
+        || Object.keys(patch).length === 0 || Object.entries(patch).some(([key, entry]) =>
+          !['quota', 'usage'].includes(key) || typeof entry !== 'boolean')) {
+        throwIpcError('INVALID_PARAMS', 'Invalid share visibility');
+      }
+      return { action: 'set-visibility', providerId: value.providerId, visibility: patch };
+    }
+    case 'insights':
+      if (typeof value.includeUsage !== 'boolean') throwIpcError('INVALID_PARAMS', 'Invalid insights scope');
+      return { action: 'insights', shareId: text(value.shareId, 'shareId', 128), includeUsage: value.includeUsage };
     case 'get-run-limits':
     case 'reset-run-limits':
       return { action: value.action };
@@ -687,6 +739,99 @@ async function createLink(
 async function execute(command: ProviderShareCommand, assertCurrent: () => void = () => undefined): Promise<unknown> {
   assertCurrent();
   switch (command.action) {
+    case 'get-fast-policy':
+    case 'set-fast-policy': {
+      const assertOwner = captureProviderManagementScope();
+      const assertScope = () => { assertCurrent(); assertOwner(); };
+      const providers = await getDesktopProviderService().listProviders({ allowSideEffects: false });
+      assertScope();
+      const provider = providers.find(entry => entry.id === command.providerId);
+      const supported = supportsSubscriptionFastPolicy(provider);
+      if (command.action === 'set-fast-policy') {
+        if (!supported) throwIpcError('INVALID_PARAMS', 'Fast policy is available only for supported subscription accounts');
+        await providerFastPolicy.set(command.providerId, command.allowFast, assertScope);
+        // Publish catalog invalidation even if a native live update needs retrying.
+        emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+        // Local subscription use also works without a running account/share transport.
+        broadcastLocal(MAKER_PUSH.PROVIDER_CHANGED, {});
+        tapWindowBroadcast(MAKER_PUSH.PROVIDER_CHANGED, {});
+        notifyProviderShareCatalogChanged(command.providerId);
+        await notifySubscriptionFastPolicyChanged();
+        assertScope();
+      }
+      return { supported, allowFast: supported ? providerFastPolicy.allows(command.providerId) : true };
+    }
+    case 'get-model-access':
+    case 'set-model-access': {
+      const assertOwner = captureProviderManagementScope();
+      const assertScope = () => { assertCurrent(); assertOwner(); };
+      if (command.memberId) {
+        requireRunning();
+        await refreshProviderShareHost('management');
+        assertScope();
+        const found = getProviderShareHostSnapshot().some((share) => share.providerId === command.providerId
+          && share.members.some((member) => member.memberId === command.memberId));
+        if (!found) throwIpcError('NOT_FOUND', 'This shared provider member is no longer available');
+      }
+      const providers = await getDesktopProviderService().listProviders({ allowSideEffects: false });
+      assertScope();
+      const provider = providers.find((entry) => entry.id === command.providerId);
+      if (!provider) throwIpcError('NOT_FOUND', 'This provider is no longer available');
+      if (command.action === 'set-model-access') {
+        await remoteModelAccess.set(command.providerId, command.models, command.memberId, assertScope);
+        assertScope();
+        await revalidateRemoteModelAccess();
+        assertScope();
+        emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+        emit(MAKER_PUSH.PROVIDER_CHANGED, {});
+        tapWindowBroadcast(MAKER_PUSH.PROVIDER_CHANGED, {});
+      }
+      const availableModels = new Map<string, { id: string; name: string }>();
+      for (const entries of [...Object.values(provider.models), ...PROVIDER_MEDIA_FIELDS.map(field => provider[field])]) for (const model of entries ?? []) {
+        if (!model.disabled) availableModels.set(model.id, { id: model.id, name: model.name || model.id });
+      }
+      return { version: 1, ...remoteModelAccess.read(command.providerId, command.memberId),
+        availableModels: [...availableModels.values()] } satisfies RemoteModelAccessView;
+    }
+    case 'get-visibility':
+      return providerShareVisibility.read(command.providerId);
+    case 'set-visibility': {
+      const assertOwner = captureProviderManagementScope();
+      const result = await providerShareVisibility.set(command.providerId, command.visibility, () => { assertCurrent(); assertOwner(); });
+      emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+      return result;
+    }
+    case 'quota-account':
+      return readProviderShareQuotaAccount(command.providerId);
+    case 'insights': {
+      const assertOwner = captureProviderManagementScope();
+      const share = findReceivedShare(command.shareId);
+      const revision = providerShareReceivedRevision();
+      if (!share || share.status !== 'active') throwIpcError('PERMISSION_DENIED', 'Provider share is not available');
+      if (!share.hostOnline) throwIpcError('DEVICE_LINK_DEVICE_OFFLINE', 'Provider share host is offline');
+      if (!shareInvoke) throwIpcError('DEVICE_LINK_NOT_CONNECTED', 'Provider share connection is not ready');
+      const assertShare = () => {
+        assertOwner();
+        const latest = findReceivedShare(command.shareId);
+        if (providerShareReceivedRevision() !== revision || !latest || latest.memberId !== share.memberId || latest.status !== 'active' || !latest.hostOnline) {
+          throwIpcError('PERMISSION_DENIED', 'Provider share changed');
+        }
+      };
+      const response = await shareInvoke(`share:${command.shareId}`, PROVIDER_SHARE_INSIGHTS_CHANNEL, [{ version: 1, includeUsage: command.includeUsage }], { preSend: assertShare });
+      assertShare();
+      if (!response.ok) {
+        throwIpcError(response.error.code === 'CHANNEL_NOT_ALLOWED' ? 'UNSUPPORTED_CAPABILITY'
+          : response.error.code === 'DEVICE_OFFLINE' ? 'DEVICE_LINK_DEVICE_OFFLINE'
+          : response.error.code === 'INVOKE_TIMEOUT' ? 'DEVICE_LINK_TIMEOUT'
+          : response.error.code === 'NOT_CONNECTED' || response.error.code === 'LINK_NOT_OPEN' ? 'DEVICE_LINK_NOT_CONNECTED'
+          : 'PERMISSION_DENIED', 'Provider share insights are not available');
+      }
+      const result = parseProviderShareInsights(response.result);
+      if (!result || (command.includeUsage && result.status.usage === 'not-requested') || (!command.includeUsage && (result.usage !== null || !['disabled', 'not-requested'].includes(result.status.usage)))) {
+        throwIpcError('UNSUPPORTED_CAPABILITY', 'Provider share insights require an update');
+      }
+      return result;
+    }
     case 'get-run-limits':
     case 'set-run-limits':
     case 'reset-run-limits': {
@@ -868,7 +1013,27 @@ async function receivedCatalogs(args: unknown[]): Promise<{ ready: boolean; shar
 export function registerProviderShareIpc(): void {
   // 受邀者对每个分享的本机偏好(「信任 {分享者}」)：按当前账号存放，读写时解析。
   configureProviderShareGuestPrefs({ resolvePath: () => ownerScopedUserDataPath('provider-share-guest-prefs.json') });
+  const insights = createProviderShareInsightsReader({
+    scopeKey: activeOwnerScopeKey,
+    captureScope: captureProviderManagementScope,
+    access: providerShareGuestAccess,
+    revision: providerShareAccessRevision,
+    visibility: (providerId) => providerShareVisibility.read(providerId),
+    shares: getProviderShareHostSnapshot,
+    owner: () => ({ displayName: getAuthState().user?.name ?? '', avatarUrl: getAuthState().user?.avatar ?? null }),
+    history: usageHistory,
+    quota: readProviderShareQuota,
+  });
   setProviderShareAccess({
+    remoteModels: (providerId) => {
+      try { return remoteModelAccess.read(providerId).providerModels; } catch { return []; }
+    },
+    modelAllowed: (controller, providerId, model) => {
+      const access = providerShareGuestAccess(controller);
+      return access?.providerId === providerId && remoteModelAccess.allows(providerId, model, access.memberId);
+    },
+    insights,
+    insightsCurrent: insights.isCurrent,
     guestAccess: providerShareGuestAccess,
     ensureKnown: ensureProviderSharePeerKnown,
     hasShares: () => getProviderShareHostSnapshot().length > 0,

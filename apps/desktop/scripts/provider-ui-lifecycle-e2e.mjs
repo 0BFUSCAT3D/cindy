@@ -1,3 +1,4 @@
+import { assertProviderE2EProfile } from './provider-e2e-profile.mjs';
 // Real Desktop UI, IPC, SQLite and loopback server; fake keys only.
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -64,7 +65,7 @@ async function save(name){await page.getByRole('button',{name:'保存供应商',
  const provider=await page.evaluate(async name=>(await window.electronAPI.maker.listProviders()).providers.find(p=>p.name===name),name);assert.ok(provider);created.push(provider.id);await persist();return provider}
 async function edit(name){await page.getByRole('button').filter({hasText:name}).first().click();await page.getByRole('button',{name:'更多操作',exact:true}).click();await page.getByRole('menuitem',{name:'编辑连接设置',exact:true}).click();await page.getByPlaceholder('我的 AI 供应商').waitFor()}
 try{
- browser=await chromium.connectOverCDP('http://127.0.0.1:19427');page=browser.contexts()[0].pages().find(p=>p.url().includes('/#/settings'));assert.ok(page);page.setDefaultTimeout(15000);
+ browser=await chromium.connectOverCDP(process.env.E2E_CDP_URL ?? 'http://127.0.0.1:19427');await assertProviderE2EProfile(browser,process.env.E2E_DB);page=browser.contexts()[0].pages().find(p=>p.url().includes('/#/settings'));assert.ok(page);page.setDefaultTimeout(15000);
  for(const action of ['legacy','id'].includes(process.env.E2E_ONLY)?[]:['stop','close','address','key']){
   await open('E2E lifecycle '+action);desired=wires[0];hold=true;const start=requests.length;await test();
   while(requests.length===start)await page.waitForTimeout(20);

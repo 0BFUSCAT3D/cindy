@@ -53,6 +53,8 @@ import { OAuthBrowserLink, OAuthDeviceCodeCard } from './OAuthDeviceCodeCard';
 import { SettingsTextInput } from './SettingsTextInput';
 import { modelsAfterProviderEndpointEdit } from '@/lib/customProviderEndpointEdit';
 import type { DetectedProviderDraft } from '../../../shared/providerDetection';
+import { SpeechModelChoices } from './SpeechModelChoices';
+import { isSpeechModel, SPEECH_API_PRESETS, speechReferenceModels, speechSetupTarget, withSpeechApiPresets } from '../../../shared/speechProviderSetup';
 
 import {
   PROVIDER_MEDIA_FIELDS,
@@ -78,7 +80,7 @@ import type {
  *   - preset(引导卡「其他供应商」行):presets 异步载入后直达该预设的表单步。
  */
 export type WizardEntry =
-  { kind: 'builtin'; providerId: string } | { kind: 'preset'; presetId: string };
+  { kind: 'builtin'; providerId: string } | { kind: 'preset'; presetId: string; speechOnly?: boolean };
 
 interface AddProviderWizardProps {
   detected?: DetectedProviderDraft;
@@ -457,6 +459,8 @@ export function AddProviderWizard({
         name: string;
         checked: boolean;
         recommended: boolean;
+        speechReference?: boolean;
+        manualSpeech?: boolean;
         agents: AgentKind[];
         /** 列模型端点上报的上下文窗口,**按 agent 分槽**(同一 id 双端可不同,如
          *  cc=1M / codex=272K);完成创建时按所属 runtime 取值,作为供应商事实单独保存。 */
@@ -476,9 +480,9 @@ export function AddProviderWizard({
     void window.electronAPI.maker
       .listProviderPresets()
       .then((r) => {
-        if (!cancelled) setPresets(r.presets);
+        if (!cancelled) setPresets(withSpeechApiPresets(r.presets));
       })
-      .catch(() => undefined);
+      .catch(() => { if (!cancelled) setPresets(withSpeechApiPresets([])); });
     return () => {
       cancelled = true;
     };
@@ -762,8 +766,8 @@ export function AddProviderWizard({
     if (entry?.kind !== 'preset' || presetEntryConsumedRef.current === entry.presetId) return;
     if (presets.length === 0) return;
     presetEntryConsumedRef.current = entry.presetId;
-    const preset = presets.find((p) => p.id === entry.presetId);
-    if (preset) pickPreset(preset);
+    const preset = presets.find((p) => p.id === entry.presetId) ?? [...Object.values(OFFICIAL_API_PRESETS), ...SPEECH_API_PRESETS].find(p => p.id === entry.presetId);
+    if (preset) pickPreset(preset, entry.speechOnly === true);
   }, [entry, presets, pickPreset]);
 
   const localLoginRef = useRef<{ cancel: () => void } | null>(null);
@@ -978,6 +982,8 @@ export function AddProviderWizard({
         name: string;
         checked: boolean;
         recommended: boolean;
+        speechReference?: boolean;
+        manualSpeech?: boolean;
         agents: AgentKind[];
         contextWindows?: Partial<Record<AgentKind, number>>;
         discoveredCosts?: Partial<Record<AgentKind, import("@cindy/model-providers").ModelCost>>;
@@ -1022,6 +1028,21 @@ export function AddProviderWizard({
         } else {
           initial.set(model.id, { name: model.name, checked: false, recommended: false, agents: [agent] });
         }
+      }
+    }
+    // Suggestions add no account membership until the user finishes this wizard.
+    // Scope them to one real API-key runtime, never the device-code draft.
+    const speechTarget = !oauthDraftRef.current && speechSetupTarget(Object.fromEntries(
+      agents.map(agent => [agent, { ...preset.runtimes[agent]!, baseUrl: presetRuntimeBaseUrl(preset, agent, presetBaseUrls) }]),
+    ));
+    if (speechTarget) {
+      if (entry?.kind === 'preset' && entry.speechOnly) {
+        for (const value of initial.values()) value.checked = false;
+      }
+      for (const model of speechReferenceModels(presetRuntimeBaseUrl(preset, speechTarget.agent, presetBaseUrls))) {
+        if (initial.has(model.id)) continue;
+        initial.set(model.id, { name: model.name, checked: model.defaultEnabled !== false,
+          recommended: model.defaultEnabled !== false, agents: [speechTarget.agent], speechReference: true });
       }
     }
     if (detected) {
@@ -1193,10 +1214,14 @@ export function AddProviderWizard({
               discoveredRoute ||
               existing.name !== m.name ||
               m.discoveredCost ||
-              m.discoveredMetadata
+              m.discoveredMetadata || existing.speechReference
             ) {
               next.set(m.id, {
                 ...existing,
+                speechReference: false,
+                // An explicit non-speech response revokes an offline TTS suggestion.
+                ...(existing.speechReference && m.discoveredMetadata?.mode && m.discoveredMetadata.mode !== 'audio_speech'
+                  ? { checked: false, recommended: false } : {}),
                 name: m.name,
                 ...(m.discoveredCost ? { discoveredCosts: { ...existing.discoveredCosts, [agent]: m.discoveredCost } } : {}),
                 agents: mergedAgents,
@@ -1244,7 +1269,7 @@ export function AddProviderWizard({
       failed: !results.some((r) => r.ok),
       empty: !results.some((r) => r.models.length > 0),
     });
-  }, [sel, apiKey, presetBaseUrls, detected]);
+  }, [sel, apiKey, presetBaseUrls, detected, entry]);
 
   /**
    * 零推荐模型的本机代理（例如 LiteLLM）若 `/models` 不可用或返回空清单，仍允许用户
@@ -1317,6 +1342,7 @@ export function AddProviderWizard({
     if (!sel || sel.kind !== 'preset') return;
     const preset = sel.preset;
     const selected = [...picks.entries()]
+      .filter(([, value]) => !value.speechReference || value.checked)
       .map(([id, v]) => ({
         id,
         checked: v.checked,
@@ -1326,6 +1352,7 @@ export function AddProviderWizard({
         discoveredMetadata: v.discoveredMetadata,
         discoveredCosts: v.discoveredCosts,
         routes: v.routes,
+        manualSpeech: v.manualSpeech,
       }));
     if (!selected.some(model => model.checked)) {
       toast.error(t('settings.providers.wizard.noModelSelected'));
@@ -1375,7 +1402,7 @@ export function AddProviderWizard({
               ...(!m.checked ? { defaultEnabled: false } : {}),
               discoveredMetadata,
               ...(m.discoveredCosts?.[agent] ? { discoveredCost: m.discoveredCosts[agent] } : {}),
-              ...(presetModel?.mode ? { mode: presetModel.mode } : {}),
+              ...(m.manualSpeech ? { mode: 'audio_speech' as const } : presetModel?.mode ? { mode: presetModel.mode } : {}),
               ...(presetModel?.modalities ? { modalities: { input: [...presetModel.modalities.input], output: [...presetModel.modalities.output] } } : {}),
               ...(presetModel?.officialDocs ? { officialDocs: presetModel.officialDocs } : {}),
               // Known models follow the maintained preset after refresh. Only
@@ -1450,7 +1477,7 @@ export function AddProviderWizard({
   // 预设单 runtime 时的「仅支持 X」说明(数据驱动的静态灰,见文件头注释)。
   const presetAgents = sel?.kind === 'preset' ? configuredPresetAgents(sel.preset) : [];
   const presetSingleAgentNote =
-    sel?.kind === 'preset' && presetAgents.length === 1
+    sel?.kind === 'preset' && presetAgents.length === 1 && sel.preset.id !== 'elevenlabs-api'
       ? t('settings.providers.wizard.onlyAgentNote', { agent: AGENT_LABEL[presetAgents[0]] })
       : null;
   const oauthSingleAgentNote =
@@ -1460,6 +1487,19 @@ export function AddProviderWizard({
         })
       : null;
 
+  const speechTarget = sel?.kind === 'preset' && !oauthDraftRef.current
+    ? speechSetupTarget(Object.fromEntries(presetAgents.map(agent => [agent, {
+        ...sel.preset.runtimes[agent]!, baseUrl: presetRuntimeBaseUrl(sel.preset, agent, presetBaseUrls),
+      }]))) : undefined;
+  const speechPicks = [...picks.entries()].filter(([id, value]) => value.manualSpeech || value.agents.some(agent =>
+    isSpeechModel({ id, discoveredMetadata: value.discoveredMetadata?.[agent], mode: sel?.kind === 'preset' ? sel.preset.runtimes[agent]?.models.find(model => model.id === id)?.mode : undefined })));
+  const speechIds = new Set(speechPicks.map(([id]) => id));
+  const generalPicks = [...picks.entries()].filter(([id]) => !speechIds.has(id));
+  const togglePick = (id: string) => setPicks(previous => {
+    const next = new Map(previous); const value = next.get(id);
+    if (value) next.set(id, { ...value, checked: !value.checked });
+    return next;
+  });
   const checkedCount = [...picks.values()].filter((v) => v.checked).length;
   const presetHasRecommendedModels =
     sel?.kind === 'preset' &&
@@ -1468,7 +1508,9 @@ export function AddProviderWizard({
     sel?.kind === 'preset' &&
     fetchState.status === 'done' &&
     (fetchState.failed || fetchState.empty) &&
-    !presetHasRecommendedModels;
+    !presetHasRecommendedModels &&
+    !(entry?.kind === 'preset' && entry.speechOnly) &&
+    speechTarget?.service !== 'elevenlabs';
   const presetNeedsApiKey = sel?.kind === 'preset' && sel.preset.authMethod !== 'none';
   const presetBaseUrlsValid =
     sel?.kind === 'preset' &&
@@ -1489,6 +1531,17 @@ export function AddProviderWizard({
     presetBaseUrlsValid &&
     (!presetNeedsApiKey || apiKey.trim().length > 0 || (detected?.catalog?.ok === true && apiKey === detected.apiKey
       && presetRuntimeBaseUrl(sel.preset, detected.agent, presetBaseUrls) === detected.preset.runtimes[detected.agent]?.baseUrl));
+
+  const wizardTitle = sel
+              ? t('settings.providers.wizard.titleWith', {
+                  name:
+                    sel.kind === 'preset'
+                      ? presetDisplayName(sel.preset, i18n.language)
+                      : sel.kind === 'ollama-onboarding'
+                        ? t('settings.providers.local.title')
+                        : sel.provider.name,
+                })
+              : t('settings.providers.wizard.title');
 
   return (
     <Dialog.Root open={dialog.open} onOpenChange={(open) => { if (!open) handleClose(); }}>
@@ -1515,18 +1568,10 @@ export function AddProviderWizard({
         <div className="flex items-center justify-between gap-4 px-4 pb-3 pt-4">
           <Dialog.Title asChild><h3
             className="min-w-0 break-words text-16 font-medium"
+            title={wizardTitle}
             style={{ color: 'var(--settings-section-title)' }}
           >
-            {sel
-              ? t('settings.providers.wizard.titleWith', {
-                  name:
-                    sel.kind === 'preset'
-                      ? presetDisplayName(sel.preset, i18n.language)
-                      : sel.kind === 'ollama-onboarding'
-                        ? t('settings.providers.local.title')
-                        : sel.provider.name,
-                })
-              : t('settings.providers.wizard.title')}
+            {wizardTitle}
           </h3></Dialog.Title>
           <div className="flex shrink-0 items-center gap-4">
             {stepLabels.map((label, i) => {
@@ -2066,6 +2111,7 @@ export function AddProviderWizard({
                   return null;
                 })}
               </div>
+              {entry?.kind === 'preset' && entry.speechOnly && <InfoLine text={t('settings.providers.speechSetup.separateKey')} />}
               {presetSingleAgentNote && <InfoLine text={presetSingleAgentNote} />}
 
             </div>
@@ -2086,12 +2132,27 @@ export function AddProviderWizard({
                   {fetchState.status === 'done' && fetchState.failed && (
                     <InfoLine text={t('settings.providers.wizard.fetchFailed')} />
                   )}
-                  {picks.size > 0 && (
+                  {(speechTarget || speechPicks.length > 0) && <SpeechModelChoices
+                    choices={speechPicks.map(([id, value]) => ({ id, ...value, reference: value.speechReference, manual: value.manualSpeech }))}
+                    onToggle={togglePick}
+                    onAdd={id => {
+                      const agent = speechTarget?.agent ?? speechPicks[0]?.[1].agents[0];
+                      if (!agent) return;
+                      setPicks(previous => {
+                        const next = new Map(previous); const existing = next.get(id);
+                        next.set(id, { ...existing, name: existing?.name ?? id, checked: true,
+                          recommended: existing?.recommended ?? false, agents: existing?.agents ?? [agent],
+                          speechReference: false, manualSpeech: true });
+                        return next;
+                      });
+                    }} />}
+                  {speechPicks.length > 0 && generalPicks.length > 0 && <p className="text-13 font-medium text-[var(--text-primary)]">{t('settings.providers.speechSetup.otherModels')}</p>}
+                  {generalPicks.length > 0 && (
                     <div
                       className="flex flex-col overflow-hidden rounded-xl border"
                       style={{ borderColor: 'var(--border-default)' }}
                     >
-                      {[...picks.entries()].map(([id, v], i) => (
+                      {generalPicks.map(([id, v], i) => (
                         <button
                           key={id}
                           type="button"
@@ -2212,9 +2273,11 @@ export function AddProviderWizard({
                       ))}
                     </div>
                   )}
-                  <p className="text-11 leading-snug" style={{ color: 'var(--text-tertiary)' }}>
-                    {t('settings.providers.wizard.modelsHint')}
-                  </p>
+                  {(generalPicks.length > 0 || showManualModelFallback) && (
+                    <p className="text-11 leading-snug" style={{ color: 'var(--text-tertiary)' }}>
+                      {t('settings.providers.wizard.modelsHint')}
+                    </p>
+                  )}
                 </>
               )}
             </div>

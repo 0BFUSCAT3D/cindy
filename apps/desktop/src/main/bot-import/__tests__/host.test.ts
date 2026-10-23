@@ -121,8 +121,12 @@ afterEach(async () => { vi.restoreAllMocks(); await fs.rm(h.root, { recursive: t
 const nativeIdentity = async (packageId: string) => (await readNativeBotPackage(path.resolve('resources/bot-packages'), packageId))
   .snapshot.items.find(item => item.role === 'identity')!.text;
 async function nativeFinished(result: Awaited<ReturnType<typeof inviteNativeBotPackage>>) {
-  for (let i = 0; result.status === 'running' && i < 100; i++) {
-    await new Promise(resolve => setTimeout(resolve, 5));
+  // Admission can return while the transfer still owns the profile lock.
+  // Wait for that transfer (including file writes and checkpoint cleanup),
+  // rather than racing Windows IO against a fixed 500ms polling budget.
+  if (result.status === 'running') {
+    await withBotProfileLocks([result.botId], async () => {});
+    // The result reader may acquire the same lock for reconciliation.
     result = (await getCompanionImportResult(result.requestId))!;
   }
   expect(result.status).not.toBe('running');
@@ -266,9 +270,13 @@ it('keeps an already installed teammate working after its package leaves the cat
   const first = await nativeFinished(await inviteNativeBotPackage(entry, 'renderer:1'));
   // The receipt of a package that is no longer bundled (a teammate retired from the catalog).
   const file = path.join(h.root, 'companion-imports', `${first.requestId}.json`);
-  const receipt = JSON.parse(await fs.readFile(file, 'utf8'));
-  receipt.nativePackage.packageId = 'retired-example';
-  await fs.writeFile(file, JSON.stringify(receipt));
+  // A complete result can precede checkpoint cleanup. Join its lifecycle lock so
+  // the trailing receipt save cannot overwrite this retired-package fixture.
+  await withBotProfileLocks([first.botId], async () => {
+    const receipt = JSON.parse(await fs.readFile(file, 'utf8'));
+    receipt.nativePackage.packageId = 'retired-example';
+    await fs.writeFile(file, JSON.stringify(receipt));
+  });
   const catalog = await listNativeBotPackages();
   expect(catalog.map(item => item.packageId)).not.toContain('retired-example');
   expect(catalog.every(item => item.installation === undefined)).toBe(true);
@@ -1409,9 +1417,13 @@ it.each(['short-legacy-document', `memory-${'a'.repeat(20)}-${'b'.repeat(20)}`])
   const [source] = await listCompanionImportSources('phone');
   const preview = await previewCompanionImport(source!.id, 'phone');
   const selection = { previewId: preview.id, requestId: 'fixture-recovered-docs', name: 'Ada', entryIds: ['memory-original-entry'], takeover: false, deferSetup: true };
-  await startCompanionImport(selection, 'phone');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('needs-attention'));
+  const accepted = await startCompanionImport(selection, 'phone');
+  // CI on Windows can accept before real memory writes finish. Join the host's
+  // existing profile lock instead of polling under a fixed wall-clock budget;
+  // retain the partial-save and stable-ID assertions through the real import.
+  await withBotProfileLocks([accepted.botId], async () => {});
   const result = (await getCompanionImportResult(selection.requestId))!;
+  expect(result.status).toBe('needs-attention');
   // Simulate the old durable checkpoint, without an available source tree.
   await h.store.update(h.root, result.botId, () => {}, environment => {
     const snapshot = JSON.parse(environment.pendingImport!.snapshotJson);
@@ -1421,7 +1433,9 @@ it.each(['short-legacy-document', `memory-${'a'.repeat(20)}-${'b'.repeat(20)}`])
   const firstFiles = (await storage.list()).map(record => record.filename);
   expect(firstFiles).toHaveLength(1);
   await startCompanionImport(selection, 'reconnected');
-  await vi.waitFor(async () => expect((await getCompanionImportResult(selection.requestId))?.status).toBe('complete'));
+  await withBotProfileLocks([result.botId], async () => {});
+  const completed = await getCompanionImportResult(selection.requestId);
+  expect(completed?.status).toBe('complete');
   expect((await storage.list()).map(record => record.filename)).toEqual(firstFiles);
   const ids = h.importDocument.mock.calls.map(call => call[1] as string);
   expect(ids[0]).toBe(ids[1]);

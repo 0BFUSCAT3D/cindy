@@ -1,3 +1,4 @@
+import { assertProviderE2EProfile } from './provider-e2e-profile.mjs';
 // Black-box real Desktop IPC -> native adapters -> loopback HTTP fault injection.
 // No database writes, host mocks, SDK mocks, real keys or paid upstreams.
 import assert from 'node:assert/strict';
@@ -63,6 +64,7 @@ const baseUrl = `http://127.0.0.1:${server.address().port}/team/v1`;
 let browser;
 try {
   browser = await chromium.connectOverCDP(process.env.E2E_CDP_URL ?? 'http://127.0.0.1:19427');
+  await assertProviderE2EProfile(browser, process.env.E2E_DB);
   const page = browser.contexts()[0].pages().find(p => /localhost:\d+\/#\/settings/.test(p.url()));
   assert.ok(page, 'An isolated Desktop settings window must be open');
   const cases = wires.map((wire, i) => ({ kind: 'success', wire, count: i + 1 }));

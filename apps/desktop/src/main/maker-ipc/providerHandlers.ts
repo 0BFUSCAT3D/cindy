@@ -1,3 +1,4 @@
+import { appendSpeechModels } from '../../shared/speechProviderSetup.js';
 import { setProviderPresentation, retainProviderPresentationAfterAuthChange } from '../maker-host/provider-presentation-store.js';
 import type { DeploymentDetectionResult } from '../../shared/providerDetection.js';
 import { pruneProviderGroupBindings } from '../provider-group/bindings.js';
@@ -196,16 +197,19 @@ function parseCustomProviderUpdateOptions(input: unknown): CustomProviderUpdateO
   if (input === undefined) return {};
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const entries = Object.entries(input as Record<string, unknown>);
-  if (entries.some(([key]) => key !== 'source' && key !== 'codexImageGenerationRestartPolicy'))
+  if (entries.some(([key]) => key !== 'source' && key !== 'codexImageGenerationRestartPolicy' && key !== 'appendSpeechModelsOnly'))
     return null;
   const source = (input as Record<string, unknown>).source;
   if (source !== undefined && source !== 'manual-settings') return null;
   const policy = (input as Record<string, unknown>).codexImageGenerationRestartPolicy;
-  if (policy === undefined) return source === 'manual-settings' ? { source } : {};
-  if (policy !== 'interrupt') return null;
+  const append = (input as Record<string, unknown>).appendSpeechModelsOnly;
+  if (append !== undefined && append !== true) return null;
+  if (policy !== undefined && policy !== 'interrupt') return null;
+  if (append && (source || policy)) return null;
   return {
     ...(source === 'manual-settings' ? { source } : {}),
-    codexImageGenerationRestartPolicy: policy,
+    ...(policy ? { codexImageGenerationRestartPolicy: policy } : {}),
+    ...(append ? { appendSpeechModelsOnly: true as const } : {}),
   };
 }
 
@@ -359,6 +363,8 @@ export interface ProviderHandlerDeps {
     ok: boolean;
     reason?: string;
     rollbackCredentials?: () => boolean;
+    /** Required account-state commit. False or failure must roll credentials back. */
+    commitAccountCapabilities?: () => Promise<boolean>;
     /** Publish identity/model changes only after the login is accepted, outside rollback. */
     afterCommit?: () => Promise<void>;
   }>;
@@ -608,6 +614,7 @@ export function registerProviderHandlers(
   deps: ProviderHandlerDeps,
 ): void {
   const oauthMutationGeneration = new Map<string, symbol>();
+  const acceptingOAuthGenerations = new Set<symbol>();
   const beginOAuthMutation = (providerId: string): symbol => {
     // Unique token avoids ABA when a completed entry is deleted and the same provider starts again.
     const generation = Symbol(providerId);
@@ -655,6 +662,7 @@ export function registerProviderHandlers(
   };
   const cancelOwnedProviderOAuth = (owner: ProviderOAuthOwner): void => {
     if (!isOAuthMutationCurrent(owner.providerId, owner.generation)) return;
+    if (acceptingOAuthGenerations.has(owner.generation)) return;
     const cancellationGeneration = beginOAuthMutation(owner.providerId);
     try {
       deps.oauthCancel(owner.providerId);
@@ -2067,7 +2075,14 @@ export function registerProviderHandlers(
         const previous = await getCustomProvider(config.id);
         assertProviderMutationOwner(ownerAtIngress);
         if (!previous) throwIpcError('NOT_FOUND', `custom provider '${config.id}' not found`);
-        if (resolveLatest) {
+        if (options.appendSpeechModelsOnly) {
+          if (Object.keys(keys).length) throwIpcError('INVALID_PARAMS', 'speech additions cannot change credentials');
+          try { config = appendSpeechModels(previous, config, deps.listPresets()); }
+          catch { throwIpcError('INVALID_PARAMS', 'connection changed or invalid speech additions'); }
+          const validation = validateCustomProviderConfig(config, { allowLegacyXai: true });
+          if (!validation.ok) throwIpcError(validation.code, validation.message);
+          separated = splitCustomProviderHeaders(config);
+        } else if (resolveLatest) {
           // Main-only key import merges under the same queue, never from a stale UI snapshot.
           config = resolveLatest(previous);
           const latestValidation = validateCustomProviderConfig(config, { allowLegacyXai: true });
@@ -2524,6 +2539,7 @@ export function registerProviderHandlers(
       const ownerAtIngress = captureProviderOwnerSession();
       const finishRouteMutation = deps.beginRouteMutation(id);
       const generation = beginOAuthMutation(id);
+      const isCurrent = () => isOAuthMutationCurrent(id, generation) && providerMutationOwnerMatches(ownerAtIngress);
       let owner: ProviderOAuthOwner | null = null;
       let codexHostPrepared = false;
       try {
@@ -2536,26 +2552,38 @@ export function registerProviderHandlers(
           ownerAtIngress,
         );
         codexHostPrepared = preparation.prepared;
-        const result = await deps.oauthLogin(id, () => isOAuthMutationCurrent(id, generation), (url) => {
+        const result = await deps.oauthLogin(id, isCurrent, (url) => {
           // Only the initiating local renderer gets this ephemeral authorization URL.
-          if (!ownerId || !sender || !isOAuthMutationCurrent(id, generation) ||
-              !providerMutationOwnerMatches(ownerAtIngress)) return;
+          if (!ownerId || !sender || !isCurrent()) return;
           try {
             sender.send?.(MAKER_PUSH.PROVIDER_OAUTH_PROGRESS, {
               providerId: id, ownerId, phase: 'browser-url', url,
             });
           } catch { /* A closed renderer must not interrupt credential cleanup. */ }
         }, method, (code) => {
-          if (!ownerId || !sender || !isOAuthMutationCurrent(id, generation) ||
-              !providerMutationOwnerMatches(ownerAtIngress)) return;
+          if (!ownerId || !sender || !isCurrent()) return;
           try {
             sender.send?.(MAKER_PUSH.PROVIDER_OAUTH_PROGRESS, {
               providerId: id, phase: 'device-code', ...code,
             });
           } catch { /* The login still runs if its initiating window closes. */ }
         });
-        if (isOAuthMutationCurrent(id, generation)) {
+        if (isCurrent()) {
           if (result.ok) {
+            if (result.commitAccountCapabilities) {
+              // Credentials are installed: close cancellation before committing their
+              // capabilities so cancellation cannot split the accepted account state.
+              acceptingOAuthGenerations.add(generation);
+              let committed = false;
+              try { committed = await result.commitAccountCapabilities(); } catch { /* Roll back below. */ }
+              if (!committed) {
+                if (!result.rollbackCredentials?.()) {
+                  finishRouteMutation.commit?.();
+                  throwIpcError('INTERNAL', 'failed to restore credentials after account capability update');
+                }
+                return { ok: false, reason: 'login_cancelled' };
+              }
+            }
             finishRouteMutation.commit?.();
             try {
               await result.afterCommit?.();
@@ -2580,6 +2608,7 @@ export function registerProviderHandlers(
         if (isIpcError(err)) throw err;
         throwIpcError('INVALID_PARAMS', err instanceof Error ? err.message : String(err));
       } finally {
+        acceptingOAuthGenerations.delete(generation);
         if (codexHostPrepared) deps.cancelCodexCustomProviderHostChange?.();
         if (ownerId && owner) removeProviderOAuthOwner(ownerId, sender ?? undefined, owner);
         finishOAuthMutation(id, generation);
@@ -2694,6 +2723,8 @@ export function registerProviderHandlers(
         if (owner) cancelOwnedProviderOAuth(owner);
         return { ok: true };
       }
+      const currentGeneration = oauthMutationGeneration.get(id);
+      if (currentGeneration && acceptingOAuthGenerations.has(currentGeneration)) return { ok: true };
       clearProviderOAuthOwners(id);
       const generation = beginOAuthMutation(id);
       try {

@@ -41,6 +41,9 @@ vi.mock('@/cindy-brain/GhostSettingsWebview', () => ({
   ),
 }));
 
+// The shared-quota rail observes auth; this component fixture has no auth host.
+vi.mock('@/contexts/AuthContext', () => ({ useOptionalAuthUser: () => null }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
@@ -76,7 +79,7 @@ vi.mock('react-i18next', () => ({
         'settings.ghosts.detail.openLocation': 'Open Install Location',
         'settings.ghosts.detail.expandInfoValue': `Show full ${String(options?.label ?? '')}`,
         'settings.ghosts.detail.collapseInfoValue': `Collapse ${String(options?.label ?? '')}`,
-        'settings.ghosts.detail.panelNotDocked': 'Not docked',
+        'settings.ghosts.detail.panelDismissed': 'Not docked',
         'settings.providers.openai.title': 'OpenAI',
         'settings.providers.xd.title': 'Cindy AI',
         'settings.defaults.restore': 'Restore default',
