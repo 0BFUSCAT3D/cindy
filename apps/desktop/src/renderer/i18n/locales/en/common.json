@@ -10024,7 +10024,7 @@
       "loadingDevices": "Loading your computers…",
       "devicesFailed": "Couldn’t load your computers",
       "noTargets": "No computer can take over. The other computer must be online, signed in to the same account, and have “Allow same-account devices to control this machine” turned on",
-      "hereControlOff": "“Allow same-account devices to control this machine” is off on this computer, so it can’t be chosen here. Turn it on in Settings → Device Link and try again",
+      "hereControlOff": "“Allow same-account devices to control this machine” is off on this computer, so it can’t be chosen here. Turn it on in Settings → Remote Connection and try again",
       "resumeToMove": "Resume {{name}} before moving it to another computer",
       "transferBusy": "{{name}} is still working on a reply. Move it after the reply finishes",
       "targetUnavailable": "“{{device}}” isn’t available. It must be online with remote control turned on",
