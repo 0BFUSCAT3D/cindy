@@ -49,6 +49,8 @@ function loadGateway(options: {
   killErrorCode?: string;
   /** 模拟回收残留锁时被另一个实例抢先（rename 失败）。 */
   reclaimLostRace?: boolean;
+  /** 模拟 wx 创建锁后写入 pid 失败（磁盘满等）。 */
+  lockPidWriteFails?: boolean;
   /** 模拟挪走的残留锁内容其实是另一个实例重建的活锁（pid）。 */
   reclaimReplacesWith?: number;
 } = {}) {
@@ -107,6 +109,9 @@ function loadGateway(options: {
     writeFileSync: (file: string, body: string) => {
       if (options.writeFails) throw Object.assign(new Error('denied'), { code: 'EACCES' });
       if (file.endsWith('.lock')) {
+        if (options.lockPidWriteFails && lockFile.value === '') {
+          throw Object.assign(new Error('no space'), { code: 'ENOSPC' });
+        }
         lockFile.value = body; // 记录持锁 pid
         return;
       }
@@ -349,6 +354,22 @@ describe('MCP gateway schema disclosure', () => {
     expect(disk.value).toBeNull();
     // 赢家的锁保持原样（内容 777，活进程），未被本实例删除或覆盖回自己的 pid。
     expect(lockOwnerAfter()).toBe('777');
+  });
+
+  it('cleans up an empty lock when writing the pid fails, and recovers on the next call', async () => {
+    // wx 创建锁后写 pid 失败（磁盘满）：空锁 owner 读不出来会被永远拒绝回收，
+    // 必须当场清掉并放弃本次落盘；下次调用（磁盘恢复）重新获取并正常落盘。
+    const { call, requests, disk, lockOwnerAfter } = loadGateway({ lockPidWriteFails: true });
+    await call();
+    expect(requests).toHaveLength(1);
+    expect(disk.value).toBeNull();
+    expect(lockOwnerAfter()).toBeNull();
+
+    // 磁盘恢复（桩不再抛）：下一次调用正常获取锁并落盘。
+    const second = loadGateway();
+    await second.call();
+    expect(second.requests).toHaveLength(1);
+    expect(second.disk.value?.entries['cindy_orca send_to_worker']).toBe(fingerprint(TOOL));
   });
 
   it('keeps another instance newer fingerprint when persisting a different tool', async () => {

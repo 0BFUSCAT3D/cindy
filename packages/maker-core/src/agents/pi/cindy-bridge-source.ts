@@ -2883,8 +2883,15 @@ function acquireDisclosureLock(lockPath: string): boolean {
   try {
     // fd 只参与 wx 独占创建这一步；锁语义是文件存在性 + pid 内容，写完即可释放。
     const fd = openSync(lockPath, 'wx', 0o600);
-    try { writeFileSync(lockPath, String(process.pid)); } catch { /* pid 写不进去时只当普通锁 */ }
+    let pidWritten = false;
+    try { writeFileSync(lockPath, String(process.pid)); pidWritten = true; } catch { /* 磁盘满等 */ }
     try { closeSync(fd); } catch { /* 关闭失败不影响已持有的锁 */ }
+    if (!pidWritten) {
+      // 空锁谁也无法认领（owner 读不出来会被永远拒绝回收），留在路径上就是死锁。
+      // 删掉刚建的空锁、放弃本次落盘；下次调用（磁盘恢复或重启后）重新走获取。
+      try { rmSync(lockPath, { force: true }); } catch { /* 下次写入再清 */ }
+      return false;
+    }
     return true;
   } catch { /* 锁已存在 → 走接管判定 */ }
   const owner = readLockOwner(lockPath);
