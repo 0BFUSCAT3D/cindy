@@ -15,9 +15,10 @@ import {
 import type { WorkerInfo } from './hooks/useWorkers';
 
 export interface EditWorkerForm {
-  role: string;
+  /** 只有用户改过的字段才会带上；undefined = 不改动（避免覆盖期间别处改的值）。 */
+  role?: string;
   /** 空白表示不改动当前 label（不提供「清空 label」语义）。 */
-  label: string;
+  label?: string;
 }
 
 export interface EditWorkerPopoverProps {
@@ -54,6 +55,9 @@ export function EditWorkerPopover({
   /** 已用哪个 worker 初始化过表单。投影刷新会换 worker 对象身份，不能用它触发重置，
    * 否则用户编辑到一半会被后台刷新静默回滚。 */
   const initializedWorkerIdRef = useRef<string | null>(null);
+  /** 打开时的基线。保存只提交用户真正改过的字段：期间 Lead 用 update_worker 改过
+   * label 时，这里仍带着旧值，全量提交会把对方的改动静默回滚。 */
+  const baselineRef = useRef<{ role: string; label: string }>({ role: '', label: '' });
 
   // 打开（或切换到另一个 worker）时按当前值重置表单；同一 worker 的投影刷新不重置。
   useEffect(() => {
@@ -69,6 +73,7 @@ export function EditWorkerPopover({
     setRole(predefined ? worker.role : '');
     setCustomRole(predefined ? '' : worker.role);
     setLabel(worker.label ?? '');
+    baselineRef.current = { role: worker.role.trim(), label: (worker.label ?? '').trim() };
     submittingRef.current = false;
     setIsSubmitting(false);
   }, [open, worker]);
@@ -97,10 +102,19 @@ export function EditWorkerPopover({
 
   const handleSave = useCallback(async () => {
     if (!canSave || submittingRef.current) return;
+    const baseline = baselineRef.current;
+    const patch: EditWorkerForm = {};
+    if (trimmedActiveRole !== baseline.role) patch.role = trimmedActiveRole;
+    if (trimmedLabel && trimmedLabel !== baseline.label) patch.label = trimmedLabel;
+    // 没有实际变化：按保存语义直接关闭，不发请求（避免空 patch 被服务端拒绝）。
+    if (patch.role === undefined && patch.label === undefined) {
+      onClose();
+      return;
+    }
     submittingRef.current = true;
     setIsSubmitting(true);
     try {
-      const ok = await onSave({ role: trimmedActiveRole, label: trimmedLabel });
+      const ok = await onSave(patch);
       if (!ok) {
         submittingRef.current = false;
         setIsSubmitting(false);
@@ -110,7 +124,7 @@ export function EditWorkerPopover({
       submittingRef.current = false;
       setIsSubmitting(false);
     }
-  }, [canSave, onSave, trimmedActiveRole, trimmedLabel]);
+  }, [canSave, onClose, onSave, trimmedActiveRole, trimmedLabel]);
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!next) handleClose(); }}>

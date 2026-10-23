@@ -27,32 +27,48 @@ describe('EditWorkerPopover', () => {
     cleanup();
   });
 
-  it('prefills the current role and label and saves them unchanged', async () => {
+  it('prefills the current role and label, and closes without saving when nothing changed', () => {
     const onSave = vi.fn(async () => true);
+    const onClose = vi.fn();
     render(
-      <EditWorkerPopover open worker={worker()} onClose={vi.fn()} onSave={onSave} />,
+      <EditWorkerPopover open worker={worker()} onClose={onClose} onSave={onSave} />,
     );
 
     const labelInput = screen.getByPlaceholderText('orca.editWorker.labelPlaceholder');
     expect((labelInput as HTMLInputElement).value).toBe('developer-2');
 
     fireEvent.click(screen.getByRole('button', { name: 'orca.editWorker.submit' }));
-    await waitFor(() => {
-      expect(onSave).toHaveBeenCalledWith({ role: 'developer', label: 'developer-2' });
-    });
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts a predefined role switch and a custom role', async () => {
+  it('submits only the role the user changed, so a concurrent label rename survives', async () => {
     const onSave = vi.fn(async () => true);
     const { rerender } = render(
       <EditWorkerPopover open worker={worker()} onClose={vi.fn()} onSave={onSave} />,
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'reviewer' }));
+    // 期间 Lead 经 update_worker 把 label 改成 lead-renamed；弹窗里仍是打开时的旧值。
+    rerender(
+      <EditWorkerPopover
+        open
+        worker={worker({ label: 'lead-renamed' })}
+        onClose={vi.fn()}
+        onSave={onSave}
+      />,
+    );
     fireEvent.click(screen.getByRole('button', { name: 'orca.editWorker.submit' }));
     await waitFor(() => {
-      expect(onSave).toHaveBeenLastCalledWith({ role: 'reviewer', label: 'developer-2' });
+      expect(onSave).toHaveBeenCalledWith({ role: 'reviewer' });
     });
+  });
+
+  it('accepts a custom role', async () => {
+    const onSave = vi.fn(async () => true);
+    const { rerender } = render(
+      <EditWorkerPopover open worker={worker()} onClose={vi.fn()} onSave={onSave} />,
+    );
 
     rerender(
       <EditWorkerPopover
@@ -64,9 +80,10 @@ describe('EditWorkerPopover', () => {
     );
     const customRoleInput = screen.getByPlaceholderText('orca.createWorker.customRolePlaceholder');
     expect((customRoleInput as HTMLInputElement).value).toBe('前端负责人');
+    fireEvent.change(customRoleInput, { target: { value: '前端负责人2' } });
     fireEvent.click(screen.getByRole('button', { name: 'orca.editWorker.submit' }));
     await waitFor(() => {
-      expect(onSave).toHaveBeenLastCalledWith({ role: '前端负责人', label: 'developer-2' });
+      expect(onSave).toHaveBeenLastCalledWith({ role: '前端负责人2' });
     });
   });
 
@@ -103,6 +120,7 @@ describe('EditWorkerPopover', () => {
       <EditWorkerPopover open worker={worker()} onClose={vi.fn()} onSave={onSave} />,
     );
 
+    fireEvent.click(screen.getByRole('button', { name: 'reviewer' }));
     fireEvent.click(screen.getByRole('button', { name: 'orca.editWorker.submit' }));
     await waitFor(() => {
       expect(onSave).toHaveBeenCalledTimes(1);

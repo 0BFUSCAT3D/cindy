@@ -424,9 +424,15 @@ export function useOrcaWorkerSelection({
   const handleUpdateWorker = useCallback(
     async (form: EditWorkerForm): Promise<boolean> => {
       if (!editWorkerId) return false;
-      const payload: { role: string; label?: string } = { role: form.role.trim() };
-      const trimmedLabel = form.label.trim();
-      if (trimmedLabel) payload.label = trimmedLabel;
+      // 只发用户实际改过的字段：全量提交会把期间 Lead 经 update_worker 改过的
+      // role / label 静默回滚（服务端串行锁拦不住请求自带的旧值）。
+      const payload: { role?: string; label?: string } = {};
+      if (form.role !== undefined) payload.role = form.role.trim();
+      if (form.label !== undefined) payload.label = form.label.trim();
+      if (payload.role === undefined && payload.label === undefined) {
+        setEditWorkerId(null);
+        return true;
+      }
       try {
         await orcaWorkflowsFor(leadSessionId).updateWorker({
           leadSessionId,
