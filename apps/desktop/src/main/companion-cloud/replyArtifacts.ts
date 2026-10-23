@@ -8,12 +8,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { parseToolResultPayload } from '@cindy/maker-shared/payload-summary';
 import { buildLooseUrl, extractLoosePath } from '../session-share/mediaUrlRewrite.pure.js';
 import type { CompanionMirrorAttachment } from './mirror.js';
 
 /** A reply sends at most this many files to the room. */
 export const REPLY_ARTIFACTS_MAX = 8;
 
+const PRODUCED_IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 const BLOB_URL = /\bcindy-media:\/\/blobs\/[0-9a-f]{64}\.[a-z0-9]+/g;
 /**
  * Only deliverables go to the room, whatever form the path is written in: documents, spreadsheets,
@@ -77,15 +79,19 @@ export function collectReplyReferences(text: string): ReplyReferences {
  * to be shown (`_xdt_render_image: false`) and any address that is not a stored blob give nothing.
  */
 export function toolResultImageUrls(rawContent: string | null): string[] {
-  let value: unknown = rawContent;
-  // A result is stored as JSON, often a JSON string holding the tool's own JSON.
-  for (let depth = 0; depth < 2 && typeof value === 'string'; depth += 1) {
-    try { value = JSON.parse(value); } catch { return []; }
-  }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-  const record = value as Record<string, unknown>;
-  if (record._xdt_render_image === false) return [];
-  const candidates = [record.xdt_image_url, ...(Array.isArray(record.xdt_image_urls) ? record.xdt_image_urls : [])];
+  if (!rawContent) return [];
+  let text = rawContent;
+  // A result is stored as JSON, sometimes as a JSON string holding the tool's own JSON.
+  try {
+    const once: unknown = JSON.parse(text);
+    if (typeof once === 'string') text = once;
+  } catch { return []; }
+  // The same reading as the other channels: the ghost_call envelope is opened, and the host's own
+  // ledger of produced media (`xdt_media_produced`) counts although the tool named no image field.
+  const record = parseToolResultPayload(text);
+  if (!record || record._xdt_render_image === false) return [];
+  const produced = Array.isArray(record.xdt_media_produced) ? record.xdt_media_produced.filter(url => typeof url === 'string' && PRODUCED_IMAGE_EXT.test(url)) : [];
+  const candidates = [record.xdt_image_url, ...(Array.isArray(record.xdt_image_urls) ? record.xdt_image_urls : []), ...produced];
   return [...new Set(candidates.filter((url): url is string => typeof url === 'string' && /^cindy-media:\/\/blobs\/[0-9a-f]{64}\.[a-z0-9]+$/.test(url)))];
 }
 

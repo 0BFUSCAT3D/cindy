@@ -105,6 +105,11 @@ describe('images made by tools during the turn', () => {
     expect(toolResultImageUrls(JSON.stringify(result))).toEqual([url('a'), url('b')]);
     expect(toolResultImageUrls(JSON.stringify(JSON.stringify(result)))).toEqual([url('a'), url('b')]);
     expect(toolResultImageUrls(JSON.stringify({ ...result, _xdt_render_image: false }))).toEqual([]);
+    // The host's own ledger of produced media counts when the tool named no image field, also inside the ghost_call envelope.
+    const ledger = { xdt_media_produced: [url('c'), `cindy-media://blobs/${'d'.repeat(64)}.mp4`, 'https://example.com/x.png'] };
+    expect(toolResultImageUrls(JSON.stringify(ledger))).toEqual([url('c')]);
+    expect(toolResultImageUrls(JSON.stringify({ ok: true, result: ledger }))).toEqual([url('c')]);
+    expect(toolResultImageUrls(JSON.stringify({ ok: true, result: { ...ledger, _xdt_render_image: false } }))).toEqual([]);
     expect(toolResultImageUrls('not json')).toEqual([]);
     expect(toolResultImageUrls(null)).toEqual([]);
   });
