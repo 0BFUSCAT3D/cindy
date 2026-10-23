@@ -52,3 +52,69 @@ describe.skipIf(!binary)('terminal real Codex guest runtime',()=>{
     }finally{await handle?.close().catch(()=>{});await host.close();child.kill();api.closeAllConnections();await new Promise<void>(resolve=>api.close(()=>resolve()));await rm(root,{recursive:true,force:true});}
   },90_000);
 });
+
+// Native regression: a per-model endpoint must remain behind the private
+// credential proxy, and switching a mixed-protocol provider must use the new
+// model's API. No real account or external network is used.
+describe.skipIf(!process.env.CINDY_PI_TEST_BINARY)('terminal real Pi model routes', () => {
+  it('keeps endpoint overrides private and switches between native APIs', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-terminal-pi-route-'));
+    const requests: Array<{ path: string; model: string; authorization: string }> = [];
+    const server = createServer(async (req, res) => {
+      let raw = ''; for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw); requests.push({ path: req.url!, model: body.model, authorization: String(req.headers.authorization) });
+      if (req.headers.authorization !== 'Bearer fake-pi-upstream-key') { res.writeHead(401).end('{}'); return; }
+      res.setHeader('content-type', 'text/event-stream');
+      if (req.url === '/chat-tenant/chat/completions') {
+        const chunks = [
+          { id: 'chat-fixture', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta: { role: 'assistant', content: 'PI_CHAT_OK' }, finish_reason: null }] },
+          { id: 'chat-fixture', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+        ];
+        res.end(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n');
+      } else if (req.url === '/responses-tenant/responses') {
+        const item = { type: 'message', id: 'msg-fixture', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'PI_RESPONSES_OK', annotations: [] }] };
+        const events = [
+          { type: 'response.created', response: { id: 'r-fixture', status: 'in_progress', output: [] } },
+          { type: 'response.output_item.done', output_index: 0, item },
+          { type: 'response.completed', response: { id: 'r-fixture', status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        ];
+        res.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+      } else res.writeHead(404).end('{}');
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+    const secrets = new Map<string, string>();
+    const host = new TerminalTaskHost({ profileDir: path.join(root, 'profile'), logger, emit() {}, binaryPaths: { pi: process.env.CINDY_PI_TEST_BINARY },
+      secretStore: { get: async key => secrets.get(key) ?? null, set: async (key, value) => { secrets.set(key, value); }, delete: async key => { secrets.delete(key); } },
+      nativeStatus: async () => ({ authenticated: false }),
+    });
+    try {
+      await host.ready;
+      await host.invoke('maker:provider:custom:create', [{ id: 'mixed', name: 'Mixed APIs', auth: { method: 'apiKey' }, runtimes: { pi: {
+        baseUrl: base + '/unused', wireProtocol: 'openai-chat', models: [
+          { id: 'chat', name: 'Chat', contextWindow: 128000, piApi: 'openai-completions', route: { baseUrl: base + '/chat-tenant', wireProtocol: 'openai-chat' } },
+          { id: 'responses', name: 'Responses', contextWindow: 128000, piApi: 'openai-responses', route: { baseUrl: base + '/responses-tenant', wireProtocol: 'openai-responses' } },
+        ],
+      } } }, { pi: 'fake-pi-upstream-key' }]);
+      const task = await host.invoke('maker:create-session', [{ agentKind: 'pi', providerId: 'mixed', model: 'chat', workingDir: root }]) as { id: string };
+      await host.invoke('maker:send', [task.id, { text: 'Reply briefly. Do not call tools.', clientId: 'chat-input' }]);
+      expect(await host.invoke('terminal:tasks:wait', [task.id, 'chat-input'])).toMatchObject({ status: 'completed', finalText: 'PI_CHAT_OK' });
+      await host.invoke('maker:set-model', [task.id, 'responses', 'mixed']);
+      await host.invoke('maker:send', [task.id, { text: 'Reply again. Do not call tools.', clientId: 'responses-input' }]);
+      expect(await host.invoke('terminal:tasks:wait', [task.id, 'responses-input'])).toMatchObject({ status: 'completed', finalText: 'PI_RESPONSES_OK' });
+      expect(requests).toEqual([
+        { path: '/chat-tenant/chat/completions', model: 'chat', authorization: 'Bearer fake-pi-upstream-key' },
+        { path: '/responses-tenant/responses', model: 'responses', authorization: 'Bearer fake-pi-upstream-key' },
+      ]);
+      const files = await readdir(path.join(root, 'profile', 'engines', 'pi'), { recursive: true });
+      for (const file of files.filter(file => String(file).endsWith('models.json'))) {
+        const raw = await readFile(path.join(root, 'profile', 'engines', 'pi', String(file)), 'utf8');
+        expect(raw).not.toContain('fake-pi-upstream-key');
+        expect(raw).not.toContain('/chat-tenant'); expect(raw).not.toContain('/responses-tenant');
+      }
+    } finally {
+      await host.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});

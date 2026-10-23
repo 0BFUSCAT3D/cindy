@@ -1,4 +1,5 @@
 import { TerminalPluginTasks } from './plugins/tasks.js';
+import { TerminalGateway } from './models/gateway.js';
 import { TerminalImConnections } from './im/connections.js';
 import { registerImResources } from './im/resources.js';
 import { TerminalPluginMarket } from './plugins/market.js';
@@ -104,6 +105,7 @@ export class TerminalService {
   private scheduler!: TerminalSchedulerHost;
   private agents!: TerminalRemoteAgentService;
   private account!: TerminalRemoteAccountService;
+  private gateway?: TerminalGateway;
   private membership!: TerminalMembershipService;
   private sharedTasks!: TerminalSharedTasks;
   private groups!: TerminalProviderGroups;
@@ -232,6 +234,7 @@ export class TerminalService {
       attachment:async(request,context)=>{context.assertCurrent();const result=await this.media.inbox.handlePeerAttachment(context.sourceDeviceId,request);context.assertCurrent();return result;},
     });
     await this.createTasks('guest');this.tasks.resumePending();
+    this.startGateway();
     if(!this.secrets.status().locked)await this.auth.initialize();
     await this.ownerChange;
     this.refreshTimer=setInterval(()=>{
@@ -247,9 +250,14 @@ export class TerminalService {
     if(next!==this.ownerKey || this.ownerSuspended){
       await this.closeOwnerServices();
       await this.createTasks(next);this.ownerSuspended=false;this.tasks.resumePending();
+      this.startGateway();
     }
     if(snapshot.session?.status==='authenticated')this.remote.start();
     else this.remote.stop();
+  }
+  private startGateway() {
+    const gateway = this.gateway;
+    void gateway?.start().catch(() => { if (!this.closing && gateway === this.gateway) logger.warn('MODEL_ACCESS_REFRESH_FAILED'); });
   }
   /** Account authority is already revoked before this runs. Cleanup failures
    * cannot skip later owners' private sockets, native tasks or durable stores. */
@@ -257,6 +265,7 @@ export class TerminalService {
     const errors: unknown[] = [];
     const close = async (operation: () => unknown) => { try { await operation(); } catch (error) { errors.push(error); } };
     await close(() => this.im?.close());
+    await close(() => this.gateway?.close());
     await close(() => this.terminals.close()); await close(() => this.remote?.stop());
     if (logout) await this.sharedTasks?.logout().catch(() => logger.warn('SHARED_TASK_CLOSE_PENDING'));
     await close(() => this.files?.stop()); await close(() => this.browser?.stop());
@@ -303,7 +312,7 @@ export class TerminalService {
       },
     });
     await this.protectedInput.prepare();
-    this.tasks=new TerminalTaskHost({profileDir:ownerDir,logger,language:()=>this.settings.snapshot().effective.language,silentStopMessage:()=>silentStopMessage(this.settings.snapshot().effective.language),runtimeRecoveryMessage:()=>runtimeRecoveryMessage(this.settings.snapshot().effective.language),deferPendingTasks:true,protectedInput:this.protectedInput,resolveAttachment:async(reference,context,sessionId)=>{
+    this.tasks=new TerminalTaskHost({profileDir:ownerDir,region:this.region,logger,language:()=>this.settings.snapshot().effective.language,silentStopMessage:()=>silentStopMessage(this.settings.snapshot().effective.language),runtimeRecoveryMessage:()=>runtimeRecoveryMessage(this.settings.snapshot().effective.language),deferPendingTasks:true,protectedInput:this.protectedInput,resolveAttachment:async(reference,context,sessionId)=>{
       if(reference.startsWith('xdt-oss-attach:')||reference.startsWith('cindy-oss-attach:')||reference.startsWith('cindy-peer-attach:'))return this.media.resolve(reference,context);
       const url=path.isAbsolute(reference)?`xdt-file://open?path=${encodeURIComponent(reference)}`:reference;
       if(context.sharedTask&&url.startsWith('cindy-media:')){
@@ -329,6 +338,17 @@ export class TerminalService {
     }});
     await this.tasks.ready;
     const endpoints=()=>((this.auth.snapshot().session?.realm??this.region)==='cn'?chinaEndpoints:globalEndpoints);
+    this.gateway = new TerminalGateway({ models: this.tasks.models, root: ownerDir,
+      endpoint: () => endpoints().modelAccessApiBaseUrl, fallbackEndpoint: () => endpoints().cdnBaseUrl,
+      identity: () => { const session = this.auth.snapshot().session; return session && !this.ownerSuspended ? { userId: session.membership.id, realm: session.realm } : null; },
+      token: () => this.ownerSuspended ? null : this.auth.getAccessToken(), refreshToken: () => this.auth.refresh(),
+      assertCurrent: () => { if (this.ownerKey !== owner || this.ownerGeneration !== generation || this.closing) throw new Error('OWNER_CHANGED'); },
+      secrets: { get: key => this.secrets.get(`${owner}:${key}`), set: (key, value) => this.secrets.set(`${owner}:${key}`, value), delete: key => this.secrets.delete(`${owner}:${key}`) },
+      changed: status => { if (this.ownerKey !== owner || this.ownerGeneration !== generation || this.ownerSuspended || this.closing) return;
+        this.transport.publish('model-access:status-change', [status]); this.transport.publish('maker:provider:changed', [{}]);
+        void this.remote?.publish('maker:provider:changed', {}).catch(() => {});
+      },
+    });
     this.account=new TerminalRemoteAccountService({getApiBaseUrl:()=>endpoints().deviceLinkApiBaseUrl,getAuthBaseUrl:()=>endpoints().authApiBaseUrl,getToken:async()=>this.auth.getAccessToken(),getOwnerScope:()=>this.auth.snapshot().session?scope():null});
     this.crossShares=new TerminalCrossRegionShares({profileDir:ownerDir,account:this.account,region:this.auth.snapshot().session?.realm??this.region,endpoints:{cn:chinaEndpoints.deviceLinkApiBaseUrl,global:globalEndpoints.deviceLinkApiBaseUrl},getOwnerScope:()=>this.auth.snapshot().session?scope():null,deviceId:this.settings.deviceId,getHello:()=>({deviceName:this.settings.snapshot().effective.deviceName,platform:process.platform,appVersion:VERSION,remoteControlEnabled:false,busy:false}),createWebSocket:(url,headers)=>new WebSocket(url,{headers}),directRuntime:createNodeDirectRtcRuntime(wrtc),onPush:push=>this.transport.publish('terminal:remote-event',[push])});
     if(this.auth.snapshot().session)void this.crossShares.open().catch(()=>logger.warn('CROSS_REGION_SHARE_UNAVAILABLE'));
@@ -594,6 +614,14 @@ export class TerminalService {
     }
     if(channel==='terminal:devices:unwatch'){const id=valueString(args[0]);this.subscriptions.get(id)?.();this.subscriptions.delete(id);return null;}
     if(channel==='maker:provider:list')return this.groups.decorate(await this.agents.views());
+    if (channel.startsWith('model-access:')) {
+      if (context.source !== 'local') throw new Error('LOCAL_CONFIGURATION_REQUIRED');
+      if (!this.gateway) throw new Error('MODEL_ACCESS_UNAVAILABLE');
+      if (channel === 'model-access:get-status') return this.gateway.status();
+      if (channel === 'model-access:retry') { await this.gateway.refresh(); return this.gateway.status(); }
+      if (channel === 'model-access:rotate') return this.gateway.rotate();
+      throw new Error('UNSUPPORTED_CHANNEL');
+    }
     if(channel==='terminal:models:add'){
       const value=object(args[0]);const name=valueString(value.name);const model=valueString(value.model);const baseUrl=valueString(value.baseUrl);
       const id=`custom-${randomUUID()}`;
@@ -652,6 +680,7 @@ export class TerminalService {
       const cleanup=async(action:()=>unknown)=>{try{await action();}catch(error){errors.push(error);}};
       clearInterval(this.refreshTimer);
       await cleanup(()=>this.im?.close());
+      await cleanup(()=>this.gateway?.close());
       await cleanup(()=>this.terminals.close());await cleanup(()=>this.remote?.stop());
       await cleanup(()=>this.files?.stop());await cleanup(()=>this.browser?.stop());await cleanup(()=>this.resources?.close());await cleanup(()=>this.membership?.close());
       await cleanup(()=>this.sharedTasks?.close());await cleanup(()=>this.crossShares?.close());await cleanup(()=>this.groupReshare?.stop());await cleanup(()=>this.reshares?.close());

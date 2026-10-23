@@ -1,3 +1,5 @@
+import { pruneAnthropicCompatForGateway } from '@cindy/model-providers/model-plane/pi-gateway-model-catalog';
+export { pruneAnthropicCompatForGateway } from '@cindy/model-providers/model-plane/pi-gateway-model-catalog';
 import { ANSWER_DELIVERY_PROMPT } from '@cindy/maker-shared/rich-answer-guide';
 import { listCindyManagedSkills } from './managed-skills.js';
 import { scanLocalCustomizations } from '../skillhub/customizationScanHost';
@@ -1106,22 +1108,6 @@ function xaiOfficialCapabilityCorrection(
  * 恢复条件:网关 schema 补齐 `strict` / `tool_removal` 后去掉本裁剪。只改客户端生成的
  * models.json,不改代理与上游。
  */
-const GATEWAY_UNSUPPORTED_ANTHROPIC_COMPAT: readonly string[] = [
-  'supportsStrictTools',
-  'supportsMidConvoToolChanges',
-  'supportsMidConvoEffort',
-];
-
-export function pruneAnthropicCompatForGateway(
-  compat: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!compat) return compat;
-  const unsupported = GATEWAY_UNSUPPORTED_ANTHROPIC_COMPAT;
-  if (!unsupported.some((key) => key in compat)) return compat;
-  const next = { ...compat };
-  for (const key of unsupported) delete next[key];
-  return next;
-}
 
 function officialPiModels(providerId: string): PiNativeModelSpec[] | null {
   const models = piModelCatalog.providers[providerId];

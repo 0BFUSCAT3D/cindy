@@ -26,7 +26,18 @@
     "./verifiedContextWindow": "./src/verifiedContextWindow.ts",
     "./utilityModelProfiles": "./src/utilityModelProfiles.ts",
     "./utilityTextResult": "./src/utilityTextResult.ts",
-    "./utilityTextRequest": "./src/utilityTextRequest.ts"
+    "./utilityTextRequest": "./src/utilityTextRequest.ts",
+    "./auxiliaryModelChain": "./src/auxiliaryModelChain.ts",
+    "./catalogModelPin": "./src/catalogModelPin.ts",
+    "./utility-model/*": "./src/utility-model/*.ts",
+    "./model-plane/*": "./src/model-plane/*.ts",
+    "./localModelRuntime": "./src/localModelRuntime.ts",
+    "./llamaCpp": "./src/llamaCpp.ts",
+    "./subscriptionModels": "./src/subscriptionModels.ts",
+    "./model-access/*": "./src/model-access/*.ts",
+    "./modelAccess": "./src/modelAccess.ts",
+    "./auxiliaryModelSettings": "./src/auxiliaryModelSettings.ts",
+    "./providerOrder": "./src/providerOrder.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

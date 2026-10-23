@@ -30,6 +30,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
   const [values,setValues,valuesNow]=useInputState<Record<string,unknown>>({});
   const [bodyOffset,setBodyOffset]=useState(0);
   const [input,setInput]=useState('');
+  const [choiceQuery,setChoiceQuery,choiceQueryNow]=useInputState('');
   const [cursor,setCursor]=useState<string>();
   const [registration,setRegistration]=useState<string>();
   const epoch=useRef(0);
@@ -92,9 +93,10 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     return()=>{epoch.current++;};
   },[device,client,initialCollection,initialRef]);
   const fieldDescriptor=action?.fields?.[field];
+  const filteredOptions=fieldDescriptor?.kind==='select'?fieldDescriptor.options?.filter(option=>txt(option.label).toLocaleLowerCase().includes(choiceQuery.toLocaleLowerCase()))??[]:[];
   const choices=action&&!confirmed?[t.cancel,txt(action.confirmation?.confirmLabel)||t.yes]
     :fieldDescriptor?.kind==='toggle'?[t.no,t.yes]
-    :fieldDescriptor?.kind==='select'?fieldDescriptor.options?.map(option=>txt(option.label))??[]:[];
+    :fieldDescriptor?.kind==='select'?filteredOptions.map(option=>txt(option.label)):[];
   const actions=resource?.actions??collection?.actions??[];
   const links=resource?.links??[];
   const lines=resource?[
@@ -106,6 +108,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     ...(cursor?[{id:'more',title:t.next,run:()=>void run(()=>list(collection,cursor))}]:[]),
   ]:collections.map(item=>({id:item.id,title:txt(item.title),run:()=>void run(()=>list(item))}));
   function prepareField(next:RemoteActionField|undefined,defaults:Record<string,unknown>){
+    setChoiceQuery('');
     const value=next?defaults[next.id]:undefined;
     setInput(typeof value==='string'?value:'');
     setSelected(next?.kind==='toggle'?(value===true?1:0):next?.kind==='select'?Math.max(0,next.options?.findIndex(option=>option.value===value)??0):0);
@@ -124,6 +127,12 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     const current=actionNow.current, currentField=current?.fields?.[fieldNow.current];
     const textActive=currentField&&confirmedNow.current&&['text','multiline','secret'].includes(currentField.kind);
     if(busyNow.current||textActive)return;
+    if(currentField?.kind==='select'&&confirmedNow.current){
+      if(key.escape&&choiceQueryNow.current){setChoiceQuery('');setSelected(0);return;}
+      if(key.backspace||(!key.ctrl&&!key.meta&&!key.tab&&!key.return&&!key.escape&&!key.upArrow&&!key.downArrow&&_input)){
+        setChoiceQuery(key.backspace?Array.from(choiceQueryNow.current).slice(0,-1).join(''):choiceQueryNow.current+terminalText(_input));setSelected(0);return;
+      }
+    }
     if(!action&&resource&&(key.pageUp||key.pageDown)){setBodyOffset(value=>Math.max(0,Math.min(Math.max(0,bodyLines.length-bodyRows),value+(key.pageDown?bodyRows:-bodyRows))));return;}
     if(key.escape){epoch.current++;if(action)setAction(undefined);else if(resource)setResource(undefined);else{setCollection(undefined);setItems([]);}setSelected(0);return;}
     const count=action?choices.length:lines.length;
@@ -131,25 +140,35 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     if(key.downArrow)setSelected(value=>Math.min(count-1,value+1));
     if(key.return){
       if(current&&!confirmedNow.current){if(selectedNow.current===0)setAction(undefined);else if(current.fields?.length){setConfirmed(true);prepareField(current.fields[0],valuesNow.current);}else void run(()=>submit(current,valuesNow.current));}
-      else if(currentField)nextField(currentField.kind==='toggle'?selectedNow.current===1:currentField.options?.[selectedNow.current]?.value);
+      else if(currentField){const option=currentField.options?.filter(option=>txt(option.label).toLocaleLowerCase().includes(choiceQueryNow.current.toLocaleLowerCase()))[selectedNow.current];if(currentField.kind==='toggle'||option)nextField(currentField.kind==='toggle'?selectedNow.current===1:option?.value);}
       else lines[selectedNow.current]?.run();
     }
   },{isActive:!registration});
   const bodyRows=Math.max(3,Math.floor(rows/3));
   const bodyLines=wrapAnsi((resource?.blocks??[]).filter(block=>block.primitive!=='form').map(block=>terminalText(block.fallbackMarkdown)).filter(Boolean).join('\n\n'),Math.max(10,columns-4),{hard:true,trim:false}).split('\n');
   const visibleBody=resource&&!action&&bodyLines.some(line=>line.trim())?Math.min(bodyRows,bodyLines.length)+(bodyLines.length>bodyRows?1:0)+1:0;
-  const pageSize=Math.max(1,Math.floor((rows-12-visibleBody)/2));
-  const start=Math.max(0,selected-pageSize+1);
+  const labels=action?choices:lines.map(line=>line.title);
+  const searchVisible=!!action&&confirmed&&fieldDescriptor?.kind==='select'&&(fieldDescriptor.options?.length??0)>8;
+  const availableRows=Math.max(2,rows-12-visibleBody-(action?2:0)-(searchVisible?2:0));
+  const heights=labels.map(label=>wrapAnsi(`› ${label}`,Math.max(10,columns-4),{hard:true,trim:false}).split('\n').length+1);
+  let start=0,end=0,usedRows=0;
+  for(;end<labels.length;end++){
+    const height=heights[end];
+    if(end>selected&&usedRows+height>availableRows)break;
+    while(start<end&&usedRows+height>availableRows){usedRows-=heights[start++];}
+    usedRows+=height;
+  }
   if(registration)return <ChannelRegistration client={client} device={device} service={registration} locale={locale} onDone={()=>{setRegistration(undefined);if(resource)void run(()=>open(resource.ref));}}/>;
   return <Box flexDirection="column" gap={1}>
     <Text bold>{resource?txt(resource.display.title):collection?txt(collection.title):t.resources}{resource?.display.status?` · ${txt(resource.display.status.label)}`:''}{busy?` · ${t.loading}`:''}</Text>
     {visibleBody>0&&<Box flexDirection="column"><Text>{bodyLines.slice(bodyOffset,bodyOffset+bodyRows).join('\n')}</Text>{bodyLines.length>bodyRows&&<Text dimColor>{bodyOffset+1}–{Math.min(bodyOffset+bodyRows,bodyLines.length)} / {bodyLines.length} · PgUp / PgDn</Text>}</Box>}
     {action?<>
       <Text>{!confirmed?txt(action.confirmation?.title):fieldDescriptor?txt(fieldDescriptor.label):txt(action.label)}</Text>
+      {searchVisible&&<Text dimColor>{t.search}{choiceQuery?` · ${choiceQuery}`:''}</Text>}
       {!confirmed&&action.confirmation?.body&&<Text>{txt(action.confirmation.body)}</Text>}
       {isText?<Input value={input} onChange={setInput} active={!busy} secret={fieldDescriptor?.kind==='secret'} multiline={fieldDescriptor?.kind==='multiline'} onSubmit={nextField} onCancel={()=>setAction(undefined)} />
-        :choices.slice(start,start+pageSize).map((choice,index)=><Text key={index+start} bold={index+start===selected}>{index+start===selected?'› ':'  '}{choice}</Text>)}
-    </>:lines.slice(start,start+pageSize).map((line,index)=><Text key={line.id} bold={selected===index+start}>{selected===index+start?'› ':'  '}{line.title}</Text>)}
+        :choices.slice(start,end).map((choice,index)=><Text key={index+start} bold={index+start===selected}>{index+start===selected?'› ':'  '}{choice}</Text>)}
+    </>:lines.slice(start,end).map((line,index)=><Text key={line.id} bold={selected===index+start}>{selected===index+start?'› ':'  '}{line.title}</Text>)}
     {!action&&!busy&&!error&&lines.length===0&&<Text dimColor>{t.emptyResources}</Text>}
     {notice&&<Text>{notice}</Text>}{error&&<Text color="red">{error}</Text>}
   </Box>;

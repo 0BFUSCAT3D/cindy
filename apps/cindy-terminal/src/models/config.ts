@@ -2,6 +2,7 @@ import path from 'node:path';
 import { BUNDLED_CATALOG, buildRegistry, buildUserProvider, resolveRoute, type AgentKind, type Catalog, type CustomProviderConfig, type Effort, type ProviderView, type ResolvedRoute, type CatalogModel, type ProviderRuntimeModelConfig, type ModelDisableOverrides, modelDisableKey, MODEL_METADATA_FIELDS, validModelMetadata, isProviderRequestPath, PI_MODEL_APIS } from '@cindy/model-providers';
 import type { TerminalSecrets } from '../contracts.js';
 import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platform.js';
+import { createActiveCatalog } from '@cindy/model-providers/model-plane/activeCatalog';
 
 export const ENGINES = ['claude-code', 'codex', 'pi'] as const;
 export type ModelSelection = { agentKind: AgentKind; providerId: string; model: string; effort?: Effort };
@@ -22,12 +23,18 @@ export function parseSelection(value: unknown): ModelSelection {
 /** Non-secret user overrides; provider metadata continues to come from the shared catalog. */
 export class TerminalModelConfig {
   private state: ModelState = { version: 1, providers: [] };
-  private readonly nativeModels = new Map<AgentKind, CatalogModel[]>();
+  readonly catalogRuntime: ReturnType<typeof createActiveCatalog>;
   private readonly discovery = new Map<AgentKind, Promise<void>>();
   private pending: Promise<unknown> = Promise.resolve();
   private readonly file: string;
-  constructor(private readonly profileDir: string, private readonly secrets: TerminalSecrets, private readonly nativeStatus: NativeStatus, private readonly catalog: Catalog = BUNDLED_CATALOG, private readonly discover?: (kind: AgentKind) => Promise<CatalogModel[]>) {
+  private gateway: (() => { apiKey: string; endpoint: string } | null) | undefined;
+  private refreshGateway?: () => Promise<void>;
+  private rejectGateway?: (key: string | null | undefined) => void;
+  private mutations = 0;
+  constructor(private readonly profileDir: string, private readonly secrets: TerminalSecrets, private readonly nativeStatus: NativeStatus, private readonly catalog: Catalog = BUNDLED_CATALOG, private readonly discover?: (kind: AgentKind) => Promise<CatalogModel[]>, region: 'cn' | 'global' = 'global') {
     this.file = path.join(profileDir, 'models.json');
+    this.catalogRuntime = createActiveCatalog(region);
+    this.catalogRuntime.setActiveCatalog(catalog, { capabilityEvidence: catalog === BUNDLED_CATALOG ? 'fallback' : 'current' });
   }
   async open(): Promise<void> {
     await privateDirectory(this.profileDir);
@@ -38,10 +45,11 @@ export class TerminalModelConfig {
     const providers = parsed.providers.map(value => this.parseProvider(value));
     if (new Set(providers.map(p => p.id)).size !== providers.length) throw new Error('DUPLICATE_PROVIDER');
     this.state = { version: 1, providers, ...(parsed.disabled && typeof parsed.disabled==='object' ? {disabled: parsed.disabled as ModelDisableOverrides} : {}), ...(parsed.defaultSelection ? { defaultSelection: parseSelection(parsed.defaultSelection) } : {}) };
+    this.catalogRuntime.setCustomProviderConfigs(providers);
   }
   private parseProvider(value: unknown): CustomProviderConfig {
     const input = object(value);
-    if (typeof input.id !== 'string' || !/^[a-z0-9_-]{1,80}$/.test(input.id) || this.catalog.providers.some(p => p.id === input.id)) throw new Error('INVALID_PROVIDER_ID');
+    if (typeof input.id !== 'string' || !/^[a-z0-9_-]{1,80}$/.test(input.id) || this.catalogRuntime.getActiveCatalog().providers.some(p => p.id === input.id && p.source !== 'user')) throw new Error('INVALID_PROVIDER_ID');
     if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('INVALID_PROVIDER_NAME');
     const auth = input.auth === undefined ? { method: 'apiKey' } : object(input.auth);
     if (auth.method !== 'apiKey' && auth.method !== 'none') throw new Error('CUSTOM_OAUTH_REQUIRES_NATIVE_LOGIN');
@@ -96,12 +104,13 @@ export class TerminalModelConfig {
   }
   previewProvider(input:unknown) {
     const provider=this.parseProvider(input);const kind=Object.keys(provider.runtimes)[0] as AgentKind;
-    const view=buildRegistry({...this.catalog,providers:[buildUserProvider(provider)]},{[provider.id]:true});
+    const view=buildRegistry({...this.activeCatalog(),providers:[buildUserProvider(provider)]},{[provider.id]:true});
     const model=provider.runtimes[kind]!.models[0].id;const route=resolveRoute(view,provider.id,model,kind);
     if(!route)throw new Error('MODEL_ROUTE_UNAVAILABLE');return {route,selection:{agentKind:kind,providerId:provider.id,model}};
   }
-  presets() { return structuredClone(this.catalog.presets ?? []); }
+  presets() { return structuredClone(this.activeCatalog().presets ?? []); }
   async refresh(providerId:string) {
+    if (providerId === 'xd' && this.refreshGateway) { await this.refreshGateway(); return { ok: true as const, providerId }; }
     const kind=providerId==='openai'?'codex':providerId==='anthropic'?'claude-code':null;
     if(!kind||!this.discover)throw new Error('PROVIDER_DISCOVERY_UNAVAILABLE');
     this.discovery.delete(kind);await this.views();
@@ -126,8 +135,17 @@ export class TerminalModelConfig {
     });
   }
   disconnect(id:string,guard:()=>void) {return this.change(async()=>{guard();if(!this.state.providers.some(p=>p.id===id))throw new Error('PROVIDER_NOT_FOUND');for(const kind of ENGINES){guard();await this.secrets.delete(this.key(id,kind));}});}
-  private activeCatalog(): Catalog {
-    return { ...this.catalog, providers: [...this.catalog.providers.map(provider => { const kind = provider.id === 'openai' ? 'codex' : provider.id === 'anthropic' ? 'claude-code' : null; return kind && this.nativeModels.has(kind) ? { ...provider, models: { ...provider.models, [kind]: this.nativeModels.get(kind)! } } : provider; }), ...this.state.providers.map(p => buildUserProvider(p,{modelRegistry:this.catalog.modelRegistry,presets:this.catalog.presets}))] };
+  connectGateway(read: () => { apiKey: string; endpoint: string } | null, refresh?: () => Promise<void>, rejected?: (key: string | null | undefined) => void) { this.gateway = read; this.refreshGateway = refresh; this.rejectGateway = rejected; }
+  gatewayCredentials() { return this.gateway?.() ?? null; }
+  reportGatewayRejection(key: string | null | undefined) { this.rejectGateway?.(key); }
+  isMutating() { return this.mutations > 0; }
+  gatewayChanged() { this.generation += 1; }
+  activeCatalog(): Catalog {
+    const catalog = this.catalogRuntime.getActiveCatalog(), gateway = this.gateway?.();
+    if (!gateway) return catalog;
+    return { ...catalog, providers: catalog.providers.map(provider => provider.id !== 'xd' ? provider : {
+      ...provider, routing: Object.fromEntries(Object.entries(provider.routing).map(([kind, route]) => [kind, { ...route, upstream: gateway.endpoint, authStrategy: 'api-key-header' }])),
+    }) };
   }
   async views(): Promise<ProviderView[]> {
     await this.pending;
@@ -138,10 +156,14 @@ export class TerminalModelConfig {
     const statuses = await Promise.all(['claude-code', 'codex'].map(async kind => [kind, await this.nativeStatus(kind as AgentKind)] as const));
     connected.anthropic = statuses[0][1].authenticated;
     connected.openai = statuses[1][1].authenticated;
+    connected.xd = Boolean(this.gateway?.());
     if (this.discover) await Promise.all(statuses.filter(([, state]) => state.authenticated).map(async ([kind]) => {
       let pending = this.discovery.get(kind as AgentKind);
       if (!pending) {
-        pending = this.discover!(kind as AgentKind).then(models => { this.nativeModels.set(kind as AgentKind, models); }).catch(() => { this.discovery.delete(kind as AgentKind); });
+        pending = this.discover!(kind as AgentKind).then(models => {
+          if (kind === 'codex') this.catalogRuntime.setDiscoveredCodexModels(models, { source: 'list' });
+          else this.catalogRuntime.setAnthropicDiscoveredModels(models);
+        }).catch(() => { this.discovery.delete(kind as AgentKind); });
         this.discovery.set(kind as AgentKind, pending);
       }
       await pending;
@@ -151,14 +173,15 @@ export class TerminalModelConfig {
   snapshot() { return structuredClone(this.state); }
   providerSources() { return this.activeCatalog().providers.map(({ id, source }) => ({ id, source })); }
   private generation = 0;
-  revision() { return this.generation; }
-  async select(input?: unknown): Promise<{ selection: ModelSelection; route: ResolvedRoute }> {
+  revision() { return this.generation + this.catalogRuntime.getActiveCatalogRevision(); }
+  async select(input?: unknown): Promise<{ selection: ModelSelection; route: ResolvedRoute; modelRevision: number }> {
     await this.pending;
     const views = await this.views();
+    const modelRevision = this.revision();
     let selection = input ? parseSelection(input) : this.state.defaultSelection;
     if (!selection) {
       for (const kind of ENGINES) {
-        const provider = views.find(p => p.connected && !p.suspended && (p.source === 'user' || kind === 'claude-code' && p.id === 'anthropic' || kind === 'codex' && p.id === 'openai') && p.models[kind]?.some(m => !m.disabled && m.defaultEnabled !== false));
+        const provider = views.find(p => p.connected && !p.suspended && (p.source === 'user' || p.id === 'xd' || kind === 'claude-code' && p.id === 'anthropic' || kind === 'codex' && p.id === 'openai') && p.models[kind]?.some(m => !m.disabled && m.defaultEnabled !== false));
         const model = provider?.models[kind]?.find(m => !m.disabled && m.defaultEnabled !== false);
         if (provider && model) { selection = { agentKind: kind, providerId: provider.id, model: model.id }; break; }
       }
@@ -168,17 +191,20 @@ export class TerminalModelConfig {
     if (!route || !route.provider.connected || route.provider.suspended || route.model.disabled) throw new Error('MODEL_ROUTE_UNAVAILABLE');
     // Built-in subscriptions use the original vendor CLI. Cross-harness OAuth
     // needs a separately authorized credential bridge, never a copied login.
-    if (route.provider.source !== 'user' && !((selection.agentKind === 'claude-code' && selection.providerId === 'anthropic') || (selection.agentKind === 'codex' && selection.providerId === 'openai'))) throw new Error('MODEL_ROUTE_REQUIRES_SUPPORTED_CONNECTION');
+    if (selection.providerId === 'xd' && this.catalogRuntime.isXdGatewayPaymentRequiredRoute(selection.model, selection.agentKind)) throw new Error('MODEL_PAYMENT_REQUIRED');
+    if (route.provider.source !== 'user' && !(selection.providerId === 'xd' && this.gateway?.()) && !((selection.agentKind === 'claude-code' && selection.providerId === 'anthropic') || (selection.agentKind === 'codex' && selection.providerId === 'openai'))) throw new Error('MODEL_ROUTE_REQUIRES_SUPPORTED_CONNECTION');
     const custom = this.state.providers.find(p => p.id === selection.providerId);
     if (custom && custom.auth?.method !== 'none' && !await this.secrets.get(this.key(selection.providerId, selection.agentKind))) throw new Error('MODEL_CREDENTIAL_REQUIRED');
-    return { selection: structuredClone(selection), route };
+    if (modelRevision !== this.revision() || this.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
+    return { selection: structuredClone(selection), route, modelRevision };
   }
   private change(operation: () => Promise<void>): Promise<void> {
-    const result = this.pending.then(async () => { try { await operation(); } finally { this.generation += 1; } });
+    this.mutations += 1;
+    const result = this.pending.then(async () => { try { await operation(); } finally { this.generation += 1; this.mutations -= 1; } });
     this.pending = result.catch(() => undefined);
     return result;
   }
-  private async persist(state: ModelState): Promise<void> { await atomicPrivateWrite(this.file, JSON.stringify(state)); this.state = state; }
+  private async persist(state: ModelState): Promise<void> { await atomicPrivateWrite(this.file, JSON.stringify(state)); this.state = state; this.catalogRuntime.setCustomProviderConfigs(state.providers); }
   setDefault(input: unknown, guard: () => void = () => {}): Promise<void> {
     const selection = parseSelection(input);
     return this.change(async () => {
@@ -238,7 +264,24 @@ export class TerminalModelConfig {
     const value = await this.secrets.get(`${this.key(providerId, agent)}:headers`);
     return value ? this.validateHeaders(JSON.parse(value)) : {};
   }
-  credential(providerId: string, agent: AgentKind) { return this.secrets.get(this.key(providerId, agent)); }
+  credential(providerId: string, agent: AgentKind): Promise<string | null> { return providerId === 'xd' ? Promise.resolve(this.gateway?.()?.apiKey ?? null) : this.secrets.get(this.key(providerId, agent)); }
   private key(id: string, agent: AgentKind) { return `terminal:provider:${id}:${agent}`; }
+  /** Private request snapshot. Credentials and headers never enter model views. */
+  async utilityCredentials() {
+    await this.views();
+    const revision = this.revision();
+    const keys = new Map<string, string | null>();
+    const catalog = structuredClone(this.activeCatalog());
+    for (const provider of catalog.providers) {
+      if (provider.source !== 'user') continue;
+      for (const kind of provider.agents) {
+        keys.set(`${provider.id}:${kind}`, await this.credential(provider.id, kind));
+        const routing = provider.routing[kind];
+        if (routing) routing.headerOverride = { ...routing.headerOverride, ...await this.headers(provider.id, kind) };
+      }
+    }
+    if (revision !== this.revision() || this.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
+    return { revision, catalog, readKey: (id: string, kind: string) => revision === this.revision() && !this.isMutating() ? keys.get(`${id}:${kind}`) ?? null : null };
+  }
   async flush() { await this.pending; }
 }

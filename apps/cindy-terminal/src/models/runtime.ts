@@ -10,6 +10,7 @@ import type { createTaskTools } from '../tasks/mcp.js';
 import type { TerminalModelConfig, ModelSelection } from './config.js';
 
 import { createProviderProxy } from './proxy.js';
+import { resolveBundledPiGatewayModelProfile, pruneAnthropicCompatForGateway } from '@cindy/model-providers/model-plane/pi-gateway-model-catalog';
 import type { TerminalCapabilities } from '../tasks/capabilities.js';
 
 const execute = promisify(execFile);
@@ -70,12 +71,12 @@ export interface RuntimeInput {
  * changing another task's provider cannot redirect an in-flight request. */
 export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgent> {
   const { selection, route, binaryPath, models, profileDir, taskId, logger } = input;
-  const custom = route.provider.source === 'user';
+  const custom = route.provider.source === 'user' || route.provider.id === 'xd';
   const key = custom && !input.remote ? await models.credential(selection.providerId, selection.agentKind) : null;
   const codexHome = custom && !input.remote && selection.agentKind === 'codex' ? (input.guestHome ? path.join(input.guestHome,'codex') : path.join(profileDir, 'engines', 'codex', taskId)) : undefined;
   const claudeHome = input.guestHome && selection.agentKind==='claude-code' ? path.join(input.guestHome,'claude') : undefined;
   for(const directory of [codexHome,claudeHome])if(directory)await privateDirectory(directory);
-  const proxy = custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest) : null;
+  const proxy = custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined) : null;
   const runtimeKey = proxy?.token ?? key;
   const endpoint = proxy?.url ?? route.routing.upstream;
   const own = (agent: BaseAgent) => { if (proxy) { const dispose = agent.dispose.bind(agent); agent.dispose = async () => { try { await dispose(); } finally { await proxy.close(); } }; } return agent; };
@@ -147,10 +148,29 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
       return {
         providers: [{
           id: selection.providerId, sourceProviderId: selection.providerId,
-          name: route.provider.name, baseUrl: native.baseUrl,
+          name: route.provider.name, baseUrl: proxy?.url ?? native.baseUrl,
           api: native.wireProtocol === 'openai-chat' ? 'openai-completions' : native.wireProtocol,
           ...(runtimeKey ? { apiKeyEnvVar: 'CINDY_TERMINAL_PROVIDER_KEY' } : {}),
-          models: catalogModels.map(model => ({ id: model.id, name: model.name, contextWindow: model.contextWindow, reasoning: Boolean(model.efforts?.length), input: ['text' as const, ...(model.supportsImageInput ? ['image' as const] : [])] })),
+          models: catalogModels.flatMap(model => {
+            const resolved = resolvePiModelRoute(model, { baseUrl: route.routing.upstream!, wireProtocol: route.routing.wireProtocol });
+            if (!resolved) return [];
+            const api = resolved.wireProtocol === 'openai-chat' ? 'openai-completions' as const : resolved.wireProtocol;
+            const bundled = route.provider.id === 'xd' ? resolveBundledPiGatewayModelProfile(model.id) : undefined;
+            const metadata = bundled?.api === api ? bundled : undefined;
+            const compat = api === 'anthropic-messages' ? pruneAnthropicCompatForGateway(metadata?.compat) : metadata?.compat;
+            return [{ id: model.id, name: model.name,
+              api,
+              ...(metadata?.samplingParams ? { samplingParams: metadata.samplingParams } : {}),
+              ...(metadata?.thinkingLevelMap ? { thinkingLevelMap: metadata.thinkingLevelMap as import('@cindy/maker-core').PiNativeModelSpec['thinkingLevelMap'] } : {}),
+              ...(route.provider.id === 'xd' && (api === 'openai-completions' || api === 'anthropic-messages') ? { compat: { ...compat, sendSessionAffinityHeaders: true } } : compat ? { compat } : {}),
+              // Endpoint overrides stay behind the per-model host proxy. Never
+              // send its loopback capability to a user-supplied upstream URL.
+              baseUrl: proxy?.url ?? resolved.baseUrl,
+              contextWindow: model.contextWindow, ...(model.maxOutput ? { maxTokens: model.maxOutput } : {}),
+              ...(model.cost?.input !== undefined && model.cost.output !== undefined ? { cost: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead ?? 0, cacheWrite: model.cost.cacheWrite ?? 0 } } : {}), supportsFastMode: model.supportsFastMode,
+              reasoning: Boolean(model.efforts?.length), input: ['text' as const, ...(model.supportsImageInput ? ['image' as const] : [])],
+            }];
+          }),
         }],
         env: runtimeKey ? { CINDY_TERMINAL_PROVIDER_KEY: runtimeKey } : {},
       };

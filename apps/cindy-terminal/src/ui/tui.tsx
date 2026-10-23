@@ -15,6 +15,8 @@ import type { InteractionRequest } from '@cindy/maker-core';
 import { InteractionView } from './interaction.js';
 import { Authentication } from './authentication.js';
 import { Resources } from './resources.js';
+import { auxiliaryModelsTitle } from '../models/utility-resources.js';
+import { resolveRemoteText } from '@cindy/device-link';
 import { getMessages, getControlMessages, getModelMessages, getServiceMessages, type Locale } from './i18n.js';
 import { Input, terminalText } from './input.js';
 import { useInputState } from './state.js';
@@ -307,13 +309,16 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         const preference=at.device?record(await call('terminal:models:target-default',[at.device],false)):record(record(await call('terminal:models:get',[],false)).defaultSelection);
         nextItems = [];
         let canConfigureModels=!at.device;
+        let canConfigureUtility=!at.device;
         if(at.device){
           try{
             const manifest=record(await call('maker:remote-resources:manifest',[{client:{protocolVersion:1,primitives:['text','actions']}}]));
             canConfigureModels=array(manifest.collections).some(item=>item.id==='providers');
+            canConfigureUtility=array(manifest.collections).some(item=>item.id==='auxiliary-models');
           }catch(error){if(!(error instanceof Error)||!['CHANNEL_NOT_ALLOWED','UNSUPPORTED_CHANNEL'].includes(error.message))throw error;}
         }
         if(canConfigureModels)nextItems.push({id:'add',title:`+ ${t.addProvider}`,run:addProvider},{id:'manage',title:modelText.manage,run:()=>navigate('providers')});
+        if(canConfigureUtility)nextItems.push({ id: 'auxiliary', title: resolveRemoteText(auxiliaryModelsTitle, locale), run: () => { setResourceTarget({ collectionId: 'auxiliary-models', kind: 'auxiliary-models', id: 'chain' }); setPage('resources'); } });
         if(!at.device)nextItems.push({id:'engines',title:t.engines,run:()=>navigate('engines')});
         const controlsCount=nextItems.length;
         for (const provider of array(record(raw).providers ?? raw)) {

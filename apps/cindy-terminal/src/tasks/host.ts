@@ -48,6 +48,9 @@ import type { Capabilities, MakerEventListener } from '@cindy/maker-core';
 import { createHistoryViewReader } from '@cindy/remote-agent/host/historyViewReader';
 import type { HistoryWorkReference } from '@cindy/maker-shared/message-window';
 import { TerminalTaskStorage, type TerminalTaskMeta, type Submission } from './storage.js';
+import { TerminalUtilityModels } from '../models/utility.js';
+import { registerUtilityModelResources } from '../models/utility-resources.js';
+import type { UtilityNativeAgents } from '@cindy/model-providers/utility-model/host';
 import { TerminalTaskChanges, TASK_CHANGE_CHANNELS } from './changes.js';
 import { TerminalTurnLifecycle } from './turn-lifecycle.js';
 import { createChannelTurnSignals } from '@cindy/im-runtime/channelTurnSignal';
@@ -65,6 +68,7 @@ import type { Locale } from '../ui/i18n.js';
 import { redactToolInputForUntrustedBoundary } from '@cindy/remote-agent/host/toolInputRedaction';
 
 export const TERMINAL_TASK_CHANNELS = [
+  'maker:auxiliary-model-settings:get', 'maker:auxiliary-model-settings:set',
   'maker:switch-session-agent', 'maker:get-session-agent-switch-intent',
   'maker:generate-title',
   ...CAPABILITY_CHANNELS,
@@ -103,13 +107,14 @@ export interface TerminalTaskHostOptions extends InputHost {
   remoteInvoke?: DeviceAgentServiceDeps['remoteInvoke'];
   binaryPaths?: Partial<Record<AgentKind, string>>;
   catalog?: Catalog;
+  region?: 'cn' | 'global';
   /** Optional adapter injection for embedding and deterministic contract tests. */
   createAgent?: (input: RuntimeInput) => Promise<BaseAgent>;
   nativeStatus?: (kind: AgentKind, binary: string | null) => ReturnType<typeof nativeAuthState>;
 }
 type ScheduledOrigin = { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string; firedAt?: number };
 type TaskInvocationContext = InvocationContext & { scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
-type LiveTask = { revoke():void; plugin?:TerminalPluginTask; capabilityRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
+type LiveTask = { revoke():void; plugin?:TerminalPluginTask; capabilityRevision: number; modelRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
 type Pending = { sessionId: string; sourceRequestId: string; request: InteractionRequest; settle: (decision: InteractionDecision) => void; decide: (decision:InteractionDecision)=>boolean; deferred?:InteractionDecision; shared?: SharedPermission; migrated?: boolean };
 
 function record(value: unknown): Record<string, unknown> {
@@ -141,6 +146,7 @@ export class TerminalTaskHost {
   private readonly routeClosures = new Set<string>();
   private readonly permissionChanges = createSessionPermissionChanges();
   private readonly utilityAbort = new AbortController();
+  readonly utility: TerminalUtilityModels;
   private readonly utilityWork = new Set<Promise<unknown>>();
   private readonly recovering = new Map<string, Promise<void>>();
   private readonly externalSubmissions = new Map<string, string>();
@@ -258,7 +264,17 @@ export class TerminalTaskHost {
       log: options.logger,
     });
     this.capabilities = new TerminalCapabilities({root:options.profileDir,secrets:options.secretStore,assertCurrent:()=>{if(this.closed)throw new Error('TASK_HOST_CLOSED');},changed:()=>{this.emit('maker:mcp:changed',{});this.emit('maker:remote-resources:changed',{collectionId:'skills'});this.emit('maker:remote-resources:changed',{collectionId:'mcp'});},workingDirs:async()=>[...new Set((await this.storage.list()).filter(row=>!row.deleted).map(row=>row.workDir))]});
-    this.models = new TerminalModelConfig(options.profileDir, options.secretStore, kind => this.authState(kind), options.catalog, options.createAgent ? undefined : async kind => { const binary = this.binaries.get(kind); return binary ? discoverNativeModels(kind, binary, options.profileDir, options.logger) : []; });
+    this.models = new TerminalModelConfig(options.profileDir, options.secretStore, kind => this.authState(kind), options.catalog, options.createAgent ? undefined : async kind => { const binary = this.binaries.get(kind); return binary ? discoverNativeModels(kind, binary, options.profileDir, options.logger) : []; }, options.region);
+    this.utility = new TerminalUtilityModels({
+      root: options.profileDir, models: this.models, log: options.logger,
+      assertCurrent: () => this.guard({ source: 'local' }),
+      changed: () => this.emit('maker:remote-resources:changed', { collectionId: 'auxiliary-models' }),
+      native: {
+        listAvailableAgents: () => ENGINES.filter(kind => Boolean(this.binaries.get(kind))),
+        getAgentAuthState: async kind => { await this.ready; return this.authState(kind); },
+        oneShot: (kind, prompt, opts) => this.nativeUtilityText(kind, prompt, opts),
+      },
+    });
     this.routes = new TerminalTaskRoutes({
       storage: this.storage, context: this.taskContext, models: this.models, logger: options.logger,
       assertCurrent: () => this.guard({ source: 'local' }),
@@ -297,7 +313,7 @@ export class TerminalTaskHost {
   }
   private async initialize() {
     await privateDirectory(this.options.profileDir);
-    const initialized=await Promise.allSettled([this.storageReady,this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,this.channelDefaults.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
+    const initialized=await Promise.allSettled([this.storageReady,this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,this.channelDefaults.ready,this.utility.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
     const failed=initialized.find((result):result is PromiseRejectedResult=>result.status==='rejected');if(failed)throw failed.reason;
     for (const id of this.channelBindings.store.listAttachedTargets()) {
       const row = await this.storage.get(id);
@@ -357,7 +373,7 @@ export class TerminalTaskHost {
     this.emit('maker:provider:changed',{});
     return {success:true};
   }
-  registerCapabilityResources(registry:import('@cindy/device-link').RemoteResourceRegistry,configuration:import('../configuration.js').TerminalConfiguration) { registerCapabilityResources(registry,this.capabilities,configuration); }
+  registerCapabilityResources(registry:import('@cindy/device-link').RemoteResourceRegistry,configuration:import('../configuration.js').TerminalConfiguration) { registerCapabilityResources(registry,this.capabilities,configuration); registerUtilityModelResources(registry, this.utility); }
   /** Reuse media adoption for independently persisted companion transcripts.
    * The caller supplies its own profileDir to normalizeTaskInput, owns acceptance
    * callbacks, and does not create a regular task in this host. */
@@ -695,40 +711,27 @@ export class TerminalTaskHost {
       withSessionPermissionChange: (id, operation) => this.permissionChanges.withSessionPermissionChange(id, operation),
     });
   }
-  requestChannelUtilityText(channel: import('@cindy/im-runtime/imDefaultSettings').ImDefaultSettingsChannel, prompt: string, opts: import('@cindy/model-providers/utilityTextRequest').UtilityTextRequestOptions): Promise<import('@cindy/model-providers/utilityTextResult').UtilityTextResult> {
-    const operation = (async (): Promise<import('@cindy/model-providers/utilityTextResult').UtilityTextResult> => {
-      let agent: BaseAgent | undefined;
-      const id = `utility-${randomUUID()}`;
-      try {
-        await this.ready; this.guard({ source: 'local' });
-        const defaults = this.channelDefaults.read(channel), selected = defaults.agents[defaults.agentKind];
-        // Use the channel's configured account/model; never borrow another
-        // subscription or dispatch on this computer for a remote-only route.
-        if (selected.agentDeviceId) return { ok: false, reason: 'no_candidate', attempts: [] };
-        const revision = this.models.revision(), snapshot = JSON.stringify(defaults);
-        const chosen = await this.selection({ agentKind: defaults.agentKind, providerId: selected.providerId ?? undefined, model: selected.model });
-        const current = async () => !this.closed && revision === this.models.revision()
-          && snapshot === JSON.stringify(this.channelDefaults.read(channel))
-          && (!opts.beforeDispatch || await opts.beforeDispatch(chosen.selection));
-        const binary = this.binaries.get(chosen.selection.agentKind);
-        if (!binary || !await current()) return { ok: false, reason: 'no_candidate', attempts: [] };
-        agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, ...chosen, binaryPath: binary, models: this.models, logger: this.options.logger });
-        if (!await current()) return { ok: false, reason: 'no_candidate', attempts: [] };
-        const text = await agent.oneShot(prompt, { ...opts, model: chosen.selection.model,
-          signal: AbortSignal.any([this.utilityAbort.signal, ...(opts.signal ? [opts.signal] : [])]), beforeDispatch: current });
-        if (!await current() || !text.trim() || opts.validateResponse && !opts.validateResponse(text)) return { ok: false, reason: 'empty_response', attempts: [] };
-        return { ok: true, text, providerId: chosen.selection.providerId, model: chosen.selection.model,
-          transport: chosen.selection.agentKind === 'codex' ? 'codex-responses' : 'litellm-chat-completions' };
-      } catch { return { ok: false, reason: 'all_candidates_failed', attempts: [] }; }
-      finally {
-        await agent?.dispose().catch(() => this.options.logger.warn('UTILITY_RUNTIME_CLEANUP_FAILED'));
-        await rm(path.join(this.options.profileDir, 'engines', 'codex', id), { recursive: true, force: true }).catch(() => {});
-      }
-    })();
-    this.utilityWork.add(operation);
-    void operation.finally(() => this.utilityWork.delete(operation)).catch(() => {});
-    return operation;
+  private async nativeUtilityText(kind: AgentKind, prompt: string, opts: Parameters<UtilityNativeAgents['oneShot']>[2]) {
+    await this.ready; this.guard({ source: 'local' });
+    const id = `utility-${randomUUID()}`;
+    const chosen = await this.models.select({ agentKind: kind, providerId: kind === 'codex' ? 'openai' : 'anthropic', model: opts?.model });
+    const revision = this.models.revision();
+    const current = async () => !this.closed && revision === this.models.revision() && !this.models.isMutating() && (!opts?.beforeDispatch || await opts.beforeDispatch());
+    const binary = this.binaries.get(kind);
+    if (!binary || !await current()) throw new Error('UTILITY_NATIVE_ROUTE_UNAVAILABLE');
+    const agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, ...chosen, binaryPath: binary, models: this.models, logger: this.options.logger });
+    try {
+      if (!await current()) throw new Error('UTILITY_ROUTE_CHANGED');
+      return await agent.oneShot(prompt, { ...opts, beforeDispatch: current });
+    } finally {
+      await agent.dispose();
+      await rm(path.join(this.options.profileDir, 'engines', 'codex', id), { recursive: true, force: true });
+    }
   }
+  requestChannelUtilityText(_channel: import('@cindy/im-runtime/imDefaultSettings').ImDefaultSettingsChannel, prompt: string, opts: import('@cindy/model-providers/utilityTextRequest').UtilityTextRequestOptions) {
+    return this.utility.request(prompt, opts);
+  }
+
   generateTaskTitle(input: { message: string; sessionId?: string; agentKind?: AgentKind }): Promise<string | null> {
     const operation = this.runTaskTitle(input);
     this.utilityWork.add(operation);
@@ -938,9 +941,9 @@ export class TerminalTaskHost {
     this.emit('terminal:tasks:changed', { sessionId: id });
     return this.view((await this.storage.get(id))!);
   }
-  private ensureLive(id: string, resolved?: { selection: ModelSelection; route: ResolvedRoute }): Promise<LiveTask> {
+  private ensureLive(id: string, resolved?: { selection: ModelSelection; route: ResolvedRoute; modelRevision?: number }): Promise<LiveTask> {
     const existing = this.live.get(id);
-    if (existing && existing.session.getStatus() === 'active' && (existing.session.isTurnRunning() || existing.capabilityRevision===this.capabilities.revision())) return Promise.resolve(existing);
+    if (existing && existing.session.getStatus() === 'active' && (existing.session.isTurnRunning() || existing.capabilityRevision===this.capabilities.revision() && existing.modelRevision===this.models.revision())) return Promise.resolve(existing);
     const starting = this.starts.get(id);
     if (starting) return starting;
     const result = this.start(id, resolved);
@@ -948,7 +951,7 @@ export class TerminalTaskHost {
     void result.finally(() => this.starts.delete(id)).catch(() => undefined);
     return result;
   }
-  private async start(id: string, resolved?: { selection: ModelSelection; route: ResolvedRoute }): Promise<LiveTask> {
+  private async start(id: string, resolved?: { selection: ModelSelection; route: ResolvedRoute; modelRevision?: number }): Promise<LiveTask> {
     if (this.closed) throw new Error('TASK_HOST_CLOSED');
     const row = await this.storage.get(id);
     if (!row) throw new Error('TASK_NOT_FOUND');
@@ -956,6 +959,8 @@ export class TerminalTaskHost {
     if (previous) await this.closeTask(id);
     if (!resolved && row.groupBinding && this.options.resolveExecutionRoute) { const execution=await this.options.resolveExecutionRoute({agentDeviceId:row.agentDeviceId,providerId:row.providerId!,model:row.model,agentKind:row.agentKind,groupBinding:row.groupBinding},id); if (!execution) throw new Error('GROUP_UNAVAILABLE'); resolved=await this.selection(execution); }
     const chosen = resolved ?? await this.selection({ agentDeviceId: row.agentDeviceId, agentKind: row.agentKind, providerId: row.providerId, model: row.model, ...(row.effort ? { effort: row.effort } : {}) });
+    const modelRevision = 'modelRevision' in chosen && typeof chosen.modelRevision === 'number' ? chosen.modelRevision : this.models.revision();
+    if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
     const binary = this.binaries.get(chosen.selection.agentKind);
     if (!binary && !row.agentDeviceId) throw new Error('ENGINE_NOT_INSTALLED');
     const capability = await this.capabilities.runtime({workingDir:row.workDir,agentKind:chosen.selection.agentKind});
@@ -989,8 +994,10 @@ export class TerminalTaskHost {
       }
     });
     try {
+      if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
       const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, thinkingEnabled: row.thinkingEnabled, vendorOptions: this.channelBindings.store.findByTarget(id) ? undefined : this.channelOrchestrators.vendorOptionsForSession(id) ?? this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
-      const task: LiveTask = { revoke:()=>{revoked=true;plugin?.close();},plugin,capabilityRevision:capability.revision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
+      if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
+      const task: LiveTask = { revoke:()=>{revoked=true;plugin?.close();},plugin,capabilityRevision:capability.revision,modelRevision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
       installDesktopInteractionHandler(session,(request,shared)=>this.interaction(id,request,undefined,shared),(sourceRequestId,decision)=>{
         for(const pending of this.pending.values())if(pending.sessionId===id&&pending.sourceRequestId===sourceRequestId){pending.settle(decision);return true;}
         return false;
@@ -1424,6 +1431,8 @@ export class TerminalTaskHost {
       case 'maker:compact-session': return (await this.ensureLive(string(args[0]))).session.compactSession(typeof args[1] === 'string' ? args[1] : undefined);
       case 'maker:list-available-agents': return ENGINES.filter(kind => Boolean(this.binaries.get(kind)));
       case 'maker:agent:status': { const kind = string(args[0]) as AgentKind; if (!ENGINES.includes(kind)) throw new Error('INVALID_ENGINE'); const binary = this.binaries.get(kind) ?? null; const auth = await this.authState(kind); return { binaryReady: Boolean(binary), binaryPath: binary, authReady: auth.authenticated, ...auth }; }
+      case 'maker:auxiliary-model-settings:get': return this.utility.state();
+      case 'maker:auxiliary-model-settings:set': return this.utility.update(args[0], () => this.guard(context));
       case 'maker:provider:list': return this.models.views();
       case 'maker:provider:presets': return {presets:this.models.presets()};
       case 'maker:provider:test-connection': return testConnection(this.models,args[0],()=>this.guard(context),context.signal);
@@ -1704,6 +1713,7 @@ export class TerminalTaskHost {
   private async shutdown() {
     this.closed = true;
     this.utilityAbort.abort();
+    await this.utility.close();
     const recovery = [...this.recovering.keys()].map(id => this.cancelTaskRecovery(id));
     const channelHandlers = this.channelControl.close();
     await this.channelOrchestrators.close();

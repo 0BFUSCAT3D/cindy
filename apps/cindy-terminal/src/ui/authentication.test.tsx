@@ -321,6 +321,27 @@ it('keeps the edited resource when the host explicitly refreshes its detail', as
   expect(screen.latest()).toContain('My channel'); expect(screen.latest()).toContain('Updated configuration');
 });
 
+// Unit: long auxiliary pickers must submit the filtered option's real value,
+// not the first unfiltered entry, and an empty search cannot submit a blank.
+it('searches a model selector and submits the matched route', async () => {
+  const host = fakeClient(), submitted: unknown[] = [];
+  const ref = { collectionId: 'auxiliary-models', kind: 'auxiliary-models', id: 'chain' };
+  host.handle((channel, args) => {
+    if (channel === 'maker:remote-resources:manifest') return { collections: [{ id: ref.collectionId, resourceKind: ref.kind, title: 'Auxiliary models' }] };
+    if (channel === 'maker:remote-resources:list') return { items: [{ ref, revision: '1', display: { title: 'Auxiliary models' }, links: [] }] };
+    if (channel === 'maker:remote-resources:get') return { ref, revision: '1', display: { title: 'Auxiliary models' }, links: [], blocks: [], actions: [{ id: 'edit', label: 'Edit', fields: [{ id: 'model1', kind: 'select', label: 'Primary model', options: [
+      ...Array.from({ length: 12 }, (_, index) => ({ value: `route-${index}`, label: `Model ${index}` })), { value: 'exact-route', label: 'DeepSeek' },
+    ] }] }] };
+    if (channel === 'maker:remote-resources:invoke') { submitted.push((args[0] as { input: unknown }).input); return { effects: [] }; }
+  });
+  const screen = await mount(host.client, { node: <Resources client={host.client} locale="en" initialCollection={ref.collectionId} onTask={() => {}} /> });
+  await screen.press('\r'); await screen.press('\r');
+  await screen.press('missing'); await screen.press('\r'); expect(submitted).toEqual([]);
+  await screen.press('\x1b[27u'); await screen.press('DeepSeek');
+  expect(screen.latest()).toContain('DeepSeek'); expect(screen.latest()).not.toContain('Model 0');
+  await screen.press('\r'); expect(submitted).toEqual([{ model1: 'exact-route' }]);
+});
+
 // Unit: settings forms previously sent raw secrets to generic remote resources.
 // Exercise the real keyboard path and assert the local-only protected entry.
 it('saves remote plugin credentials through the local protected controller without echo',async()=>{
