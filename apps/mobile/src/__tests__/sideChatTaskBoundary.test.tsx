@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import * as React from 'react';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SideChatTaskBoundary } from '../session/SideChatTaskBoundary';
+import { SessionTaskLayout } from '../session/SessionTaskLayout';
+import type { ComponentProps } from 'react';
+import type { SessionListDrawer } from '../session/SessionListDrawer';
+import type { RemoteSessionListItem } from '../session/sessionList';
 
 const state = vi.hoisted(() => ({
   focused: true,
@@ -16,48 +17,51 @@ const state = vi.hoisted(() => ({
   dismissKeyboard: vi.fn(),
   listeners: new Set<(deviceId: string, sessionId: string) => void>(),
   route: { deviceId: 'host', sessionId: 'child' },
+  sidebar: null as ComponentProps<typeof SessionListDrawer> | null,
+  source: 'local',
+  replaceParams: vi.fn(),
 }));
-vi.mock('react-native', () => ({
-  Keyboard: { dismiss: state.dismissKeyboard },
+vi.mock('react-native', async () => {
+  const { createElement } = await import('react');
+  return {
+    Keyboard: { dismiss: state.dismissKeyboard },
+    View: ({ children }: { children: React.ReactNode }) => createElement('div', null, children),
+    StyleSheet: { create: (styles: unknown) => styles },
+    Platform: { OS: 'ios' }, Alert: { alert: vi.fn() },
+  };
+});
+vi.mock('expo-router', () => ({
+  useLocalSearchParams: () => state.route,
+  useNavigation: () => ({ replaceParams: state.replaceParams }),
+  useRouter: () => ({
+    back: state.back, canGoBack: () => state.canGoBack, replace: state.replace,
+  }),
 }));
-vi.mock('expo-router', () => ({ useRouter: () => ({
-  back: state.back, canGoBack: () => state.canGoBack, replace: state.replace,
-}) }));
 vi.mock('expo-router/react-navigation', () => ({ useIsFocused: () => state.focused }));
 vi.mock('../session/remoteSessionStore', () => ({
   remoteSessionStore: {
+    getSessionDeviceId: () => 'host',
     onSessionRemoved: (listener: (deviceId: string, sessionId: string) => void) => {
       state.listeners.add(listener);
       return () => { state.listeners.delete(listener); };
     },
   },
+  useRemoteSessionDetail: () => ({ source: state.source }),
 }));
-
-// Execute the actual route wrapper (without loading the native editor tree).
-// Boundary-only tests cannot catch a task key added by its caller.
-const source = ts.createSourceFile('session.tsx', readFileSync(
-  resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8',
-), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const page = source.statements.find((node): node is ts.FunctionDeclaration =>
-  ts.isFunctionDeclaration(node) && node.name?.text === 'SessionScreen');
-if (!page?.body) throw new Error('SessionScreen not found');
-const compiledRoute = ts.transpileModule(`function SessionScreen() ${page.body.getText(source)}`, {
-  compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
-}).outputText;
-const SessionRoute = new Function('bindings', `
-  const { React, useLocalSearchParams, readRouteParam, remoteSessionStore,
-    useRemoteSessionDetail, SideChatTaskBoundary, CindyMakeSessionGate, SessionScreenContent } = bindings;
-  ${compiledRoute}
-  return SessionScreen;
-`)({
-  React, SideChatTaskBoundary,
-  useLocalSearchParams: () => state.route,
-  readRouteParam: (value: string) => value,
-  remoteSessionStore: { getSessionDeviceId: () => 'host' },
-  useRemoteSessionDetail: () => ({ source: 'local' }),
+vi.mock('../session/CindyMakeSessionGate', () => ({
   CindyMakeSessionGate: ({ children }: { children: React.ReactNode }) => children,
-  SessionScreenContent: () => <textarea aria-label="Message" />,
-}) as React.ComponentType;
+}));
+vi.mock('../session/RecentMessageHistories', () => ({
+  MessageHistoryOverlay: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock('../session/ResidentHomeList', () => ({ useSessionPaneLayout: () => ({ persistent: true, sidebarWidth: 320 }) }));
+vi.mock('@/platform/AdaptiveWindowContext', () => ({ useAdaptiveWindow: () => ({ barEdge: 'left' }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('../session/conversationSearch', () => ({ conversationSearchCompanionParams: () => ({}) }));
+vi.mock('../session/SessionListDrawer', () => ({ SessionListDrawer: (props: ComponentProps<typeof SessionListDrawer>) => {
+  state.sidebar = props;
+  return <textarea aria-label="Sidebar search" />;
+} }));
 
 // Unit, black-box regression 2026-10-20: a deleted follow-up kept its editor.
 // Picker/count tests do not mount this route boundary. Minimal input: an own
@@ -67,7 +71,7 @@ describe('side chat task lifecycle', () => {
   let host: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
   const render = (enabled = true, sessionId = 'child', deviceId = 'host') => act(() => root.render(
-    <SideChatTaskBoundary deviceId={deviceId} sessionId={sessionId} enabled={enabled}>
+    <SideChatTaskBoundary key={JSON.stringify([deviceId, sessionId])} deviceId={deviceId} sessionId={sessionId} enabled={enabled}>
       <textarea aria-label="Message" />
     </SideChatTaskBoundary>,
   ));
@@ -81,6 +85,9 @@ describe('side chat task lifecycle', () => {
     state.canGoBack = true;
     state.replace.mockClear();
     state.dismissKeyboard.mockClear();
+    state.source = 'local';
+    state.route = { deviceId: 'host', sessionId: 'child' };
+    state.replaceParams.mockReset();
     host = document.createElement('div');
     root = createRoot(host);
   });
@@ -132,21 +139,72 @@ describe('side chat task lifecycle', () => {
     expect(state.replace).toHaveBeenCalledExactlyOnceWith('/');
   });
 
-  // Unit regression 2026-10-24: task-keyed deletion protection remounted the
-  // whole page and sidebar on every switch. Existing tests only used one task.
-  // The boundary must retain live children yet isolate removal across scopes.
-  it('keeps the mounted page when switching ordinary tasks and computers', () => {
+  // Unit regression 2026-10-24 (#6976 review): preserving the entire task leaked
+  // local state and late completions. Exercise the production layout boundary
+  // with stateful children; the sidebar must survive while detail is replaced.
+  it('keeps sidebar measurement/search nodes while replacing tasks and computers', () => {
     const renderRoute = (sessionId: string, deviceId = 'host') => {
       state.route = { deviceId, sessionId };
-      act(() => root.render(<SessionRoute />));
+      act(() => root.render(<SessionTaskLayout>{() => <textarea aria-label="Message" />}</SessionTaskLayout>));
     };
     renderRoute('child');
-    const editor = host.querySelector('textarea')!;
-    renderRoute('next');
-    expect(host.querySelector('textarea')).toBe(editor);
-    renderRoute('next', 'other-host');
-    expect(host.querySelector('textarea')).toBe(editor);
+    const sidebar = host.querySelector('[aria-label="Sidebar search"]')!;
+    let editor = host.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+    for (const [sessionId, deviceId] of [['next', 'host'], ['next', 'other-host'], ['child', 'host']] as const) {
+      editor.value = 'old task search';
+      renderRoute(sessionId, deviceId);
+      expect(host.querySelector('[aria-label="Sidebar search"]')).toBe(sidebar);
+      expect(host.querySelector('[aria-label="Message"]')).not.toBe(editor);
+      editor = host.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+      expect(editor.value).toBe('');
+    }
     expect(state.back).not.toHaveBeenCalled();
+  });
+
+  it('isolates busy/error completions when an old task settles after a new operation starts', async () => {
+    const pending: { reject(error: Error): void }[] = [];
+    function TaskContent() {
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState('');
+      return <button disabled={busy} onClick={() => {
+        setBusy(true);
+        void new Promise<void>((_resolve, reject) => pending.push({ reject }))
+          .catch(reason => setError(reason.message)).finally(() => setBusy(false));
+      }}>{error || (busy ? 'pending' : 'ready')}</button>;
+    }
+    const renderLayout = () => act(() => root.render(
+      <SessionTaskLayout>{() => <TaskContent />}</SessionTaskLayout>,
+    ));
+    renderLayout();
+    act(() => host.querySelector('button')!.click());
+    state.route = { deviceId: 'other-host', sessionId: 'child' };
+    renderLayout();
+    expect(host.querySelector('button')!.disabled).toBe(false);
+    act(() => host.querySelector('button')!.click());
+    await act(async () => pending[0]!.reject(new Error('old task failed')));
+    expect(host.querySelector('button')!.disabled).toBe(true);
+    expect(host.textContent).toBe('pending');
+    await act(async () => pending[1]!.reject(new Error('current task failed')));
+    expect(host.querySelector('button')!.disabled).toBe(false);
+    expect(host.textContent).toBe('current task failed');
+  });
+
+  it('discards the outgoing attachment scope before sidebar navigation and preserves search focus', () => {
+    const order: string[] = [];
+    state.replaceParams.mockImplementation(() => order.push('navigate'));
+    act(() => root.render(<SessionTaskLayout>{chrome => {
+      chrome.beforeSessionSwitchRef.current = () => order.push('discard');
+      return <textarea />;
+    }}</SessionTaskLayout>));
+    const target = {
+      session: { id: 'next', canonicalDeviceId: 'canonical-host', deviceLinkDeviceId: 'old-host', deviceLinkDeviceName: 'Mac' },
+      searchFocusClientId: 'message-42',
+    } as unknown as RemoteSessionListItem;
+    act(() => state.sidebar!.onSelectSession(target));
+    expect(order).toEqual(['discard', 'navigate']);
+    expect(state.replaceParams).toHaveBeenCalledExactlyOnceWith({
+      deviceId: 'canonical-host', deviceName: 'Mac', sessionId: 'next', focusClientId: 'message-42',
+    });
   });
 
   it.each([

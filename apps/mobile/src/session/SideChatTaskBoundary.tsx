@@ -15,29 +15,20 @@ export function SideChatTaskBoundary({ children, deviceId, sessionId, enabled }:
 }) {
   const router = useRouter();
   const focused = useIsFocused();
-  const scope = JSON.stringify([deviceId, sessionId]);
-  const [removal, setRemoval] = useState({ scope, removed: false });
-  // Reset only deletion state when params change. Keying this boundary by task
-  // would also remount the page, its sidebar header and its measuring slot.
-  if (removal.scope !== scope) setRemoval({ scope, removed: false });
-  const removed = removal.scope === scope && removal.removed;
-  const returned = useRef<typeof removal | null>(null);
+  const [removed, setRemoved] = useState(false);
+  const returned = useRef(false);
   useEffect(() => {
     if (!enabled) return;
-    let active = true;
-    const unsubscribe = remoteSessionStore.onSessionRemoved((ownerDeviceId, removedSessionId) => {
-      if (!active || ownerDeviceId !== deviceId || removedSessionId !== sessionId) return;
-      setRemoval(current => current.scope === scope && !current.removed
-        ? { scope, removed: true } : current);
+    return remoteSessionStore.onSessionRemoved((ownerDeviceId, removedSessionId) => {
+      if (ownerDeviceId === deviceId && removedSessionId === sessionId) setRemoved(true);
     });
-    return () => { active = false; unsubscribe(); };
-  }, [deviceId, enabled, scope, sessionId]);
+  }, [deviceId, enabled, sessionId]);
   useEffect(() => {
     // A hidden route waits for focus so deletion never pops a different screen.
-    if (!focused || !removed || returned.current === removal) return;
-    returned.current = removal;
+    if (!focused || !removed || returned.current) return;
+    returned.current = true;
     Keyboard.dismiss();
     goBackGuarded(router);
-  }, [focused, removal, removed, router]);
+  }, [focused, removed, router]);
   return removed ? null : children;
 }
