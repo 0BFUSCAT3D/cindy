@@ -91,7 +91,9 @@ try {
       await copyPackage(dependency, source, destination, [parentDestination, ...ancestors]);
     }
   };
-  for (const name of ['ink', 'react', '@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2']) await copyPackage(name, app, path.join(output, 'app'));
+  // Install the renderer's singleton peer first. A nested React copied while
+  // traversing Ink/reconciler would cause real TUI hooks to use another runtime.
+  for (const name of ['react', 'ink', '@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2']) await copyPackage(name, app, path.join(output, 'app'));
 
   const [suffix, digest] = runtimes[target];
   const archiveName = `node-v${nodeVersion}-${suffix}`;
@@ -129,7 +131,7 @@ try {
   // Use the bundled Node, not the build machine's Node. Exercise actual native
   // modules; a cross-ABI SQLite or missing WebRTC artifact blocks publication.
   const node = path.join(output, 'runtime', windows ? 'node.exe' : 'node');
-  const smoke = `const req=require('node:module').createRequire(${JSON.stringify(path.join(output, 'app/package.json'))}); req('react');req('node-pty');req('ssh2');const db=new (req('better-sqlite3'))(':memory:');db.prepare('select 1').get();db.close();req('sharp');const p=new (req('@roamhq/wrtc').RTCPeerConnection)();p.close();`;
+  const smoke = `const {createRequire}=require('node:module');const req=createRequire(${JSON.stringify(path.join(output, 'app/package.json'))});const inkReq=createRequire(req.resolve('ink'));const reconcilerReq=createRequire(inkReq.resolve('react-reconciler'));if(req('react')!==inkReq('react')||req('react')!==reconcilerReq('react'))throw Error('Duplicate React runtime');req('node-pty');req('ssh2');const db=new (req('better-sqlite3'))(':memory:');db.prepare('select 1').get();db.close();req('sharp');const p=new (req('@roamhq/wrtc').RTCPeerConnection)();p.close();`;
   const smokeHome = path.join(stage, 'home');
   await mkdir(smokeHome);
   for (const command of [['--input-type=commonjs', '-e', smoke], [path.join(output, 'app/dist/cli.js'), '--version'], [path.join(output, 'app/dist/cli.js'), '--help']]) {

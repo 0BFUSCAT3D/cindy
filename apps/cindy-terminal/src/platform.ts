@@ -8,6 +8,12 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 export const VERSION = '0.1.0';
 
+/** Windows PowerShell 5 must rebuild its own module search path. Inheriting
+ * PowerShell 7's PSModulePath can load incompatible Security module assemblies. */
+export function windowsPowerShellEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'));
+}
+
 /** Kept outside the profile so a stopped-profile restore can swap directories
  * without dropping the same lock used by daemon startup. */
 export function profileLifecycleLockPath(profileDir: string): string {
@@ -56,7 +62,7 @@ export async function privateDirectory(directory: string): Promise<void> {
     'Set-Acl -LiteralPath $env:CINDY_PRIVATE_DIRECTORY -AclObject $acl',
   ].join('; ');
   await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-    windowsHide: true, timeout: 15_000, env: { ...process.env, CINDY_PRIVATE_DIRECTORY: directory },
+    windowsHide: true, timeout: 15_000, env: { ...windowsPowerShellEnv(), CINDY_PRIVATE_DIRECTORY: directory },
   });
 }
 

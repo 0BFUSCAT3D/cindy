@@ -39,6 +39,7 @@ async function run(args, { input = '', timeout = 30_000, raw = false } = {}) {
 
 let server;
 let registered = false;
+let tuiOutput = '';
 try {
   const version = await run(['--version']); assert.equal(typeof version, 'string'); record('bundled Node + CLI version', 'PASS', version);
   const help = await run(['--help']); assert.match(help, /Cindy/); record('bundled CLI help', 'PASS');
@@ -77,7 +78,7 @@ try {
     let output = '', closing = false;
     const timeout = setTimeout(() => { terminal.kill(); reject(new Error('Native TUI did not render in PTY')); }, 20_000);
     terminal.onData(data => {
-      output += data;
+      output += data; tuiOutput = output;
       if (!closing && /Cindy|Tasks|tasks|Service|service/.test(output)) { closing = true; terminal.write('\u0011'); }
     });
     terminal.onExit(() => { clearTimeout(timeout); if (closing) resolve(output); else reject(new Error('TUI exited before rendering')); });
@@ -115,6 +116,7 @@ try {
 } catch (error) {
   record('platform acceptance', 'FAIL', String(error.message)); process.exitCode = 1;
 } finally {
+  if (tuiOutput) await writeFile(path.join(report, 'tui.ansi'), tuiOutput);
   if (registered) await run(['service', 'uninstall'], { raw: true }).catch(() => {});
   await run(['service', 'stop'], { raw: true, timeout: 5000 }).catch(() => {});
   server?.kill();
