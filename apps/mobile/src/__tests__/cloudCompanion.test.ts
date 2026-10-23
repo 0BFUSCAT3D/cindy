@@ -73,6 +73,22 @@ describe('cloud companion rows', () => {
       { id: id(11), text: '〔来自飞书〕\nlook', names: [[id(41), 'a.png'], [id(42), expect.any(String)]] },
     ]);
   });
+  it('drops private-protocol image links from the companion\'s reply and keeps everything else', () => {
+    const base = { author: { kind: 'bot', name: '' }, createdAt: '2026-10-13T00:00:00Z', deleted: false, threadRootId: null };
+    const reply = (n: number, text: string, authorId = id(1)): ChatMessage => ({ ...base, id: id(n), seq: String(n), authorId, content: [{ type: 'text', text }] });
+    const hash = 'a'.repeat(64);
+    const view = cloudCompanionMessages([
+      reply(1, `Here is the frog.\n\n![绿色小青蛙](cindy-media://blobs/${hash}.png)\n\nEnjoy`),
+      reply(2, `![x](cindy-media://blobs/${hash}.png)`),
+      reply(3, `![web](https://example.com/a.png) [link](cindy-media://x) \`![c](cindy-media://y)\`\n\n\`\`\`\n![d](xdt-image://s/f.png)\n\`\`\``),
+      reply(4, `![mine](cindy-media://blobs/${hash}.png)`, id(9)),
+    ], id(1));
+    expect(view.map(item => item.text)).toEqual([
+      'Here is the frog.\n\nEnjoy',
+      `![web](https://example.com/a.png) [link](cindy-media://x) \`![c](cindy-media://y)\`\n\n\`\`\`\n![d](xdt-image://s/f.png)\n\`\`\``,
+      `![mine](cindy-media://blobs/${hash}.png)`,
+    ]);
+  });
   it('orders by message time, so older history uploaded later still appears first', () => {
     const at = (n: number, time: string): ChatMessage => ({ id: id(n), seq: String(n), authorId: id(9), author: { kind: 'human', name: '' },
       createdAt: time, deleted: false, threadRootId: null, content: [{ type: 'text', text: `m${n}` }] });

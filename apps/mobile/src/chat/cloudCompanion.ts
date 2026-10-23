@@ -75,6 +75,18 @@ export function cloudHomeTargets<T extends { deviceId: string; online: boolean }
 
 export interface CloudMessage { id: string; fromCompanion: boolean; text: string; attachments: BotGroupAttachment[]; createdAt: number }
 
+const PRIVATE_IMAGE = /!\[[^\]\n]*\]\((?:cindy-media|xdt-image|xdt-video|file):\/\/[^)\s]*\)/gi;
+
+/**
+ * A reply names the images it produced with the computer's private addresses, which the phone cannot open;
+ * the same files already arrive as attachments. Drops those image links, leaving http(s) images, links and code.
+ */
+export function stripPrivateImageLinks(text: string): string {
+  const parts = text.split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/);
+  const cleaned = parts.map((part, index) => (index % 2 ? part : part.replace(PRIVATE_IMAGE, ''))).join('');
+  return cleaned === text ? text : cleaned.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+}
+
 /**
  * Oldest first, deduplicated; the companion's actor wrote its replies, everyone else is the owner.
  * A message with only attachments stays; one with neither text nor attachments is dropped.
@@ -90,10 +102,12 @@ export function cloudCompanionMessages(messages: readonly ChatMessage[], actorId
     return left < right ? -1 : left > right ? 1 : 0;
   });
   return unique.flatMap(message => {
-    const text = chatMessageText(message).trim();
+    const fromCompanion = message.authorId === actorId;
+    const raw = chatMessageText(message);
+    const text = (fromCompanion ? stripPrivateImageLinks(raw) : raw).trim();
     const attachments = chatMessageAttachments(message);
     return text || attachments.length
-      ? [{ id: message.id, fromCompanion: message.authorId === actorId, text, attachments, createdAt: Date.parse(message.createdAt) }] : [];
+      ? [{ id: message.id, fromCompanion, text, attachments, createdAt: Date.parse(message.createdAt) }] : [];
   });
 }
 
