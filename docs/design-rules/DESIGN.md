@@ -652,17 +652,6 @@ history page does not assign a pill frame or change task state. The separate res
 action remains the registered compact secondary Button and is outside this exemption.
 This records the accepted quiet list, not a general exemption for settings actions.
 
-The section title uses the connection platform (for example, “飞书任务”). A 28px
-shared quiet icon action at the right toggles only the hint and task list, which
-start collapsed whenever the panel mounts. Reuse the shared `Collapse` container
-for the existing expansion motion and unmounting; its 14px
-chevron and localized Tip name the next action. Each listed conversation, including the owner DM, adds a 28px
-quiet archive action immediately before the unchanged restart Button, with a 4px
-action gap. Reuse the sidebar task archive glyph (`Archive`, 14px, stroke width 2).
-Both new actions keep the ordinary pill frame, semantic colors and keyboard focus;
-existing record typography, card, spacing and restart treatment stay unchanged. Archive follows SessionItem's inline two-step interaction: replace the icon with the existing compact secondary danger-surface Button and sidebar archive label (xs, 24px high, minimum 56px wide to fit localized labels), overlaid at the same right edge within the original 28px action slot so record wrapping and restart position stay unchanged, dismiss after 4 seconds or an outside click, then remove the row immediately when confirmed and restore it with the shared error toast if persistence fails. No archive confirmation dialog or success notice; explain its list-only effect and return on new messages in the existing section hint. Restart keeps its confirmation.
-
-
 Keyboard focus uses the theme-invariant `--focus-ring` as a `focus-visible` box-shadow
 ring. Non-input `outline` is suppressed globally, so an outline class is not a visible
 focus treatment here. The ring appears only for keyboard focus and does not create an
