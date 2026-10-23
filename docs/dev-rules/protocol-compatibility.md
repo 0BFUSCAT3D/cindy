@@ -590,6 +590,21 @@ device-link 授权、撤权与 owner fence；仅有归属范围权限的调用�
 SSH 主机不自动成为设备目录成员。实现与回归见 `mcp-integrations/historyDevices.ts`、
 `localDb/ipc/historyQuery.ts` 和 `packages/lizi-mcps/src/__tests__/historyDevices.test.ts`。
 
+## 定时任务的 Agent 运行位置（2026-10-22）
+
+`maker:schedule:*` 读回的定时任务与写入参数新增可选 `agentDeviceId`（每次新建任务时 Agent 在哪台电脑或
+分享来的供应商上运行，相对定时任务所在电脑；省略 = 本机），旧端忽略该字段。新 host 收到的写入改了
+`agentKind` / `modelAgentKind` / `model` / `providerId` 却没带 `agentDeviceId` 时，把运行位置归回本机：
+旧版手机端与旧版桌面远程编辑选的是任务所在电脑的目录，沿用旧位置会把那份来源派到另一台电脑。
+`null` 同样表示回到本机。`cindy_scheduler` 跨电脑修改定时任务时拒绝设置 `agentDeviceId`，因为位置 id
+只对定时任务所在电脑有意义。
+
+项目自动化的 `.cindy/automations/schedules.json`（version 1）与既有 upsert 参数也保留可选
+`agentDeviceId`：提升用户自动化、表单编辑和文件同步均与模型／供应商一起保存，字段删除时
+清除已保存的位置。新 host 校验设备 ID 格式且要求显式模型；实际运行仍按当前账号的既有
+远程／分享授权校验，不因配置文件带了设备 ID 而获得授权。旧配置省略时继续使用本机；旧客户端
+不支持该字段，提升或编辑时可能丢失运行位置，远端项目自动化需使用支持此字段的客户端维护。
+
 ## Agent 跨电脑管理定时任务与发消息
 
 产品规则见 [`../product-rules/agent-user-parity.md`](../product-rules/agent-user-parity.md)。
@@ -3138,9 +3153,14 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 ## 自动化绑定投影的持续会话标记（归档确认）
 
 `maker:schedule:list` 在 `sessionBindings: true` 的投影里新增可选 `persistentSession`（仅为 `true` 时携带，
-`false` 或缺省都不下发）。新控制端读到它才把该自动化视为「归档后会换绑新任务继续跑」，归档前不提示；
-旧控制端的 `parseScheduleBindings` 只取已知字段，忽略新增字段。旧被控端不下发该字段时，新控制端只可能
-对持续会话多弹一次归档提醒，提醒不丢、不误归档，属安全降级。
+`false` 或缺省都不下发），继续保留运行模式与旧控制端兼容。当前控制端的归档提醒按 `active` 绑定筛选，
+包含持续会话，不再用该字段排除提醒；普通自动任务下次触发会恢复原任务，不因归档换绑。
+实际执行生命周期由被控端版本决定：旧被控端仍可能暂停普通自动化或为持续会话换绑，
+新被控端按恢复原普通任务的语义执行。混合版本的提示可能与实际执行不同，以被控端版本为准；
+不新增协议字段或版本协商。旧控制端可能仍按该字段省略持续会话提醒，或展示旧暂停文案。
+`parseScheduleBindings` 对未知字段继续忽略，旧被控端缺省该字段不影响新控制端的提醒筛选。
+
+产品语义与托管任务边界见 [`archive-pauses-automations.md`](../product-rules/archive-pauses-automations.md)。
 
 不新增 channel、能力、服务端 schema、数据库或 Mobile 原生指纹，`maker:schedule:list` 沿用既有白名单。
 桌面远程任务归档时，每台设备总是直取一次带 `sessionBindings: true` 的 `maker:schedule:list`（最多等
