@@ -12,22 +12,22 @@
  * 只登记不带 transport 的 `LaneTurnScope`,供伙伴技能等按「这一轮是不是主人触发」授权。
  */
 
-import type { FeishuIM, TelegramIM } from '@cindy/im';
+import type { FeishuIM, TelegramIM } from "@cindy/im";
 
 /** MCP 侧用到的 TelegramIM 子集(结构类型, 测试可用假对象)。 */
 export type TelegramToolTransport = Pick<
   TelegramIM,
-  | 'getBotApi'
-  | 'getBotId'
-  | 'getBotUsername'
-  | 'resolveSendTarget'
-  | 'recordOutboundEcho'
-  | 'sendMedia'
-  | 'downloadFile'
+  | "getBotApi"
+  | "getBotId"
+  | "getBotUsername"
+  | "resolveSendTarget"
+  | "recordOutboundEcho"
+  | "sendMedia"
+  | "downloadFile"
 >;
 
 export interface TelegramToolScope {
-  channel: 'telegram';
+  channel: "telegram";
   im: TelegramToolTransport;
   /** 连接 id(个人 bot 为 bot 数字 id; 伙伴连接为连接 id)。 */
   botId: string;
@@ -37,7 +37,7 @@ export interface TelegramToolScope {
   chatId: string;
   /** forum topic id; 非话题为空串。 */
   threadId: string;
-  chatKind: 'direct' | 'group';
+  chatKind: "direct" | "group";
   /** 触发本轮的是不是主人(Main 校验过的身份, 不来自模型参数)。 */
   requesterIsOwner: boolean;
   /** 触发消息的原生 message_id(回复 / 表情的默认目标)。 */
@@ -49,27 +49,27 @@ export interface TelegramToolScope {
 /** MCP 侧用到的 FeishuIM 子集(结构类型, 测试可用假对象); 与 @cindy/mcps 的 FeishuBotLaneTransport 对齐。 */
 export type FeishuToolTransport = Pick<
   FeishuIM,
-  | 'getService'
-  | 'getBotAppId'
-  | 'getOwnerOpenId'
-  | 'sendText'
-  | 'sendMarkdownText'
-  | 'replyText'
-  | 'replyMarkdownText'
-  | 'sendFile'
-  | 'reactToMessage'
-  | 'removeMessageReaction'
-  | 'getChatInfo'
-  | 'listChatMembers'
-  | 'getMessage'
-  | 'pinMessage'
-  | 'unpinMessage'
-  | 'recallMessage'
-  | 'callApi'
+  | "getService"
+  | "getBotAppId"
+  | "getOwnerOpenId"
+  | "sendText"
+  | "sendMarkdownText"
+  | "replyText"
+  | "replyMarkdownText"
+  | "sendFile"
+  | "reactToMessage"
+  | "removeMessageReaction"
+  | "getChatInfo"
+  | "listChatMembers"
+  | "getMessage"
+  | "pinMessage"
+  | "unpinMessage"
+  | "recallMessage"
+  | "callApi"
 >;
 
 export interface FeishuToolScope {
-  channel: 'feishu';
+  channel: "feishu";
   im: FeishuToolTransport;
   /** 连接 id(个人 bot 为 app_id; 伙伴连接为连接 id)。 */
   botId: string;
@@ -79,7 +79,7 @@ export interface FeishuToolScope {
   chatId: string;
   /** 话题 id; 非话题为空串。 */
   threadId: string;
-  chatKind: 'direct' | 'group';
+  chatKind: "direct" | "group";
   requesterIsOwner: boolean;
   /** 触发消息的 message_id(om_ 开头; 回复 / 表情 / 置顶的默认目标)。 */
   triggerMessageId: string;
@@ -91,24 +91,34 @@ export interface FeishuToolScope {
  * 「当前在哪个对话、这一轮是不是主人触发」(伙伴技能读写按它授权)。
  */
 export interface LaneTurnScope {
-  channel: 'wecom' | 'dingtalk' | 'discord' | 'wechat' | 'x';
+  channel: "wecom" | "dingtalk" | "discord" | "wechat" | "x";
   /** 连接的 botContextId。 */
   botId: string;
   laneUserId: string;
   chatId: string;
-  chatKind: 'direct' | 'group';
+  chatKind: "direct" | "group";
   /** 触发本轮的是不是主人(与本轮权限策略同一判定, 不来自模型参数)。 */
   requesterIsOwner: boolean;
   companion: true;
 }
 
-export type LaneTurnScopeChannel = LaneTurnScope['channel'];
+export type LaneTurnScopeChannel = LaneTurnScope["channel"];
 
-export function isLaneTurnScopeChannel(channel: string): channel is LaneTurnScopeChannel {
-  return channel === 'wecom' || channel === 'dingtalk' || channel === 'discord' || channel === 'wechat' || channel === 'x';
+export function isLaneTurnScopeChannel(
+  channel: string,
+): channel is LaneTurnScopeChannel {
+  return (
+    channel === "wecom" ||
+    channel === "dingtalk" ||
+    channel === "discord" ||
+    channel === "wechat" ||
+    channel === "x"
+  );
 }
 
-export type ChannelToolScope = (TelegramToolScope | FeishuToolScope | LaneTurnScope) & {
+export type ChannelToolScope = (
+  TelegramToolScope | FeishuToolScope | LaneTurnScope
+) & {
   /** Local durable input, stamped by the IM runner after persistence succeeds. */
   inputClientId?: string;
 };
@@ -126,10 +136,13 @@ export function beginChannelToolScope(args: {
   sessionInstanceId: string;
   scope: ChannelToolScope;
 }): () => void {
-  if (!args.sessionId) throw new Error('channel tool scope sessionId is required');
-  if (!args.sessionInstanceId) throw new Error('channel tool scope sessionInstanceId is required');
-  if (!args.scope.chatId.trim()) throw new Error('channel tool scope chatId is required');
-  const token = Symbol('channel-tool-scope');
+  if (!args.sessionId)
+    throw new Error("channel tool scope sessionId is required");
+  if (!args.sessionInstanceId)
+    throw new Error("channel tool scope sessionInstanceId is required");
+  if (!args.scope.chatId.trim())
+    throw new Error("channel tool scope chatId is required");
+  const token = Symbol("channel-tool-scope");
   activeBySession.set(args.sessionId, {
     sessionInstanceId: args.sessionInstanceId,
     token,
@@ -147,7 +160,8 @@ export function readChannelToolScope(args: {
 }): ChannelToolScope | null {
   if (!args.sessionId || !args.sessionInstanceId) return null;
   const active = activeBySession.get(args.sessionId);
-  if (!active || active.sessionInstanceId !== args.sessionInstanceId) return null;
+  if (!active || active.sessionInstanceId !== args.sessionInstanceId)
+    return null;
   return active.scope;
 }
 

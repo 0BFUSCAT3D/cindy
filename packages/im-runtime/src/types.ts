@@ -1,4 +1,4 @@
-import type { ImContextSnapshot } from '@cindy/companion-core/imMessageSource';
+import type { ImContextSnapshot } from "@cindy/companion-core/imMessageSource";
 /**
  * main/im/shared/types.ts
  * ---------------------------------------------------------------------------
@@ -25,21 +25,21 @@ import type {
   InteractionRequest,
   PermissionMode,
   TurnPermissionPolicy,
-} from '@cindy/maker-core';
-import type { GroupHistoryAccessScope } from './groupHistoryAccess';
-import type { ChannelToolScope } from './channelToolScope';
-import type { ImChannelNoteSource } from './channelNote';
-import type { ImOutputDriver, IMAttachment, IMMessageEvent, IMUnsupportedEntry, TextChannelIM } from '@cindy/im';
+} from "@cindy/maker-core";
+import type { GroupHistoryAccessScope } from "./groupHistoryAccess";
+import type { ChannelToolScope } from "./channelToolScope";
+import type { ImChannelNoteSource } from "./channelNote";
+import type {
+  ImOutputDriver,
+  IMAttachment,
+  IMMessageEvent,
+  IMUnsupportedEntry,
+  TextChannelIM,
+} from "@cindy/im";
 
 /** 渠道名 — 同时是 sessions.source 列值与 IdentityKey.channel 的值域。 */
 export type ImChannelName =
-  | 'feishu'
-  | 'slack'
-  | 'discord'
-  | 'wechat'
-  | 'telegram'
-  | 'dingtalk'
-  | 'wecom';
+  "feishu" | "slack" | "discord" | "wechat" | "telegram" | "dingtalk" | "wecom";
 
 /**
  * IM 编排层的产品默认配置(由 main/im/index.ts 产品接线层注入)。
@@ -87,11 +87,14 @@ export interface ImSessionNamespace {
    * (按 workingDir 聚成项目组);'dialogue' 落「对话」分组 —— IM 私聊会话的
    * workingDir 是 app 托管目录(im-working-dir),不该以它聚成假项目组。
    */
-  workspaceKind?: 'project' | 'dialogue';
+  workspaceKind?: "project" | "dialogue";
   /** 该渠道 session 的工作目录(必须已创建好)。 */
   ensureWorkingDir(botContextId: string): string;
   /** 渠道专属列(feishu: feishuBotAppId/feishuOpenId;slack: imBotContextId/imUserId)。 */
-  extraInsertColumns(botContextId: string, userId: string): Record<string, unknown>;
+  extraInsertColumns(
+    botContextId: string,
+    userId: string,
+  ): Record<string, unknown>;
   /**
    * 按 userId 覆写新会话的权限档:
    *   - telegram guest lane → 'plan' 只读探索(收紧);
@@ -105,7 +108,10 @@ export interface ImSessionNamespace {
    * 建行/复活行后异步解析正式标题(飞书群 lane → 拉群名拼 `[飞书·群] {群名}`)。
    * 返回 null/缺省 = 保持 defaultTitle。幂等(值稳定), 失败不阻塞建行。
    */
-  resolveSessionTitle?(userId: string, scopeKey?: string): Promise<string | null>;
+  resolveSessionTitle?(
+    userId: string,
+    scopeKey?: string,
+  ): Promise<string | null>;
   /**
    * 该 userId 的会话不参与 oneshot 起名(飞书群主流 lane 只剩开话题失败的
    * 降级路径, 标题是稳定的「群名」, 不该被首条消息的话题标题漂掉;
@@ -142,9 +148,9 @@ export interface ImSessionNamespace {
  *   - guest-dm: 获准的非主人私聊 → 伙伴的 `channel` 专线(按 userId 一条)。
  */
 export type ImCompanionLane =
-  | { kind: 'owner-dm' }
-  | { kind: 'group'; chatId: string; threadId: string }
-  | { kind: 'guest-dm'; userId: string };
+  | { kind: "owner-dm" }
+  | { kind: "group"; chatId: string; threadId: string }
+  | { kind: "guest-dm"; userId: string };
 
 /**
  * 渠道适配器 — 编排层所有渠道差异的唯一注入点。
@@ -183,7 +189,7 @@ export interface ImChannelAdapter {
    * turn 终态时可将状态替换为错误表情。返回 null = 该终态不放表情(撤掉 ack);
    * 缺省 = 全部按默认撤掉。仅真正跑过的 turn 生效, pre-dispatch 失败不放。
    */
-  terminalReactionEmoji?(kind: 'done' | 'aborted' | 'error'): string | null;
+  terminalReactionEmoji?(kind: "done" | "aborted" | "error"): string | null;
   /**
    * 交互被作废(turn 收口 / session 清理 / 抢跑)时, 把它那张卡片正文改写成的失效
    * 提示。缺省 = 不改写(该渠道保持原行为)。
@@ -209,7 +215,10 @@ export interface ImChannelAdapter {
    * 接管(attached)session 恒为 undefined — 该语义在编排层硬编码, 不走这里。
    * threadScoped 渠道会收到 scopeKey(thread root ts), 供 MCP 出站定位 thread。
    */
-  buildVendorOptions(userId: string, scopeKey?: string): Record<string, unknown>;
+  buildVendorOptions(
+    userId: string,
+    scopeKey?: string,
+  ): Record<string, unknown>;
   /**
    * Text-only channels can still resolve agent interactions without rich cards.
    * The callback owns channel-specific correlation and parsing.
@@ -217,7 +226,10 @@ export interface ImChannelAdapter {
   handleTextInteraction?(
     userId: string,
     request: InteractionRequest,
-    options?: { timeoutMs?: number; sharedPermission?: import('./sharedPermission').SharedPermission },
+    options?: {
+      timeoutMs?: number;
+      sharedPermission?: import("./sharedPermission").SharedPermission;
+    },
   ): Promise<InteractionDecision>;
   /**
    * Cancel a channel-owned text interaction when the central route times out,
@@ -257,7 +269,7 @@ export interface ImChannelAdapter {
    * 调用。钩子抛错或判不出来按 'proceed' 走原路径(主模型仍可用 NO_REPLY 沉默)。
    * 只对 ambient 消息调用; 被召唤的消息从不经过这里。
    */
-  ambientTurnGate?(event: IMMessageEvent): Promise<'proceed' | 'skip'>;
+  ambientTurnGate?(event: IMMessageEvent): Promise<"proceed" | "skip">;
   prepareAgentTurnText?(event: IMMessageEvent): Promise<{
     agentText: string;
     contextSnapshot?: ImContextSnapshot;
@@ -265,7 +277,7 @@ export interface ImChannelAdapter {
      * agentText 里实际交给模型的被回复消息投影(过滤后的占位也算)。Auto 审阅只用它,
      * 不读 event.replyContext 原值 —— 审阅器看到的引用不得多于模型看到的。
      */
-    replyContext?: IMMessageEvent['replyContext'];
+    replyContext?: IMMessageEvent["replyContext"];
     contextAttachments?: IMAttachment[];
     commit?: () => void | Promise<void>;
   } | null>;
@@ -275,7 +287,9 @@ export interface ImChannelAdapter {
    * 会话权限档不支持 turn 策略(acceptEdits/bypassPermissions)时 maker 拒跑
    * 该轮(fail-closed), 不会静默放开。
    */
-  turnPermissionPolicyFor?(event: IMMessageEvent): TurnPermissionPolicy | undefined;
+  turnPermissionPolicyFor?(
+    event: IMMessageEvent,
+  ): TurnPermissionPolicy | undefined;
   /**
    * 群轮次强确认策略对指定权限档「可选」的渠道判定 — 同时传入本轮 policy，
    * 让渠道能把会话档位授权限定到具体触发者。返回 true 时 dispatch 不挂
@@ -288,7 +302,9 @@ export interface ImChannelAdapter {
     turnPermissionPolicy: TurnPermissionPolicy,
   ): boolean;
   /** Telegram 每轮的群历史检索授权；其它渠道不实现即 fail closed。 */
-  groupHistoryAccessFor?(event: IMMessageEvent): GroupHistoryAccessScope | undefined;
+  groupHistoryAccessFor?(
+    event: IMMessageEvent,
+  ): GroupHistoryAccessScope | undefined;
   /**
    * 本轮渠道工具(`cindy_telegram_bot`)的作用域：当前 chat、触发者身份与出站 transport。
    * provider 开始前登记、终态释放(channelToolScope.ts)；不实现即本轮没有渠道工具。
@@ -456,10 +472,18 @@ export interface ImUiTextPack {
     };
     model: {
       title: string;
-      currentLine: (label: string, effort: string | null, description: string) => string;
+      currentLine: (
+        label: string,
+        effort: string | null,
+        description: string,
+      ) => string;
       hint: string;
       /** 每行模型按钮文案:供应商名 + 模型名 (+ effort)。 */
-      optionLabel: (providerName: string, label: string, effort: string | null) => string;
+      optionLabel: (
+        providerName: string,
+        label: string,
+        effort: string | null,
+      ) => string;
       resolved: (label: string, effort: string | null) => string;
       failed: (reason: string) => string;
     };
@@ -519,7 +543,10 @@ export interface ImUiTextPack {
       sessionPickerEmptyBody: (displayName: string) => string;
       btnNew: string;
       btnBack: string;
-      resolvedSessionPick: (sessionTitle: string, workspaceName: string) => string;
+      resolvedSessionPick: (
+        sessionTitle: string,
+        workspaceName: string,
+      ) => string;
       resolvedNewSession: (workspaceName: string) => string;
       attachFailed: (reason: string) => string;
       /**
@@ -533,7 +560,9 @@ export interface ImUiTextPack {
       sessionBusyPrompts: ReadonlyArray<(sessionTitle: string) => string>;
       takeoverLoadingPrompts: ReadonlyArray<(sessionTitle: string) => string>;
       sessionAttachedOneshotPrompts: ReadonlyArray<string>;
-      newSessionWelcomePrompts: ReadonlyArray<(workspaceName: string) => string>;
+      newSessionWelcomePrompts: ReadonlyArray<
+        (workspaceName: string) => string
+      >;
     };
   };
   /**
@@ -555,16 +584,25 @@ export interface ImUiTextPack {
     /** "发起远程控制"按钮(收口卡/欢迎卡上的免打字入口, 常驻可反复按)。 */
     btnStartControl: string;
     /** 接管 root 卡标题/正文(顶层消息, 该卡的 thread 即接管会话)。 */
-    takeoverCard: (sessionTitle: string, workspaceName: string) => { title: string; body: string };
+    takeoverCard: (
+      sessionTitle: string,
+      workspaceName: string,
+    ) => { title: string; body: string };
     /** 新建+接管 root 卡。 */
-    takeoverNewSessionCard: (workspaceName: string) => { title: string; body: string };
+    takeoverNewSessionCard: (workspaceName: string) => {
+      title: string;
+      body: string;
+    };
     /** root 卡上的退出接管按钮文案。 */
     btnExitTakeover: string;
     /**
      * 点退出按钮后 root 卡的收口卡 — 标题保留曾控制的 session 名
      * (顶层可追溯这个 thread 控制过谁);title 查不到时省略。
      */
-    takeoverExited: (sessionTitle: string | null) => { title?: string; body: string };
+    takeoverExited: (sessionTitle: string | null) => {
+      title?: string;
+      body: string;
+    };
     /** 旧接管被新 thread 替换后, 旧锚点/root 卡的收口文案。 */
     takeoverReplaced: (sessionTitle: string) => string;
     /** /new 在 thread 模型下的废弃提示。 */

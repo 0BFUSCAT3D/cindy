@@ -5,7 +5,7 @@
  */
 export function isStopCommand(text: string): boolean {
   const normalized = text.trim().toLowerCase();
-  return normalized === '!stop' || normalized === '！stop';
+  return normalized === "!stop" || normalized === "！stop";
 }
 
 /**
@@ -23,7 +23,9 @@ export function isStopCommand(text: string): boolean {
  * 命令同理会操作主人的目录/会话。telegram 在入站层已经拦了(命令 owner 专属),
  * 钉钉没有 —— 门放在共用路由上, 六个渠道一次盖住。
  */
-export function isCommandAuthorized(event: { speaker?: { isOwner: boolean } }): boolean {
+export function isCommandAuthorized(event: {
+  speaker?: { isOwner: boolean };
+}): boolean {
   if (event.speaker === undefined) return true;
   return event.speaker.isOwner === true;
 }

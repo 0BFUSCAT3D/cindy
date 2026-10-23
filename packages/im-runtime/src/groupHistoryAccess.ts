@@ -6,8 +6,6 @@
  * sessionInstanceId 阻断同一业务 session 重建后，旧 MCP 请求借用新实例权限。
  */
 
-
-
 export interface GroupHistorySearchLane {
   provider: string;
   chatId: string;
@@ -15,7 +13,7 @@ export interface GroupHistorySearchLane {
   threadId: string;
 }
 
-export type GroupHistoryAccessLevel = 'lane' | 'owner';
+export type GroupHistoryAccessLevel = "lane" | "owner";
 
 export interface GroupHistoryAccessScope {
   access: GroupHistoryAccessLevel;
@@ -34,9 +32,10 @@ interface ActiveAccess {
 const activeBySession = new Map<string, ActiveAccess>();
 
 function assertScope(scope: GroupHistoryAccessScope): void {
-  if (!scope.provider.trim()) throw new Error('group history access provider is required');
+  if (!scope.provider.trim())
+    throw new Error("group history access provider is required");
   if (scope.lane && scope.lane.provider !== scope.provider) {
-    throw new Error('group history access lane provider mismatch');
+    throw new Error("group history access lane provider mismatch");
   }
 }
 
@@ -45,12 +44,13 @@ export function beginGroupHistoryAccess(args: {
   sessionInstanceId: string;
   scope: GroupHistoryAccessScope;
 }): () => void {
-  if (!args.sessionId) throw new Error('group history access sessionId is required');
+  if (!args.sessionId)
+    throw new Error("group history access sessionId is required");
   if (!args.sessionInstanceId) {
-    throw new Error('group history access sessionInstanceId is required');
+    throw new Error("group history access sessionInstanceId is required");
   }
   assertScope(args.scope);
-  const token = Symbol('group-history-access');
+  const token = Symbol("group-history-access");
   activeBySession.set(args.sessionId, {
     sessionInstanceId: args.sessionInstanceId,
     token,
@@ -68,7 +68,8 @@ export function readGroupHistoryAccess(args: {
 }): GroupHistoryAccessScope | null {
   if (!args.sessionId || !args.sessionInstanceId) return null;
   const active = activeBySession.get(args.sessionId);
-  if (!active || active.sessionInstanceId !== args.sessionInstanceId) return null;
+  if (!active || active.sessionInstanceId !== args.sessionInstanceId)
+    return null;
   return active.scope;
 }
 

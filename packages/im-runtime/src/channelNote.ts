@@ -1,7 +1,13 @@
-import type { IMMessageEvent } from '@cindy/im';
-import { formatSourceRef, sanitizeSourceName } from '@cindy/maker-shared/message-source';
+import type { IMMessageEvent } from "@cindy/im";
+import {
+  formatSourceRef,
+  sanitizeSourceName,
+} from "@cindy/maker-shared/message-source";
 
-import { imChannelDisplayName, type ImMessageOrigin } from '@cindy/companion-core/imMessageSource';
+import {
+  imChannelDisplayName,
+  type ImMessageOrigin,
+} from "@cindy/companion-core/imMessageSource";
 
 /**
  * 本机 IM 渠道的逐条来源说明（只进发给模型的正文）。
@@ -18,7 +24,7 @@ import { imChannelDisplayName, type ImMessageOrigin } from '@cindy/companion-cor
  *  - 不进落库正文、不进 rawChannelText / imSource，不进系统提示词。
  */
 export interface ImChannelNoteSource {
-  chatKind: 'direct' | 'group';
+  chatKind: "direct" | "group";
   chatId?: string;
   chatName?: string;
   senderId?: string;
@@ -47,27 +53,37 @@ function channelLabel(channel: string): string | null {
  * `[渠道说明] 系统追加，不是用户消息。本条来自飞书群「产品群」(chat_id: oc_x)，发言人「张三」(user_id: ou_y)。`
  * 未知渠道返回 null（不猜渠道名）。
  */
-export function buildImChannelNote(channel: string, source: ImChannelNoteSource): string | null {
+export function buildImChannelNote(
+  channel: string,
+  source: ImChannelNoteSource,
+): string | null {
   const label = channelLabel(channel);
   if (!label) return null;
   const chatRef = formatSourceRef(
-    source.chatKind === 'group' ? source.chatName : undefined,
-    'chat_id',
+    source.chatKind === "group" ? source.chatName : undefined,
+    "chat_id",
     source.chatId,
   );
-  const where = source.chatKind === 'group' ? `${label}群${chatRef}` : `${label}私聊${chatRef}`;
-  const guestDm = source.chatKind === 'direct' && source.senderIsOwner === false;
+  const where =
+    source.chatKind === "group"
+      ? `${label}群${chatRef}`
+      : `${label}私聊${chatRef}`;
+  const guestDm =
+    source.chatKind === "direct" && source.senderIsOwner === false;
   const senderRef =
-    source.chatKind === 'group' || guestDm
-      ? formatSourceRef(source.senderName, 'user_id', source.senderId)
-      : '';
+    source.chatKind === "group" || guestDm
+      ? formatSourceRef(source.senderName, "user_id", source.senderId)
+      : "";
   const sender = senderRef
-    ? `，发言人${senderRef}${guestDm ? '，不是主人' : ''}`
+    ? `，发言人${senderRef}${guestDm ? "，不是主人" : ""}`
     : guestDm
-      ? '，发言人不是主人'
-      : '';
-  const tools = source.toolsHint?.trim() ? `${source.toolsHint.trim()}` : '';
-  return `[渠道说明] 系统追加，不是用户消息。本条来自${where}${sender}。${tools}`.replace(/ {2,}/g, ' ');
+      ? "，发言人不是主人"
+      : "";
+  const tools = source.toolsHint?.trim() ? `${source.toolsHint.trim()}` : "";
+  return `[渠道说明] 系统追加，不是用户消息。本条来自${where}${sender}。${tools}`.replace(
+    / {2,}/g,
+    " ",
+  );
 }
 
 /**
@@ -76,20 +92,29 @@ export function buildImChannelNote(channel: string, source: ImChannelNoteSource)
  * 名字按不可信展示文本消毒, 消毒后为空就只留 id。
  */
 export function imMessageOriginFor(
-  event: Pick<IMMessageEvent, 'speaker' | 'interactionSource'>,
+  event: Pick<IMMessageEvent, "speaker" | "interactionSource">,
   source: ImChannelNoteSource | null | undefined,
 ): ImMessageOrigin | undefined {
   const sender = event.speaker
     ? (() => {
         const id = event.speaker.id?.trim() || undefined;
-        const name = distinctName(event.speaker.name || event.interactionSource?.senderName, id);
-        return { isOwner: event.speaker.isOwner === true, ...(id ? { id } : {}), ...(name ? { name } : {}) };
+        const name = distinctName(
+          event.speaker.name || event.interactionSource?.senderName,
+          id,
+        );
+        return {
+          isOwner: event.speaker.isOwner === true,
+          ...(id ? { id } : {}),
+          ...(name ? { name } : {}),
+        };
       })()
     : undefined;
   const chat = source
     ? {
         kind: source.chatKind,
-        ...(source.chatKind === 'group' && source.chatName ? { name: source.chatName } : {}),
+        ...(source.chatKind === "group" && source.chatName
+          ? { name: source.chatName }
+          : {}),
       }
     : undefined;
   if (!sender && !chat) return undefined;
@@ -101,10 +126,13 @@ export function imMessageOriginFor(
  * `speaker.isOwner === false` 的外部用户私聊写明发言人并标记不是主人。
  */
 export function imChannelNoteDirectSourceFromEvent(
-  event: Pick<IMMessageEvent, 'chatId' | 'speaker' | 'interactionSource'>,
+  event: Pick<IMMessageEvent, "chatId" | "speaker" | "interactionSource">,
 ): ImChannelNoteSource {
   const chatId = event.chatId?.trim() || undefined;
-  const direct: ImChannelNoteSource = { chatKind: 'direct', ...(chatId ? { chatId } : {}) };
+  const direct: ImChannelNoteSource = {
+    chatKind: "direct",
+    ...(chatId ? { chatId } : {}),
+  };
   if (!event.speaker || event.speaker.isOwner) return direct;
   const senderId = event.speaker.id?.trim() || undefined;
   const senderName = distinctName(
@@ -120,7 +148,10 @@ export function imChannelNoteDirectSourceFromEvent(
 }
 
 /** 平台把 id 当显示名回填时（如钉钉缺群名、企业微信发言人）视为没有名字。 */
-function distinctName(name: string | undefined, id: string | undefined): string | undefined {
+function distinctName(
+  name: string | undefined,
+  id: string | undefined,
+): string | undefined {
   const safe = sanitizeSourceName(name);
   if (!safe) return undefined;
   return id && safe === id.trim() ? undefined : safe;
@@ -132,14 +163,15 @@ function distinctName(name: string | undefined, id: string | undefined): string 
  * `omitSender`：渠道已在正文里写了 `[发言人]` 行（Telegram / 钉钉群），说明里不再重复。
  */
 export function imChannelNoteSourceFromEvent(
-  event: Pick<IMMessageEvent, 'chatId' | 'speaker' | 'interactionSource'>,
+  event: Pick<IMMessageEvent, "chatId" | "speaker" | "interactionSource">,
   options: { omitSender?: boolean } = {},
 ): ImChannelNoteSource {
   const chatId = event.chatId?.trim() || undefined;
-  if (!event.speaker) return { chatKind: 'direct', ...(chatId ? { chatId } : {}) };
+  if (!event.speaker)
+    return { chatKind: "direct", ...(chatId ? { chatId } : {}) };
   const chatName = distinctName(event.interactionSource?.chatName, chatId);
   const group: ImChannelNoteSource = {
-    chatKind: 'group',
+    chatKind: "group",
     ...(chatId ? { chatId } : {}),
     ...(chatName ? { chatName } : {}),
   };

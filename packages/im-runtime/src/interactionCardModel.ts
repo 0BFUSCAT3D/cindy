@@ -27,12 +27,12 @@ import type {
   AskUserQuestionItem,
   InteractionDecision,
   InteractionRequest,
-} from '@cindy/maker-core';
-import { isProviderShareCredentialSessionApproval } from '@cindy/remote-agent/shared/providerShareCredentialConsent';
+} from "@cindy/maker-core";
+import { isProviderShareCredentialSessionApproval } from "@cindy/remote-agent/shared/providerShareCredentialConsent";
 
 export type SessionPermissionRequest = Pick<
-  Extract<InteractionRequest, { kind: 'permission' }>,
-  'toolName' | 'metadata' | 'suggestions'
+  Extract<InteractionRequest, { kind: "permission" }>,
+  "toolName" | "metadata" | "suggestions"
 >;
 
 // ── 语义常量 ────────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ export const BTN_LABEL_MAX = 30;
 export const HOOK_PERMISSION_INPUT_SUMMARY_MAX = 600;
 export const IM_PERMISSION_INPUT_PREVIEW_MAX = 800;
 /** 无选项降级时唯一按钮的文案(两侧一致)。 */
-export const ASK_CONTINUE_LABEL = '继续';
+export const ASK_CONTINUE_LABEL = "继续";
 /**
  * 把打勾卡勾选结果编成 answers value。
  *
@@ -62,38 +62,43 @@ export function encodeAskOptionAnswers(
   multiSelect: boolean,
   labels: readonly string[],
 ): string {
-  if (labels.length === 0) return '';
+  if (labels.length === 0) return "";
   return multiSelect ? JSON.stringify(labels) : labels[0]!;
 }
 
 /** 收口卡展示: JSON 数组解成逗号分隔, 多问之间用分号。 */
-export function formatAskAnswersForDisplay(answers: Record<string, string>): string {
+export function formatAskAnswersForDisplay(
+  answers: Record<string, string>,
+): string {
   return Object.values(answers)
     .map((value) => {
       try {
         const parsed = JSON.parse(value) as unknown;
-        if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
-          return parsed.join(', ');
+        if (
+          Array.isArray(parsed) &&
+          parsed.every((item) => typeof item === "string")
+        ) {
+          return parsed.join(", ");
         }
       } catch {
         // 单选是裸 label
       }
       return value;
     })
-    .join('；');
+    .join("；");
 }
 
 // ── 截断工具 ────────────────────────────────────────────────────────────────
 
 /** IM 卡片截断: 折行后追加「…(已截断)」(卡片正文有排版空间)。 */
 export function truncateBlock(s: string, max: number): string {
-  if (!s) return '';
+  if (!s) return "";
   return s.length > max ? `${s.slice(0, max)}\n\n…(已截断)` : s;
 }
 
 /** hook 卡片截断: 单行省略号(标题 / 单行摘要用)。 */
 export function truncateInline(s: string, max: number): string {
-  if (!s) return '';
+  if (!s) return "";
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
@@ -112,12 +117,12 @@ export function buildAskAnswerDecision(
   questionText: string,
   answerText: string,
 ): InteractionDecision {
-  return { kind: 'ask_user_question', answers: { [questionText]: answerText } };
+  return { kind: "ask_user_question", answers: { [questionText]: answerText } };
 }
 
 /** ask 的安全默认: 空 answers(超时 / turn 收口 = "未回答"继续)。 */
 export function buildAskNoAnswerDecision(): InteractionDecision {
-  return { kind: 'ask_user_question', answers: {} };
+  return { kind: "ask_user_question", answers: {} };
 }
 
 /**
@@ -125,13 +130,15 @@ export function buildAskNoAnswerDecision(): InteractionDecision {
  * key 仍是问题全文(同 buildAskAnswerDecision 的 SDK 匹配约束); 未作答的
  * 问题**不写入** key —— 与空 answers 的"未回答"语义一致, agent 会追问。
  */
-export function buildAskAnswersDecision(answers: Record<string, string>): InteractionDecision {
-  return { kind: 'ask_user_question', answers };
+export function buildAskAnswersDecision(
+  answers: Record<string, string>,
+): InteractionDecision {
+  return { kind: "ask_user_question", answers };
 }
 
 /** permission: 只允许这一次。 */
 export function buildPermissionAllowOnceDecision(): InteractionDecision {
-  return { kind: 'permission', behavior: 'allow' };
+  return { kind: "permission", behavior: "allow" };
 }
 
 /**
@@ -148,29 +155,44 @@ export function buildPermissionAllowOnceDecision(): InteractionDecision {
  * createSessionPermissionUpdate 同值, 这里就地写死只为不给 hook 链路引入
  * maker-core 运行期依赖; 漂移由本模块单测钉住(见 __tests__)。
  */
-export function buildPermissionAllowAlwaysDecision(request: SessionPermissionRequest): InteractionDecision {
+export function buildPermissionAllowAlwaysDecision(
+  request: SessionPermissionRequest,
+): InteractionDecision {
   // 本机凭证卡的授权范围由宿主定义，不能转换成普通工具的 addRules。
-  if (request.metadata?.hostOwnedConfirmation === 'shared_provider_credential'
-    && isProviderShareCredentialSessionApproval(request.suggestions)) {
-    return { kind: 'permission', behavior: 'allow', permissionUpdates: request.suggestions };
+  if (
+    request.metadata?.hostOwnedConfirmation === "shared_provider_credential" &&
+    isProviderShareCredentialSessionApproval(request.suggestions)
+  ) {
+    return {
+      kind: "permission",
+      behavior: "allow",
+      permissionUpdates: request.suggestions,
+    };
   }
   return {
-    kind: 'permission',
-    behavior: 'allow',
+    kind: "permission",
+    behavior: "allow",
     permissionUpdates: [
-      { type: 'addRules', rules: [{ toolName: request.toolName }], behavior: 'allow', destination: 'session' },
+      {
+        type: "addRules",
+        rules: [{ toolName: request.toolName }],
+        behavior: "allow",
+        destination: "session",
+      },
     ],
   };
 }
 
 /** permission 拒绝(reason 是渠道语义: 用户点拒绝 / 超时 / turn 收口)。 */
-export function buildPermissionDenyDecision(reason: string): InteractionDecision {
-  return { kind: 'permission', behavior: 'deny', reason };
+export function buildPermissionDenyDecision(
+  reason: string,
+): InteractionDecision {
+  return { kind: "permission", behavior: "deny", reason };
 }
 
 /** plan: 批准执行。 */
 export function buildPlanApproveDecision(): InteractionDecision {
-  return { kind: 'plan_review', behavior: 'allow' };
+  return { kind: "plan_review", behavior: "allow" };
 }
 
 /**
@@ -178,17 +200,17 @@ export function buildPlanApproveDecision(): InteractionDecision {
  * reason 当用户反馈发起修订 turn。
  */
 export function buildPlanDenyDecision(reason: string): InteractionDecision {
-  return { kind: 'plan_review', behavior: 'deny', reason, dismissed: true };
+  return { kind: "plan_review", behavior: "deny", reason, dismissed: true };
 }
 
 /** 用户点「打回」的 reason(两侧一致)。 */
-export const PLAN_USER_REJECTED_REASON = 'user_rejected';
+export const PLAN_USER_REJECTED_REASON = "user_rejected";
 /** 用户点「拒绝」的 reason(两侧一致)。 */
-export const PERMISSION_USER_DENIED_REASON = 'user_denied';
+export const PERMISSION_USER_DENIED_REASON = "user_denied";
 
 // ── 语义模型 ────────────────────────────────────────────────────────────────
 
-export type InteractionChoiceStyle = 'primary' | 'default' | 'danger';
+export type InteractionChoiceStyle = "primary" | "default" | "danger";
 
 /** 一个可按下的选项(渠道各自映射到自己的历史 buttonId, choiceId 不过网线)。 */
 export interface InteractionChoice {
@@ -235,7 +257,7 @@ export interface AskQuestionModel {
 }
 
 export interface AskInteractionModel extends BaseInteractionModel {
-  kind: 'ask_user_question';
+  kind: "ask_user_question";
   /** v1 单问投影: 第一问(不支持多题卡的渠道只渲染这一问)。 */
   question: AskUserQuestionItem;
   /** 卡片标题文本: header 优先, 缺省用问题全文。 */
@@ -249,13 +271,13 @@ export interface AskInteractionModel extends BaseInteractionModel {
 }
 
 export interface PlanInteractionModel extends BaseInteractionModel {
-  kind: 'plan_review';
+  kind: "plan_review";
   /** 正文原文(截断在渲染侧 —— 省略号样式两侧不同)。 */
   plan: string;
 }
 
 export interface PermissionInteractionModel extends BaseInteractionModel {
-  kind: 'permission';
+  kind: "permission";
   toolName: string;
   /** hook 卡标题用的展示名: displayName > title > toolName。 */
   displayTitle: string;
@@ -280,33 +302,39 @@ export type InteractionModel =
  * 字段仍是 hook 侧与其余渠道的 v1 投影, 两套视图出自同一份合成逻辑。
  */
 export function composeInteractionModel(
-  req: Extract<InteractionRequest, { kind: 'ask_user_question' }>,
+  req: Extract<InteractionRequest, { kind: "ask_user_question" }>,
 ): AskInteractionModel | null;
 export function composeInteractionModel(
-  req: Extract<InteractionRequest, { kind: 'plan_review' }>,
+  req: Extract<InteractionRequest, { kind: "plan_review" }>,
 ): PlanInteractionModel;
 export function composeInteractionModel(
-  req: Extract<InteractionRequest, { kind: 'permission' }>,
+  req: Extract<InteractionRequest, { kind: "permission" }>,
 ): PermissionInteractionModel;
-export function composeInteractionModel(req: InteractionRequest): InteractionModel | null;
-export function composeInteractionModel(req: InteractionRequest): InteractionModel | null {
-  if (req.kind === 'ask_user_question') {
+export function composeInteractionModel(
+  req: InteractionRequest,
+): InteractionModel | null;
+export function composeInteractionModel(
+  req: InteractionRequest,
+): InteractionModel | null {
+  if (req.kind === "ask_user_question") {
     if (req.questions.length === 0) return null;
     const questions: AskQuestionModel[] = req.questions.map((question) => {
       const headerText = question.header || question.question;
       const options = (question.options ?? []).slice(0, MAX_OPTIONS);
       const questionBody =
-        question.header && question.header !== question.question ? question.question : '';
+        question.header && question.header !== question.question
+          ? question.question
+          : "";
       const choices: InteractionChoice[] =
         options.length === 0
           ? [
               {
-                choiceId: 'ask:continue',
+                choiceId: "ask:continue",
                 index: 0,
                 label: ASK_CONTINUE_LABEL,
-                answerText: '',
-                style: 'default',
-                decision: buildAskAnswerDecision(question.question, ''),
+                answerText: "",
+                style: "default",
+                decision: buildAskAnswerDecision(question.question, ""),
               },
             ]
           : options.map((opt, index) => ({
@@ -314,7 +342,7 @@ export function composeInteractionModel(req: InteractionRequest): InteractionMod
               index,
               label: opt.label,
               answerText: opt.label,
-              style: 'default' as const,
+              style: "default" as const,
               decision: buildAskAnswerDecision(question.question, opt.label),
             }));
       return {
@@ -330,7 +358,7 @@ export function composeInteractionModel(req: InteractionRequest): InteractionMod
     // (含它们的既有测试)零改动。
     const primary = questions[0];
     return {
-      kind: 'ask_user_question',
+      kind: "ask_user_question",
       question: primary.question,
       headerText: primary.headerText,
       questionBody: primary.questionBody,
@@ -341,23 +369,23 @@ export function composeInteractionModel(req: InteractionRequest): InteractionMod
     };
   }
 
-  if (req.kind === 'plan_review') {
+  if (req.kind === "plan_review") {
     return {
-      kind: 'plan_review',
+      kind: "plan_review",
       plan: req.plan,
       choices: [
         {
-          choiceId: 'plan:approve',
+          choiceId: "plan:approve",
           index: 0,
           label: null,
-          style: 'primary',
+          style: "primary",
           decision: buildPlanApproveDecision(),
         },
         {
-          choiceId: 'plan:reject',
+          choiceId: "plan:reject",
           index: 1,
           label: null,
-          style: 'danger',
+          style: "danger",
           decision: buildPlanDenyDecision(PLAN_USER_REJECTED_REASON),
         },
       ],
@@ -365,33 +393,33 @@ export function composeInteractionModel(req: InteractionRequest): InteractionMod
     };
   }
 
-  if (req.kind === 'permission') {
+  if (req.kind === "permission") {
     return {
-      kind: 'permission',
+      kind: "permission",
       toolName: req.toolName,
       displayTitle: req.displayName ?? req.title ?? req.toolName,
-      description: req.description ?? '',
+      description: req.description ?? "",
       input: req.input,
       choices: [
         {
-          choiceId: 'permission:allow-once',
+          choiceId: "permission:allow-once",
           index: 0,
           label: null,
-          style: 'primary',
+          style: "primary",
           decision: buildPermissionAllowOnceDecision(),
         },
         {
-          choiceId: 'permission:allow-always',
+          choiceId: "permission:allow-always",
           index: 1,
           label: null,
-          style: 'default',
+          style: "default",
           decision: buildPermissionAllowAlwaysDecision(req),
         },
         {
-          choiceId: 'permission:deny',
+          choiceId: "permission:deny",
           index: 2,
           label: null,
-          style: 'danger',
+          style: "danger",
           decision: buildPermissionDenyDecision(PERMISSION_USER_DENIED_REASON),
         },
       ],
@@ -413,9 +441,12 @@ export function composeInteractionModel(req: InteractionRequest): InteractionMod
  * 全部问题都没有选项时保持 v1 单问卡, 并不存在逐问单卡调度。
  */
 export function needsAskMultiCard(
-  req: Extract<InteractionRequest, { kind: 'ask_user_question' }>,
+  req: Extract<InteractionRequest, { kind: "ask_user_question" }>,
 ): boolean {
   const hasAnyOptions = req.questions.some((q) => (q.options?.length ?? 0) > 0);
   if (!hasAnyOptions) return false;
-  return req.questions.length > 1 || req.questions.some((q) => q.multiSelect === true);
+  return (
+    req.questions.length > 1 ||
+    req.questions.some((q) => q.multiSelect === true)
+  );
 }

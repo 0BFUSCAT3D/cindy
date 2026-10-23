@@ -74,14 +74,18 @@ export function createSerializedConnectionLifecycle(
 
     runWhileStarted<T>(operation: () => Promise<T>): Promise<T> {
       if (!started) {
-        return Promise.reject(new Error('[IM_NOT_READY] IM connection is not active'));
+        return Promise.reject(
+          new Error("[IM_NOT_READY] IM connection is not active"),
+        );
       }
       const requestedGeneration = generation;
       return enqueue(async () => {
         // Logout invalidates queued account-scoped work synchronously, before
         // transport shutdown or DbClient disposal begins.
         if (!started || generation !== requestedGeneration) {
-          throw new Error('[IM_NOT_READY] IM connection stopped before operation ran');
+          throw new Error(
+            "[IM_NOT_READY] IM connection stopped before operation ran",
+          );
         }
         return operation();
       });

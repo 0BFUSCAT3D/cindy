@@ -25,6 +25,7 @@ import { TerminalPluginTasks } from '../plugins/tasks.js';
 import { TerminalPluginMarket } from '../plugins/market.js';
 import { TerminalPluginAccount } from '../plugins/account.js';
 import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
+import type { SharedPermission } from '@cindy/im-runtime/sharedPermission';
 
 const logger: Logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child: () => logger };
 const roots: string[] = [];
@@ -160,6 +161,47 @@ describe('terminal task host', () => {
     await running;
     expect(native.decisions).toEqual([{ kind: 'permission', behavior: 'allow' }]);
     expect(await host.invoke('maker:get-pending-interactions', [a.id])).toEqual([]);
+  });
+
+  // Integration: the terminal's direct listener used to replace IM routing.
+  // A real Maker permission now reaches both surfaces, retains source metadata,
+  // and accepts exactly the first response through the public remote handler.
+  it.each(['terminal','channel'] as const)('shares one permission decision when %s answers first',async winner=>{
+    const {host,nextPush,native}=await setup();
+    const task=await host.invoke('maker:create-session',[{}]) as {id:string};
+    let shared!:SharedPermission;
+    const route=await host.beginChannelInteraction(task.id,{
+      route:{sessionId:task.id,turnId:'channel-turn',origin:{kind:'im',channel:'telegram'},interactionSurface:'channel-card',sourceDescription:'Test group · original message'},
+      handle:async(_request,permission)=>{shared=permission!;return permission!.result;},
+    });
+    try{
+      const requested=nextPush('maker:interaction-request');
+      const running=host.invoke('maker:send',[task.id,{text:'permission'}]);
+      const event=await requested as {request:{requestId:string;description:string}};
+      expect(event.request.description).toContain('Test group · original message');
+      if(winner==='terminal')await host.invoke('maker:resolve-interaction',[event.request.requestId,{kind:'permission',behavior:'allow'}],{source:'remote',deviceId:'controller'});
+      else expect(shared.decide({kind:'permission',behavior:'allow'})).toBe(true);
+      expect(shared.decide({kind:'permission',behavior:'deny'})).toBe(false);
+      await running;
+      expect(native.decisions).toEqual([{kind:'permission',behavior:'allow'}]);
+      expect(await shared.result).toEqual(native.decisions[0]);
+      expect(await host.invoke('maker:get-pending-interactions',[task.id])).toEqual([]);
+      await expect(host.invoke('maker:resolve-interaction',[event.request.requestId,{kind:'permission',behavior:'deny'}])).rejects.toThrow('INTERACTION_NOT_PENDING');
+    }finally{route.release();}
+  });
+
+  // Cancellation must clear the public request even though the channel/router
+  // correlates the original native request ID and the terminal publishes a UUID.
+  it('retires both channel and terminal permissions when their turn lease ends',async()=>{
+    const {host,nextPush,native}=await setup();
+    const task=await host.invoke('maker:create-session',[{}]) as {id:string};
+    let shared!:SharedPermission;
+    const route=await host.beginChannelInteraction(task.id,{route:{sessionId:task.id,turnId:'cancelled-channel-turn',origin:{kind:'im',channel:'feishu'},interactionSurface:'channel-card'},handle:async(_request,permission)=>{shared=permission!;return permission!.result;}});
+    const requested=nextPush('maker:interaction-request'),running=host.invoke('maker:send',[task.id,{text:'permission'}]);
+    await requested;route.release('turn_terminal');await running;
+    expect(native.decisions).toMatchObject([{kind:'permission',behavior:'deny',reason:'turn_terminal'}]);
+    expect(shared.decide({kind:'permission',behavior:'allow'})).toBe(false);
+    expect(await host.invoke('maker:get-pending-interactions',[task.id])).toEqual([]);
   });
 
   it('protects local configuration and preserves prior settings on invalid route input', async () => {

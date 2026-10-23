@@ -1,26 +1,32 @@
-import type { InteractionDecision } from '@cindy/maker-core';
-import type { InteractiveCardSpec } from '@cindy/im';
+import type { InteractionDecision } from "@cindy/maker-core";
+import type { InteractiveCardSpec } from "@cindy/im";
 import {
   isExpiredPermissionDecision,
   type SharedPermission,
-} from './sharedPermission';
-import { hasSessionPermissionUpdates } from '@cindy/maker-core';
-import { forgetSharedPending, registerPendingExternal } from './pendingInteractions';
-import type { SessionPermissionRequest } from './interactionCardModel';
+} from "./sharedPermission";
+import { hasSessionPermissionUpdates } from "@cindy/maker-core";
+import {
+  forgetSharedPending,
+  registerPendingExternal,
+} from "./pendingInteractions";
+import type { SessionPermissionRequest } from "./interactionCardModel";
 
 /** Receipt only: the Host may hold the choice until the task resumes. */
-export const INTERACTION_CHOICE_RECEIVED_TEXT = '已收到你的选择。';
+export const INTERACTION_CHOICE_RECEIVED_TEXT = "已收到你的选择。";
 
 /** Text-only channels and Hook share the same final permission wording. */
-export function permissionOutcomeText(decision: InteractionDecision, toolName?: string): string {
+export function permissionOutcomeText(
+  decision: InteractionDecision,
+  toolName?: string,
+): string {
   const status =
-    decision.kind === 'permission' && decision.behavior === 'allow'
+    decision.kind === "permission" && decision.behavior === "allow"
       ? hasSessionPermissionUpdates(decision)
-        ? '✅ 已允许（本任务）'
-        : '✅ 已允许（仅本次）'
+        ? "✅ 已允许（本任务）"
+        : "✅ 已允许（仅本次）"
       : isExpiredPermissionDecision(decision)
-        ? '⌛ 本次确认已失效'
-        : '❌ 已拒绝';
+        ? "⌛ 本次确认已失效"
+        : "❌ 已拒绝";
   return toolName ? `${status}：${toolName}` : status;
 }
 
@@ -39,13 +45,21 @@ export function presentSharedPermissionCard(args: {
   if (permission.decision) return permission.result;
   registerPendingExternal(
     requestId,
-    'permission',
-    '',
+    "permission",
+    "",
     permission.decide,
     () => {
-      permission.settle({ kind: 'permission', behavior: 'deny', reason: 'session_disposed' });
+      permission.settle({
+        kind: "permission",
+        behavior: "deny",
+        reason: "session_disposed",
+      });
     },
-    { owner: args.owner, permissionRequest: args.permissionRequest, sharedPermission: permission },
+    {
+      owner: args.owner,
+      permissionRequest: args.permissionRequest,
+      sharedPermission: permission,
+    },
   );
   void permission.result.then(() => forgetSharedPending(requestId, permission));
   // Sending and updating are presentation only: neither delays execution nor

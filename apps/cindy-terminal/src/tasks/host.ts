@@ -22,6 +22,8 @@ import { createTaskTools } from './mcp.js';
 import type { TerminalKnowledge } from '../knowledge.js';
 import { TerminalCapabilities, CAPABILITY_CHANNELS } from './capabilities.js';
 import { registerCapabilityResources } from './capability-resources.js';
+import { installDesktopInteractionHandler, beginInteractionRoute, requestHostInteraction, noteInteractionRouteSteer } from '@cindy/im-runtime/interactionRouter';
+import type { SharedPermission } from '@cindy/im-runtime/sharedPermission';
 import { createHistoryViewReader } from '@cindy/remote-agent/host/historyViewReader';
 import type { HistoryWorkReference } from '@cindy/maker-shared/message-window';
 import { TerminalTaskStorage, type TerminalTaskMeta, type Submission } from './storage.js';
@@ -65,7 +67,7 @@ export interface TerminalTaskHostOptions extends InputHost {
 type ScheduledOrigin = { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string; firedAt?: number };
 type TaskInvocationContext = InvocationContext & { scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
 type LiveTask = { revoke():void; plugin?:TerminalPluginTask; capabilityRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
-type Pending = { sessionId: string; request: InteractionRequest; settle: (decision: InteractionDecision) => void };
+type Pending = { sessionId: string; sourceRequestId: string; request: InteractionRequest; settle: (decision: InteractionDecision) => void; decide: (decision:InteractionDecision)=>boolean; deferred?:InteractionDecision };
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_ARGUMENT');
@@ -192,8 +194,12 @@ export class TerminalTaskHost {
   configurePlugins(factory:(context:PluginTaskContext)=>Promise<TerminalPluginTask>,setup:TerminalPluginSetup){this.pluginFactory=factory;this.pluginSetup=setup;}
   requestHostPermission:import('@cindy/plugin-runtime/ghostInstallConsentInteraction').HostPermissionRequester=async(id,instance,request,signal)=>{
     const task=this.live.get(id);if(this.closed||!task||task.session.instanceId!==instance)return null;
-    const result=await this.interaction(id,request,signal);return this.live.get(id)===task?result:null;
+    const result=await requestHostInteraction(task.session,request,signal??new AbortController().signal);return this.live.get(id)===task?result:null;
   };
+  async beginChannelInteraction(id:string,registration:Parameters<typeof beginInteractionRoute>[1]){
+    const task=await this.ensureLive(id);
+    return beginInteractionRoute(task.session,registration);
+  }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
   async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<(import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot & {autoReviewOwner:'native'|'cindy'})|null>{
     const task=this.live.get(id);if(this.closed||!task||instanceId&&task.session.instanceId!==instanceId)return null;
@@ -206,7 +212,7 @@ export class TerminalTaskHost {
   }
   async requestPluginWrite(id:string,payload:import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmPayload,signal?:AbortSignal):Promise<import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmDecision>{
     const task=this.live.get(id);if(!task||this.closed)return {confirmed:false,reason:'session_closed'};
-    const decision=await this.interaction(id,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.write',input:payload as unknown as Record<string,unknown>},signal);
+    const decision=await requestHostInteraction(task.session,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.write',input:payload as unknown as Record<string,unknown>},signal??new AbortController().signal);
     return decision.kind==='permission'&&decision.behavior==='allow'&&this.live.get(id)===task?{confirmed:true}:{confirmed:false,reason:'cancelled'};
   }
   configureScheduler(deps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps) {this.schedulerDeps=deps;}
@@ -375,7 +381,10 @@ export class TerminalTaskHost {
     try {
       const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, planMode: row.planMode, ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
       const task: LiveTask = { revoke:()=>{revoked=true;plugin?.close();},plugin,capabilityRevision:capability.revision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
-      session.setInteractionListener((request, signal) => this.interaction(id, request, signal));
+      installDesktopInteractionHandler(session,(request,shared)=>this.interaction(id,request,undefined,shared),(sourceRequestId,decision)=>{
+        for(const pending of this.pending.values())if(pending.sessionId===id&&pending.sourceRequestId===sourceRequestId){pending.settle(decision);return true;}
+        return false;
+      });
       task.dispose.push(session.onEvent(event => this.onEvent(id, event)));
       task.dispose.push(session.onStatusChange(status => this.emit('maker:status-changed', { sessionId: id, status })));
       lease=task;this.live.set(id, task);
@@ -412,17 +421,28 @@ export class TerminalTaskHost {
       void this.live.get(id)?.session.abort().catch(() => undefined);
     });
   }
-  private interaction(id: string, request: InteractionRequest, signal?: AbortSignal): Promise<InteractionDecision> {
+  private interaction(id: string, request: InteractionRequest, signal?: AbortSignal, shared?:SharedPermission): Promise<InteractionDecision> {
     const publicRequest = { ...request, requestId: randomUUID() };
     return new Promise(resolve => {
+      let finished=false;
       const settle = (decision: InteractionDecision) => {
+        if(finished)return;
+        finished=true;
+        shared?.settle(decision);
         signal?.removeEventListener('abort', cancel);
         this.pending.delete(publicRequest.requestId);
         this.emit('maker:interaction-dismissed', { sessionId: id, requestId: publicRequest.requestId });
-        resolve(decision);
+        resolve(shared?.decision??decision);
       };
       const cancel = () => settle(decisionForDismissal(publicRequest));
-      this.pending.set(publicRequest.requestId, { sessionId: id, request: publicRequest, settle });
+      const pending:Pending={sessionId:id,sourceRequestId:request.requestId,request:publicRequest,settle,decide:decision=>{
+        if(finished||shared?.decision||pending.deferred||this.pending.get(publicRequest.requestId)!==pending)return false;
+        if(this.queuePaused.has(id)){pending.deferred=decision;return true;}
+        settle(decision);
+        return true;
+      }};
+      this.pending.set(publicRequest.requestId,pending);
+      if(shared){shared.decide=decision=>decision.kind==='permission'&&pending.decide(decision);void shared.result.then(settle);}
       signal?.addEventListener('abort', cancel, { once: true });
       if (signal?.aborted || this.closed) { cancel(); return; }
       this.emit('maker:interaction-request', { sessionId: id, request: publicRequest });
@@ -466,8 +486,7 @@ export class TerminalTaskHost {
         ? { kind: 'permission', behavior: raw.behavior, ...(typeof raw.reason === 'string' ? { reason: raw.reason } : {}), ...(raw.updatedInput !== undefined ? { updatedInput: record(raw.updatedInput) } : {}), ...(raw.permissionUpdates !== undefined ? { permissionUpdates: this.permissionUpdates(raw.permissionUpdates) } : {}) }
         : { kind: 'plan_review', behavior: raw.behavior, ...(typeof raw.reason === 'string' ? { reason: raw.reason } : {}), ...(typeof raw.editedPlan === 'string' ? { editedPlan: raw.editedPlan } : {}) };
     }
-    pending.settle(decision);
-    return { success: true };
+    return { success: pending.decide(decision) };
   }
   private async closeTask(id: string) {
     this.options.protectedInput?.handoff.cleanupForSession(id);
@@ -519,7 +538,7 @@ export class TerminalTaskHost {
         if(opts.keepQueue===false)for(const item of await this.storage.queued(id))await this.removeQueued(id,item.requestId,context);
         await this.live.get(id)?.session.abort();if(opts.pauseQueue===false){this.queuePaused.delete(id);this.drain(id);}return this.projection(id);
       }
-      case 'maker:input:resume': {const id=string(args[0]);await this.storage.update(id,{queuePaused:false});this.queuePaused.delete(id);this.drain(id);return this.projection(id);}
+      case 'maker:input:resume': {const id=string(args[0]);await this.storage.update(id,{queuePaused:false});this.queuePaused.delete(id);for(const pending of this.pending.values())if(pending.sessionId===id&&pending.deferred){const decision=pending.deferred;pending.deferred=undefined;pending.decide(decision);}this.drain(id);return this.projection(id);}
       case 'maker:input:remove': {const id=string(args[0]);await this.removeQueued(id,string(args[1]),context);return {...await this.projection(id),inputDeliveryCancelled:true};}
       case 'maker:input:update-text':case 'maker:input:update-content': {
         const id=string(args[0]),clientId=string(args[1]);const previous=await this.requireQueued(id,clientId,context);this.queueMutations.add(id);
@@ -623,7 +642,7 @@ export class TerminalTaskHost {
           return await task.session.send(payload, ...(context.scheduler ? [{ origin: context.scheduler }] : []));
         } finally { this.sending.delete(id); }
       }
-      case 'maker:steer': return (await this.ensureLive(string(args[0]))).session.steer(typeof args[1] === 'string' ? args[1] : await this.message(string(args[0]), args[1], context));
+      case 'maker:steer': {const session=(await this.ensureLive(string(args[0]))).session;noteInteractionRouteSteer(session);return session.steer(typeof args[1] === 'string' ? args[1] : await this.message(string(args[0]), args[1], context));}
       case 'maker:get-context-usage': return (await this.ensureLive(string(args[0]))).session.getContextUsage();
       case 'maker:set-model': {
         const id = string(args[0]); const row = await this.storage.get(id); if (!row) throw new Error('TASK_NOT_FOUND');

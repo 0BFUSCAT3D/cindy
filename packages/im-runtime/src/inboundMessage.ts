@@ -1,14 +1,14 @@
-import type { UserContentBlock, UserMessage } from '@cindy/maker-core';
-import type { IMAttachment } from '@cindy/im';
+import type { UserContentBlock, UserMessage } from "@cindy/maker-core";
+import type { IMAttachment } from "@cindy/im";
 
 const TAKEOVER_DELIVERY_CONTEXT =
-  '<cindy_delivery_context>' +
-  'Reply normally to the user message in this turn. Cindy automatically delivers your final response ' +
-  'to the conversation that sent it. Do not ask the user to configure a bot, webhook, or outbound ' +
-  'integration, and do not use a proactive outbound tool unless the user explicitly requests a separate ' +
-  'outbound message. This delivery rule is transport-independent; never infer a persistent destination ' +
-  'from earlier turns.' +
-  '</cindy_delivery_context>';
+  "<cindy_delivery_context>" +
+  "Reply normally to the user message in this turn. Cindy automatically delivers your final response " +
+  "to the conversation that sent it. Do not ask the user to configure a bot, webhook, or outbound " +
+  "integration, and do not use a proactive outbound tool unless the user explicitly requests a separate " +
+  "outbound message. This delivery rule is transport-independent; never infer a persistent destination " +
+  "from earlier turns." +
+  "</cindy_delivery_context>";
 
 /**
  * Build the model-facing message for an IM turn.
@@ -38,21 +38,23 @@ export function buildImUserMessage(
 
   if (attachments.length === 0) {
     return {
-      type: 'user',
-      content: [deliveryContext, channelNote || null, text].filter((part) => part !== null).join('\n\n'),
+      type: "user",
+      content: [deliveryContext, channelNote || null, text]
+        .filter((part) => part !== null)
+        .join("\n\n"),
     };
   }
 
   const blocks: UserContentBlock[] = [];
-  if (deliveryContext) blocks.push({ type: 'text', text: deliveryContext });
-  if (channelNote) blocks.push({ type: 'text', text: channelNote });
-  if (text) blocks.push({ type: 'text', text });
+  if (deliveryContext) blocks.push({ type: "text", text: deliveryContext });
+  if (channelNote) blocks.push({ type: "text", text: channelNote });
+  if (text) blocks.push({ type: "text", text });
   for (const att of attachments) {
     blocks.push({
-      type: att.kind === 'image' ? 'image' : 'file',
+      type: att.kind === "image" ? "image" : "file",
       path: att.absPath,
       mimeType: att.mimeType,
     });
   }
-  return { type: 'user', content: blocks };
+  return { type: "user", content: blocks };
 }

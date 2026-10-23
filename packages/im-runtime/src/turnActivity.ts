@@ -8,9 +8,9 @@
  * of flooding the card with raw stream events.
  */
 
-import { summarizeToolUseText } from '@cindy/maker-shared/message-presentation';
-import { tokenizeThinkingText } from '@cindy/maker-shared/thinking-text';
-import { readTokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
+import { summarizeToolUseText } from "@cindy/maker-shared/message-presentation";
+import { tokenizeThinkingText } from "@cindy/maker-shared/thinking-text";
+import { readTokenSpeedSnapshot } from "@cindy/maker-shared/usage-format";
 
 /** Keep parity with the desktop/mobile running work preview. */
 export const MAX_VISIBLE_STEPS = 5;
@@ -20,7 +20,7 @@ const STEP_LABEL_MAX = 80;
 
 export interface TurnActivityStep {
   key: string;
-  kind: 'thinking' | 'tool';
+  kind: "thinking" | "tool";
   label: string;
 }
 
@@ -73,11 +73,17 @@ interface TurnActivityInternalState {
   sequence: number;
 }
 
-const internalStateByActivity = new WeakMap<TurnActivityState, TurnActivityInternalState>();
+const internalStateByActivity = new WeakMap<
+  TurnActivityState,
+  TurnActivityInternalState
+>();
 
-function getInternalState(activity: TurnActivityState): TurnActivityInternalState {
+function getInternalState(
+  activity: TurnActivityState,
+): TurnActivityInternalState {
   const internal = internalStateByActivity.get(activity);
-  if (!internal) throw new Error('Turn activity must be created with createTurnActivity()');
+  if (!internal)
+    throw new Error("Turn activity must be created with createTurnActivity()");
   return internal;
 }
 
@@ -100,17 +106,21 @@ export function createTurnActivity(startedAt: number): TurnActivityState {
 }
 
 function truncate(text: string, max: number): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 
-function appendStep(activity: TurnActivityState, step: TurnActivityStep): boolean {
+function appendStep(
+  activity: TurnActivityState,
+  step: TurnActivityStep,
+): boolean {
   const internal = getInternalState(activity);
   if (internal.seenKeys.has(step.key)) return false;
   internal.seenKeys.add(step.key);
   activity.totalSteps += 1;
   activity.recentSteps.push(step);
-  if (activity.recentSteps.length > MAX_VISIBLE_STEPS) activity.recentSteps.shift();
+  if (activity.recentSteps.length > MAX_VISIBLE_STEPS)
+    activity.recentSteps.shift();
   return true;
 }
 
@@ -118,8 +128,14 @@ function appendStep(activity: TurnActivityState, step: TurnActivityStep): boolea
  * 设置 / 清除单行状态说明。返回是否真的变了 —— 调用方据此决定要不要触发一帧
  * 渠道刷新, 同 push*Step 的返回值语义(重复内容不浪费 chat.update 配额)。
  */
-export function setActivityNotice(activity: TurnActivityState, notice: string | null): boolean {
-  const next = notice && notice.trim().length > 0 ? truncate(notice, STEP_LABEL_MAX) : null;
+export function setActivityNotice(
+  activity: TurnActivityState,
+  notice: string | null,
+): boolean {
+  const next =
+    notice && notice.trim().length > 0
+      ? truncate(notice, STEP_LABEL_MAX)
+      : null;
   if (activity.notice === next) return false;
   activity.notice = next;
   return true;
@@ -133,7 +149,10 @@ export function setInteractionNotice(
   activity: TurnActivityState,
   notice: string | null,
 ): boolean {
-  const next = notice && notice.trim().length > 0 ? truncate(notice, STEP_LABEL_MAX) : null;
+  const next =
+    notice && notice.trim().length > 0
+      ? truncate(notice, STEP_LABEL_MAX)
+      : null;
   if (activity.interactionNotice === next) return false;
   activity.interactionNotice = next;
   return true;
@@ -143,8 +162,14 @@ export function setInteractionNotice(
  * 设置 / 清除头部的 tok/s。非正数与非有限值一律视为"没有读数"。返回是否变化,
  * 语义同 setActivityNotice; 速度只随 ticker 带出, 调用方不必为它单独刷帧。
  */
-export function setActivityTokenRate(activity: TurnActivityState, rate: number | null): boolean {
-  const next = rate !== null && Number.isFinite(rate) && rate > 0 ? Math.round(rate) : null;
+export function setActivityTokenRate(
+  activity: TurnActivityState,
+  rate: number | null,
+): boolean {
+  const next =
+    rate !== null && Number.isFinite(rate) && rate > 0
+      ? Math.round(rate)
+      : null;
   if (activity.tokenRate === next) return false;
   activity.tokenRate = next;
   return true;
@@ -157,16 +182,25 @@ export function setActivityTokenRate(activity: TurnActivityState, rate: number |
  * - generationReliable === false: 隐藏, 与桌面运行状态栏同口径(不显示错数);
  * - 占位帧 / 首个输出之前的 0 读数 / 坏数据: 保留上一个值, 避免工具执行间隙头部来回闪。
  */
-export function applyStatusTokenRate(activity: TurnActivityState, data: unknown): boolean {
-  return setActivityTokenRate(activity, tokenRateFromStatus(data, activity.tokenRate));
+export function applyStatusTokenRate(
+  activity: TurnActivityState,
+  data: unknown,
+): boolean {
+  return setActivityTokenRate(
+    activity,
+    tokenRateFromStatus(data, activity.tokenRate),
+  );
 }
 
 /**
  * applyStatusTokenRate 的纯判据: 给定上一个值与一条 status data, 返回下一个值。
  * 还没有 activity 可写时(自动任务转播卡尚未开出)用它暂存读数。
  */
-export function tokenRateFromStatus(data: unknown, previous: number | null): number | null {
-  if (!data || typeof data !== 'object') return previous;
+export function tokenRateFromStatus(
+  data: unknown,
+  previous: number | null,
+): number | null {
+  if (!data || typeof data !== "object") return previous;
   const record = data as { generationReliable?: unknown; tokenSpeed?: unknown };
   if (record.generationReliable === false) return null;
   const speed = readTokenSpeedSnapshot(record.tokenSpeed);
@@ -191,7 +225,10 @@ function clearNotice(activity: TurnActivityState): void {
 
 /** Raw tool_use -> desktop/mobile-compatible readable title. */
 export function formatToolStep(toolName: string, input: unknown): string {
-  return truncate(summarizeToolUseText(toolName, input).label || toolName, STEP_LABEL_MAX);
+  return truncate(
+    summarizeToolUseText(toolName, input).label || toolName,
+    STEP_LABEL_MAX,
+  );
 }
 
 /**
@@ -205,24 +242,28 @@ export function pushToolStep(
   toolUseId?: string,
 ): boolean {
   const internal = getInternalState(activity);
-  const key = toolUseId ? `tool:${toolUseId}` : `tool:auto:${++internal.sequence}`;
+  const key = toolUseId
+    ? `tool:${toolUseId}`
+    : `tool:auto:${++internal.sequence}`;
   if (internal.seenKeys.has(key)) return false;
   activity.writing = false;
   clearNotice(activity);
   return appendStep(activity, {
     key,
-    kind: 'tool',
+    kind: "tool",
     label: formatToolStep(toolName, input),
   });
 }
 
 function thinkingPlainText(value: string): string {
-  return tokenizeThinkingText(value)
-    .map((token) => token.value)
-    .join('')
-    // Streaming deltas can stop halfway through a strong span. Do not flash
-    // the unmatched Codex delimiter while waiting for the closing delta.
-    .replace(/\*\*/g, '');
+  return (
+    tokenizeThinkingText(value)
+      .map((token) => token.value)
+      .join("")
+      // Streaming deltas can stop halfway through a strong span. Do not flash
+      // the unmatched Codex delimiter while waiting for the closing delta.
+      .replace(/\*\*/g, "")
+  );
 }
 
 /** Paired ** markers and code delimiters are removed before Slack mrkdwn sees them. */
@@ -234,17 +275,21 @@ export function formatThinkingStep(value: string): string {
  * Apply one thinking start/delta/final event. The first non-empty text creates
  * the row; later deltas update it in place and final replaces it canonically.
  */
-export function pushThinkingStep(activity: TurnActivityState, data: unknown): boolean {
-  if (!data || typeof data !== 'object') return false;
+export function pushThinkingStep(
+  activity: TurnActivityState,
+  data: unknown,
+): boolean {
+  if (!data || typeof data !== "object") return false;
   const record = data as Record<string, unknown>;
-  if (record.stage === 'redacted') return false;
-  const text = typeof record.text === 'string' ? record.text : '';
-  const blockId = typeof record.blockId === 'string' && record.blockId
-    ? record.blockId
-    : 'current';
+  if (record.stage === "redacted") return false;
+  const text = typeof record.text === "string" ? record.text : "";
+  const blockId =
+    typeof record.blockId === "string" && record.blockId
+      ? record.blockId
+      : "current";
   const internal = getInternalState(activity);
-  const previous = internal.thinkingTextByBlockId.get(blockId) ?? '';
-  const next = record.stage === 'final' ? text : `${previous}${text}`;
+  const previous = internal.thinkingTextByBlockId.get(blockId) ?? "";
+  const next = record.stage === "final" ? text : `${previous}${text}`;
   if (next === previous) return false;
   internal.thinkingTextByBlockId.set(blockId, next);
 
@@ -263,7 +308,7 @@ export function pushThinkingStep(activity: TurnActivityState, data: unknown): bo
   if (internal.seenKeys.has(key)) return false;
   activity.writing = false;
   clearNotice(activity);
-  return appendStep(activity, { key, kind: 'thinking', label });
+  return appendStep(activity, { key, kind: "thinking", label });
 }
 
 /** Assistant progress text stays visible below the activity list. */
@@ -276,7 +321,7 @@ function formatElapsed(ms: number): string {
   const sec = Math.max(0, Math.round(ms / 1000));
   if (sec < 60) return `${sec}s`;
   const min = Math.floor(sec / 60);
-  return `${min}m${sec % 60 ? `${sec % 60}s` : ''}`;
+  return `${min}m${sec % 60 ? `${sec % 60}s` : ""}`;
 }
 
 /**
@@ -286,11 +331,19 @@ function formatElapsed(ms: number): string {
  * turn 上, 那是渠道消息唯一可能整段静止的窗口(见 TurnActivityState.notice)。
  * 此时省掉"N 项"段 —— 报"0 项"没有信息量。
  */
-export function renderActivity(activity: TurnActivityState, now: number): string {
-  if (activity.totalSteps === 0 && activity.notice === null && activity.interactionNotice === null)
-    return '';
+export function renderActivity(
+  activity: TurnActivityState,
+  now: number,
+): string {
+  if (
+    activity.totalSteps === 0 &&
+    activity.notice === null &&
+    activity.interactionNotice === null
+  )
+    return "";
   const elapsed = formatElapsed(now - activity.startedAt);
-  const rate = activity.tokenRate !== null ? ` · ${activity.tokenRate} tok/s` : '';
+  const rate =
+    activity.tokenRate !== null ? ` · ${activity.tokenRate} tok/s` : "";
   const lines = [
     activity.totalSteps > 0
       ? `⚙️ 工作中 · ${activity.totalSteps} 项 · ${elapsed}${rate}`
@@ -304,12 +357,13 @@ export function renderActivity(activity: TurnActivityState, now: number): string
       !activity.writing &&
       activity.notice === null &&
       activity.interactionNotice === null;
-    const marker = isTail ? '▸' : '✓';
-    const prefix = step.kind === 'thinking' ? '✦ ' : '';
+    const marker = isTail ? "▸" : "✓";
+    const prefix = step.kind === "thinking" ? "✦ " : "";
     lines.push(`> ${marker} ${prefix}${step.label}`);
   });
   if (activity.notice !== null) lines.push(`> ⏳ ${activity.notice}`);
   // 等用户那一行放最后: 它是此刻唯一需要用户动手的事。
-  if (activity.interactionNotice !== null) lines.push(`> ⏳ ${activity.interactionNotice}`);
-  return lines.join('\n');
+  if (activity.interactionNotice !== null)
+    lines.push(`> ⏳ ${activity.interactionNotice}`);
+  return lines.join("\n");
 }

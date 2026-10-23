@@ -1,11 +1,9 @@
-import type { InteractiveCardSpec } from '@cindy/im';
-
+import type { InteractiveCardSpec } from "@cindy/im";
 
 /** Quick text-only check; treat anything starting with '/' (no spaces before) as a command. */
 export function looksLikeSlashCommand(text: string): boolean {
-  return text.startsWith('/');
+  return text.startsWith("/");
 }
-
 
 export interface SlashCtx {
   botContextId: string;
@@ -21,7 +19,6 @@ export interface SlashCtx {
     withCard(userId: string, spec: InteractiveCardSpec): Promise<boolean>;
   };
 }
-
 
 export interface ImSlashHandlers {
   /**

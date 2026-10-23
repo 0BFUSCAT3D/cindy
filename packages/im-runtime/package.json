@@ -15,7 +15,11 @@
     "@cindy/maker-core": "workspace:*",
     "@cindy/maker-shared": "workspace:*",
     "@cindy/companion-core": "workspace:*",
-    "@cindy/remote-agent": "workspace:*"
+    "@cindy/remote-agent": "workspace:*",
+    "@cindy/model-providers": "workspace:*",
+    "@cindy/maker-scheduler": "workspace:*",
+    "@cindy/slack-hook-protocol": "workspace:*",
+    "@cindy/plugin-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "*",

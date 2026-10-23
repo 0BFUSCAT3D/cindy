@@ -32,12 +32,12 @@ import {
   TELEGRAM_PERSONAL_CAPABILITIES,
   TELEGRAM_PROGRESS_FRAME_MAX_CHARS,
   type TelegramDriverCapabilities,
-} from '@cindy/im';
-import type { AgentEvent } from '@cindy/maker-core';
+} from "@cindy/im";
+import type { AgentEvent } from "@cindy/maker-core";
 import {
   buildMessageRenderItems,
   type MessageRenderNormalizedMessage,
-} from '@cindy/maker-shared/message-render';
+} from "@cindy/maker-shared/message-render";
 
 import {
   applyStatusTokenRate,
@@ -49,8 +49,8 @@ import {
   setActivityNotice,
   setInteractionNotice,
   type TurnActivityState,
-} from './turnActivity.js';
-import { turnRetryNotice } from './turnRetryNotice.js';
+} from "./turnActivity.js";
+import { turnRetryNotice } from "./turnRetryNotice.js";
 
 /**
  * 进度快照节流(trailing-edge): 事件密集时最多每 1.5s 发一帧, 与 IM 流式卡的
@@ -141,7 +141,9 @@ export interface ProgressDedupeSlots {
 }
 
 /** 三槽基线: pending ?? sending ?? lastSent(严格此顺序)。 */
-export function progressDedupeBaseline(slots: ProgressDedupeSlots): string | undefined {
+export function progressDedupeBaseline(
+  slots: ProgressDedupeSlots,
+): string | undefined {
   return slots.pending ?? slots.sending ?? slots.lastSent;
 }
 
@@ -152,7 +154,10 @@ export function progressDedupeBaseline(slots: ProgressDedupeSlots): string | und
  * (controller.ts 3423-3461): 前缀判据会在"流式增量恰好以上一帧开头"时把真实
  * 新内容判成重复吞掉, 用户看到过程区卡死。
  */
-export function shouldEmitProgressFrame(candidate: string, slots: ProgressDedupeSlots): boolean {
+export function shouldEmitProgressFrame(
+  candidate: string,
+  slots: ProgressDedupeSlots,
+): boolean {
   return candidate !== progressDedupeBaseline(slots);
 }
 
@@ -225,7 +230,7 @@ export function createProgressEmitter(
     slots.sending = snapshot;
     lastEmitAt = Date.now();
     const result = emit(snapshot);
-    if (result && typeof (result as Promise<void>).then === 'function') {
+    if (result && typeof (result as Promise<void>).then === "function") {
       (result as Promise<void>).then(
         () => finishSend(false),
         () => finishSend(true),
@@ -256,7 +261,10 @@ export function createProgressEmitter(
   };
   const schedule = (): void => {
     if (stopped || pending !== null) return;
-    const wait = Math.max(0, lastEmitAt + policy.intermediateThrottleMs - Date.now());
+    const wait = Math.max(
+      0,
+      lastEmitAt + policy.intermediateThrottleMs - Date.now(),
+    );
     pending = setTimeout(() => {
       pending = null;
       fire();
@@ -293,16 +301,19 @@ export function createProgressEmitter(
  * 正文。两侧运行中视图共用这一条 —— observer 的进度快照与 turnRunner 的
  * composeStreamingView(非收口态)逐字一致。
  */
-export function composeProgressView(activityText: string, body: string): string {
+export function composeProgressView(
+  activityText: string,
+  body: string,
+): string {
   if (!activityText) return body;
   return body ? `${activityText}\n\n${body}` : activityText;
 }
 
 /** 正文累积策略。见模块头。 */
-export type TurnPresenterMode = 'finalized-segments' | 'buffer-replace';
+export type TurnPresenterMode = "finalized-segments" | "buffer-replace";
 
 /** 运行中正文投影：默认只露当前消息；whole 与个人 IM 一样露出整轮累计正文。 */
-export type ProgressBodyMode = 'latest' | 'whole';
+export type ProgressBodyMode = "latest" | "whole";
 
 export interface TurnPresenterOptions {
   mode: TurnPresenterMode;
@@ -364,7 +375,11 @@ interface BodyEngine {
   /** 累积一个 text 事件的正文(不碰 activity)。调用前已保证 data.text 是 string。 */
   applyText(ev: AgentEvent): void;
   /** tool_use 边界的正文投影(segments: 封存尾段 + 投影 tool 消息; buffer: 无)。 */
-  projectToolUse(toolName: string, input: unknown, toolUseId: string | undefined): void;
+  projectToolUse(
+    toolName: string,
+    input: unknown,
+    toolUseId: string | undefined,
+  ): void;
   /** thinking 的正文投影(segments: 原位更新 render 消息; buffer: 无)。 */
   projectThinking(ev: AgentEvent): void;
   /** done 封存尾段。 */
@@ -384,7 +399,7 @@ interface BodyEngine {
  * finalText 即整段缓冲。
  */
 function createBufferEngine(): BodyEngine {
-  let buffer = '';
+  let buffer = "";
   return {
     applyText(ev: AgentEvent): void {
       const data = ev.data as { text: string; isFinal?: boolean };
@@ -435,12 +450,12 @@ function createSegmentsEngine(): BodyEngine {
   const finalizedSegments: string[] = [];
   /** finalizedSegments 在共享消息投影里的对应下标(同消息多 block 原位更新)。 */
   const finalizedRenderIndexes: number[] = [];
-  let streamTail = '';
-  let assistantText = '';
+  let streamTail = "";
+  let assistantText = "";
   /** 最近一次定稿段所属的 claude 消息标识(uuid, 缺失时退到 requestId)。 */
   let lastFinalUuid: string | undefined;
   const recomputeAssistantText = (): void => {
-    const finalizedText = finalizedSegments.join('\n\n');
+    const finalizedText = finalizedSegments.join("\n\n");
     // trim 只用于判空(纯空白尾巴不该拼出悬空分隔), 拼接用原文 ——
     // 首行缩进/换行是内容(markdown 代码块等), 不得被裁掉。
     const hasTail = streamTail.trim().length > 0;
@@ -458,7 +473,9 @@ function createSegmentsEngine(): BodyEngine {
   const renderClockBase = Date.now();
   let renderSequence = 0;
   let currentTurnRenderStart = 0;
-  const nextRenderIdentity = (prefix: string): { key: string; createdAt: string } => {
+  const nextRenderIdentity = (
+    prefix: string,
+  ): { key: string; createdAt: string } => {
     const sequence = renderSequence++;
     return {
       key: `hook-${prefix}-${sequence}`,
@@ -468,9 +485,9 @@ function createSegmentsEngine(): BodyEngine {
     };
   };
   const pushRenderMessage = (
-    kind: MessageRenderNormalizedMessage['kind'],
+    kind: MessageRenderNormalizedMessage["kind"],
     body: string,
-    sourceExtra: Partial<MessageRenderNormalizedMessage['source']> = {},
+    sourceExtra: Partial<MessageRenderNormalizedMessage["source"]> = {},
   ): number => {
     const { key, createdAt } = nextRenderIdentity(kind);
     renderMessages.push({
@@ -478,7 +495,7 @@ function createSegmentsEngine(): BodyEngine {
       source: {
         id: key,
         clientId: key,
-        role: kind === 'tool' ? 'tool_use' : kind,
+        role: kind === "tool" ? "tool_use" : kind,
         createdAt,
         ...sourceExtra,
       },
@@ -489,7 +506,10 @@ function createSegmentsEngine(): BodyEngine {
     });
     return renderMessages.length - 1;
   };
-  const pushFinalizedSegment = (segment: string, sameMessage: boolean): void => {
+  const pushFinalizedSegment = (
+    segment: string,
+    sameMessage: boolean,
+  ): void => {
     if (sameMessage && finalizedSegments.length > 0) {
       const segmentIndex = finalizedSegments.length - 1;
       finalizedSegments[segmentIndex] += segment;
@@ -499,29 +519,31 @@ function createSegmentsEngine(): BodyEngine {
       return;
     }
     finalizedSegments.push(segment);
-    finalizedRenderIndexes.push(pushRenderMessage('assistant', segment));
+    finalizedRenderIndexes.push(pushRenderMessage("assistant", segment));
   };
   const finalizeStreamTail = (): void => {
     if (streamTail.trim().length === 0) return;
     pushFinalizedSegment(streamTail, false);
-    streamTail = '';
+    streamTail = "";
     lastFinalUuid = undefined;
     recomputeAssistantText();
   };
   const progressAssistantText = (): string => {
     if (streamTail.trim().length > 0) return streamTail;
-    return finalizedSegments[finalizedSegments.length - 1] ?? '';
+    return finalizedSegments[finalizedSegments.length - 1] ?? "";
   };
   const finalAnswerText = (): string => {
-    const visible = buildMessageRenderItems(renderMessages, { isSessionStreaming: false })
+    const visible = buildMessageRenderItems(renderMessages, {
+      isSessionStreaming: false,
+    })
       .flatMap((item) =>
-        item.type === 'message'
-        && item.message.kind === 'assistant'
-        && item.message.body.trim().length > 0
+        item.type === "message" &&
+        item.message.kind === "assistant" &&
+        item.message.body.trim().length > 0
           ? [item.message.body]
           : [],
       )
-      .join('\n\n');
+      .join("\n\n");
     return visible.trim().length > 0 ? visible : assistantText;
   };
 
@@ -539,11 +561,13 @@ function createSegmentsEngine(): BodyEngine {
         // ③ codex item.completed / pi message_end:该条全文,覆盖已流增量。
         // ④ 未知 source: 保守用前缀启发式。
         const src = (ev as { source?: string }).source;
-        const meta = (ev as { agentMeta?: { uuid?: unknown; requestId?: unknown } }).agentMeta;
-        const claudeTail = src === 'claude-code' && meta === undefined;
+        const meta = (
+          ev as { agentMeta?: { uuid?: unknown; requestId?: unknown } }
+        ).agentMeta;
+        const claudeTail = src === "claude-code" && meta === undefined;
         const segment = claudeTail
           ? streamTail + data.text
-          : src === 'claude-code' || src === 'codex' || src === 'pi'
+          : src === "claude-code" || src === "codex" || src === "pi"
             ? data.text
             : data.text.startsWith(streamTail)
               ? data.text
@@ -557,10 +581,10 @@ function createSegmentsEngine(): BodyEngine {
         // finalText() 会按桌面消息语义识别正式正文; 不能因为某个渠道最终只
         // 允许一条消息, 就在这里把同一条消息的内容拆成「最后一段」。
         const messageId =
-          src === 'claude-code'
-            ? typeof meta?.uuid === 'string'
+          src === "claude-code"
+            ? typeof meta?.uuid === "string"
               ? meta.uuid
-              : typeof meta?.requestId === 'string'
+              : typeof meta?.requestId === "string"
                 ? meta.requestId
                 : undefined
             : undefined;
@@ -579,21 +603,26 @@ function createSegmentsEngine(): BodyEngine {
         // 的是尾段 —— 而尾段按构造就是整轮文本的**结尾**, 结论在里面; 按 ① 处理
         // 而实为 ② 时, 旁白会被粘进公开回帖一起发出去。何况 ② 才是 translator
         // 文档里点名的那个场景(PR #1272 review 指出, 推翻了上一版的无条件并入)。
-        const sameMessage = messageId !== undefined && messageId === lastFinalUuid;
+        const sameMessage =
+          messageId !== undefined && messageId === lastFinalUuid;
         pushFinalizedSegment(segment, sameMessage);
         lastFinalUuid = messageId;
-        streamTail = '';
+        streamTail = "";
       } else {
         streamTail += data.text;
       }
       recomputeAssistantText();
     },
-    projectToolUse(toolName: string, input: unknown, toolUseId: string | undefined): void {
+    projectToolUse(
+      toolName: string,
+      input: unknown,
+      toolUseId: string | undefined,
+    ): void {
       // tool_use 是明确的 assistant 消息边界，与桌面
       // messagePersistBroadcaster.flushAssistantBlock 同口径。
       finalizeStreamTail();
       lastFinalUuid = undefined;
-      pushRenderMessage('tool', '', {
+      pushRenderMessage("tool", "", {
         toolName,
         toolInput: input,
         ...(toolUseId !== undefined ? { toolUseId } : {}),
@@ -610,21 +639,25 @@ function createSegmentsEngine(): BodyEngine {
         durationMs?: unknown;
         startedAt?: unknown;
       } | null;
-      const blockId = typeof data?.blockId === 'string'
-        ? data.blockId
-        : `anonymous-${renderSequence}`;
-      const content = data?.stage === 'redacted'
-        ? { isRedacted: true }
-        : {
-            ...(typeof data?.text === 'string' ? { text: data.text } : {}),
-            ...(typeof data?.durationMs === 'number' ? { durationMs: data.durationMs } : {}),
-          };
+      const blockId =
+        typeof data?.blockId === "string"
+          ? data.blockId
+          : `anonymous-${renderSequence}`;
+      const content =
+        data?.stage === "redacted"
+          ? { isRedacted: true }
+          : {
+              ...(typeof data?.text === "string" ? { text: data.text } : {}),
+              ...(typeof data?.durationMs === "number"
+                ? { durationMs: data.durationMs }
+                : {}),
+            };
       const existingIndex = thinkingRenderIndexes.get(blockId);
       if (existingIndex === undefined) {
-        const renderIndex = pushRenderMessage('thinking', '', {
+        const renderIndex = pushRenderMessage("thinking", "", {
           clientId: blockId,
           content,
-          ...(typeof data?.startedAt === 'number'
+          ...(typeof data?.startedAt === "number"
             ? { createdAt: new Date(data.startedAt).toISOString() }
             : {}),
         });
@@ -638,9 +671,14 @@ function createSegmentsEngine(): BodyEngine {
       // 极端 adapter 路径可能只有增量没有 isFinal；done 仍是确定边界，此时把尾段
       // 物化成一条 assistant message，和桌面 main 在 done 前落最后正文同口径。
       finalizeStreamTail();
-      for (let index = renderMessages.length - 1; index >= currentTurnRenderStart; index--) {
+      for (
+        let index = renderMessages.length - 1;
+        index >= currentTurnRenderStart;
+        index--
+      ) {
         const message = renderMessages[index];
-        if (message.kind !== 'assistant' || message.body.trim().length === 0) continue;
+        if (message.kind !== "assistant" || message.body.trim().length === 0)
+          continue;
         message.turnCompleted = true;
         break;
       }
@@ -654,7 +692,10 @@ function createSegmentsEngine(): BodyEngine {
       // 这只在请求首次出现时调用；剩余等待文案的切换不是新边界。
       finalizeStreamTail();
       lastFinalUuid = undefined;
-      pushRenderMessage('system', '', { role: 'system', content: { kind: 'interaction' } });
+      pushRenderMessage("system", "", {
+        role: "system",
+        content: { kind: "interaction" },
+      });
     },
     progressBody(): string {
       return progressAssistantText();
@@ -668,21 +709,28 @@ function createSegmentsEngine(): BodyEngine {
     replaceBody(): void {
       // finalized-segments 没有单一缓冲可整体替换(正文是按消息切开的定稿段 +
       // 流式尾部)。observer 从不调用它; 调到即接线错误, 显式失败而不是静默吞掉。
-      throw new Error('finalized-segments presenter does not support replaceBody');
+      throw new Error(
+        "finalized-segments presenter does not support replaceBody",
+      );
     },
   };
 }
 
-export function createTurnPresenter(options: TurnPresenterOptions): TurnPresenter {
+export function createTurnPresenter(
+  options: TurnPresenterOptions,
+): TurnPresenter {
   const startedAt = options.startedAt ?? Date.now();
   const policy = options.policy ?? DEFAULT_PRESENTER_POLICY;
   const body: BodyEngine =
-    options.mode === 'finalized-segments' ? createSegmentsEngine() : createBufferEngine();
+    options.mode === "finalized-segments"
+      ? createSegmentsEngine()
+      : createBufferEngine();
   const activity = createTurnActivity(startedAt);
   const composeRunning = (b: string): string =>
     composeProgressView(renderActivity(activity, Date.now()), b);
   const composeProgress = (): string => {
-    if (options.progressBodyMode !== 'whole') return composeRunning(body.progressBody());
+    if (options.progressBodyMode !== "whole")
+      return composeRunning(body.progressBody());
     const whole = composeRunning(body.wholeText());
     // 累计正文跨过单帧上限后不能继续头截断：那会让最新答案永远落在截点外。
     // 退回当前消息，至少保住最新进展；终稿仍由 turn.end 带完整正文。
@@ -698,15 +746,20 @@ export function createTurnPresenter(options: TurnPresenterOptions): TurnPresente
     activity,
     applyText(ev: AgentEvent): boolean {
       const data = ev.data as { text?: string } | null;
-      if (!data || typeof data.text !== 'string') return false;
+      if (!data || typeof data.text !== "string") return false;
       body.applyText(ev);
       markActivityWriting(activity);
       return true;
     },
     applyToolUse(ev: AgentEvent): boolean {
-      const data = ev.data as { toolName?: unknown; toolUseId?: unknown; input?: unknown } | null;
-      if (!data || typeof data.toolName !== 'string') return false;
-      const toolUseId = typeof data.toolUseId === 'string' ? data.toolUseId : undefined;
+      const data = ev.data as {
+        toolName?: unknown;
+        toolUseId?: unknown;
+        input?: unknown;
+      } | null;
+      if (!data || typeof data.toolName !== "string") return false;
+      const toolUseId =
+        typeof data.toolUseId === "string" ? data.toolUseId : undefined;
       body.projectToolUse(data.toolName, data.input, toolUseId);
       pushToolStep(activity, data.toolName, data.input, toolUseId);
       return true;

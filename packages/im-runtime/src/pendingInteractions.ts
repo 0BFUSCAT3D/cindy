@@ -10,15 +10,18 @@
  * tool call), but each is uniquely keyed.
  */
 
-import type { AskUserQuestionItem, InteractionDecision } from '@cindy/maker-core';
-import type { SharedPermission } from './sharedPermission';
+import type {
+  AskUserQuestionItem,
+  InteractionDecision,
+} from "@cindy/maker-core";
+import type { SharedPermission } from "./sharedPermission";
 
 import {
   buildAskNoAnswerDecision,
   buildPermissionDenyDecision,
   buildPlanDenyDecision,
   type SessionPermissionRequest,
-} from './interactionCardModel';
+} from "./interactionCardModel";
 
 interface PendingEntry {
   sharedPermission?: SharedPermission;
@@ -29,7 +32,7 @@ interface PendingEntry {
   /** Card messageId we sent — orchestrator can patch it after resolve. */
   messageId: string;
   /** For sanity / log: which kind we're awaiting. */
-  kind: InteractionDecision['kind'];
+  kind: InteractionDecision["kind"];
   /**
    * Original permission context, including host-owned session consent.
    * Only the stored request determines "always allow"; button payloads do not.
@@ -59,7 +62,7 @@ const pending = new Map<string, PendingEntry>();
 
 export function registerPending(
   requestId: string,
-  kind: InteractionDecision['kind'],
+  kind: InteractionDecision["kind"],
   messageId: string,
   extras?: {
     sharedPermission?: SharedPermission;
@@ -72,7 +75,14 @@ export function registerPending(
 ): Promise<InteractionDecision> {
   return new Promise<InteractionDecision>((resolve, reject) => {
     try {
-      registerPendingExternal(requestId, kind, messageId, resolve, reject, extras);
+      registerPendingExternal(
+        requestId,
+        kind,
+        messageId,
+        resolve,
+        reject,
+        extras,
+      );
     } catch (err) {
       reject(err as Error);
     }
@@ -89,7 +99,7 @@ export function registerPending(
  */
 export function registerPendingExternal(
   requestId: string,
-  kind: InteractionDecision['kind'],
+  kind: InteractionDecision["kind"],
   messageId: string,
   resolve: (decision: InteractionDecision) => void,
   reject: (err: Error) => void,
@@ -103,7 +113,9 @@ export function registerPendingExternal(
   },
 ): void {
   if (pending.has(requestId)) {
-    throw new Error(`pending interaction already exists for requestId=${requestId}`);
+    throw new Error(
+      `pending interaction already exists for requestId=${requestId}`,
+    );
   }
   pending.set(requestId, {
     sharedPermission: extras?.sharedPermission,
@@ -126,7 +138,11 @@ export function lookupPending(requestId: string): PendingEntry | null {
 export function resolvePending(
   requestId: string,
   decision: InteractionDecision,
-): { messageId: string; permissionCard?: { title: string; body: string }; shared?: boolean } | null {
+): {
+  messageId: string;
+  permissionCard?: { title: string; body: string };
+  shared?: boolean;
+} | null {
   const entry = pending.get(requestId);
   if (!entry) return null;
   if (entry.sharedPermission) {
@@ -147,7 +163,10 @@ export function resolvePending(
  * buttons after the interaction is already gone — pressing it then does
  * nothing at all, which is exactly what a dropped turn looks like to the user.
  */
-export function cancelPending(requestId: string, reason: string): { messageId: string } | null {
+export function cancelPending(
+  requestId: string,
+  reason: string,
+): { messageId: string } | null {
   const entry = pending.get(requestId);
   if (!entry) return null;
   if (entry.sharedPermission) {
@@ -155,9 +174,9 @@ export function cancelPending(requestId: string, reason: string): { messageId: s
     return null; // The shared presenter owns the final card, including its source.
   }
   pending.delete(requestId);
-  if (entry.kind === 'ask_user_question') {
+  if (entry.kind === "ask_user_question") {
     entry.resolve(buildAskNoAnswerDecision());
-  } else if (entry.kind === 'plan_review') {
+  } else if (entry.kind === "plan_review") {
     entry.resolve(buildPlanDenyDecision(reason));
   } else {
     entry.resolve(buildPermissionDenyDecision(reason));
@@ -166,8 +185,12 @@ export function cancelPending(requestId: string, reason: string): { messageId: s
 }
 
 /** Remove a shared presentation after the authoritative decision has settled. */
-export function forgetSharedPending(requestId: string, permission: SharedPermission): void {
-  if (pending.get(requestId)?.sharedPermission === permission) pending.delete(requestId);
+export function forgetSharedPending(
+  requestId: string,
+  permission: SharedPermission,
+): void {
+  if (pending.get(requestId)?.sharedPermission === permission)
+    pending.delete(requestId);
 }
 
 /** Reject all pending interactions (used on session close / error). */
@@ -175,12 +198,15 @@ export function rejectAllPending(
   reason: string,
   owner?: symbol,
 ): Array<{ requestId: string; messageId: string }> {
-  const entries = [...pending].filter(([, entry]) => owner === undefined || entry.owner === owner);
+  const entries = [...pending].filter(
+    ([, entry]) => owner === undefined || entry.owner === owner,
+  );
   // Remove the selected entries before callbacks can register another request.
   for (const [requestId] of entries) pending.delete(requestId);
   for (const [, entry] of entries) entry.reject(new Error(reason));
   // Shared presenters update their own final card, including cards still being sent.
-  return entries.filter(([, entry]) => !entry.sharedPermission)
+  return entries
+    .filter(([, entry]) => !entry.sharedPermission)
     .map(([requestId, entry]) => ({ requestId, messageId: entry.messageId }));
 }
 

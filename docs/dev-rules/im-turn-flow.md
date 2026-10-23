@@ -18,6 +18,12 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 **公共入口**（App 的既有入口，IM 不再另写）、**共用流程**（新的 IM 一轮任务模块，两侧
 同一份）、**渠道适配**（只保留入站来源、出站载体、台账登记的有意差异）。
 
+纯 Node 宿主与 Desktop 的共用实现位于 `packages/im-runtime`。个人渠道的入站、
+`turnRunner`、命令分发、卡片构建、交互路由、正文呈现和权限切换规则由此模块持有；
+Desktop 的原路径保留兼容导出或宿主接线。`ImTurnHost` / `ImCommandHost` 只注入
+当前账号的任务存储、运行实例、模型目录、媒体及生命周期服务，不能在宿主中另写一套
+排队、停止或终稿状态机。跨宿主的契约仍受下表的个人渠道／官方 hook 差异约束。
+
 | 步骤 | 个人 IM 现状 | 官方 hook 现状 | 目标归属 |
 |---|---|---|---|
 | 入站 | 各渠道 adapter → `im/shared/messageHandler.ts`（微信经 `WechatTaskStore` 持久队列） | `hook-control/manager.ts` 收 `task.dispatch` → `dispatcher.handleDispatch` | 渠道适配（入站来源各自保留） |

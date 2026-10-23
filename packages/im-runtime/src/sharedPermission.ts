@@ -1,4 +1,4 @@
-import type { InteractionDecision } from '@cindy/maker-core';
+import type { InteractionDecision } from "@cindy/maker-core";
 
 /** One execution decision, with any number of channel/Desktop presentations. */
 export interface SharedPermission {
@@ -17,7 +17,7 @@ export function createSharedPermission(): SharedPermission {
     resolve = done;
   });
   const settle = (value: InteractionDecision) => {
-    if (decision || value.kind !== 'permission') return false;
+    if (decision || value.kind !== "permission") return false;
     decision = value;
     resolve(value);
     return true;
@@ -32,12 +32,14 @@ export function createSharedPermission(): SharedPermission {
   };
 }
 
-export function isExpiredPermissionDecision(decision: InteractionDecision): boolean {
+export function isExpiredPermissionDecision(
+  decision: InteractionDecision,
+): boolean {
   return (
-    decision.kind === 'permission' &&
-    decision.behavior === 'deny' &&
+    decision.kind === "permission" &&
+    decision.behavior === "deny" &&
     /timeout|session_disposed|session_aborted|session_closed|interaction_route_released|turn_terminal/.test(
-      decision.reason ?? '',
+      decision.reason ?? "",
     )
   );
 }

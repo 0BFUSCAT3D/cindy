@@ -28,7 +28,7 @@
  * (见 docs/dev-rules/engineering-conventions.md §5)。
  */
 
-import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
+import { redactSensitiveText } from "@cindy/maker-shared/error-redaction";
 import {
   isAutoReviewConfirmUndeliveredNotice,
   isAutoReviewUnavailableNotice,
@@ -36,9 +36,9 @@ import {
   parseOverloadRetryProgress,
   parseTerminalRateLimitRetryProgress,
   parseToolLoopErrorDetails,
-} from '@cindy/maker-core';
+} from "@cindy/maker-core";
 
-import { isQuotaExhaustedErrorMessage } from '@cindy/maker-shared/provider-errors';
+import { isQuotaExhaustedErrorMessage } from "@cindy/maker-shared/provider-errors";
 
 /**
  * Auto 档「自动审批不可用」-> 渠道说明。
@@ -53,30 +53,46 @@ import { isQuotaExhaustedErrorMessage } from '@cindy/maker-shared/provider-error
  * 判据走 maker-core 的单点函数,不在这里匹配英文原文或自己拼 `[CODE]` 前缀;文案硬编码
  * 中文、不进 renderer locale(与本文件其它渠道文案同规)。
  */
-function autoReviewUnavailableNotice(message: string, channel?: string): string | null {
+function autoReviewUnavailableNotice(
+  message: string,
+  channel?: string,
+): string | null {
   if (isAutoReviewUnavailableNotice(message)) {
-    if (channel === 'wechat') {
-      return '自动审批暂时无法给出判断，需要审批的操作已改为由你确认。'
-        + '个人微信不能使用「完全访问」，请直接确认这次操作。';
+    if (channel === "wechat") {
+      return (
+        "自动审批暂时无法给出判断，需要审批的操作已改为由你确认。" +
+        "个人微信不能使用「完全访问」，请直接确认这次操作。"
+      );
     }
-    return '自动审批暂时无法给出判断，需要审批的操作已改为由你确认。'
-      + '想少被打断，可以把任务切到「完全访问」，但风险更高。';
+    return (
+      "自动审批暂时无法给出判断，需要审批的操作已改为由你确认。" +
+      "想少被打断，可以把任务切到「完全访问」，但风险更高。"
+    );
   }
   if (isAutoReviewConfirmUndeliveredNotice(message)) {
-    return '自动审批没完成，确认也没有送到或没有被点。这次拒绝不是你点的。';
+    return "自动审批没完成，确认也没有送到或没有被点。这次拒绝不是你点的。";
   }
   return null;
 }
 
 /** 已知的非终止自动重试事件 -> 渠道侧本地化进度；其它错误保持静默。 */
-export function turnRetryNotice(data: unknown, options?: { channel?: string }): string | null {
-  if (!data || typeof data !== 'object') return null;
+export function turnRetryNotice(
+  data: unknown,
+  options?: { channel?: string },
+): string | null {
+  if (!data || typeof data !== "object") return null;
   const record = data as { message?: unknown; reason?: unknown };
-  const message = typeof record.message === 'string' ? record.message : '';
-  const reason = typeof record.reason === 'string' ? record.reason : undefined;
-  const autoReviewNotice = autoReviewUnavailableNotice(message, options?.channel);
+  const message = typeof record.message === "string" ? record.message : "";
+  const reason = typeof record.reason === "string" ? record.reason : undefined;
+  const autoReviewNotice = autoReviewUnavailableNotice(
+    message,
+    options?.channel,
+  );
   if (autoReviewNotice) return autoReviewNotice;
-  const rateLimitProgress = parseTerminalRateLimitRetryProgress(message, reason);
+  const rateLimitProgress = parseTerminalRateLimitRetryProgress(
+    message,
+    reason,
+  );
   if (rateLimitProgress) {
     return `请求受到限流，正在自动重试（${rateLimitProgress.attempt}/${rateLimitProgress.maxAttempts}）…`;
   }
@@ -91,22 +107,35 @@ export function turnRetryNotice(data: unknown, options?: { channel?: string }): 
  * error 文案一样命中过载判定, 但那时该走失败收口, 不是"正在重试"。
  */
 export function overloadRetryNotice(data: unknown): string | null {
-  if (!data || typeof data !== 'object') return null;
-  const record = data as { message?: unknown; errorStatus?: unknown; codexErrorInfo?: unknown };
-  const message = typeof record.message === 'string' ? record.message : '';
-  const errorStatus = typeof record.errorStatus === 'number' ? record.errorStatus : undefined;
+  if (!data || typeof data !== "object") return null;
+  const record = data as {
+    message?: unknown;
+    errorStatus?: unknown;
+    codexErrorInfo?: unknown;
+  };
+  const message = typeof record.message === "string" ? record.message : "";
+  const errorStatus =
+    typeof record.errorStatus === "number" ? record.errorStatus : undefined;
   // 结构化 tag 一并取: codex 改过载文案后, 只认文案会让整段退避窗口(约 22-38s)在
   // 渠道侧重新变回"一个字都不动", 也就是本文件开头描述的那个"卡死了"观感复发。
   const codexErrorInfo =
-    typeof record.codexErrorInfo === 'string' ? record.codexErrorInfo : undefined;
+    typeof record.codexErrorInfo === "string"
+      ? record.codexErrorInfo
+      : undefined;
   // 空 payload 守卫也要算上 tag, 否则「无 message + 只有结构化 tag」会被提前挡掉。
-  if (message.length === 0 && errorStatus === undefined && codexErrorInfo === undefined) return null;
-  if (parseOverloadError(message, errorStatus, codexErrorInfo) === null) return null;
+  if (
+    message.length === 0 &&
+    errorStatus === undefined &&
+    codexErrorInfo === undefined
+  )
+    return null;
+  if (parseOverloadError(message, errorStatus, codexErrorInfo) === null)
+    return null;
   const progress = parseOverloadRetryProgress(message);
   // 次数缺省(上游没带 attempt/max_retries)时不编造分母, 只说明正在重试。
   return progress
     ? `模型服务繁忙，正在自动重试（${progress.attempt}/${progress.maxAttempts}）…`
-    : '模型服务繁忙，正在自动重试…';
+    : "模型服务繁忙，正在自动重试…";
 }
 
 /**
@@ -122,16 +151,17 @@ export function overloadFailureNotice(
   errorStatus?: number,
   codexErrorInfo?: string,
 ): string | null {
-  if (parseOverloadError(message, errorStatus, codexErrorInfo) === null) return null;
+  if (parseOverloadError(message, errorStatus, codexErrorInfo) === null)
+    return null;
   // 刻意**不**声称"自动重试多次后仍未成功": 走到终态的原因不止预算耗尽, 还包括
   // "本 turn 已有产出所以不重投"(maker-core 的 currentTurnProducedOutput 守卫)与接管
   // 条件不满足, 那些情况下一次自动重试都没发生过(review #844 codex P1)。真重试过时
   // 用户已经在退避窗口里看过「正在自动重试（N/M）」那一行, 终态只需要给下一步。
   // 与桌面端 ErrorBanner 的 overloadBusy 文案同口径。
   return (
-    '⚠️ 模型服务繁忙：上游暂时没有可用容量。' +
-    '请直接在这里重发这条消息重试，或在 Cindy 里换一个模型。' +
-    '（在桌面端点「重试」也能继续任务，但结果不会回到这条消息里。）'
+    "⚠️ 模型服务繁忙：上游暂时没有可用容量。" +
+    "请直接在这里重发这条消息重试，或在 Cindy 里换一个模型。" +
+    "（在桌面端点「重试」也能继续任务，但结果不会回到这条消息里。）"
   );
 }
 
@@ -143,23 +173,23 @@ export function overloadFailureNotice(
  * 只根据白名单后的 kind/count 生成安全文案, 绝不把原始 loopHint 外发。
  */
 function toolLoopFailureNotice(data: unknown): string | null {
-  if (!data || typeof data !== 'object') return null;
+  if (!data || typeof data !== "object") return null;
   const record = data as { reason?: unknown; toolLoop?: unknown };
-  if (record.reason !== 'tool_use_loop_detected') return null;
+  if (record.reason !== "tool_use_loop_detected") return null;
 
   const details = parseToolLoopErrorDetails(record.toolLoop);
   if (!details) {
-    return '模型重复调用工具次数过多，Cindy 已停止本轮以避免无限循环。可以发送新消息继续。';
+    return "模型重复调用工具次数过多，Cindy 已停止本轮以避免无限循环。可以发送新消息继续。";
   }
 
   switch (details.kind) {
-    case 'consecutive':
+    case "consecutive":
       return `模型重复调用同一个工具 ${details.count} 次，Cindy 已停止本轮以避免无限循环。可以发送新消息继续。`;
-    case 'pingpong':
+    case "pingpong":
       return `模型在多个工具调用之间来回循环，Cindy 检测到本轮已有 ${details.count} 次调用后停止了本轮。可以发送新消息继续。`;
-    case 'rotation':
+    case "rotation":
       return `模型持续轮转调用多个工具，Cindy 检测到本轮已有 ${details.count} 次调用后停止了本轮。可以发送新消息继续。`;
-    case 'contract':
+    case "contract":
       return `模型连续触发了无效的工具调用，Cindy 已在 ${details.count} 次失败后停止本轮，以避免无限循环。可以发送新消息继续。`;
   }
 }
@@ -168,7 +198,7 @@ function toolLoopFailureNotice(data: unknown): string | null {
  * 额度类失败说明的固定开头。hook 主日志只记失败类别(原文可能带用户内容),
  * dispatcher 据此把这类失败记成 provider-quota-exhausted, 而不是 unclassified。
  */
-export const QUOTA_FAILURE_NOTICE_PREFIX = '⚠️ 供应商额度不足';
+export const QUOTA_FAILURE_NOTICE_PREFIX = "⚠️ 供应商额度不足";
 
 const SPEND_CAP_RE = /\bspend(?:ing)?[-_ ]?cap\b/i;
 const USAGE_LIMIT_RE = /\busage\s+limit\b/i;
@@ -181,7 +211,7 @@ function terminalErrorRecord(data: unknown): {
   reason?: string;
 } {
   const record =
-    data && typeof data === 'object'
+    data && typeof data === "object"
       ? (data as {
           message?: unknown;
           errorStatus?: unknown;
@@ -199,10 +229,16 @@ function terminalErrorRecord(data: unknown): {
       : String(data);
   return {
     message,
-    ...(typeof record?.errorStatus === 'number' ? { errorStatus: record.errorStatus } : {}),
-    ...(typeof record?.codexErrorInfo === 'string' ? { codexErrorInfo: record.codexErrorInfo } : {}),
-    ...(typeof record?.sdkError === 'string' ? { sdkError: record.sdkError } : {}),
-    ...(typeof record?.reason === 'string' ? { reason: record.reason } : {}),
+    ...(typeof record?.errorStatus === "number"
+      ? { errorStatus: record.errorStatus }
+      : {}),
+    ...(typeof record?.codexErrorInfo === "string"
+      ? { codexErrorInfo: record.codexErrorInfo }
+      : {}),
+    ...(typeof record?.sdkError === "string"
+      ? { sdkError: record.sdkError }
+      : {}),
+    ...(typeof record?.reason === "string" ? { reason: record.reason } : {}),
   };
 }
 
@@ -216,9 +252,9 @@ function terminalErrorRecord(data: unknown): {
 export function isQuotaExhaustionFailure(data: unknown): boolean {
   if (data === null || data === undefined) return false;
   const e = terminalErrorRecord(data);
-  if (e.reason === 'provider_quota_limit') return true;
-  if (e.sdkError === 'billing_error') return true;
-  if (e.codexErrorInfo === 'usageLimitExceeded') return true;
+  if (e.reason === "provider_quota_limit") return true;
+  if (e.sdkError === "billing_error") return true;
+  if (e.codexErrorInfo === "usageLimitExceeded") return true;
   if (e.errorStatus === 402) return true;
   return isQuotaExhaustedErrorMessage(e.message);
 }
@@ -229,15 +265,15 @@ export interface QuotaFailureNoticeOptions {
   modelLabel?: string;
   taskLabel?: string;
   botLabel?: string;
-  surface: 'personal' | 'official';
+  surface: "personal" | "official";
   /** 只有个人富卡渠道的 /model 改当前任务；官方的 /model 改目录默认。 */
   supportsModelCommand?: boolean;
 }
 
 function quotaRecoveryHint(options: QuotaFailureNoticeOptions): string {
-  return options.surface === 'personal' && options.supportsModelCommand
-    ? '发 /model 为当前任务更换供应商或模型，再重发这条消息。'
-    : '在 Cindy 里打开这个任务，更换供应商或模型，再回到这里重发这条消息。';
+  return options.surface === "personal" && options.supportsModelCommand
+    ? "发 /model 为当前任务更换供应商或模型，再重发这条消息。"
+    : "在 Cindy 里打开这个任务，更换供应商或模型，再回到这里重发这条消息。";
 }
 
 export function quotaFailureNotice(
@@ -247,22 +283,24 @@ export function quotaFailureNotice(
   if (!isQuotaExhaustionFailure(data)) return null;
   const { message, codexErrorInfo } = terminalErrorRecord(data);
   const reason = SPEND_CAP_RE.test(message)
-    ? '已达到工作区所有者设置的花费上限'
-    : codexErrorInfo === 'usageLimitExceeded' || USAGE_LIMIT_RE.test(message)
-      ? '账号用量已达上限'
-      : '账号余额或配额不足';
+    ? "已达到工作区所有者设置的花费上限"
+    : codexErrorInfo === "usageLimitExceeded" || USAGE_LIMIT_RE.test(message)
+      ? "账号用量已达上限"
+      : "账号余额或配额不足";
   const display = (value: string | null | undefined): string =>
-    redactSensitiveText(value?.replace(/\s+/g, ' ').trim() ?? '').slice(0, 100);
+    redactSensitiveText(value?.replace(/\s+/g, " ").trim() ?? "").slice(0, 100);
   const label = display(options.providerLabel);
-  const who = label ? `「${label}」` : '当前供应商';
+  const who = label ? `「${label}」` : "当前供应商";
   return [
     `${QUOTA_FAILURE_NOTICE_PREFIX}：${who}${reason}，这个任务暂时无法继续。`,
-    `来源：${display(options.botLabel) || (options.surface === 'official' ? '官方 bot' : '个人 bot')}` +
-      (options.modelLabel ? ` · 模型：${display(options.modelLabel)}` : ''),
+    `来源：${display(options.botLabel) || (options.surface === "official" ? "官方 bot" : "个人 bot")}` +
+      (options.modelLabel ? ` · 模型：${display(options.modelLabel)}` : ""),
     ...(options.taskLabel ? [`任务：${display(options.taskLabel)}`] : []),
-    ...(SPEND_CAP_RE.test(message) ? ['请联系工作区管理员调整花费上限，或更换供应商。'] : []),
+    ...(SPEND_CAP_RE.test(message)
+      ? ["请联系工作区管理员调整花费上限，或更换供应商。"]
+      : []),
     quotaRecoveryHint(options),
-  ].join('\n');
+  ].join("\n");
 }
 
 /**
@@ -276,12 +314,25 @@ export function quotaFailureNotice(
  * P1)。两边共用本函数, 顺带保证 errorStatus(Anthropic 529 只有状态码、message 里
  * 不一定带 529)不被丢掉。
  */
-export function terminalErrorText(data: unknown, options?: QuotaFailureNoticeOptions): string {
-  if (data && typeof data === 'object' && 'reason' in data && data.reason === 'output-limit') {
-    return '模型已达到输出长度上限，本轮回复可能不完整。可以直接发送下一条消息继续。';
+export function terminalErrorText(
+  data: unknown,
+  options?: QuotaFailureNoticeOptions,
+): string {
+  if (
+    data &&
+    typeof data === "object" &&
+    "reason" in data &&
+    data.reason === "output-limit"
+  ) {
+    return "模型已达到输出长度上限，本轮回复可能不完整。可以直接发送下一条消息继续。";
   }
-  if (data && typeof data === 'object' && 'reason' in data && data.reason === 'silent-stop-exhausted') {
-    return '模型连续多次返回空响应，自动续跑已暂停。';
+  if (
+    data &&
+    typeof data === "object" &&
+    "reason" in data &&
+    data.reason === "silent-stop-exhausted"
+  ) {
+    return "模型连续多次返回空响应，自动续跑已暂停。";
   }
   const { message, errorStatus, codexErrorInfo } = terminalErrorRecord(data);
   return (

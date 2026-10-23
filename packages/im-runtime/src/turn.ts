@@ -1,10 +1,12 @@
-import type { IMAttachment, IMMessageEvent } from '@cindy/im';
-import type { TurnPermissionPolicy } from '@cindy/maker-core';
-import type { ImContextSnapshot, ImMessageOrigin } from '@cindy/companion-core/imMessageSource';
-import type { ImChannelNoteSource } from './channelNote';
-import type { GroupHistoryAccessScope } from './groupHistoryAccess';
-import type { ChannelToolScope } from './channelToolScope';
-
+import type { IMAttachment, IMMessageEvent } from "@cindy/im";
+import type { TurnPermissionPolicy } from "@cindy/maker-core";
+import type {
+  ImContextSnapshot,
+  ImMessageOrigin,
+} from "@cindy/companion-core/imMessageSource";
+import type { ImChannelNoteSource } from "./channelNote";
+import type { GroupHistoryAccessScope } from "./groupHistoryAccess";
+import type { ChannelToolScope } from "./channelToolScope";
 
 export interface ImRunAgentTurnArgs {
   sourceDescription?: string;
@@ -29,7 +31,7 @@ export interface ImRunAgentTurnArgs {
    * 渠道 adapter 给出的被回复消息(IMMessageEvent.replyContext)。只用于 Auto 审阅的
    * 引用证据(见 imAutoReviewReferences), 不改模型正文与落库。
    */
-  replyContext?: IMMessageEvent['replyContext'];
+  replyContext?: IMMessageEvent["replyContext"];
   /** thread = session 模型的会话维度键(slack);feishu 不传。 */
   scopeKey?: string;
   /**
@@ -97,7 +99,6 @@ export interface ImRunAgentTurnArgs {
   onEarlyReject?(reason: string, text: string): Promise<boolean> | boolean;
 }
 export interface ImMessageTurnRunner {
-
   runAgentTurn(args: ImRunAgentTurnArgs): Promise<void>;
 
   /**

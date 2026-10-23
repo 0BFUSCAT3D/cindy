@@ -16,32 +16,39 @@
  * 跨渠道互不影响。
  */
 
-import type { IMMessageEvent, InteractiveCardSpec, TextChannelIM } from '@cindy/im';
-import { buildInboundMessageFacts } from '@cindy/im';
+import type {
+  IMMessageEvent,
+  InteractiveCardSpec,
+  TextChannelIM,
+} from "@cindy/im";
+import { buildInboundMessageFacts } from "@cindy/im";
 
+import { isCommandAuthorized, isStopCommand } from "./controlCommands";
+import type { ImSlashHandlers } from "./commands";
 
-
-
-
-import { isCommandAuthorized, isStopCommand } from './controlCommands';
-import type { ImSlashHandlers } from './commands';
-
-import type { ImMessageTurnRunner } from './turn';
-import type { MessageIngressHost } from './ingressHost';
-import type { ImAccountGeneration } from './accountBoundary';
-import type { ImChannelAdapter } from './types';
-import { describeInteractionSource } from './interactionSource';
-import { buildImReplyContextBlock } from './replyContext';
-import { captureImContext } from '@cindy/companion-core/imMessageSource';
-import { imChannelNoteSourceFromEvent, imMessageOriginFor, type ImChannelNoteSource } from './channelNote';
-import { isLaneTurnScopeChannel, type ChannelToolScope } from './channelToolScope';
+import type { ImMessageTurnRunner } from "./turn";
+import type { MessageIngressHost } from "./ingressHost";
+import type { ImAccountGeneration } from "./accountBoundary";
+import type { ImChannelAdapter } from "./types";
+import { describeInteractionSource } from "./interactionSource";
+import { buildImReplyContextBlock } from "./replyContext";
+import { captureImContext } from "@cindy/companion-core/imMessageSource";
+import {
+  imChannelNoteSourceFromEvent,
+  imMessageOriginFor,
+  type ImChannelNoteSource,
+} from "./channelNote";
+import {
+  isLaneTurnScopeChannel,
+  type ChannelToolScope,
+} from "./channelToolScope";
 
 /**
  * `!stop` 控制指令 — 半角/全角感叹号、大小写不敏感(issue #867)。
  * 用 `!` 而非 slash 前缀: Slack 会把 `/` 开头的输入截为原生 slash command,
  * 普通 DM 文本里只有 `!` 前缀能原样到达 bot。
  */
-export { isStopCommand } from './controlCommands';
+export { isStopCommand } from "./controlCommands";
 
 export function createMessageHandler(
   adapter: ImChannelAdapter,
@@ -49,24 +56,38 @@ export function createMessageHandler(
   turnRunner: ImMessageTurnRunner,
   host: MessageIngressHost,
 ): (im: TextChannelIM) => () => void {
-  const { createLogger, captureImAccountGeneration, runInImAccountGeneration, isImAccountScopeClosedError, getControlScope, isInControl, looksLikeSlashCommand } = host;
+  const {
+    createLogger,
+    captureImAccountGeneration,
+    runInImAccountGeneration,
+    isImAccountScopeClosedError,
+    getControlScope,
+    isInControl,
+    looksLikeSlashCommand,
+  } = host;
   const { ui, channel, threadScoped } = adapter;
   // 富卡渠道(仅 feishu 实现这两个能力): 群主流 @ 开话题的「思考中」开场白卡
   // 在非流式终态分支的收口 — 见各分支内 consume/discard 调用点。
-  const richIm = adapter.output?.kind === 'rich-card' ? adapter.output.im : null;
+  const richIm =
+    adapter.output?.kind === "rich-card" ? adapter.output.im : null;
 
   /**
    * 尝试消费 pending 开场白卡并把终态回复 patch 上去。消费成功返回 true
    * (调用方跳过另发); 无 pending opener 或 patch 失败返回 false(回落正常
    * 发送 — 失败场景下发送兜底, 且认领已完成, 同话题下一条不会再 patch 错卡)。
    */
-  async function consumeOpenerWithText(userId: string, text: string): Promise<boolean> {
+  async function consumeOpenerWithText(
+    userId: string,
+    text: string,
+  ): Promise<boolean> {
     if (!richIm?.consumePendingOpenerCard) return false;
     try {
       return await richIm.consumePendingOpenerCard(userId, text);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.warn(`consumePendingOpenerCard failed (fallback to normal send): ${msg}`);
+      log.warn(
+        `consumePendingOpenerCard failed (fallback to normal send): ${msg}`,
+      );
       return false;
     }
   }
@@ -88,7 +109,9 @@ export function createMessageHandler(
     messageId: string,
   ): Promise<string | null> {
     try {
-      return (await im.reactToMessage?.(messageId, adapter.processingEmoji)) ?? null;
+      return (
+        (await im.reactToMessage?.(messageId, adapter.processingEmoji)) ?? null
+      );
     } catch {
       return null;
     }
@@ -120,13 +143,16 @@ export function createMessageHandler(
     // 这个判据必须与下面两条命令分支**逐字一致**: 门比分支窄一点, 非主人的
     // `!stop` + unsupported 就会穿过门再被分支执行, 洞等于没堵。
     const pureTextCommandInput =
-      event.text.length > 0 && event.attachments.length === 0 && event.unsupported.length === 0;
+      event.text.length > 0 &&
+      event.attachments.length === 0 &&
+      event.unsupported.length === 0;
     const commandLike =
-      pureTextCommandInput && (isStopCommand(event.text) || looksLikeSlashCommand(event.text));
+      pureTextCommandInput &&
+      (isStopCommand(event.text) || looksLikeSlashCommand(event.text));
     if (commandLike && !isCommandAuthorized(event)) {
       log.info(
         `dropped non-owner command sender=...${event.senderId.slice(-8)} ` +
-          `speaker=...${(event.speaker?.id ?? '').slice(-8)}`,
+          `speaker=...${(event.speaker?.id ?? "").slice(-8)}`,
       );
       return;
     }
@@ -134,19 +160,28 @@ export function createMessageHandler(
     let notificationSessionId: string | undefined;
     if (event.replyThread && adapter.resolveNotificationReply) {
       try {
-        notificationSessionId = (await adapter.resolveNotificationReply(event)) ?? undefined;
+        notificationSessionId =
+          (await adapter.resolveNotificationReply(event)) ?? undefined;
       } catch (error) {
         if (isImAccountScopeClosedError(error)) throw error;
-        log.warn('notification reply route unavailable');
-        await im.sendMarkdownText(event.senderId, adapter.notificationReplyText!.unavailable, {
-          threadTs: event.replyThread.rootMessageId,
-        });
+        log.warn("notification reply route unavailable");
+        await im.sendMarkdownText(
+          event.senderId,
+          adapter.notificationReplyText!.unavailable,
+          {
+            threadTs: event.replyThread.rootMessageId,
+          },
+        );
         return;
       }
       if (notificationSessionId) {
         event = { ...event, scopeKey: event.replyThread.rootMessageId };
         if (pureTextCommandInput && looksLikeSlashCommand(event.text)) {
-          await im.sendMarkdownText(event.senderId, adapter.notificationReplyText!.commands, { threadTs: event.scopeKey });
+          await im.sendMarkdownText(
+            event.senderId,
+            adapter.notificationReplyText!.commands,
+            { threadTs: event.scopeKey },
+          );
           return;
         }
       }
@@ -162,7 +197,8 @@ export function createMessageHandler(
     // 到各自独立 session, 与选择流程的原子性无关, 放行。
     const blockedByControl = threadScoped
       ? isInControl(event.contextId, event.senderId) &&
-        (!event.threadTs || event.threadTs === getControlScope(event.contextId, event.senderId))
+        (!event.threadTs ||
+          event.threadTs === getControlScope(event.contextId, event.senderId))
       : isInControl(event.contextId, event.senderId);
     if (blockedByControl && !notificationSessionId) {
       log.info(
@@ -189,10 +225,13 @@ export function createMessageHandler(
         const result = await turnRunner.stopActiveTurn({
           botContextId: event.contextId,
           userId: event.senderId,
-          scopeKey: notificationSessionId || threadScoped ? event.scopeKey : undefined,
+          scopeKey:
+            notificationSessionId || threadScoped ? event.scopeKey : undefined,
           ...(notificationSessionId ? { notificationSessionId } : {}),
         });
-        reply = result.stopped ? ui.agent.stopDone(result.droppedQueued) : ui.agent.stopIdle;
+        reply = result.stopped
+          ? ui.agent.stopDone(result.droppedQueued)
+          : ui.agent.stopIdle;
         log.info(
           `!stop handled sender=...${event.senderId.slice(-8)} stopped=${result.stopped} dropped=${result.droppedQueued}`,
         );
@@ -213,7 +252,10 @@ export function createMessageHandler(
         try {
           await im.sendMarkdownText(event.senderId, reply, {
             threadTs: event.scopeKey,
-            fallbackOpenerId: richIm?.takeNotedFallbackOpenerId?.(event.senderId, 'markdown'),
+            fallbackOpenerId: richIm?.takeNotedFallbackOpenerId?.(
+              event.senderId,
+              "markdown",
+            ),
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -242,13 +284,19 @@ export function createMessageHandler(
       const sink = consumeCard
         ? {
             used: false,
-            async withMarkdown(userId: string, markdown: string): Promise<boolean> {
+            async withMarkdown(
+              userId: string,
+              markdown: string,
+            ): Promise<boolean> {
               if (this.used) return false;
               const ok = await consumeCard(userId, markdown);
               if (ok) this.used = true;
               return ok;
             },
-            async withCard(userId: string, spec: InteractiveCardSpec): Promise<boolean> {
+            async withCard(
+              userId: string,
+              spec: InteractiveCardSpec,
+            ): Promise<boolean> {
               if (this.used) return false;
               const ok = (await consumeAsCard?.(userId, spec)) ?? false;
               if (ok) this.used = true;
@@ -282,7 +330,10 @@ export function createMessageHandler(
           try {
             await im.sendMarkdownText(event.senderId, errorText, {
               threadTs: event.scopeKey,
-              fallbackOpenerId: richIm?.takeNotedFallbackOpenerId?.(event.senderId, 'markdown'),
+              fallbackOpenerId: richIm?.takeNotedFallbackOpenerId?.(
+                event.senderId,
+                "markdown",
+              ),
             });
           } catch {
             /* 发送失败与卡残留同一最终边界 */
@@ -295,7 +346,12 @@ export function createMessageHandler(
     const hasContent = event.text.length > 0 || event.attachments.length > 0;
 
     // ── pure-unsupported: reply directly, do NOT invoke agent ───────────────
-    if (!hasContent && !event.invoked && !event.replyContext && event.unsupported.length > 0) {
+    if (
+      !hasContent &&
+      !event.invoked &&
+      !event.replyContext &&
+      event.unsupported.length > 0
+    ) {
       const notice = ui.agent.unsupportedOnly(event.unsupported);
       // 同 !stop: 开场白卡就地 patch 成 unsupported 提示, 消费不了再另发;
       // 仅本条消息自己开了话题(groupContextLane)才消费。
@@ -306,7 +362,10 @@ export function createMessageHandler(
         try {
           await im.sendText(event.senderId, notice, {
             threadTs: event.scopeKey,
-            fallbackOpenerId: richIm?.takeNotedFallbackOpenerId?.(event.senderId, 'markdown'),
+            fallbackOpenerId: richIm?.takeNotedFallbackOpenerId?.(
+              event.senderId,
+              "markdown",
+            ),
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -324,9 +383,13 @@ export function createMessageHandler(
     // ── mixed: ack the dropped bits as a SEPARATE text msg, then run agent ──
     if (event.unsupported.length > 0) {
       try {
-        await im.sendText(event.senderId, ui.agent.unsupportedNotice(event.unsupported), {
-          threadTs: event.scopeKey,
-        });
+        await im.sendText(
+          event.senderId,
+          ui.agent.unsupportedNotice(event.unsupported),
+          {
+            threadTs: event.scopeKey,
+          },
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn(`unsupportedNotice send failed (non-fatal): ${msg}`);
@@ -337,7 +400,7 @@ export function createMessageHandler(
     // 放在 ack / 提前落库之前: 判成 SKIP 的消息不留任何痕迹(不落专线、不起轮次、
     // 群窗口游标不动)。判不出来按原路径起轮次, 由主模型自己 NO_REPLY。
     if (event.ambient === true && adapter.ambientTurnGate) {
-      let verdict: 'proceed' | 'skip' = 'proceed';
+      let verdict: "proceed" | "skip" = "proceed";
       try {
         verdict = await adapter.ambientTurnGate(event);
       } catch (err) {
@@ -345,7 +408,7 @@ export function createMessageHandler(
         const msg = err instanceof Error ? err.message : String(err);
         log.warn(`ambientTurnGate failed (proceeding): ${msg}`);
       }
-      if (verdict === 'skip') {
+      if (verdict === "skip") {
         log.info(
           `ambient skipped by judge sender=...${event.senderId.slice(-8)} msg=...${event.messageId.slice(-8)}`,
         );
@@ -356,19 +419,22 @@ export function createMessageHandler(
     // ── invoke agent ────────────────────────────────────────────────────────
     // 本条的渠道来源事实(只进模型正文); 取不到按"不写说明"降级, 不阻断消息。与下面的
     // 群上下文拼装互不依赖, 先发起、派发前再取, 群名查询不额外拖慢首条消息。
-    const channelNoteSourcePromise: Promise<ImChannelNoteSource | null> = (async () => {
-      try {
-        return adapter.channelNoteSourceFor
-          ? await adapter.channelNoteSourceFor(event)
-          : imChannelNoteSourceFromEvent(event);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.warn(`channelNoteSourceFor failed (note omitted): ${msg}`);
-        return null;
-      }
-    })();
+    const channelNoteSourcePromise: Promise<ImChannelNoteSource | null> =
+      (async () => {
+        try {
+          return adapter.channelNoteSourceFor
+            ? await adapter.channelNoteSourceFor(event)
+            : imChannelNoteSourceFromEvent(event);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn(`channelNoteSourceFor failed (note omitted): ${msg}`);
+          return null;
+        }
+      })();
     // 送模型正文改写钩子(群上下文拼装): 失败按"不改写"降级, 不阻断消息。
-    let prepared: Awaited<ReturnType<NonNullable<ImChannelAdapter['prepareAgentTurnText']>>> = null;
+    let prepared: Awaited<
+      ReturnType<NonNullable<ImChannelAdapter["prepareAgentTurnText"]>>
+    > = null;
     // 「已收到」表情先落, 再拼上下文 —— 群上下文拼装要回翻群历史(可能翻页 + 调
     // 轻量模型), 慢的时候几十秒没有任何反馈, 用户只能看着不动的消息猜 bot 是不是
     // 挂了(实测最慢到 87s)。句柄交给 turn 接管(turn 收口时照常撤掉/换成结果
@@ -381,7 +447,9 @@ export function createMessageHandler(
     // 受保护内容时返回 null, 完全退回原行为(见 persistInboundUserMessageEarly)。
     let prePersisted: { sessionId: string; clientId: string } | null = null;
     if (adapter.prepareAgentTurnText) {
-      handedOverAck = event.messageId ? ackProcessingEarly(im, event.messageId) : null;
+      handedOverAck = event.messageId
+        ? ackProcessingEarly(im, event.messageId)
+        : null;
       try {
         if (!notificationSessionId) {
           prePersisted =
@@ -391,7 +459,9 @@ export function createMessageHandler(
               scopeKey: threadScoped ? event.scopeKey : undefined,
               text: event.text,
               attachments: event.attachments,
-              ...(event.protectedContent === true ? { protectedContent: true } : {}),
+              ...(event.protectedContent === true
+                ? { protectedContent: true }
+                : {}),
               // 群 / 私聊此刻还没算出来(渠道说明在拼), 先把发言人存上; 派发时补齐。
               ...(() => {
                 const messageOrigin = imMessageOriginFor(event, null);
@@ -418,38 +488,50 @@ export function createMessageHandler(
     // A channel policy's own identity verdict wins (personal WeChat is always
     // `unknown`); otherwise the control-command owner check applies.
     const requesterIsOwner = turnPermissionPolicy?.autoReviewContext
-      ? turnPermissionPolicy.autoReviewContext.requesterAuthority === 'owner'
+      ? turnPermissionPolicy.autoReviewContext.requesterAuthority === "owner"
       : isCommandAuthorized(event);
     // Telegram / 飞书由渠道自己登记带 transport 的作用域; 企业微信 / 钉钉 / Discord 的伙伴专线
     // 轮次登记一份不带 transport 的, 让伙伴技能等能按本轮触发者授权(否则主人也只读)。
     const channelToolScope: ChannelToolScope | undefined =
       adapter.channelToolScopeFor?.(event) ??
-      (isLaneTurnScopeChannel(channel) && turnRunner.companionBotIdFor?.(event.contextId)
+      (isLaneTurnScopeChannel(channel) &&
+      turnRunner.companionBotIdFor?.(event.contextId)
         ? {
             channel,
             botId: event.contextId,
             laneUserId: event.senderId,
             chatId: event.chatId?.trim() || event.senderId,
-            chatKind: channelNoteSource?.chatKind ?? (event.speaker ? 'group' : 'direct'),
+            chatKind:
+              channelNoteSource?.chatKind ??
+              (event.speaker ? "group" : "direct"),
             requesterIsOwner,
             companion: true,
           }
         : undefined);
-    const fallbackReplyPrefix = !adapter.prepareAgentTurnText && event.replyContext
-      ? buildImReplyContextBlock(event.replyContext)
-      : '';
-    const deliveredReply = prepared?.replyContext ??
+    const fallbackReplyPrefix =
+      !adapter.prepareAgentTurnText && event.replyContext
+        ? buildImReplyContextBlock(event.replyContext)
+        : "";
+    const deliveredReply =
+      prepared?.replyContext ??
       (!adapter.prepareAgentTurnText ? event.replyContext : undefined);
     try {
       await turnRunner.runAgentTurn({
-        ...(notificationSessionId ? {
-          notificationSessionId,
-          revalidateNotificationReply: async () => {
-            if (await adapter.resolveNotificationReply!(event) !== notificationSessionId) {
-              throw new Error('Notification reply identity changed before dispatch');
+        ...(notificationSessionId
+          ? {
+              notificationSessionId,
+              revalidateNotificationReply: async () => {
+                if (
+                  (await adapter.resolveNotificationReply!(event)) !==
+                  notificationSessionId
+                ) {
+                  throw new Error(
+                    "Notification reply identity changed before dispatch",
+                  );
+                }
+              },
             }
-          },
-        } : {}),
+          : {}),
         botContextId: event.contextId,
         userId: event.senderId,
         userMessageId: event.messageId,
@@ -464,7 +546,9 @@ export function createMessageHandler(
         ...(turnPermissionPolicy ? { turnPermissionPolicy } : {}),
         ...(groupHistoryAccess ? { groupHistoryAccess } : {}),
         ...(channelToolScope ? { channelToolScope } : {}),
-        ...(handedOverAck !== undefined ? { ackReactionIdPromise: handedOverAck } : {}),
+        ...(handedOverAck !== undefined
+          ? { ackReactionIdPromise: handedOverAck }
+          : {}),
         // 早期拒绝终态(missing_auth / credential busy): 本条消息自己开了话题
         // 时, 用终态文案收口开场白卡 — 否则「思考中」卡残留且下一条误认领。
         ...(event.groupContextLane
@@ -476,18 +560,31 @@ export function createMessageHandler(
             }
           : {}),
         ...(prePersisted ? { prePersistedUserMessage: prePersisted } : {}),
-        agentText: buildInboundMessageFacts({
-          text: event.text,
-          invoked: event.invoked,
-          hasReply: !!event.replyContext,
-          attachmentCount: event.attachments.length + (prepared?.contextAttachments?.length ?? 0),
-          unavailable: [
-            ...event.unsupported.map((entry) => `${entry.type}：${entry.label}`),
-            ...(deliveredReply?.unavailableAttachments ?? []),
-          ],
-        }) + (prepared?.agentText ?? `${fallbackReplyPrefix}${event.text}`),
-        ...(prepared?.contextSnapshot ? { contextSnapshot: prepared.contextSnapshot } : fallbackReplyPrefix
-          ? { contextSnapshot: captureImContext({ replyPrefix: fallbackReplyPrefix, replyMessageCount: 1 }) } : {}),
+        agentText:
+          buildInboundMessageFacts({
+            text: event.text,
+            invoked: event.invoked,
+            hasReply: !!event.replyContext,
+            attachmentCount:
+              event.attachments.length +
+              (prepared?.contextAttachments?.length ?? 0),
+            unavailable: [
+              ...event.unsupported.map(
+                (entry) => `${entry.type}：${entry.label}`,
+              ),
+              ...(deliveredReply?.unavailableAttachments ?? []),
+            ],
+          }) + (prepared?.agentText ?? `${fallbackReplyPrefix}${event.text}`),
+        ...(prepared?.contextSnapshot
+          ? { contextSnapshot: prepared.contextSnapshot }
+          : fallbackReplyPrefix
+            ? {
+                contextSnapshot: captureImContext({
+                  replyPrefix: fallbackReplyPrefix,
+                  replyMessageCount: 1,
+                }),
+              }
+            : {}),
         // 群历史附件只进模型消息、不落库(见 ImRunAgentTurnArgs.contextAttachments)。
         ...(prepared?.contextAttachments?.length
           ? { contextAttachments: prepared.contextAttachments }
@@ -505,18 +602,25 @@ export function createMessageHandler(
         // 只取 adapter 实际交给模型的回复投影(可能已被过滤成占位), 不用 event 原值。
         ...(deliveredReply ? { replyContext: deliveredReply } : {}),
         // threadScoped 渠道: scopeKey = thread root ts(thread = session 路由键)
-        scopeKey: notificationSessionId || threadScoped ? event.scopeKey : undefined,
+        scopeKey:
+          notificationSessionId || threadScoped ? event.scopeKey : undefined,
         // Title generation and similar detached work must stay visible to the
         // same account drain without delaying the foreground message dispatch.
         trackBackgroundTask: (operation) => {
-          void runInImAccountGeneration(accountGeneration, operation).catch((err) => {
-            if (isImAccountScopeClosedError(err)) {
-              log.info(`drop background task from stale account generation channel=${channel}`);
-              return;
-            }
-            const msg = err instanceof Error ? err.message : String(err);
-            log.warn(`account-scoped background task failed (non-fatal): ${msg}`);
-          });
+          void runInImAccountGeneration(accountGeneration, operation).catch(
+            (err) => {
+              if (isImAccountScopeClosedError(err)) {
+                log.info(
+                  `drop background task from stale account generation channel=${channel}`,
+                );
+                return;
+              }
+              const msg = err instanceof Error ? err.message : String(err);
+              log.warn(
+                `account-scoped background task failed (non-fatal): ${msg}`,
+              );
+            },
+          );
         },
       });
     } catch (err) {
@@ -535,7 +639,10 @@ export function createMessageHandler(
         try {
           await im.sendText(event.senderId, errorText, {
             threadTs: event.scopeKey,
-            fallbackOpenerId: richIm?.takeNotedFallbackOpenerId?.(event.senderId, 'markdown'),
+            fallbackOpenerId: richIm?.takeNotedFallbackOpenerId?.(
+              event.senderId,
+              "markdown",
+            ),
           });
         } catch {
           /* swallow */
@@ -550,12 +657,14 @@ export function createMessageHandler(
       // check at execution time could accept old-account work after relogin.
       const accountGeneration = captureImAccountGeneration();
       if (accountGeneration === null) {
-        log.info(`drop inbound message after account boundary closed channel=${channel}`);
+        log.info(
+          `drop inbound message after account boundary closed channel=${channel}`,
+        );
         return;
       }
       // threadScoped 渠道: 同 thread 串行、跨 thread 并行(scopeKey 进锁键);
       // feishu scopeKey 恒 undefined — 键多一个冒号后缀, 行为不变。
-      const key = `${event.contextId}:${event.senderId}:${threadScoped ? (event.scopeKey ?? '') : ''}`;
+      const key = `${event.contextId}:${event.senderId}:${threadScoped ? (event.scopeKey ?? "") : ""}`;
       const prev = userLocks.get(key) ?? Promise.resolve();
       const work = prev
         .catch(() => {
@@ -566,7 +675,9 @@ export function createMessageHandler(
             processOne(im, event, accountGeneration),
           ).catch((err) => {
             if (isImAccountScopeClosedError(err)) {
-              log.info(`drop inbound message from stale account generation channel=${channel}`);
+              log.info(
+                `drop inbound message from stale account generation channel=${channel}`,
+              );
               return;
             }
             const msg = err instanceof Error ? err.message : String(err);
