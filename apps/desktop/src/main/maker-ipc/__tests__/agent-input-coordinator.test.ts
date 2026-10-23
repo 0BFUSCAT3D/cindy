@@ -12482,6 +12482,7 @@ describe('AgentInputCoordinator replaceQueuedMessage(Orca lead 排队消息修�
       send:vi.fn(async (_message,opts)=>{await opts?.onAccepted?.();return {accepted:true as const};}),
     };
     const transaction=createMakerSendTransaction({
+      statDirectory:async()=>({isDirectory:()=>true}),
       getSession:()=>session,closeSession:async()=>{},preflightBotRuntimeResources:async()=>{},
       getSessionMeta:async()=>({}),ensureRemoteReadyForSessionStart:async()=>{},checkWorkDirExists:async()=>true,
       isOrcaMcpHydrated:()=>true,buildCreateOptsWithStderr:x=>x,synthesizeOrcaVendorOptionsFromDb:async()=>false,
@@ -14531,8 +14532,7 @@ describe('usage-limit wait (ordinary tasks)', () => {
       session, didInjectOrcaInstructions: false, didInjectProjectContext: false,
     })).mockRejectedValueOnce(quota);
     const transaction = createMakerSendTransaction({
-      // Main's transaction requires a directory probe; spread also supports this branch's older contract.
-      ...{ statDirectory: async () => ({ isDirectory: () => true }) },
+      statDirectory: async () => ({ isDirectory: () => true }),
       getSession: () => rehydrate ? session : undefined,
       closeSession: async () => {}, preflightBotRuntimeResources: async () => {},
       getSessionMeta: async () => ({}), ensureRemoteReadyForSessionStart: async () => {},
