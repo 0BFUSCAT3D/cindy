@@ -15,6 +15,8 @@ import type { ChatApi, ChatContentBlock } from './chatServerMigration.js';
 
 /** Internal-only readers: never serialized in group messages or IPC. */
 export type ChatUploadAttachment = BotGroupAttachment & {
+  /** Offset in the file-rewritten Markdown, before image materialization. Never sent over the wire. */
+  sourceOffset?: number;
   readBytes?: () => Promise<Buffer>;
   assertCurrent?: () => void;
 };

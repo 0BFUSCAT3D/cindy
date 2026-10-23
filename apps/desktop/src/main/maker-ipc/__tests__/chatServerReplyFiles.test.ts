@@ -99,14 +99,34 @@ describe('group reply file delivery', () => {
     expect(await prepareChatReplyFiles(text, 'lane', () => {})).toEqual({ text, attachments: [] });
   });
 
-  it('deduplicates case variants according to the host path semantics before applying the count limit', async () => {
-    const names = process.platform === 'win32'
-      ? Array.from({ length: 32 }, (_, mask) => [...'report'].map((c, i) => mask & (1 << i) ? c.toUpperCase() : c).join('') + '.pdf')
-      : ['Report.pdf', 'report.pdf'];
-    for (const name of names) await fs.writeFile(path.join(work, name), 'case report');
-    const result = await prepareChatReplyFiles(names.map(name => `[report](${name})`).join(' '), 'lane', () => {});
-    expect(result.attachments).toHaveLength(process.platform === 'win32' ? 1 : 2);
+  it('deduplicates real filesystem identities before applying the count limit', async () => {
+    const source = path.join(work, 'CaseReport.pdf');
+    await fs.writeFile(source, 'case report');
+    const names = Array.from({ length: 32 }, (_, mask) => [...'casereport'].map((c, i) => mask & (1 << i) ? c.toUpperCase() : c).join('') + '.pdf');
+    // Probe this actual volume; neither platform nor fs metadata is mocked.
+    let insensitive = false;
+    try { insensitive = (await fs.stat(path.join(work, names[0]!))).ino === (await fs.stat(source)).ino; } catch { /* case-sensitive volume */ }
+    if (!insensitive) for (const name of names.slice(0, 2)) await fs.writeFile(path.join(work, name), 'case report');
+    const refs = insensitive ? names : names.slice(0, 2);
+    const result = await prepareChatReplyFiles(refs.map(name => `[report](${name})`).join(' '), 'lane', () => {});
+    expect(result.attachments).toHaveLength(insensitive ? 1 : 2);
     for (const attachment of result.attachments) expect((await attachment.readBytes!()).toString()).toBe('case report');
+  });
+
+  it.each(['    ', '\t'])('never delivers an indented persisted code example (%j)', async indent => {
+    scope.reply = { content: JSON.stringify({ text: `${indent}[example](<${pdf}>)` }) };
+    const text = `[example](<${pdf}>)`;
+    expect(await prepareChatReplyFiles(text, 'lane', () => {}, 'reply-client')).toEqual({ text, attachments: [] });
+  });
+
+  it('retains file positions relative to the body passed to image preparation', async () => {
+    const image = '![chart](cindy-media://blobs/' + 'a'.repeat(64) + '.png)';
+    const body = `[report](&lt;${pdf}&gt;) ${image} [data][r]\n\n[r]: <./ordered.json>`;
+    await fs.writeFile(path.join(work, 'ordered.json'), '{}');
+    const result = await prepareChatReplyFiles(body, 'lane', () => {});
+    expect(result.attachments.map(a => a.sourceOffset)).toEqual([0, result.text.indexOf('data')]);
+    expect(result.text.indexOf(image)).toBeGreaterThan(result.attachments[0]!.sourceOffset!);
+    expect(result.text.indexOf(image)).toBeLessThan(result.attachments[1]!.sourceOffset!);
   });
 
   it('preserves persisted Markdown for an empty SDK result without changing ordinary text replies', async () => {

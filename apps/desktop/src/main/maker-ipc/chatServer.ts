@@ -1513,7 +1513,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
                 }, !terminal.resultText.trim() ? terminal.resultMessageClientId : undefined);
                 pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(pending.fileReply.text, run.sessionId, assertCurrent) };
                 contentText = pending.reply.text;
-                produced.push(...pending.reply.attachments, ...pending.fileReply.attachments);
+                produced.push(...[...pending.reply.attachments, ...pending.fileReply.attachments]
+                  .sort((a, b) => {
+                    const position = (a.sourceOffset ?? Infinity) - (b.sourceOffset ?? Infinity);
+                    // An outer file link starts before its nested preview image;
+                    // removing its delimiters can project both to the same offset.
+                    return position || (a.sourceOffset !== undefined && b.sourceOffset !== undefined
+                      ? Number(a.category === 'image') - Number(b.category === 'image') : 0);
+                  }));
                 if (produced.length > BOT_GROUP_ATTACHMENTS_MAX) throw new Error('ATTACHMENT_UNAVAILABLE');
               }
               const validateUpload = async () => {

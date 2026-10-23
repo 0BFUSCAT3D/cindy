@@ -84,7 +84,11 @@ export function replyFileLinks(text: string) {
   let deliveredText = text;
   for (const edit of edits.sort((a, b) => b.start - a.start))
     deliveredText = deliveredText.slice(0, edit.start) + edit.text + deliveredText.slice(edit.end);
-  return { links, text: deliveredText };
+  // Image preparation sees deliveredText, so both attachment kinds use its offsets.
+  const positionedLinks = links.map(link => ({ ...link, outputStart: link.start + edits
+    .filter(edit => edit.end <= link.start)
+    .reduce((delta, edit) => delta + edit.text.length - (edit.end - edit.start), 0) }));
+  return { links: positionedLinks, text: deliveredText };
 }
 
 function localPath(url: string, workDir: string): string {
@@ -165,7 +169,7 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
     if (getCurrentDbClientSnapshot() !== snapshot) throw new Error('OWNER_CHANGED');
     // The existing search projection flattens newlines. Only file delivery needs the
     // original Markdown; scheduling and replies without file links keep their old input.
-    markdown = row ? visibleMessageText('assistant', row.content) : text;
+    markdown = row ? visibleMessageText('assistant', row.content, { preserveWhitespace: true }) : text;
   }
   const parsed = replyFileLinks(markdown);
   if (!parsed.links.length) return { text, attachments: [] as ChatUploadAttachment[] };
@@ -193,14 +197,23 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
     const lexicalRoot = path.resolve(scope.workingDir!);
     if (!isPathWithin(lexicalRoot, source) && !isPathWithin(root, source)) throw unavailable();
     const canonicalSource = isPathWithin(root, source) ? source : path.resolve(root, path.relative(lexicalRoot, source));
-    // Windows path identity ignores case; preserve the original spelling for
-    // subsequent realpath, descriptor and workdir checks.
-    const identity = process.platform === 'win32' ? canonicalSource.toLowerCase() : canonicalSource;
+    // Use the actual volume's inode identity (including case-insensitive APFS),
+    // not a platform-wide casing assumption. Never follow the named symlink;
+    // full realpath/descriptor containment is still enforced before reading.
+    let identity = canonicalSource;
+    try {
+      const stat = await fs.lstat(canonicalSource, { bigint: true });
+      if (stat.isFile() && stat.ino !== 0n) identity = `${stat.dev}:${stat.ino}`;
+    } catch (error) {
+      // Preserve deferred missing-file failure and the shared count limit.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    assertCurrent();
     if (seen.has(identity)) continue;
     if (attachments.length >= BOT_GROUP_ATTACHMENTS_MAX) throw unavailable();
     seen.add(identity);
     let digest: string | undefined;
-    attachments.push({ id: canonicalSource, name: path.basename(source), category: 'file',
+    attachments.push({ id: canonicalSource, sourceOffset: link.outputStart, name: path.basename(source), category: 'file',
       mimeType: path.extname(source).toLowerCase() === '.pdf' ? 'application/pdf' : 'application/octet-stream',
       size: 0, path: null, url: null, assertCurrent,
       readBytes: async () => {

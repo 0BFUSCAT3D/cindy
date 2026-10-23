@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const avatarUpload = vi.hoisted(() => vi.fn());
 vi.mock('../../ossPublicUpload.js', () => ({ uploadPublicAsset: avatarUpload }));
-const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> => []), download: vi.fn(), packaged: true, urls: [] as string[], wsUrls: [] as string[], exists: vi.fn(), config: '', handle: vi.fn(), profiles: [] as unknown[], sockets: [] as import('ws').WebSocket[], token: 'isolated-test-token', refresh: vi.fn(async () => true), requests: [] as Array<{ url: string; token: string; actor?: string }> }));
+const fixture = vi.hoisted(() => ({ upload: vi.fn<(...args: Parameters<ReturnType<typeof import('../chatServerMedia.js').createChatMedia>['upload']>) => Promise<unknown[]>>(async () => []), download: vi.fn(), packaged: true, urls: [] as string[], wsUrls: [] as string[], exists: vi.fn(), config: '', handle: vi.fn(), profiles: [] as unknown[], sockets: [] as import('ws').WebSocket[], token: 'isolated-test-token', refresh: vi.fn(async () => true), requests: [] as Array<{ url: string; token: string; actor?: string }> }));
 vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, refresh: fixture.refresh }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
 const replyFiles = vi.hoisted(() => ({ prepare: vi.fn(async (text: string) => ({ text, attachments: [] as unknown[] })) }));
 vi.mock('../chatServerReplyFiles.js', () => ({ prepareChatReplyFiles: replyFiles.prepare }));
 vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: fixture.upload, download: fixture.download }) }));
-const replyImages = vi.hoisted(() => vi.fn(async (text: string): Promise<{ text: string; attachments: import('../../../shared/botGroupChat.js').BotGroupAttachment[] }> => ({ text, attachments: [] })));
+const replyImages = vi.hoisted(() => vi.fn(async (text: string): Promise<{ text: string; attachments: import('../chatServerMedia.js').ChatUploadAttachment[] }> => ({ text, attachments: [] })));
 vi.mock('../chatServerReplyImages.js', () => ({ prepareChatReplyImages: replyImages }));
 // Persists across adapter recreation; the SQLite implementation has its own persistence tests.
 const taskPosts = vi.hoisted(() => new Map<string, unknown>());
@@ -729,6 +729,24 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deliveries()).toHaveLength(2);
     expect(deliveries()[1][2]).toEqual(deliveries()[0][2]);
     expect(fixture.upload.mock.calls.length - uploads).toBe(1);
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it.each([20, 0])('keeps file/image source order across an upload retry (image offset %s)', async imageOffset => {
+    const first = { id: 'pdf', name: 'report.pdf', category: 'file', sourceOffset: 0 };
+    const last = { id: 'json', name: 'data.json', sourceOffset: 80 };
+    const image = { ...replyImage, sourceOffset: imageOffset };
+    replyFiles.prepare.mockResolvedValue({ text: 'report chart data', attachments: [first, last] });
+    replyImages.mockResolvedValue({ text: 'Delivered', attachments: [image] });
+    fixture.upload.mockRejectedValueOnce(Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: 503 }))
+      .mockResolvedValue([first, image, last].map(file => ({ type: 'media', mediaId: file.id })));
+    await startFileReply();
+    const before = fixture.upload.mock.calls.length;
+    await service.settleLaneTurn({ ...terminal, resultText: '[report](./report.pdf) ![chart](image) [data](./data.json)' });
+    await vi.advanceTimersByTimeAsync(16000);
+    const uploads = fixture.upload.mock.calls.slice(before);
+    expect(uploads).toHaveLength(2);
+    for (const call of uploads) expect(call[2]).toEqual([first, image, last]);
     expect(deps.dispatch).toHaveBeenCalledOnce();
   });
 

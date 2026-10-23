@@ -15,16 +15,24 @@ describe('generated reply image attachments', () => {
     vi.resetAllMocks(); f.canRead.mockResolvedValue(true);
     f.resolve.mockReturnValue({ absPath: path.resolve('fixture', 'image.png'), mimeType: 'image/png' });
     f.stat.mockResolvedValue({ isFile: () => true, size: 3 });
-    f.materialize.mockImplementation(async (_session, text) => ({ text, failures: [] }));
+    f.materialize.mockImplementation(async (_session, text) => ({ text, replacements: new Map(), failures: [] }));
   });
   it('imports local task images and deduplicates only rendered references', async () => {
-    f.materialize.mockResolvedValue({ text: `![First](${url}) ![Again](${url})`, failures: [] });
+    f.materialize.mockResolvedValue({ text: `![First](${url}) ![Again](${url})`, replacements: new Map([['xdt-image:///task/generated.png', url]]), failures: [] });
     const source = '![First](xdt-image:///task/generated.png)';
     const result = await prepareChatReplyImages(source, 'lane', vi.fn());
     expect(f.materialize).toHaveBeenCalledExactlyOnceWith('lane', source);
     expect(result.text).toBe('First Again');
     expect(result.attachments).toEqual([expect.objectContaining({ url, path: null, category: 'image', size: 3 })]);
     expect(f.canRead).toHaveBeenCalledExactlyOnceWith('a'.repeat(64), 'lane', f.db);
+  });
+  it('retains original positions when importing images changes URL lengths', async () => {
+    const local = 'xdt-image:///task/chart.png';
+    const second = `cindy-media://blobs/${'b'.repeat(64)}.png`;
+    const source = `report ![chart](${local}) data ![next](${second})`;
+    f.materialize.mockResolvedValue({ text: source.replace(local, url), replacements: new Map([[local, url]]), failures: [] });
+    const result = await prepareChatReplyImages(source, 'lane', vi.fn());
+    expect(result.attachments.map(a => a.sourceOffset)).toEqual([source.indexOf('![chart]'), source.indexOf('![next]')]);
   });
   it('leaves text, code samples, external images and unreferenced definitions unchanged', async () => {
     const text = `Hello \`![sample](${url})\`\n![web](https://example.test/image.png)\n\n[unused]: ${url}`;
