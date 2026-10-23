@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,6 +37,9 @@ describe('worktree runtime evidence and physical locks', () => {
   const seedLegacyLease = () => seedLegacySharedRuntimeLease(path.join(state.root, 'app-data'), worktree, gitLock);
   const hasGitLock = () => fs.stat(gitLock).then(() => true, () => false);
   const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  // The lease heartbeat interval is module-wide and starts with the first lease any test holds.
+  beforeAll(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }); });
+  afterAll(() => { vi.useRealTimers(); });
   beforeEach(async () => {
     state.root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-worktree-runtime-'));
     state.userData = '';
@@ -438,12 +441,65 @@ describe('worktree runtime evidence and physical locks', () => {
       throw Object.assign(new Error('owner is gone'), { code: 'ESRCH' });
     });
 
-    it('waives a lease written before this boot even when its PID now belongs to another process', async () => {
+    it('waives a lease from before this boot only once its live PID is proven to be another process', async () => {
       vi.spyOn(os, 'uptime').mockReturnValue(60);
       const lease = (await acquireWorktreeRuntimeLease('one', worktree))!;
-      await ownedBy(lease, 4242, hourMs);
       vi.spyOn(process, 'kill').mockReturnValue(true);
+      const protectedPath = new Set([await physicalWorktreeKey(worktree)]);
+      // A corrected clock can make a live owner's lease look older than this boot.
+      await ownedBy(lease, 4242, hourMs);
+      expect(await readWorktreeRuntimePaths()).toEqual(protectedPath);
+      await ownedBy(lease, 4242, hourMs + 1_000);
+      readIdentity.mockResolvedValueOnce({ startedAtMs: Date.now() - 2 * hourMs, executablePath: path.join(state.root, 'Cindy.exe') });
+      expect(await readWorktreeRuntimePaths()).toEqual(protectedPath);
+
+      await ownedBy(lease, 4242, hourMs + 2_000);
+      readIdentity.mockResolvedValueOnce({ startedAtMs: Date.now(), executablePath: path.join(state.root, 'wechat-pad.exe') });
       expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+      // Leases are never adopted, so a later Node or Electron process with the PID is not the owner either.
+      await ownedBy(lease, 4242, hourMs + 3_000);
+      readIdentity.mockResolvedValueOnce({ startedAtMs: Date.now(), executablePath: path.join(state.root, 'node.exe') });
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+    });
+
+    it('recognises its live owner by recorded identity even when the clock was corrected after it started', async () => {
+      vi.spyOn(os, 'uptime').mockReturnValue(30 * 24 * 60 * 60);
+      const lease = (await acquireWorktreeRuntimeLease('one', worktree))!;
+      vi.spyOn(process, 'kill').mockReturnValue(true);
+      // The owner was born by a fast clock, so its OS birth is later than every heartbeat since.
+      const owner = { startedAtMs: Date.now() + hourMs, executablePath: path.join(state.root, 'Cindy.exe') };
+      await ownedBy(lease, 4242, 2 * hourMs, { processIdentity: owner });
+      readIdentity.mockResolvedValueOnce(owner);
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
+      readIdentity.mockResolvedValueOnce({ ...owner, startedAtMs: owner.startedAtMs + 60_000 });
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+    });
+
+    it('counts the grace period from the last heartbeat, and much longer for leases without one', async () => {
+      vi.spyOn(os, 'uptime').mockReturnValue(30 * 24 * 60 * 60);
+      const lease = (await acquireWorktreeRuntimeLease('one', worktree))!;
+      exitedOwner();
+      await ownedBy(lease, 4242, 2 * hourMs, { heartbeatMs: undefined });
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
+      await ownedBy(lease, 4242, 25 * hourMs, { heartbeatMs: undefined });
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+
+      // A lease with this process's PID that it does not hold was left by an earlier process.
+      const stray = path.join(path.dirname(lease.file), `${process.pid}-${'a'.repeat(64)}.json`);
+      await fs.writeFile(stray, JSON.stringify({ version: 1, pid: process.pid, path: await physicalWorktreeKey(worktree), heartbeatMs: 300_000 }));
+      await ownedBy({ file: stray }, process.pid, 2 * hourMs);
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+    });
+
+    it('refreshes the leases this process holds so a long task is not mistaken for an abandoned one', async () => {
+      const lease = (await acquireWorktreeRuntimeLease('one', worktree))!;
+      const old = new Date(Date.now() - 2 * hourMs);
+      await fs.utimes(lease.file, old, old);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      let mtimeMs = old.getTime();
+      for (let check = 0; check < 50 && mtimeMs === old.getTime(); check++) mtimeMs = (await fs.stat(lease.file)).mtimeMs;
+      expect(mtimeMs).toBeGreaterThan(Date.now() - 60_000);
+      await releaseWorktreeRuntimeLease(lease);
     });
 
     it('waives an exited owner lease after the grace period while a recorded child keeps it protective', async () => {
@@ -458,13 +514,15 @@ describe('worktree runtime evidence and physical locks', () => {
       expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
     });
 
-    it('ignores an unsupported instance registered before this boot without querying its PID', async () => {
+    it('falls back to the boot time for an unsupported instance only when its identity is unavailable', async () => {
       vi.spyOn(os, 'uptime').mockReturnValue(60);
       await fs.writeFile(path.join(state.root, '.dev-instances', '4242.json'),
         JSON.stringify({ pid: 4242, startedAtMs: Date.now() - hourMs, state: 'failed' }));
       vi.spyOn(process, 'kill').mockReturnValue(true);
       expect(await readWorktreeRuntimePaths()).toEqual(new Set());
-      expect(readIdentity).not.toHaveBeenCalled();
+      // A runtime born before the registration is that instance, whatever the boot estimate says.
+      readIdentity.mockResolvedValueOnce({ startedAtMs: Date.now() - 2 * hourMs, executablePath: path.join(state.root, 'Cindy.exe') });
+      expect(await readWorktreeRuntimePaths()).toBeNull();
     });
   });
 

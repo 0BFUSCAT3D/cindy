@@ -22,6 +22,7 @@ vi.mock('../worktree/liveSessionRefs', () => ({ loadLiveSessionPathKeys: async (
 const write = vi.hoisted(() => vi.fn());
 vi.mock('../worktree/recycleJournal', () => ({
   listRecycleRecords: list,
+  listRecycleRecordsWithHistory: vi.fn(async () => [...state.records]),
   readRecycleRecord: read,
   writeRecycleRecord: write,
   pruneUnreferencedRecoveryArchives: vi.fn(async () => 0),
@@ -79,11 +80,11 @@ describe('durable worktree maintenance', () => {
     ready = true; await maintenance.start();
     expect(closeAndRecycle).toHaveBeenCalledWith('owner', 'archived'); expect(watch).toHaveBeenCalledOnce();
   });
-  it('retries a request an older client paused over its archive exactly once', async () => {
-    state.records = [{ ...record(), reason: 'recycle-failed', attempts: 3, retryPolicy: { state: 'paused', failures: 3, failedWorkMs: 1_800_000 } }];
+  it.each(['recycle-failed', 'EPERM'])('retries a request an older client paused over its archive (%s) exactly once', async (reason) => {
+    state.records = [{ ...record(), reason, attempts: 3, retryPolicy: { state: 'paused', failures: 3, failedWorkMs: 1_800_000 } }];
     closeAndRecycle.mockImplementation(async () => {
       const [current] = state.records;
-      state.records = [{ ...current, reason: 'recycle-failed', retryPolicy: { state: 'paused', failures: 3, failedWorkMs: 0 } }];
+      state.records = [{ ...current, reason, retryPolicy: { state: 'paused', failures: 3, failedWorkMs: 0 } }];
     });
     await maintenance.start();
     expect(closeAndRecycle).toHaveBeenCalledExactlyOnceWith('owner', 'archived');

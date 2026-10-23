@@ -12,7 +12,9 @@ import { hasLiveSessionReference, loadLiveSessionPathKeys } from './liveSessionR
 import { assertManagedResourceLocation, assertManagedResourcePath, assertWorktreeGitIdentity } from './resourceSafety';
 import * as store from './worktreeStore';
 import { withLegacyWorktreeRuntimeGuard } from './legacyRuntimeGuard';
-import { checkoutMissingSnapshotFiles, presentFilesMatchSnapshotTree, readWorktreeHeadRef } from './contentSnapshot';
+import {
+  checkoutMissingSnapshotFiles, presentFilesMatchSnapshotTree, readWorktreeHeadRef, releaseSnapshotRef,
+} from './contentSnapshot';
 
 function restoreCheckoutPathIsSafe(value: string): boolean {
   if (!path.isAbsolute(value)) return false;
@@ -42,6 +44,11 @@ type RecycleRecord = NonNullable<Awaited<ReturnType<typeof readRecycleRecord>>>;
 /** Recovery evidence is complete: older snapshots without untracked files also need their archive. */
 export function hasRecordedRecovery(record: RecycleRecord | null | undefined): record is RecycleRecord {
   return Boolean(record?.snapshot && (record.archive || record.snapshot.untracked));
+}
+
+/** The worktree holds the snapshot's content again; nothing can restore from it a second time. */
+async function releaseRestoredSnapshot(record: RecycleRecord): Promise<void> {
+  if (record.snapshot) await releaseSnapshotRef(record.meta.baseRepo, record.snapshot);
 }
 
 function restorableRecord(record: RecycleRecord | null): record is RecycleRecord {
@@ -80,6 +87,7 @@ export async function restoreRecordedWorktree(sessionId: string, worktreePath: s
       // Registration was the final mutation; finish a journal write interrupted by a crash.
       record.phase = 'restored';
       await writeRecycleRecord(record);
+      await releaseRestoredSnapshot(record);
       return true;
     }
     if (registered && worktreeGeneration(registered) !== record.generation) return false;
@@ -110,6 +118,7 @@ export async function restoreRecordedWorktree(sessionId: string, worktreePath: s
         // Snapshotting never mutates the live checkout. Cancelling recycling needs no apply.
         record.phase = 'restored';
         await writeRecycleRecord(record);
+        await releaseRestoredSnapshot(record);
         return true;
       }
       await assertManagedResourcePath(record.meta, [worktreePath]);
@@ -226,6 +235,7 @@ export async function restoreRecordedWorktree(sessionId: string, worktreePath: s
       generation: record.restoredGeneration, quarantinePath: undefined });
     record.phase = 'restored';
     await writeRecycleRecord(record);
+    await releaseRestoredSnapshot(record);
     return true;
   }));
 }

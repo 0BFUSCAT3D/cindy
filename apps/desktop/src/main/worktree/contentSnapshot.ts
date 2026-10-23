@@ -43,12 +43,65 @@ async function withTemporaryIndex<T>(run: (env: Record<string, string>) => Promi
   }
 }
 
+/**
+ * Untracked nested repositories (`git clone` or `git init` inside the worktree). Git lists
+ * them as `dir/` and does not descend into them; a snapshot could keep only a gitlink, and
+ * one without a commit makes `git add` fail. Like ignored files they are not preserved.
+ */
+async function untrackedNestedRepositories(worktreePath: string, extraEnv: Record<string, string>): Promise<string[]> {
+  const { stdout } = await gitExec(['ls-files', '--others', '--exclude-standard', '-z'], worktreePath, { extraEnv });
+  return stdout.split('\0').filter((entry) => entry.endsWith('/')).map((entry) => entry.slice(0, -1));
+}
+
+/**
+ * `git add` skips files marked assume-unchanged or skip-worktree, so local edits kept that way
+ * would be neither saved nor noticed. Clear the marks in the temporary index only; the live
+ * index keeps them. A skip-worktree file absent from disk (sparse checkout) keeps its mark,
+ * otherwise it would be recorded as deleted.
+ */
+async function unmarkHiddenEdits(worktreePath: string, extraEnv: Record<string, string>): Promise<void> {
+  const { stdout } = await gitExec(['ls-files', '-v', '-z'], worktreePath, { extraEnv });
+  const marked: string[] = [];
+  for (const entry of stdout.split('\0')) {
+    const tag = entry[0];
+    if (!tag || entry[1] !== ' ' || (tag === tag.toUpperCase() && tag !== 'S')) continue;
+    const file = entry.slice(2);
+    if (tag.toUpperCase() === 'S') {
+      try { await fs.lstat(path.join(worktreePath, file)); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+    }
+    marked.push(file);
+  }
+  for (let start = 0; start < marked.length; start += 200) {
+    await gitExec(
+      ['update-index', '--no-assume-unchanged', '--no-skip-worktree', '--', ...marked.slice(start, start + 200)],
+      worktreePath, { extraEnv },
+    );
+  }
+}
+
+/** Stage tracked edits and, with `--all`, new files into a temporary index, skipping nested repositories. */
+async function addWorktreeContent(worktreePath: string, mode: '--all' | '--update', extraEnv: Record<string, string>): Promise<void> {
+  await unmarkHiddenEdits(worktreePath, extraEnv);
+  const nested = mode === '--all' ? await untrackedNestedRepositories(worktreePath, extraEnv) : [];
+  if (nested.length === 0) {
+    await gitExec(['add', mode, '--', '.'], worktreePath, { extraEnv });
+    return;
+  }
+  // A pathspec file avoids command-line length limits; it lives beside the temporary index.
+  const pathspec = path.join(path.dirname(extraEnv.GIT_INDEX_FILE), 'pathspec');
+  await fs.writeFile(pathspec, ['.', ...nested.map((entry) => `:(exclude,literal)${entry}`)].join('\0') + '\0');
+  await gitExec(['add', mode, `--pathspec-from-file=${pathspec}`, '--pathspec-file-nul'], worktreePath, { extraEnv });
+}
+
 /** Tracked and untracked content that `.gitignore` does not exclude, as a tree. */
 async function fullContentTree(worktreePath: string): Promise<string> {
   return withTemporaryIndex(async (extraEnv) => {
     const { stdout: indexPath } = await gitExec(['rev-parse', '--path-format=absolute', '--git-path', 'index'], worktreePath);
     await fs.copyFile(indexPath.trim(), extraEnv.GIT_INDEX_FILE);
-    await gitExec(['add', '--all', '--', '.'], worktreePath, { extraEnv });
+    await addWorktreeContent(worktreePath, '--all', extraEnv);
     const { stdout } = await gitExec(['write-tree'], worktreePath, { extraEnv });
     return stdout.trim();
   });
@@ -72,6 +125,7 @@ export async function worktreeContentMatches(
 /**
  * Files still present in a partially removed or reused checkout must be a subset of the
  * snapshot: missing files are fine, while edited or new non-ignored files stop recovery.
+ * Nested repositories were never part of a snapshot and are left alone.
  */
 export async function presentFilesMatchSnapshotTree(worktreePath: string, tree: string): Promise<boolean> {
   return withTemporaryIndex(async (extraEnv) => {
@@ -83,7 +137,7 @@ export async function presentFilesMatchSnapshotTree(worktreePath: string, tree: 
       if (fields[index] !== 'D') return false;
     }
     const { stdout: extra } = await gitExec(['ls-files', '--others', '--exclude-standard', '-z'], worktreePath, { extraEnv });
-    return extra.length === 0;
+    return extra.split('\0').every((entry) => entry === '' || entry.endsWith('/'));
   });
 }
 
@@ -165,8 +219,8 @@ export async function captureWorktreeContent(
     const originalIndexHash = createHash('sha256').update(await fs.readFile(index)).digest('hex');
     const { stdout: staged } = await gitExec(['write-tree'], worktreePath, options);
     const indexTree = staged.trim();
-    // Ignored files are regenerable (dependencies, build output) and are never saved.
-    await gitExec(['add', includeUntracked ? '--all' : '--update', '--', '.'], worktreePath, options);
+    // Ignored files (dependencies, build output) and nested repositories are never saved.
+    await addWorktreeContent(worktreePath, includeUntracked ? '--all' : '--update', options.extraEnv);
     const { stdout: contents } = await gitExec(['write-tree'], worktreePath, options);
     const tree = contents.trim();
     // Retain both trees through the snapshot ref, including staged-only bytes.
@@ -197,4 +251,62 @@ export async function captureWorktreeContent(
   } finally {
     await fs.rm(temp, { recursive: true, force: true });
   }
+}
+
+export const SNAPSHOT_REF_PREFIX = 'refs/cindy/worktree-recovery/';
+
+/**
+ * Drop a recovery snapshot ref once nothing can restore from it (restored, superseded, or its
+ * task deleted). Only the ref is removed; the repository's own gc reclaims the objects later.
+ * The expected commit keeps a concurrently rewritten ref intact. Failure leaves the ref, which
+ * is harmless.
+ */
+export async function releaseSnapshotRef(
+  baseRepo: string,
+  snapshot: Pick<NonNullable<WorktreeRecycleRecord['snapshot']>, 'ref' | 'commit'>,
+): Promise<boolean> {
+  if (!snapshot.ref.startsWith(SNAPSHOT_REF_PREFIX)) return false;
+  try {
+    await gitExec(['update-ref', '-d', snapshot.ref, snapshot.commit], baseRepo);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Existing snapshot refs and the commits they point to, read with a single Git process. */
+export async function listSnapshotRefs(baseRepo: string): Promise<Map<string, string>> {
+  const { stdout } = await gitExec(
+    ['for-each-ref', '--format=%(refname)%00%(objectname)', SNAPSHOT_REF_PREFIX], baseRepo,
+  );
+  const refs = new Map<string, string>();
+  for (const line of stdout.split('\n')) {
+    const [ref, commit] = line.trim().split('\0');
+    if (ref && commit) refs.set(ref, commit);
+  }
+  return refs;
+}
+
+/** Above this many entries a removal falls back to timestamps alone; it keeps the journal small. */
+const MAX_DISCARDABLE_ENTRIES = 2_000;
+
+/**
+ * Paths a snapshot deliberately leaves out: ignored files (wholly ignored directories collapse
+ * to `dir/`) and nested repositories. Recorded when removal begins, so a resumed removal can
+ * tell such bytes from files that appeared afterwards. Null when the list would be too long.
+ */
+export async function discardableWorktreePaths(worktreePath: string): Promise<string[] | null> {
+  const listed = async (args: string[]) => (await gitExec(['ls-files', ...args, '-z'], worktreePath, {
+    extraEnv: { GIT_OPTIONAL_LOCKS: '0' },
+  })).stdout.split('\0').filter(Boolean);
+  const ignored = await listed(['--others', '--ignored', '--exclude-standard', '--directory']);
+  const nested = (await listed(['--others', '--exclude-standard'])).filter((entry) => entry.endsWith('/'));
+  const entries = [...new Set([...ignored, ...nested])];
+  return entries.length > MAX_DISCARDABLE_ENTRIES ? null : entries;
+}
+
+/** Every path a snapshot tree holds, read from the base repository with one Git process. */
+export async function snapshotTreePaths(baseRepo: string, tree: string): Promise<Set<string>> {
+  const { stdout } = await gitExec(['ls-tree', '-r', '-z', '--name-only', tree], baseRepo);
+  return new Set(stdout.split('\0').filter(Boolean));
 }

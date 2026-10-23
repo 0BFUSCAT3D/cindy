@@ -6,9 +6,11 @@ import { app } from 'electron';
 import { getDbClient } from '../localDb/client/current';
 import { createLogger } from '../logger';
 import {
-  listRecycleRecords, pruneUnreferencedRecoveryArchives, readRecycleRecord, watchRecycleJournal, worktreeGeneration, writeRecycleRecord,
-  type WorktreeRecycleRecord,
+  listRecycleRecords, listRecycleRecordsWithHistory, pruneUnreferencedRecoveryArchives, readRecycleRecord,
+  watchRecycleJournal, worktreeGeneration, writeRecycleRecord, type WorktreeRecycleRecord,
 } from './recycleJournal';
+import { listSnapshotRefs, releaseSnapshotRef, SNAPSHOT_REF_PREFIX } from './contentSnapshot';
+import type { LocalWorktreeReference } from '../localDb/worker/worktreeReferences';
 import { recycleManagedWorktree } from './managedRecycle';
 import { hasLiveSessionReference, loadLiveSessionPathKeys, pathKey } from './liveSessionRefs';
 import * as store from './worktreeStore';
@@ -28,11 +30,20 @@ export interface WorktreeMaintenanceOptions {
   onAttemptComplete?(): Promise<void>;
 }
 
-const legacyArchiveFailureReasons = new Set(['recycle-failed', 'ENOSPC']);
+/** Paused for the directory's identity or location, not for the old archive flow: never retried. */
+const unsafeResourceReasons = new Set([
+  'legacy-quarantine-needs-review', 'directory-replaced', 'unmanaged-path', 'redirected-worktree-parent',
+]);
 
+/**
+ * Older clients paused requests after archive failures (timeouts, a disk filled by archives,
+ * Windows EPERM/EBUSY/ENAMETOOLONG while packing). None of that work exists any more, so each
+ * such request gets one fresh failure budget; a fault that persists pauses it again.
+ */
 function grantsLegacyArchiveRetry(record: WorktreeRecycleRecord): boolean {
-  return !record.legacyArchiveRetry && !record.snapshot?.untracked && record.phase === 'pending'
-    && recyclePolicy(record).state === 'paused' && legacyArchiveFailureReasons.has(record.reason ?? '');
+  return !record.legacyArchiveRetry && !record.snapshot?.untracked
+    && ['pending', 'snapshotted', 'removing'].includes(record.phase)
+    && recyclePolicy(record).state === 'paused' && record.reason !== undefined && !unsafeResourceReasons.has(record.reason);
 }
 
 /** Event-driven, single-flight maintenance with one timer for the earliest pending deadline. */
@@ -183,6 +194,18 @@ export class WorktreeRecycleMaintenance {
     return granted;
   }
 
+  private async releaseObsoleteSnapshots(): Promise<void> {
+    try {
+      const db = getDbClient();
+      const readRows = db.readLocalWorktreeReferences?.bind(db);
+      if (!readRows) return;
+      const released = await releaseObsoleteRecoverySnapshots(readRows);
+      if (released > 0) log.info('released obsolete worktree recovery snapshots', { count: released });
+    } catch (error) {
+      log.warn('worktree recovery snapshot release postponed', { code: (error as NodeJS.ErrnoException).code ?? 'unavailable' });
+    }
+  }
+
   private async runPass(): Promise<void> {
     if (!this.options.isReady()) return;
     await this.ensureWatcher();
@@ -193,6 +216,7 @@ export class WorktreeRecycleMaintenance {
     if (pendingLeaseReleases > 0) this.schedule(Date.now() + retryDelay(1));
     let records = await listRecycleRecords();
     if (this.initialPass && await this.retireRecoveryArchives(records)) records = await listRecycleRecords();
+    if (this.initialPass) await this.releaseObsoleteSnapshots();
     const wakeIds = new Set(this.wakeIds);
     this.wakeIds.clear();
     // A resource may have been released while Cindy was closed: recheck waits
@@ -274,6 +298,53 @@ export class WorktreeRecycleMaintenance {
     }
     if (attempted && !this.stopped) await this.options.onAttemptComplete?.();
   }
+}
+
+/**
+ * Delete snapshot refs nothing can restore from: the worktree was restored, or it was removed
+ * and every known database marks its task deleted. Startup-only, like the savepoint sweep, so
+ * the regular recycle path never reads task databases; a status change itself never deletes
+ * recovery evidence. Archived tasks keep their snapshots because they can be unarchived; a
+ * task missing from the databases is unknown, not deleted. Task databases are read only when a
+ * removed record needs its owner checked. Costs one Git process per repository with
+ * candidates, plus one per ref actually deleted.
+ */
+export async function releaseObsoleteRecoverySnapshots(
+  readRows: () => Promise<readonly LocalWorktreeReference[]>,
+): Promise<number> {
+  const records = await listRecycleRecordsWithHistory();
+  if (!records) return 0;
+  // History keeps an older copy of the same record, so decide per ref across all copies.
+  const copies = new Map<string, WorktreeRecycleRecord[]>();
+  for (const record of records) {
+    if (!record.snapshot?.ref.startsWith(SNAPSHOT_REF_PREFIX)) continue;
+    copies.set(record.snapshot.ref, [...(copies.get(record.snapshot.ref) ?? []), record]);
+  }
+  const restored = (versions: readonly WorktreeRecycleRecord[]) => versions.some((record) => record.phase === 'restored');
+  const removed = (versions: readonly WorktreeRecycleRecord[]) => versions.every((record) => record.phase === 'removed');
+  const values = [...copies.values()];
+  const rows = values.some((versions) => !restored(versions) && removed(versions)) ? await readRows() : [];
+  const ownerDeleted = (sessionId: string): boolean => {
+    const owned = rows.filter((row) => row.id === sessionId);
+    return owned.length > 0 && owned.every((row) => row.source !== 'bot' && row.status === 'deleted');
+  };
+  const byRepo = new Map<string, Array<{ ref: string; commit: string }>>();
+  for (const [ref, versions] of copies) {
+    const obsolete = restored(versions)
+      || (removed(versions) && versions.every((record) => ownerDeleted(record.meta.sessionId)));
+    if (!obsolete) continue;
+    const { baseRepo } = versions[0].meta;
+    byRepo.set(baseRepo, [...(byRepo.get(baseRepo) ?? []), { ref, commit: versions[0].snapshot!.commit }]);
+  }
+  let released = 0;
+  for (const [baseRepo, candidates] of byRepo) {
+    let existing: Map<string, string>;
+    try { existing = await listSnapshotRefs(baseRepo); } catch { continue; }
+    for (const candidate of candidates) {
+      if (existing.get(candidate.ref) === candidate.commit && await releaseSnapshotRef(baseRepo, candidate)) released++;
+    }
+  }
+  return released;
 }
 
 /** Starts once both task storage and runtime-close services are usable. */

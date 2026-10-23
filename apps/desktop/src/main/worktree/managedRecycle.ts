@@ -3,11 +3,15 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { captureWorktreeContent, worktreeContentMatches } from './contentSnapshot';
+import {
+  captureWorktreeContent, discardableWorktreePaths, releaseSnapshotRef, snapshotTreePaths,
+  worktreeContentMatches, worktreeStagedContentMatches,
+} from './contentSnapshot';
 import { gitExec } from './gitExec';
 import { hasLiveSessionReference, loadLiveSessionPathKeys } from './liveSessionRefs';
+import { inventoryWorktree, sameWorktreeFiles } from './recoveryArchive';
 import {
-  newRecycleRecord, readRecycleRecord, writeRecycleRecord, worktreeGeneration,
+  newRecycleRecord, readRecycleRecord, writeRecycleRecord, worktreeGeneration, type WorktreeRecycleRecord,
 } from './recycleJournal';
 import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import { isManagedWorktreePath } from './safety';
@@ -77,6 +81,99 @@ async function hasGitLink(worktreePath: string): Promise<boolean> {
   }
 }
 
+/** A `.git` file whose metadata directory was already deleted cannot answer Git queries. */
+async function gitMetadataUsable(worktreePath: string): Promise<boolean> {
+  const link = path.join(worktreePath, '.git');
+  let stat;
+  try { stat = await fs.lstat(link); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  // Anything but a regular gitfile goes through the identity check, which rejects it.
+  if (!stat.isFile()) return true;
+  const match = /^gitdir:\s*(.+?)\s*$/m.exec(await fs.readFile(link, 'utf8'));
+  if (!match) return true;
+  try {
+    await fs.stat(path.resolve(worktreePath, match[1]));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * Surviving files that removal may delete: none written after `sinceMs` and, when the lists are
+ * known, each one either saved in the snapshot or under a path the snapshot left out on purpose.
+ * The path check catches files moved or copied in with their old timestamps; content swapped
+ * into a saved path with a preserved timestamp remains undetectable. Directories are not dated
+ * (deleting children updates them), nor is status-change time (Git may clear a read-only flag
+ * before failing to delete a file). Discardable directories are not walked.
+ */
+async function residualFilesAllowed(
+  root: string,
+  sinceMs: number,
+  saved: ReadonlySet<string> | null,
+  discardable: readonly string[] | null,
+): Promise<boolean> {
+  const discarded = (relative: string): boolean => discardable!.some((entry) => (
+    entry.endsWith('/') ? `${relative}/` === entry || relative.startsWith(entry) : relative === entry
+  ));
+  const walk = async (directory: string, prefix: string): Promise<boolean> => {
+    let entries;
+    try { entries = await fs.readdir(directory, { withFileTypes: true }); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      throw error;
+    }
+    for (const entry of entries) {
+      const relative = `${prefix}${entry.name}`;
+      const entryPath = path.join(directory, entry.name);
+      // The worktree's own Git link predates removal and is never part of a snapshot.
+      if (relative === '.git') continue;
+      if (entry.isDirectory()) {
+        if (saved && discarded(relative)) continue;
+        if (!(await walk(entryPath, `${relative}/`))) return false;
+        continue;
+      }
+      let stat;
+      try { stat = await fs.lstat(entryPath); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (Math.max(stat.mtimeMs, stat.birthtimeMs) > sinceMs) return false;
+      if (saved && !saved.has(relative) && !discarded(relative)) return false;
+    }
+    return true;
+  };
+  return walk(root, '');
+}
+
+/**
+ * A partially removed directory may only lose bytes that existed when removal began. The full
+ * tree was verified against the snapshot after `removingSince` was taken and before it was
+ * recorded, so every file written before that moment was saved, ignored or nested. Older
+ * clients' records compare their archive inventory instead.
+ */
+async function residualFilesCovered(
+  meta: WorktreeMeta,
+  record: WorktreeRecycleRecord,
+  snapshot: NonNullable<WorktreeRecycleRecord['snapshot']>,
+): Promise<boolean> {
+  if (record.archive) {
+    if (!sameWorktreeFiles(await inventoryWorktree(meta.path), record.archive.files, true)) return false;
+  } else {
+    const since = record.removingSince;
+    if (typeof since !== 'number' || !Number.isFinite(since)) return false;
+    const discardable = Array.isArray(record.removalDiscardable) ? record.removalDiscardable : null;
+    const saved = discardable ? await snapshotTreePaths(meta.baseRepo, snapshot.tree) : null;
+    if (!(await residualFilesAllowed(meta.path, since, saved, discardable))) return false;
+  }
+  // While Git metadata survives, HEAD, the branch and staged content must be unchanged too.
+  if (!(await gitMetadataUsable(meta.path))) return true;
+  await assertWorktreeGitIdentity(meta);
+  return worktreeStagedContentMatches(meta.path, snapshot);
+}
+
 /** Written before the terminal status mutation, so a crash cannot lose the cleanup intent. */
 export async function requestWorktreeRecycle(sessionId: string, resourcePaths: readonly string[] = []): Promise<void> {
   const own = store.get(sessionId);
@@ -107,7 +204,8 @@ async function recycleManagedWorktreeInSlot(meta: WorktreeMeta, options: Managed
     if (registered && worktreeGeneration(registered) !== worktreeGeneration(meta)) return false;
     if (await hasOtherGeneration(meta)) return false;
     let record = await readRecycleRecord(meta.path);
-    if (!record || record.generation !== worktreeGeneration(meta)) {
+    // A restored record's snapshot ref is already released; never complete a removal on it.
+    if (!record || record.generation !== worktreeGeneration(meta) || record.phase === 'restored') {
       record = await newRecycleRecord(meta);
       record.directoryIdentity = (await directoryIdentity(meta.path)) ?? undefined;
       await writeRecycleRecord(record);
@@ -164,14 +262,17 @@ async function recycleManagedWorktreeInSlot(meta: WorktreeMeta, options: Managed
       }
       record.directoryIdentity = identity;
       await assertManagedResourcePath(meta, store.getAllPaths());
-      // Git can delete .git before Windows reports EBUSY; such a resumed removal keeps the
-      // snapshot that was verified before deletion started.
-      const resumingRemoval = record.phase === 'removing' && Boolean(record.snapshot) && !(await hasGitLink(meta.path));
+      // Once deletion may have started, the directory can be partial (Windows stops at the first
+      // locked file, with or without .git). Never snapshot it again: that would replace the
+      // snapshot verified before deletion with a tree missing the files already deleted.
+      const resumingRemoval = record.phase === 'removing' && Boolean(record.snapshot);
       if (!resumingRemoval) {
         // A missing .git must never fall through to the parent repository.
         await assertWorktreeGitIdentity(meta);
-        // Git keeps tracked and new files; ignored files (dependencies, build output) are not saved.
+        // Git keeps tracked and new files; ignored files and nested repositories are not saved.
+        let superseded: WorktreeRecycleRecord['snapshot'];
         if (!record.snapshot || !(await worktreeContentMatches(meta.path, record.snapshot))) {
+          superseded = record.snapshot;
           record.snapshot = await captureWorktreeContent(
             meta.path, `refs/cindy/worktree-recovery/${record.id}/${randomUUID()}`, { includeUntracked: true },
           );
@@ -179,36 +280,48 @@ async function recycleManagedWorktreeInSlot(meta: WorktreeMeta, options: Managed
         }
         record.phase = 'snapshotted';
         await writeRecycleRecord(record);
+        // The new snapshot holds everything still present; the older one can no longer be restored.
+        if (superseded && superseded.ref !== record.snapshot.ref) await releaseSnapshotRef(meta.baseRepo, superseded);
       }
       const snapshot = record.snapshot;
       if (!snapshot) return defer('recovery-evidence-missing');
+      // Before deletion: the whole tree must still match the snapshot. After it may have started:
+      // every surviving file must already have been covered when removal began.
       const contentUnchanged = async (): Promise<boolean> => {
-        if (!(await hasGitLink(meta.path))) return resumingRemoval;
+        if (record.phase === 'removing') return residualFilesCovered(meta, record, snapshot);
+        if (!(await hasGitLink(meta.path))) return false;
         await assertWorktreeGitIdentity(meta);
         return worktreeContentMatches(meta.path, snapshot);
       };
       if (!(await canRemove())) return defer('referenced-before-removal');
       if (await directoryIdentity(meta.path) !== identity) return defer('directory-replaced');
       await assertManagedResourcePath(meta, store.getAllPaths());
-      if (!(await contentUnchanged())) return defer('git-baseline-changed');
-      record.phase = 'removing';
-      await writeRecycleRecord(record);
-      // Revalidate immediately before the destructive Git operation: a late
-      // editor/IDE write or a newly live reference keeps this generation protected.
-      if (!(await canRemove())) return defer('referenced-before-removal');
-      if (await directoryIdentity(meta.path) !== identity) return defer('directory-replaced');
-      await assertManagedResourcePath(meta, store.getAllPaths());
-      if (!(await contentUnchanged())) return defer('git-baseline-changed-before-removal');
+      if (!(await contentUnchanged())) return defer(resumingRemoval ? 'residual-files-changed' : 'git-baseline-changed');
+      if (!resumingRemoval) {
+        // Revalidate the full tree immediately before the destructive Git operation; a late
+        // editor/IDE write or a newly live reference keeps this generation protected. The
+        // boundary is taken first and recorded only once the verification has completed, so
+        // an interrupted verification leaves the request `snapshotted` and nothing unverified
+        // can ever count as covered.
+        const since = Date.now();
+        if (!(await canRemove())) return defer('referenced-before-removal');
+        if (await directoryIdentity(meta.path) !== identity) return defer('directory-replaced');
+        await assertManagedResourcePath(meta, store.getAllPaths());
+        await assertWorktreeGitIdentity(meta);
+        if (!(await worktreeContentMatches(meta.path, snapshot))) return defer('git-baseline-changed-before-removal');
+        record.removalDiscardable = (await discardableWorktreePaths(meta.path)) ?? undefined;
+        record.removingSince = since;
+        record.phase = 'removing';
+        await writeRecycleRecord(record);
+      }
       try {
         await gitExec(['-c', 'core.longpaths=true', 'worktree', 'remove', '--force', meta.path], meta.baseRepo);
       } catch {
         if (await directoryIdentity(meta.path) !== identity) return defer('remove-unconfirmed');
         if (!(await canRemove())) return defer('referenced-before-fallback');
         await assertManagedResourcePath(meta, store.getAllPaths());
-        if (await hasGitLink(meta.path)) {
-          await assertWorktreeGitIdentity(meta);
-          if (!(await worktreeContentMatches(meta.path, snapshot))) return defer('git-baseline-changed');
-        }
+        // Only bytes that existed when removal began (saved, ignored or nested) may be deleted.
+        if (!(await residualFilesCovered(meta, record, snapshot))) return defer('residual-files-changed');
         if (await directoryIdentity(meta.path) !== identity) return defer('directory-replaced');
         await fs.rm(meta.path, { recursive: true, force: true });
       }

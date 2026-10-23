@@ -36,6 +36,10 @@ export interface WorktreeRecycleRecord {
   archive?: WorktreeRecoveryArchive;
   /** The one fresh retry budget for a request an older client paused over its archive. */
   legacyArchiveRetry?: true;
+  /** When deletion was first allowed to start; files written since stop a resumed removal. */
+  removingSince?: number;
+  /** Ignored and nested paths a snapshot left out, captured when removal began. */
+  removalDiscardable?: string[];
 }
 
 export function recycleJournalRoot(): string {
@@ -177,25 +181,10 @@ export async function pruneUnreferencedRecoveryArchives(now = Date.now()): Promi
   }
   const archives = names.filter((name) => archiveNamePattern.test(name));
   if (archives.length === 0) return 0;
+  const records = await listRecycleRecordsWithHistory();
+  if (!records) return 0;
   const referenced = new Set<string>();
-  const history = path.join(root, 'history');
-  let historyNames: string[] = [];
-  try { historyNames = await fs.readdir(history); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-  const recordFiles = [
-    ...names.filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).map((name) => ({ file: path.join(root, name), id: name.slice(0, 64) })),
-    ...historyNames.filter((name) => /^[a-f0-9]{64}-[a-f0-9]{64}\.json$/.test(name)).map((name) => ({ file: path.join(history, name), id: name.slice(0, 64) })),
-  ];
-  for (const { file, id } of recordFiles) {
-    let record: WorktreeRecycleRecord;
-    try { record = parseRecord(await fs.readFile(file, 'utf8'), id); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      log.warn('recovery archive sweep skipped: unreadable record', { resourceId: id });
-      return 0;
-    }
-    if (record.archive?.file) referenced.add(record.archive.file);
-  }
+  for (const record of records) if (record.archive?.file) referenced.add(record.archive.file);
   let removed = 0;
   for (const name of archives) {
     if (referenced.has(name)) continue;
@@ -209,6 +198,32 @@ export async function pruneUnreferencedRecoveryArchives(now = Date.now()): Promi
     }
   }
   return removed;
+}
+
+/**
+ * Current and history records, or null when any of them cannot be read: an unreadable record
+ * might still need the evidence a sweep would otherwise discard.
+ */
+export async function listRecycleRecordsWithHistory(): Promise<WorktreeRecycleRecord[] | null> {
+  const root = recycleJournalRoot();
+  const files: Array<{ file: string; id: string }> = [];
+  for (const [directory, pattern] of [[root, /^[a-f0-9]{64}\.json$/], [path.join(root, 'history'), /^[a-f0-9]{64}-[a-f0-9]{64}\.json$/]] as const) {
+    let names: string[];
+    try { names = await fs.readdir(directory); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const name of names) if (pattern.test(name)) files.push({ file: path.join(directory, name), id: name.slice(0, 64) });
+  }
+  const records: WorktreeRecycleRecord[] = [];
+  for (const { file, id } of files) {
+    try { records.push(parseRecord(await fs.readFile(file, 'utf8'), id)); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      log.warn('worktree recycle sweep skipped: unreadable record', { resourceId: id });
+      return null;
+    }
+  }
+  return records;
 }
 
 /** Fail closed for a malformed file; callers report the failure without discarding evidence. */

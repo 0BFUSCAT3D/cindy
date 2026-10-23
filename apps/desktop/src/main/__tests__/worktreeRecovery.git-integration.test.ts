@@ -44,7 +44,8 @@ vi.mock('../worktree/gitExec', async (original) => {
 
 import { checkpointWorktreeForReuse, recycleManagedWorktree } from '../worktree/managedRecycle';
 import { restoreRecordedWorktree } from '../worktree/restoreRecovery';
-import { readRecycleRecord, writeRecycleRecord } from '../worktree/recycleJournal';
+import { newRecycleRecord, readRecycleRecord, writeRecycleRecord } from '../worktree/recycleJournal';
+import { releaseObsoleteRecoverySnapshots } from '../worktree/recycleMaintenance';
 import { captureWorktreeContent } from '../worktree/contentSnapshot';
 import { GitExecError, gitExec } from '../worktree/gitExec';
 import { acquireWorktree, releaseWorktree, parkAll } from '../worktree/WorktreePool';
@@ -150,6 +151,111 @@ describe('worktree recovery with real Git', () => {
     await git(meta.path, 'add', 'draft.txt');
     await git(meta.path, 'commit', '-m', 'continue restored work');
     expect(await git(repo, 'rev-parse', 'cindy/attached')).toBe(await git(meta.path, 'rev-parse', 'HEAD'));
+  }, 30_000);
+
+  it('deletes nested repositories instead of waiting on them and restores only saved files', async () => {
+    const meta = await createFixture('nested');
+    const cloned = path.join(meta.path, 'vendor', 'cloned');
+    await fs.mkdir(cloned, { recursive: true });
+    await git(cloned, 'init', '-b', 'main');
+    await fs.writeFile(path.join(cloned, 'lib.txt'), 'nested\n');
+    await git(cloned, 'add', 'lib.txt');
+    await git(cloned, '-c', 'user.name=Nested', '-c', 'user.email=nested@localhost', 'commit', '-m', 'nested');
+    // A plain file beside the nested repository is ordinary new content and must be saved.
+    await fs.writeFile(path.join(meta.path, 'vendor', 'notes.txt'), 'beside the clone\n');
+    // A repository without a commit makes a plain `git add --all` fail outright.
+    const scaffold = path.join(meta.path, 'scaffold');
+    await fs.mkdir(scaffold);
+    await git(scaffold, 'init');
+    await fs.writeFile(path.join(scaffold, 'app.txt'), 'generated\n');
+    expect(await recycleManagedWorktree(meta, { canRemove: async () => true })).toBe(true);
+    await expect(fs.stat(meta.path)).rejects.toMatchObject({ code: 'ENOENT' });
+    const record = (await readRecycleRecord(meta.path))!;
+    const savedTree = await git(repo, 'ls-tree', '-r', '--name-only', record.snapshot!.commit);
+    expect(savedTree.split('\n')).toEqual(expect.arrayContaining(['draft.txt', 'vendor/notes.txt']));
+    expect(savedTree).not.toContain('vendor/cloned');
+    expect(savedTree).not.toContain('scaffold');
+    expect(await restoreRecordedWorktree(meta.sessionId, meta.path)).toBe(true);
+    expect(await fs.readFile(path.join(meta.path, 'draft.txt'), 'utf8')).toBe('nested contents\n');
+    expect(await fs.readFile(path.join(meta.path, 'vendor', 'notes.txt'), 'utf8')).toBe('beside the clone\n');
+    await expect(fs.stat(cloned)).rejects.toMatchObject({ code: 'ENOENT' });
+    // A restored snapshot is consumed: its ref no longer keeps the objects alive.
+    expect(await git(repo, 'for-each-ref', record.snapshot!.ref)).toBe('');
+  }, 30_000);
+
+  it('saves tracked edits hidden by assume-unchanged without touching the live index flag', async () => {
+    const meta = await createFixture('hidden-edit');
+    await git(meta.path, 'update-index', '--assume-unchanged', 'tracked.txt');
+    await fs.writeFile(path.join(meta.path, 'tracked.txt'), 'local only\n');
+    const probe = await captureWorktreeContent(meta.path, 'refs/cindy/worktree-recovery/probe/hidden', { includeUntracked: true });
+    expect(await git(repo, 'show', `${probe.tree}:tracked.txt`)).toBe('local only');
+    expect(await git(meta.path, 'ls-files', '-v', 'tracked.txt')).toBe('h tracked.txt');
+    await git(repo, 'update-ref', '-d', probe.ref);
+
+    expect(await recycleManagedWorktree(meta, { canRemove: async () => true })).toBe(true);
+    expect(await restoreRecordedWorktree(meta.sessionId, meta.path)).toBe(true);
+    expect(await fs.readFile(path.join(meta.path, 'tracked.txt'), 'utf8')).toBe('local only\n');
+  }, 30_000);
+
+  it('resumes a partial removal from the original snapshot and stops at a file written since', async () => {
+    const meta = await createFixture('resumed');
+    const record = await newRecycleRecord(meta);
+    record.snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/resumed`, { includeUntracked: true });
+    // Removal began after every existing file was written, then Windows stopped at a locked
+    // file: draft.txt is gone while .git survives.
+    record.phase = 'removing';
+    record.removingSince = Date.now();
+    record.removalDiscardable = [];
+    await writeRecycleRecord(record);
+    await fs.rm(path.join(meta.path, 'draft.txt'));
+    const late = path.join(meta.path, 'late.txt');
+    await fs.writeFile(late, 'written after removal began\n');
+    const later = new Date(record.removingSince + 60_000);
+    await fs.utimes(late, later, later);
+
+    expect(await recycleManagedWorktree(meta, { canRemove: async () => true })).toBe(false);
+    const waiting = (await readRecycleRecord(meta.path))!;
+    expect(waiting.reason).toBe('residual-files-changed');
+    expect(waiting.snapshot!.commit).toBe(record.snapshot.commit);
+    expect(await fs.readFile(late, 'utf8')).toBe('written after removal began\n');
+    await fs.rm(late);
+
+    // Moved or copied in with its old timestamps: only the path shows it was never saved.
+    const moved = path.join(meta.path, 'moved-in.txt');
+    await fs.writeFile(moved, 'kept its original timestamps\n');
+    waiting.removingSince = Date.now() + 60_000;
+    await writeRecycleRecord(waiting);
+    expect(await recycleManagedWorktree(meta, { canRemove: async () => true })).toBe(false);
+    expect((await readRecycleRecord(meta.path))?.reason).toBe('residual-files-changed');
+    expect(await fs.readFile(moved, 'utf8')).toBe('kept its original timestamps\n');
+
+    await fs.rm(moved);
+    expect(await recycleManagedWorktree(meta, { canRemove: async () => true })).toBe(true);
+    await expect(fs.stat(meta.path)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await restoreRecordedWorktree(meta.sessionId, meta.path)).toBe(true);
+    expect(await fs.readFile(path.join(meta.path, 'draft.txt'), 'utf8')).toBe('resumed contents\n');
+  }, 30_000);
+
+  it('drops a superseded snapshot at once and a deleted task\'s snapshot only in the startup sweep', async () => {
+    const meta = await createFixture('retention');
+    const record = await newRecycleRecord(meta);
+    record.snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/older`, { includeUntracked: true });
+    record.phase = 'snapshotted';
+    await writeRecycleRecord(record);
+    await fs.writeFile(path.join(meta.path, 'draft.txt'), 'edited after the first snapshot\n');
+    expect(await recycleManagedWorktree(meta, { canRemove: async () => true })).toBe(true);
+    const removed = (await readRecycleRecord(meta.path))!;
+    expect(removed.snapshot!.ref).not.toBe(record.snapshot.ref);
+    expect(await git(repo, 'for-each-ref', record.snapshot.ref)).toBe('');
+
+    const owner = (status: string) => async () => [
+      { id: meta.sessionId, status, source: 'desktop', currentDatabase: true, workingDir: meta.path, worktreePath: meta.path },
+    ];
+    // An archived task can still be unarchived; only a deleted one gives up its snapshot.
+    await releaseObsoleteRecoverySnapshots(owner('archived'));
+    expect(await git(repo, 'for-each-ref', removed.snapshot!.ref)).not.toBe('');
+    await releaseObsoleteRecoverySnapshots(owner('deleted'));
+    expect(await git(repo, 'for-each-ref', removed.snapshot!.ref)).toBe('');
   }, 30_000);
 
   it('keeps an advanced branch and its missing worktree untouched', async () => {

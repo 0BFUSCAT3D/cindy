@@ -24,7 +24,12 @@ vi.mock('../worktree/runtimeLeases', async (original) => ({
   ...await original<typeof import('../worktree/runtimeLeases')>(),
   readWorktreeRuntimePaths: vi.fn(async () => state.runtimes),
 }));
-vi.mock('../worktree/contentSnapshot', () => ({ captureWorktreeContent: snapshot, worktreeContentMatches: baselineMatches }));
+vi.mock('../worktree/contentSnapshot', () => ({
+  captureWorktreeContent: snapshot, worktreeContentMatches: baselineMatches,
+  worktreeStagedContentMatches: vi.fn(async () => true), releaseSnapshotRef: vi.fn(async () => true),
+  // Path lists are covered with real Git; here a resumed removal checks timestamps only.
+  discardableWorktreePaths: vi.fn(async () => null), snapshotTreePaths: vi.fn(async () => new Set()),
+}));
 vi.mock('../worktree/gitExec', () => ({ gitExec: git }));
 
 import { checkpointWorktreeForReuse, recycleManagedWorktree, requestWorktreeRecycle } from '../worktree/managedRecycle';
@@ -336,7 +341,8 @@ describe('shared worktree recycling', () => {
       return true;
     }).mockResolvedValueOnce(false);
     expect(await recycle()).toBe(false);
-    expect((await readRecycleRecord(meta.path))?.phase).toBe('removing');
+    // Nothing was deleted, so the next attempt verifies (and if needed re-snapshots) the full tree.
+    expect((await readRecycleRecord(meta.path))?.phase).toBe('snapshotted');
     expect((await readRecycleRecord(meta.path))?.reason).toBe('git-baseline-changed-before-removal');
     expect(git.mock.calls.some(([args]) => args.includes('remove'))).toBe(false);
     expect(await fs.readFile(path.join(meta.path, 'late-editor-write.txt'), 'utf8')).toBe('keep me');
