@@ -62,6 +62,24 @@ export function collectReplyReferences(text: string): ReplyReferences {
   return { blobs, paths };
 }
 
+/**
+ * The stored images a tool handed back (`xdt_image_url` / `xdt_image_urls` in its result), which the
+ * chat shows as images of the turn although the reply text never names them. A result that asked not
+ * to be shown (`_xdt_render_image: false`) and any address that is not a stored blob give nothing.
+ */
+export function toolResultImageUrls(rawContent: string | null): string[] {
+  let value: unknown = rawContent;
+  // A result is stored as JSON, often a JSON string holding the tool's own JSON.
+  for (let depth = 0; depth < 2 && typeof value === 'string'; depth += 1) {
+    try { value = JSON.parse(value); } catch { return []; }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  if (record._xdt_render_image === false) return [];
+  const candidates = [record.xdt_image_url, ...(Array.isArray(record.xdt_image_urls) ? record.xdt_image_urls : [])];
+  return [...new Set(candidates.filter((url): url is string => typeof url === 'string' && /^cindy-media:\/\/blobs\/[0-9a-f]{64}\.[a-z0-9]+$/.test(url)))];
+}
+
 function safeDecode(value: string): string {
   try { return decodeURIComponent(value); } catch { return value; }
 }
@@ -83,15 +101,24 @@ export interface ReplyArtifactDeps {
   roots: (sessionId: string) => Promise<string[]>;
   /** A stored media blob: its type and size, or null when this computer does not have it. */
   blob: (url: string, sessionId: string) => Promise<{ mimeType: string; size: number } | null>;
+  /** Stored images the tools of the turn this reply ends produced (see `toolResultImageUrls`). */
+  turnImages?: (sessionId: string, row: { id: string; createdAt: number }) => Promise<string[]>;
   maxBytes: number;
   log?: { warn: (message: string, meta?: Record<string, unknown>) => void };
 }
 
 /** Files the reply names that can go to the room with it (see the file comment). */
 export async function replyArtifactAttachments(
-  row: { id: string }, text: string, sessionId: string, deps: ReplyArtifactDeps,
+  row: { id: string; createdAt?: number }, text: string, sessionId: string, deps: ReplyArtifactDeps,
 ): Promise<CompanionMirrorAttachment[]> {
   const refs = collectReplyReferences(text);
+  // Images the turn's tools made are part of what the chat shows with this reply, named or not.
+  const turn = deps.turnImages && row.createdAt !== undefined
+    ? await deps.turnImages(sessionId, { id: row.id, createdAt: row.createdAt }).catch((error: unknown) => {
+      deps.log?.warn('Turn images could not be listed', { code: (error as NodeJS.ErrnoException)?.code ?? 'UNKNOWN' });
+      return [] as string[];
+    }) : [];
+  for (const url of turn) if (!refs.blobs.includes(url)) refs.blobs.push(url);
   if (!refs.blobs.length && !refs.paths.length) return [];
   const out: CompanionMirrorAttachment[] = [];
   const full = () => out.length >= REPLY_ARTIFACTS_MAX;

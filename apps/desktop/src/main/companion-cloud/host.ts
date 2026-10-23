@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
-import { and, asc, desc, eq, gt, gte, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { portableBotAvatarOrFallback, BOT_AVATAR_MAX_BYTES } from '../../shared/botAvatarValue.js';
 import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
 import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
@@ -36,7 +36,7 @@ import type { CompanionMaterializeHost } from './materialize.js';
 import { companionHomes } from './homes.js';
 import { companionCapabilitiesPatch, portableCompanionCapabilities, type CompanionArrivalNotice } from './capabilities.js';
 import { MIRROR_ATTACHMENT_MAX_BYTES, type CompanionMirrorCursor, type CompanionMirrorRow } from './mirror.js';
-import { replyArtifactAttachments, replyTextWithFiles } from './replyArtifacts.js';
+import { replyArtifactAttachments, replyTextWithFiles, toolResultImageUrls } from './replyArtifacts.js';
 import type { CompanionCloudHost } from './runtime.js';
 import { createCompanionCloudState } from './state.js';
 import type { CompanionLog } from './types.js';
@@ -299,6 +299,22 @@ async function readTaskFileRoots(sessionId: string): Promise<string[]> {
   return session ? taskImageRoots(session) : [];
 }
 
+/**
+ * Stored images the tools produced since the row before this reply (the previous user or assistant
+ * row): what the chat shows as images of the turn. Each lands on the first reply after it.
+ */
+async function readTurnImageUrls(sessionId: string, row: { id: string; createdAt: number }): Promise<string[]> {
+  const { drizzle } = getDbClient();
+  const [previous] = await drizzle.select({ createdAt: messages.createdAt }).from(messages)
+    .where(and(visibleRows(sessionId), lt(messages.createdAt, row.createdAt)))
+    .orderBy(desc(messages.createdAt)).limit(1);
+  const results = await drizzle.select({ content: messages.content }).from(messages)
+    .where(and(eq(messages.sessionId, sessionId), isNull(messages.rewindAt), eq(messages.role, 'tool_result'),
+      gt(messages.createdAt, previous?.createdAt ?? 0), lte(messages.createdAt, row.createdAt)))
+    .orderBy(asc(messages.createdAt)).limit(50);
+  return [...new Set(results.flatMap(result => toolResultImageUrls(result.content)))];
+}
+
 /** A media blob this task may read and this computer still has (the reply only names its address). */
 async function readReplyBlob(url: string, sessionId: string): Promise<{ mimeType: string; size: number } | null> {
   const blob = parseBlobUrl(url);
@@ -401,6 +417,7 @@ export function createCompanionCloudHost(input: {
     replyAttachments: (_botId, sessionId, row, text) => replyArtifactAttachments(row, text, sessionId, {
       roots: readTaskFileRoots,
       blob: readReplyBlob,
+      turnImages: readTurnImageUrls,
       maxBytes: MIRROR_ATTACHMENT_MAX_BYTES,
       ...(input.log ? { log: input.log } : {}),
     }),

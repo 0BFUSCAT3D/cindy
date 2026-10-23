@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { collectReplyReferences, replyArtifactAttachments, replyTextWithFiles, REPLY_ARTIFACTS_MAX } from '../replyArtifacts.js';
+import { collectReplyReferences, replyArtifactAttachments, replyTextWithFiles, toolResultImageUrls, REPLY_ARTIFACTS_MAX } from '../replyArtifacts.js';
 
 const HASH = 'a'.repeat(64);
 
@@ -72,6 +72,36 @@ describe('replyArtifactAttachments', () => {
     expect(files[0]).toMatchObject({ url: urls[2], category: 'file', mimeType: 'video/mp4' });
     expect(files[1]).toMatchObject({ url: urls[3], category: 'image' });
     expect(new Set(files.map(file => file.id)).size).toBe(files.length);
+  });
+});
+
+describe('images made by tools during the turn', () => {
+  const url = (hash: string) => `cindy-media://blobs/${hash.repeat(64)}.png`;
+  it('reads the stored images a tool result carries, whether it is stored as an object or as a JSON string', () => {
+    const result = { ok: true, xdt_image_url: url('a'), xdt_image_urls: [url('b'), url('a'), 'xdt-image://old/x.png', 'https://example.com/x.png'] };
+    expect(toolResultImageUrls(JSON.stringify(result))).toEqual([url('a'), url('b')]);
+    expect(toolResultImageUrls(JSON.stringify(JSON.stringify(result)))).toEqual([url('a'), url('b')]);
+    expect(toolResultImageUrls(JSON.stringify({ ...result, _xdt_render_image: false }))).toEqual([]);
+    expect(toolResultImageUrls('not json')).toEqual([]);
+    expect(toolResultImageUrls(null)).toEqual([]);
+  });
+
+  it('sends them with the reply although its text never names them, once and within the limit', async () => {
+    const known = new Map([[url('a'), 5], [url('b'), 7]]);
+    const asked: unknown[] = [];
+    const files = await replyArtifactAttachments({ id: 'm1', createdAt: 100 }, `看看 ${url('b')}`, 's1', {
+      roots: async () => [], maxBytes: 1000,
+      blob: async address => (known.has(address) ? { mimeType: 'image/png', size: known.get(address)! } : null),
+      turnImages: async (...args) => { asked.push(args); return [url('a'), url('b'), url('c')]; },
+    });
+    expect(asked).toEqual([['s1', { id: 'm1', createdAt: 100 }]]);
+    expect(files.map(file => [file.url, file.category])).toEqual([[url('b'), 'image'], [url('a'), 'image']]);
+    // A failure to look costs the reply nothing else.
+    const plain = await replyArtifactAttachments({ id: 'm2', createdAt: 100 }, `看看 ${url('b')}`, 's1', {
+      roots: async () => [], maxBytes: 1000, blob: async () => ({ mimeType: 'image/png', size: 1 }),
+      turnImages: async () => { throw new Error('boom'); },
+    });
+    expect(plain.map(file => file.url)).toEqual([url('b')]);
   });
 });
 
