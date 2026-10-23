@@ -127,6 +127,13 @@ relay 以 close 1013 `inbound backpressure` 主动断连，此时任何「立即
    被控端连续立即返回空结果时控制端放慢到 1s 一次，防止空转。2 台控制端共享被控端、
    其中一台静默的回归仍需在双实例实机验证中补测。
 
+账号边界关闭远程 Agent 句柄时，通知对方关闭与释放本机资源独立进行。关闭通知失败只记录日志，
+不能作为本机 PI 进程残留阻断换号；本机执行器、MCP 身份与执行环境中继的清理必须等待完成，
+失败仍向上传递，并让重复关闭共享同一清理结果。未送达的关闭由运行端现有无人拉取超时收尾，
+本次账号边界关闭不新增跨账号重试，也不重建 link 或 relay。普通关闭和连接池让出仍报告远端关闭失败；
+本机与 SSH PI 的账号边界保护不变。实现见 `remote-agent/controller/{proxyHandle,startRemote}.ts`，
+不改变 wire、授权检查或跨端版本要求（#6921）。
+
 **控制端连接池的让出与连回**(2026-10-17，协议见 [`protocol-compatibility.md`](protocol-compatibility.md)「控制端连接池」)：
 
 1. **故障层级**：B 的单设备名额(`caps.maxRuns`)快满或已满，或 B 以名额类 `REMOTE_AGENT_BUSY` 拒绝一次 open；只涉及这台 A 在
