@@ -9,18 +9,18 @@ import zhCN from '@/i18n/locales/zh-CN/common.json';
 import zhTW from '@/i18n/locales/zh-TW/common.json';
 import ja from '@/i18n/locales/ja/common.json';
 import ko from '@/i18n/locales/ko/common.json';
-import { DisplayPricingDetails } from '../DisplayPricingDetails';
+import { DisplayPricingDetails, DisplayPricingQuote } from '../DisplayPricingDetails';
 
 const locales = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko };
 type PricingModel = Pick<CatalogModel, 'displayPricing' | 'currency' | 'costDiscount'>;
 const item = { label: 'Output', price: 0.5, unit: 'second', quantity: 1 };
 
-async function renderPricing(model: PricingModel, locale: keyof typeof locales = 'en') {
+async function renderPricing(model: PricingModel, locale: keyof typeof locales = 'en', summary = false) {
   const i18n = createInstance();
   await i18n.init({ lng: locale, resources: { [locale]: { translation: locales[locale] } } });
   return render(
     <I18nextProvider i18n={i18n}>
-      <DisplayPricingDetails model={model} />
+      {summary ? <DisplayPricingQuote quote={model.displayPricing!.summary!.output![0]} currency={model.currency!} costDiscount={model.costDiscount} /> : <DisplayPricingDetails model={model} />}
     </I18nextProvider>,
   );
 }
@@ -52,7 +52,7 @@ describe('DisplayPricingDetails', () => {
     expect(within(output).getByText('$0.5').tagName).toBe('S');
     expect(within(output).getByText('/ second')).toBeTruthy();
     expect(within(output).getByText('/ 3 custom-unit')).toBeTruthy();
-    expect(within(input).getByText('/ 1,000,000 tokens')).toBeTruthy();
+    expect(within(input).getByText('/ 1M tokens')).toBeTruthy();
     expect(screen.getByText('Billed by output duration.')).toBeTruthy();
     expect(screen.getByText('<b>Provider terms</b>')).toBeTruthy();
     expect(container.querySelector('b')).toBeNull();
@@ -81,6 +81,24 @@ describe('DisplayPricingDetails', () => {
         if (discount === 1) expect(screen.getByText('¥0.5').tagName).toBe('S');
       },
     );
+
+    // Summary contract, unit tier: real quote/table rendering with million quantities and range qualifiers.
+    // Earlier cases had no summary or localized million denominator; minimal input is one output quote.
+    it.each(['estimated', 'starting_at'] as const)('renders summary range, tier, discount and %s in this locale', async priceType => {
+      const copy = locales[locale].newChat.modelSelector.displayPricing;
+      const { container } = await renderPricing({ currency: 'CNY', costDiscount: 0.2, displayPricing: {
+        items: [item], summary: { output: [{ price: 6, maxPrice: 10, tier: '480P/720P', unit: 'token', quantity: 1000000, priceType }] },
+      } }, locale, true);
+      expect(container.textContent).toContain('480P/720P');
+      expect(container.textContent).toContain((priceType === 'estimated' ? copy.estimated : copy.startingAt).replace('{{price}}', '¥4.8–¥8'));
+      expect(container.querySelector('s')?.textContent).toBe('¥6–¥10');
+      expect(screen.getByText(`/ ${copy.million} ${copy.units.token}`)).toBeTruthy();
+    });
+    it('uses the same million denominator in the supplementary price table', async () => {
+      await renderPricing({ currency: 'CNY', displayPricing: { items: [{ ...item, unit: 'character', quantity: 1000000 }] } }, locale);
+      const copy = locales[locale].newChat.modelSelector.displayPricing;
+      expect(screen.getByText(`/ ${copy.million} ${copy.units.character}`)).toBeTruthy();
+    });
 
     it('localizes known image units and keeps unknown provider units unchanged', async () => {
       await renderPricing({

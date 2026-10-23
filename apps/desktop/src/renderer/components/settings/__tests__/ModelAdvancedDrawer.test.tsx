@@ -785,3 +785,33 @@ it('keeps enterprise reference prices read-only in the model drawer', () => {
     screen.queryByRole('button', { name: 'settings.providers.models.priceOverride.menu' }),
   ).toBeNull();
 });
+
+// Unit contract: drawer summary must show translated roles while retaining supplier conditions below.
+// Previous drawer tests had no displayPricing; one input quote previously showed only the English table.
+it.each([{ hasSummary: true, withNotes: true }, { hasSummary: true, withNotes: false }, { hasSummary: false, withNotes: false }])('keeps supplier detail labels even without tiers or notes: %j', ({ hasSummary, withNotes }) => {
+  const quote = { price: 0.02, unit: 'image', quantity: 1 };
+  const summary = { input: [quote, { price: 140, unit: 'character', quantity: 1000000 }],
+    output: [{ ...quote, price: 6, maxPrice: 10, tier: '480P/720P' }],
+    cacheRead: [quote], cacheWrite: [quote] };
+  draw({ ...model, currency: 'CNY', costDiscount: 0.2, displayPricing: {
+    items: [{ ...quote, label: 'Supplier-specific charge' }], ...(withNotes ? { notes: ['Provider billing condition'] } : {}),
+    ...(hasSummary ? { summary } : {}),
+  } });
+  expect(screen.getByText('Supplier-specific charge')).toBeTruthy();
+  if (withNotes) expect(screen.getByText('Provider billing condition')).toBeTruthy();
+  if (!hasSummary) {
+    expect(screen.queryByText('settings.providers.models.advanced.price.input')).toBeNull();
+    return;
+  }
+  const input = screen.getByText('settings.providers.models.advanced.price.input').parentElement!;
+  expect(input.textContent).toContain('¥0.016');
+  expect(input.textContent).toContain(' · ');
+  expect(input.textContent).toContain('¥112');
+  expect(input.querySelector('s')?.textContent).toBe('¥0.02');
+  const output = screen.getByText('settings.providers.models.advanced.price.output').parentElement!;
+  expect(output.textContent).toContain('480P/720P ¥4.8–¥8');
+  expect(output.querySelector('s')?.textContent).toBe('¥6–¥10');
+  expect(screen.getByText('settings.providers.models.advanced.price.cacheRead')).toBeTruthy();
+  expect(screen.getByText('settings.providers.models.advanced.price.cacheCreate')).toBeTruthy();
+  expect(output.compareDocumentPosition(screen.getByText('Supplier-specific charge')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});

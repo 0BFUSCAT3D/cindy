@@ -1,4 +1,4 @@
-import { DisplayPricingDetails } from '@/components/DisplayPricingDetails';
+import { DisplayPricingDetails, DisplayPricingQuote } from '@/components/DisplayPricingDetails';
 import { Button } from '@/components/ui/button';
 import { localizedModelDescription } from '@/lib/modelDescriptions';
 import { localizedModelName, localizedBrandName } from '@/lib/modelDisplayNames';
@@ -995,7 +995,33 @@ export function ModelAdvancedDrawer({
 
                   <Section title={t('settings.providers.models.advanced.pricing')}>
                     {primaryModel.displayPricing && primaryModel.currency ? (
-                      <DisplayPricingDetails model={primaryModel} />
+                      <>
+                        {(['input', 'output', 'cacheRead', 'cacheWrite'] as const).map((role) => {
+                          const quotes = primaryModel.displayPricing?.summary?.[role];
+                          if (!quotes?.length) return null;
+                          return (
+                            <Row
+                              key={role}
+                              label={t(`settings.providers.models.advanced.price.${role === 'cacheWrite' ? 'cacheCreate' : role}`)}
+                            >
+                              {quotes.map((quote, index) => (
+                                <span key={index}>
+                                  {index > 0 && ' · '}
+                                  <DisplayPricingQuote
+                                    quote={quote}
+                                    currency={primaryModel.currency!}
+                                    costDiscount={primaryModel.costDiscount}
+                                  />
+                                </span>
+                              ))}
+                            </Row>
+                          );
+                        })}
+                        {/* Item labels may carry conditions absent from summary; retain the supplier's full table. */}
+                        <div className={primaryModel.displayPricing.summary ? 'pt-3' : undefined}>
+                          <DisplayPricingDetails model={primaryModel} />
+                        </div>
+                      </>
                     ) : price === null ? (
                       <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>
                         {t(

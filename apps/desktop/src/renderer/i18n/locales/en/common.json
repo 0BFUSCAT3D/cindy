@@ -10815,6 +10815,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "million": "1M",
         "free": "Free",
         "estimated": "About {{price}}",
         "startingAt": "From {{price}}",

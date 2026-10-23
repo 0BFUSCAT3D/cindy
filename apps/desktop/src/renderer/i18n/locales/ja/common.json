@@ -10780,6 +10780,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "million": "100万",
         "free": "無料",
         "estimated": "約 {{price}}",
         "startingAt": "{{price}} から",

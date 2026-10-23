@@ -10780,6 +10780,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "million": "百萬",
         "free": "免費",
         "estimated": "約 {{price}}",
         "startingAt": "{{price}} 起",

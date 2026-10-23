@@ -10780,6 +10780,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "million": "100만",
         "free": "무료",
         "estimated": "약 {{price}}",
         "startingAt": "{{price}}부터",
