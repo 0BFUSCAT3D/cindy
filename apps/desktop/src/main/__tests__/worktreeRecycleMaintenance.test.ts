@@ -118,9 +118,9 @@ describe('startup recovery snapshot cleanup', () => {
     for (const item of state.records) refs.set(item.snapshot!.ref, item.snapshot!.commit);
     let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
-    const runGit = git.getMockImplementation()!;
+    const simulateGit = git.getMockImplementation()!;
     git.mockImplementation(async (...args) => {
-      const result = await runGit(...args);
+      const result = await simulateGit(...args);
       if (args[0][0] === 'update-ref') now += 60_000;
       return result;
     });
@@ -136,12 +136,12 @@ describe('startup recovery snapshot cleanup', () => {
     state.records = [saved('slow', 'restored'), saved('fast', 'restored')];
     state.records[1].meta.baseRepo = path.resolve('other-repo');
     for (const item of state.records) refs.set(item.snapshot!.ref, item.snapshot!.commit);
-    const runGit = git.getMockImplementation()!;
+    const simulateGit = git.getMockImplementation()!;
     git.mockImplementation(async (...args) => {
       if (args[0][0] === 'update-ref' && args[0][2] === state.records[0].snapshot!.ref) {
         throw new Error('Git operation deadline exceeded');
       }
-      return runGit(...args);
+      return simulateGit(...args);
     });
     expect(await releaseObsoleteRecoverySnapshots(async () => [])).toBe(1);
     expect([...refs.keys()]).toEqual([state.records[0].snapshot!.ref]);
@@ -157,8 +157,8 @@ describe('startup recovery snapshot cleanup', () => {
     state.records = [saved('owner', 'restored')];
     refs.set(state.records[0].snapshot!.ref, state.records[0].snapshot!.commit);
     let ready = true;
-    const runGit = git.getMockImplementation()!;
-    git.mockImplementation(async (...args) => { ready = false; return runGit(...args); });
+    const simulateGit = git.getMockImplementation()!;
+    git.mockImplementation(async (...args) => { ready = false; return simulateGit(...args); });
     expect(await releaseObsoleteRecoverySnapshots(async () => [], () => ready)).toBe(0);
     expect(refs.size).toBe(1);
   });
