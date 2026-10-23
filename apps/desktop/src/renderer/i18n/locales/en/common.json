@@ -5206,10 +5206,6 @@
           "name": "Android automation",
           "description": "View and operate Android devices connected to this computer."
         },
-        "ios-simulator": {
-          "name": "iOS Simulator",
-          "description": "Install, run and inspect apps in an iOS Simulator."
-        },
         "browser": {
           "name": "Browser",
           "description": "Browse, read, capture and interact with web pages."
@@ -7141,10 +7137,10 @@
         "embeddedSimulator": {
           "title": "The original built-in simulator has been retired",
           "description": "Cindy has removed the original built-in simulator.",
-          "replacementName": "Baguette Simulator",
-          "replacementDescription": "View a live screen in the Cindy sidebar, control devices, run apps, and take screenshots.",
+          "replacementName": "Device Simulator",
+          "replacementDescription": "View a live screen in the Cindy sidebar, control devices, run apps, and take screenshots. Built on the open-source Baguette.",
           "requirements": "Requires an Apple Silicon Mac, macOS 15 or later, and full Xcode.",
-          "dataNotice": "Your original simulator devices and app data will not be deleted. Installing Baguette does not automatically migrate devices, apps, or sign-ins."
+          "dataNotice": "Your original simulator devices and app data will not be deleted. Installing the new Device Simulator does not automatically migrate devices, apps, or sign-ins."
         }
       },
       "remote": {

@@ -5175,10 +5175,6 @@
           "name": "Android 자동화",
           "description": "이 컴퓨터에 연결된 Android 기기를 확인하고 조작합니다."
         },
-        "ios-simulator": {
-          "name": "iOS 시뮬레이터",
-          "description": "iOS 시뮬레이터에서 앱을 설치, 실행 및 검사합니다."
-        },
         "browser": {
           "name": "브라우저",
           "description": "웹 페이지를 탐색하고 읽고 캡처하며 조작합니다."
@@ -7110,10 +7106,10 @@
         "embeddedSimulator": {
           "title": "기존 내장 시뮬레이터 지원이 종료되었습니다",
           "description": "Cindy에서 기존 내장 시뮬레이터를 제거했습니다.",
-          "replacementName": "Baguette 시뮬레이터",
-          "replacementDescription": "Cindy 사이드바에서 실시간 화면을 보고 기기를 조작하며 App 실행과 스크린샷 촬영을 할 수 있습니다.",
+          "replacementName": "기기 시뮬레이터",
+          "replacementDescription": "Cindy 사이드바에서 실시간 화면을 보고 기기를 조작하며 App 실행과 스크린샷 촬영을 할 수 있습니다. 오픈 소스 프로젝트 Baguette를 기반으로 합니다.",
           "requirements": "Apple Silicon Mac, macOS 15 이상 및 전체 Xcode가 필요합니다.",
-          "dataNotice": "기존 시뮬레이터 기기와 App 데이터는 삭제되지 않습니다. Baguette를 설치해도 기기, App, 로그인 상태는 자동으로 이전되지 않습니다."
+          "dataNotice": "기존 시뮬레이터 기기와 App 데이터는 삭제되지 않습니다. 새 기기 시뮬레이터를 설치해도 기기, App, 로그인 상태는 자동으로 이전되지 않습니다."
         }
       },
       "remote": {
