@@ -171,11 +171,12 @@ describe('bot im connection store', () => {
     expect(listBotImConnections()).toHaveLength(3);
     const obsolete = Object.fromEntries(Object.keys(document.connections[first.id].archivedTaskRows)
       .slice(0, limit === 'count' ? 1 : count / 2).map((id) => [id, 1]));
-    await archiveBotImTaskRow(first, 'new-session', obsolete);
+    await archiveBotImTaskRow(second, 'new-session', [{ connection: first, cutoffs: obsolete }]);
     const archives = readBotImConnection(first.id)?.archivedTaskRows;
-    expect(archives?.['new-session']).toEqual(expect.any(Number));
     for (const id of Object.keys(obsolete)) expect(archives?.[id]).toBeUndefined();
-    expect(readBotImConnection(second.id)?.archivedTaskRows).toEqual(document.connections[second.id].archivedTaskRows);
+    expect(readBotImConnection(second.id)?.archivedTaskRows).toEqual({
+      ...document.connections[second.id].archivedTaskRows, 'new-session': expect.any(Number),
+    });
   });
 
   it('serializes concurrent archives at the owner-wide limit', async () => {
@@ -195,10 +196,21 @@ describe('bot im connection store', () => {
     document.connections[record.id].archivedTaskRows = { obsolete: 1, rearchived: 2, dormant: 1 };
     fs.writeFileSync(file(), JSON.stringify(document));
     // The runtime observed cutoff=1 before another writer rearchived this row.
-    await archiveBotImTaskRow(record, 'new-session', { obsolete: 1, rearchived: 1 });
+    await archiveBotImTaskRow(record, 'new-session', [{ connection: record, cutoffs: { obsolete: 1, rearchived: 1 } }]);
     expect(readBotImConnection(record.id)?.archivedTaskRows).toEqual({
       rearchived: 2, dormant: 1, 'new-session': expect.any(Number),
     });
+  });
+
+  it('preserves another connection whose binding changed during reclamation lookup', async () => {
+    const first = await addBotImConnectionRecord({ botId: 'bot-a', channel: 'feishu' }, { id: () => 'aaaaaaaaaaaa' });
+    const second = await addBotImConnectionRecord({ botId: 'bot-b', channel: 'telegram' }, { id: () => 'bbbbbbbbbbbb' });
+    await archiveBotImTaskRow(first, 'old-session');
+    const observed = readBotImConnection(first.id)!;
+    await updateBotImConnectionRecord(first.id, { botContextId: 'new-binding' });
+    await archiveBotImTaskRow(second, 'new-session', [{ connection: observed, cutoffs: observed.archivedTaskRows! }]);
+    expect(readBotImConnection(first.id)?.archivedTaskRows).toEqual(observed.archivedTaskRows);
+    expect(readBotImConnection(second.id)?.archivedTaskRows?.['new-session']).toEqual(expect.any(Number));
   });
 
   it('keeps valid prototype-named task ids as ordinary archive entries', async () => {

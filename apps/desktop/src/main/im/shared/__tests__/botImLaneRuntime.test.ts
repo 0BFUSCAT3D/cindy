@@ -7,12 +7,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { BotImConnectionRecord } from '../../../../shared/botImConnection';
+import type { BotImTaskArchiveCleanup } from '../botImConnectionStore';
 
 const h = vi.hoisted(() => ({
   records: new Map<string, unknown>(),
   archived: new Set<string>(),
   owner: 'owner-a',
-  reclaimable: [] as Record<string, number>[],
+  reclaimable: [] as (readonly BotImTaskArchiveCleanup[])[],
 }));
 
 vi.mock('../../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.owner, isAppSessionBoundaryPending: () => false }));
@@ -23,7 +24,8 @@ vi.mock('../../../localDb/client/current', () => ({ getDbClient: vi.fn() }));
 vi.mock('../../../localDb/schema', () => ({ botSessionLinks: {}, messages: {}, sessions: {} }));
 vi.mock('../botImConnectionStore', () => ({
   readBotImConnection: (id: string) => h.records.get(id) ?? null,
-  archiveBotImTaskRow: async (record: BotImConnectionRecord, sessionId: string, reclaimable: Record<string, number> = {}) => {
+  listBotImConnections: () => [...h.records.values()] as BotImConnectionRecord[],
+  archiveBotImTaskRow: async (record: BotImConnectionRecord, sessionId: string, reclaimable: readonly BotImTaskArchiveCleanup[] = []) => {
     h.reclaimable.push(reclaimable);
     const next = { ...record, archivedTaskRows: { ...record.archivedTaskRows, [sessionId]: Date.now() } };
     h.records.set(record.id, next);
@@ -99,7 +101,7 @@ describe('botImLaneRuntime', () => {
   it('identifies only unlinked or superseded cutoffs for reclamation', async () => {
     h.records.set(TELEGRAM.id, { ...TELEGRAM, archivedTaskRows: { 's-main': 200, 's-topic': 1, removed: 1 } });
     await archiveBotImConnectionLane(TELEGRAM.id, 's-group');
-    expect(h.reclaimable).toEqual([{ 's-topic': 1, removed: 1 }]);
+    expect(h.reclaimable).toEqual([[{ connection: expect.objectContaining({ id: TELEGRAM.id }), cutoffs: { 's-topic': 1, removed: 1 } }]]);
     expect(restartSession).not.toHaveBeenCalled();
   });
 
@@ -107,7 +109,20 @@ describe('botImLaneRuntime', () => {
     h.records.set(TELEGRAM.id, { ...TELEGRAM, archivedTaskRows: { 's-topic': 1 } });
     readActivity.mockRejectedValueOnce(new Error('activity unavailable'));
     await archiveBotImConnectionLane(TELEGRAM.id, 's-group');
-    expect(h.reclaimable).toEqual([{}]);
+    expect(h.reclaimable).toEqual([[]]);
+  });
+
+  it.each(['empty', 'active', 'unavailable'] as const)('checks another connection with %s routes before applying the shared archive budget', async (routes) => {
+    const cutoffs = Object.fromEntries(Array.from({ length: 512 }, (_, i) => [`obsolete-${i}`, 1]));
+    const legacy = { ...TELEGRAM, id: 'old-connection', botId: 'old-bot', archivedTaskRows: cutoffs };
+    h.records.set(legacy.id, legacy);
+    if (routes === 'unavailable') listLinks.mockResolvedValueOnce(LINKS).mockRejectedValueOnce(new Error('routes unavailable'));
+    if (routes === 'active') listLinks.mockResolvedValueOnce(LINKS).mockResolvedValueOnce(
+      Object.keys(cutoffs).map((sessionId, i) => ({ sessionId, role: 'channel', routeKey: `im:telegram:777:g:-${1000 + i}` })),
+    );
+    await archiveBotImConnectionLane(TELEGRAM.id, 's-group');
+    expect(h.reclaimable).toEqual([routes === 'unavailable' ? [] : [{ connection: legacy, cutoffs }]]);
+    expect(restartSession).not.toHaveBeenCalled();
   });
 
   it('rejects an account change during reclamation lookup before any archive write', async () => {

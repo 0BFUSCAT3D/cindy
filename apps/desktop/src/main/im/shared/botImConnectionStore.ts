@@ -191,11 +191,16 @@ function assertArchiveCapacity(connections: BotImConnectionDocument['connections
   }
 }
 
+export interface BotImTaskArchiveCleanup {
+  connection: BotImConnectionRecord;
+  cutoffs: Readonly<Record<string, number>>;
+}
+
 /** Archive a row in one connection, without touching its session or route link. */
 export async function archiveBotImTaskRow(
   expected: BotImConnectionRecord,
   sessionId: string,
-  reclaimable: Readonly<Record<string, number>> = {},
+  reclaimable: readonly BotImTaskArchiveCleanup[] = [],
 ): Promise<BotImConnectionRecord | null> {
   const owner = activeOwnerScopeKey();
   let next: BotImConnectionRecord | null = null;
@@ -203,16 +208,23 @@ export async function archiveBotImTaskRow(
     if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('OWNER_CHANGED');
     const existing = current.value.connections[expected.id];
     if (!existing || existing.botId !== expected.botId || existing.channel !== expected.channel || existing.botContextId !== expected.botContextId) return current.value;
-    const archivedTaskRows = { ...existing.archivedTaskRows };
-    for (const [id, observedCutoff] of Object.entries(reclaimable)) {
-      // A newer archive made while activity was being read must survive.
-      if (archivedTaskRows[id] === observedCutoff) delete archivedTaskRows[id];
+    const connections = { ...current.value.connections };
+    for (const { connection, cutoffs } of reclaimable) {
+      const source = connections[connection.id];
+      if (!source || source.botId !== connection.botId || source.channel !== connection.channel || source.botContextId !== connection.botContextId) continue;
+      const archivedTaskRows = { ...source.archivedTaskRows };
+      for (const [id, observedCutoff] of Object.entries(cutoffs)) {
+        // A newer archive made while activity was being read must survive.
+        if (archivedTaskRows[id] === observedCutoff) delete archivedTaskRows[id];
+      }
+      connections[connection.id] = { ...source, archivedTaskRows };
     }
+    const target = connections[expected.id];
     const merged = {
-      ...existing,
-      archivedTaskRows: { ...archivedTaskRows, [sessionId]: Date.now() },
+      ...target,
+      archivedTaskRows: { ...target.archivedTaskRows, [sessionId]: Date.now() },
     };
-    const connections = { ...current.value.connections, [expected.id]: merged };
+    connections[expected.id] = merged;
     assertArchiveCapacity(connections);
     next = { id: expected.id, ...merged };
     return { connections };

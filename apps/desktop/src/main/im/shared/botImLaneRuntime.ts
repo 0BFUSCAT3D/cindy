@@ -29,7 +29,7 @@ import type {
   BotImConnectionRecord,
   BotImLaneKind,
 } from '../../../shared/botImConnection';
-import { archiveBotImTaskRow, readBotImConnection } from './botImConnectionStore';
+import { archiveBotImTaskRow, listBotImConnections, readBotImConnection, type BotImTaskArchiveCleanup } from './botImConnectionStore';
 import { companionConnectionRouteKeyPrefix } from './imBotBindingRoute';
 
 const log = createLogger('im:bot-lanes');
@@ -294,22 +294,37 @@ export async function archiveBotImConnectionLane(
   const link = links.find((item) => item.sessionId === sessionId);
   assertCurrent();
   if (!link) throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
-  const linkedIds = new Set(links.map((item) => item.sessionId));
-  const reclaimable: Record<string, number> = Object.create(null);
-  for (const [id, cutoff] of Object.entries(record.archivedTaskRows ?? {})) {
-    if (id === sessionId) continue;
-    if (!linkedIds.has(id)) {
-      reclaimable[id] = cutoff;
-      continue;
-    }
-    let activity: BotImLaneActivity | null = null;
+  const reclaimable: BotImTaskArchiveCleanup[] = [];
+  // Capacity is shared by the owner. An empty old connection must not strand
+  // obsolete markers that block archiving in every other connection.
+  for (const candidate of [record, ...listBotImConnections().filter((item) => item.id !== id)]) {
+    if (!candidate.archivedTaskRows) continue;
+    let candidateLinks: ScopedLink[];
     try {
-      activity = await store.readActivity(id);
+      candidateLinks = candidate.id === id ? links : await listScopedLinks(candidate);
     } catch {
-      // Missing activity evidence must not reveal a still-archived row.
+      assertCurrent();
+      continue; // A failed route lookup is not evidence that its rows are gone.
     }
     assertCurrent();
-    if (activity && activity.lastActivityAt !== null && activity.lastActivityAt > cutoff) reclaimable[id] = cutoff;
+    const linkedIds = new Set(candidateLinks.map((item) => item.sessionId));
+    const cutoffs: Record<string, number> = Object.create(null);
+    for (const [archivedId, cutoff] of Object.entries(candidate.archivedTaskRows)) {
+      if (candidate.id === id && archivedId === sessionId) continue;
+      if (!linkedIds.has(archivedId)) {
+        cutoffs[archivedId] = cutoff;
+        continue;
+      }
+      let activity: BotImLaneActivity | null = null;
+      try {
+        activity = await store.readActivity(archivedId);
+      } catch {
+        // Missing activity evidence must not reveal a still-archived row.
+      }
+      assertCurrent();
+      if (activity && activity.lastActivityAt !== null && activity.lastActivityAt > cutoff) cutoffs[archivedId] = cutoff;
+    }
+    if (Object.keys(cutoffs).length) reclaimable.push({ connection: candidate, cutoffs });
   }
   assertCurrent();
   const current = requireRecord(id);
