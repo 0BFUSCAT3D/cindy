@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { open, readdir, rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
@@ -16,12 +17,15 @@ export type TerminalTaskMeta = SessionMeta & {
   workspaceKind?: 'project' | 'dialogue'; userSendAt?: number;
   pendingHandoff?: { id: string; text: string; createdAt: number } | null;
   goalContinuation?: import('@cindy/im-runtime/goalInactiveNote').GoalContinuationState | null;
+  thinkingEnabled?: boolean;
   usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number };
 };
 export type NewTerminalTaskMeta = Omit<TerminalTaskMeta, 'createdAt' | 'updatedAt'>;
 type ChannelRotation = { version: 1; rows: TerminalTaskMeta[]; bindings: ImBindingRow[] };
 export type Submission = { requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
-export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user' | 'user-meta'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string };
+export type ContextRebuild = Parameters<import('@cindy/im-runtime/contextOverflowRollover').ContextOverflowRolloverDeps['commitRebuild']>[2] & { handoff: string };
+export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user' | 'user-meta' | 'boundary' | 'boundary-meta' | 'context-rebuild'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string; boundary?: import('@cindy/im-runtime/sessionAgentSwitch').AgentSwitchBoundaryContent; contextRebuild?: ContextRebuild };
+type RouteCommit = { version: 1; row: TerminalTaskMeta; record: HistoryRecord };
 function taskId(value: string): string {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(value)) throw new Error('INVALID_TASK_ID');
   return value;
@@ -35,6 +39,7 @@ export class TerminalTaskStorage implements SessionStorage {
   private readonly writes = new Map<string, Promise<unknown>>();
   private metadataBarrier: Promise<void> = Promise.resolve();
   private metadataFault: unknown;
+  private readonly routeFaults = new Map<string, unknown>();
   constructor(private readonly root: string) {}
   private directory(id: string) { return path.join(this.root, taskId(id)); }
   private file(id: string) { return path.join(this.directory(id), 'task.json'); }
@@ -46,12 +51,14 @@ export class TerminalTaskStorage implements SessionStorage {
     if (rotation) await this.materializeRotation(this.parseRotation(JSON.parse(rotation.toString())));
     for (const entry of await readdir(this.root, { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]{1,100}$/.test(entry.name)) continue;
+      await this.repairInterruptedAppend(entry.name);
+      const routeCommit = await readPrivateFile(this.routeCommitFile(entry.name));
+      if (routeCommit) await this.materializeRouteCommit(entry.name, this.parseRouteCommit(entry.name, JSON.parse(routeCommit.toString())));
       const raw = await readPrivateFile(this.file(entry.name));
       if (!raw) throw new Error('TASK_METADATA_MISSING');
       const row = JSON.parse(raw.toString()) as TerminalTaskMeta;
       if (row.id !== entry.name || !['claude-code', 'codex', 'pi'].includes(row.agentKind) || typeof row.model !== 'string' || typeof row.workDir !== 'string') throw new Error('INVALID_TASK_METADATA');
       this.rows.set(row.id, row);
-      await this.repairInterruptedAppend(row.id);
       const receipts = await readPrivateFile(path.join(this.directory(row.id), 'requests.json'));
       const entries: Submission[] = receipts ? JSON.parse(receipts.toString()) : [];
       for (const receipt of entries) {
@@ -63,7 +70,7 @@ export class TerminalTaskStorage implements SessionStorage {
     }
   }
   private enqueue<T>(id: string, action: () => Promise<T>): Promise<T> {
-    const result = Promise.all([this.metadataBarrier, this.writes.get(id)]).then(action);
+    const result = Promise.all([this.metadataBarrier, this.writes.get(id)]).then(() => { this.assertRouteHealthy(id); return action(); });
     this.writes.set(id, result.catch(() => undefined));
     return result;
   }
@@ -81,6 +88,7 @@ export class TerminalTaskStorage implements SessionStorage {
     taskId(id);
     await this.metadataBarrier;
     await this.writes.get(id);
+    this.assertRouteHealthy(id);
     return this.rows.has(id) ? structuredClone(this.rows.get(id)!) : null;
   }
   async list(): Promise<TerminalTaskMeta[]> {
@@ -178,6 +186,66 @@ export class TerminalTaskStorage implements SessionStorage {
     });
   }
   setSelection(id: string, selection: ModelSelection) { return this.update(id, { agentKind: selection.agentKind, providerId: selection.providerId, model: selection.model, effort: selection.effort }); }
+  private assertRouteHealthy(id: string) { if (this.routeFaults.has(id)) throw this.routeFaults.get(id); }
+  private routeCommitFile(id: string) { return path.join(this.directory(id), 'route-commit.json'); }
+  private parseRouteCommit(id: string, input: unknown): RouteCommit {
+    const value = input as Partial<RouteCommit> | null;
+    if (!value || value.version !== 1 || value.row?.id !== id || !value.record
+      || !['claude-code', 'codex', 'pi'].includes(value.row.agentKind) || typeof value.row.workDir !== 'string' || typeof value.row.model !== 'string'
+      || !['boundary', 'boundary-meta', 'context-rebuild'].includes(value.record.kind) || !value.record.clientId
+      || !Number.isSafeInteger(value.record.sequence) || value.record.sequence < 1 || !Number.isSafeInteger(value.record.timestamp)
+      || typeof (value.record.boundary ?? value.record.contextRebuild)?.handoff !== 'string' || value.row.pendingHandoff?.id !== value.record.clientId
+      || value.row.pendingHandoff.text !== (value.record.boundary ?? value.record.contextRebuild)?.handoff) throw new Error('INVALID_TASK_ROUTE_COMMIT');
+    return value as RouteCommit;
+  }
+  /** Recovery is idempotent on either side of the journal append. There can be
+   * no newer writes after a committed transaction until it is materialized. */
+  private async materializeRouteCommit(id: string, transaction: RouteCommit) {
+    const last = (await this.readHistory(id, 0, 1, true)).records[0];
+    const record = transaction.record;
+    if ((last?.sequence ?? 0) === record.sequence - 1) await this.writeRecord(id, record);
+    else {
+      const existing = (await this.readHistory(id, record.sequence - 1, 1)).records[0];
+      if (last?.sequence !== record.sequence || JSON.stringify(existing) !== JSON.stringify(record)) throw new Error('TASK_ROUTE_JOURNAL_CONFLICT');
+      this.nextSequences.set(id, record.sequence);
+    }
+    await atomicPrivateWrite(this.file(id), JSON.stringify(transaction.row));
+    await rm(this.routeCommitFile(id), { force: true, maxRetries: 5, retryDelay: 100 });
+    this.rows.set(id, transaction.row);
+  }
+  /** Route, visible boundary and next-send context share one durable commit.
+   * Resume fallback replaces the boundary projection while clearing its SDK ID. */
+  commitRouteChange(id: string, patch: Partial<TerminalTaskMeta>, boundary: NonNullable<HistoryRecord['boundary']>, guard: () => void, replaceClientId?: string): Promise<HistoryRecord> {
+    return this.commitContext(id, patch, { kind: replaceClientId ? 'boundary-meta' : 'boundary', boundary }, boundary.handoff, guard, replaceClientId);
+  }
+  commitContextRebuild(id: string, rebuild: ContextRebuild, guard: () => void): Promise<HistoryRecord> {
+    return this.commitContext(id, {}, { kind: 'context-rebuild', contextRebuild: rebuild }, rebuild.handoff, guard);
+  }
+  private commitContext(id: string, patch: Partial<TerminalTaskMeta>, input: Pick<HistoryRecord, 'kind' | 'boundary' | 'contextRebuild'>, handoff: string, guard: () => void, replaceClientId?: string): Promise<HistoryRecord> {
+    return this.enqueue(id, async () => {
+      guard();
+      const prior = this.rows.get(id);
+      if (!prior || prior.deleted || prior.archived) throw new Error('TASK_NOT_FOUND');
+      if (replaceClientId && prior.pendingHandoff?.id !== replaceClientId) throw new Error('TASK_HANDOFF_CHANGED');
+      const rebuild = input.contextRebuild;
+      if (rebuild) {
+        if (rebuild.expectedClearedAt !== undefined && (prior.clearedAt ?? null) !== rebuild.expectedClearedAt) throw new Error('TASK_CONTEXT_CHANGED');
+        if (rebuild.replacementRoute && prior.sdkSessionId !== rebuild.replacementRoute.expectedSdkSessionId) throw new Error('TASK_NATIVE_SESSION_CHANGED');
+        patch = { sdkSessionId: undefined, usage: { tokenUsage: prior.usage?.tokenUsage ?? 0, contextTokens: 0, contextWindow: prior.usage?.contextWindow ?? 0, costUsd: prior.usage?.costUsd ?? 0 },
+          ...(rebuild.replacementRoute ? { model: rebuild.replacementRoute.model, providerId: rebuild.replacementRoute.providerId ?? undefined, effort: rebuild.replacementRoute.effort as ModelSelection['effort'], fastMode: rebuild.replacementRoute.fastMode } : {}) };
+      }
+      const last = (await this.readHistory(id, 0, 1, true)).records[0];
+      const timestamp = Math.max(Date.now(), (prior.clearedAt ?? 0) + 1), clientId = replaceClientId ?? randomUUID();
+      const record: HistoryRecord = { sequence: (last?.sequence ?? 0) + 1, timestamp, ...input, clientId };
+      const row = { ...prior, ...patch, id: prior.id, createdAt: prior.createdAt, updatedAt: timestamp, pendingHandoff: { id: clientId, text: handoff, createdAt: timestamp } };
+      const transaction = this.parseRouteCommit(id, { version: 1, row, record });
+      guard();
+      await atomicPrivateWrite(this.routeCommitFile(id), JSON.stringify(transaction));
+      try { await this.materializeRouteCommit(id, transaction); }
+      catch (error) { this.routeFaults.set(id, error); throw error; }
+      return structuredClone(record);
+    });
+  }
   append(id: string, input: Omit<HistoryRecord, 'sequence' | 'timestamp'>): Promise<HistoryRecord> {
     return this.enqueue(id, async () => {
       if (!this.rows.has(id)) throw new Error('TASK_NOT_FOUND');
@@ -209,11 +277,14 @@ export class TerminalTaskStorage implements SessionStorage {
         next = page.records[0]?.sequence ?? 0;
       }
       const record: HistoryRecord = { ...input, timestamp: Date.now(), sequence: next + 1 };
+      await this.writeRecord(id, record);
+      return record;
+  }
+  private async writeRecord(id: string, record: HistoryRecord) {
       const handle = await open(path.join(this.directory(id), 'events.jsonl'), 'a', 0o600);
       try { await handle.writeFile(JSON.stringify(record) + '\n'); await handle.sync(); }
       finally { await handle.close(); }
       this.nextSequences.set(id, record.sequence);
-      return record;
   }
   /** Only an incomplete trailing record can arise from an interrupted append.
    * Drop those uncommitted bytes before reusing its sequence; never ignore a
@@ -247,6 +318,7 @@ export class TerminalTaskStorage implements SessionStorage {
     taskId(id);
     await this.metadataBarrier;
     await this.writes.get(id);
+    this.assertRouteHealthy(id);
     if (!this.rows.has(id)) throw new Error('TASK_NOT_FOUND');
     return this.readHistory(id, after, Math.max(1, Math.min(1000, limit)));
   }
@@ -324,5 +396,5 @@ export class TerminalTaskStorage implements SessionStorage {
       return structuredClone(receipt);
     });
   }
-  async flush(): Promise<void> { await Promise.all([this.metadataBarrier, ...this.writes.values()]); }
+  async flush(): Promise<void> { await Promise.all([this.metadataBarrier, ...this.writes.values()]); if (this.routeFaults.size) throw this.routeFaults.values().next().value; }
 }

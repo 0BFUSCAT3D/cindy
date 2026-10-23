@@ -51,7 +51,7 @@ const registerAst = ts.createSourceFile('register.ts', registerSource, ts.Script
 // Compile only the production predicate; importing its runtime module here
 // would load the entire harness dependency chain into this fast guard suite.
 const switchAst = ts.createSourceFile('sessionAgentSwitchHandler.ts', readFileSync(
-  resolve(mainRoot, 'maker-ipc/sessionAgentSwitchHandler.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+  resolve(mainRoot, '../../../../packages/im-runtime/src/sessionAgentSwitch.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
 const userIntentPredicate = switchAst.statements.find((node): node is ts.FunctionDeclaration =>
   ts.isFunctionDeclaration(node) && node.name?.text === 'isUserPendingAgentSwitchIntent')!;
 const isUserPendingAgentSwitchIntent = new Function(ts.transpileModule(

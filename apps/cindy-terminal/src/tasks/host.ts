@@ -13,6 +13,9 @@ import { type InvocationContext, type TerminalSecrets } from '../contracts.js';
 import { createDeviceAgentStarter, readDeviceProviderViews, readRemoteProviderRoute, hostedStartOptions, type HostedStartInput, type DeviceAgentServiceDeps } from '@cindy/remote-agent';
 import { readTaskDelivery, validateTaskDelivery, type TaskDeliveryProof } from './handoff.js';
 import { TerminalTaskMedia } from './media.js';
+import { persistedUserContentToWireMessage, type ContextOverflowRolloverDeps } from '@cindy/im-runtime/contextOverflowRollover';
+import { createAutoReviewIntentProjection } from '@cindy/maker-shared/auto-review-intent';
+import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, INHERITED_CAPABILITY_SELECTION, PI_CACHE_RECOVERY_EXPECTATION } from '@cindy/maker-core';
 import { normalizeTaskInput, appendInputText, inputPlainText, persistedInput, type InputHost, type AttachmentLifecycle } from './input.js';
 import { createRemoteHistory } from './remote-history.js';
 import { atomicPrivateWrite, readPrivateFile, privateDirectory } from '../platform.js';
@@ -47,11 +50,13 @@ import { validateTitleOutput } from '@cindy/im-runtime/titleOutputValidation';
 import { fbotTitle } from '@cindy/im-runtime/title';
 import { isCredentialModeSwitchBusyError } from '@cindy/im-runtime/credentialModeSwitchError';
 import { TerminalTaskContext } from './context.js';
+import { TerminalTaskRoutes } from './routes.js';
 import { AUTO_TITLE_MAX_CHARS } from '@cindy/maker-shared/session-title';
 import type { Locale } from '../ui/i18n.js';
 import { redactToolInputForUntrustedBoundary } from '@cindy/remote-agent/host/toolInputRedaction';
 
 export const TERMINAL_TASK_CHANNELS = [
+  'maker:switch-session-agent', 'maker:get-session-agent-switch-intent',
   'maker:generate-title',
   ...CAPABILITY_CHANNELS,
   ...TASK_CHANGE_CHANNELS,
@@ -122,6 +127,8 @@ export class TerminalTaskHost {
   readonly channelSignals: ReturnType<typeof createChannelTurnSignals>;
   readonly channelRecovery: ReturnType<typeof createRuntimeRecoveryNotices>;
   readonly taskContext: TerminalTaskContext;
+  readonly routes: TerminalTaskRoutes;
+  private readonly routeClosures = new Set<string>();
   private readonly permissionChanges = createSessionPermissionChanges();
   private readonly utilityAbort = new AbortController();
   private readonly utilityWork = new Set<Promise<unknown>>();
@@ -235,6 +242,28 @@ export class TerminalTaskHost {
     });
     this.capabilities = new TerminalCapabilities({root:options.profileDir,secrets:options.secretStore,assertCurrent:()=>{if(this.closed)throw new Error('TASK_HOST_CLOSED');},changed:()=>{this.emit('maker:mcp:changed',{});this.emit('maker:remote-resources:changed',{collectionId:'skills'});this.emit('maker:remote-resources:changed',{collectionId:'mcp'});},workingDirs:async()=>[...new Set((await this.storage.list()).filter(row=>!row.deleted).map(row=>row.workDir))]});
     this.models = new TerminalModelConfig(options.profileDir, options.secretStore, kind => this.authState(kind), options.catalog, options.createAgent ? undefined : async kind => { const binary = this.binaries.get(kind); return binary ? discoverNativeModels(kind, binary, options.profileDir, options.logger) : []; });
+    this.routes = new TerminalTaskRoutes({
+      storage: this.storage, context: this.taskContext, models: this.models, logger: options.logger,
+      assertCurrent: () => this.guard({ source: 'local' }),
+      getSession: id => this.live.get(id)?.session,
+      closeSession: id => this.closeTask(id), bootstrap: async id => { await this.ensureLive(id); },
+      select: input => this.selection(input), messages: id => this.contextMessages(id, Infinity),
+      withCloseSuppressed: async (id, run) => {
+        const previous = this.routeClosures.has(id); this.routeClosures.add(id);
+        try { return await run(); } finally { if (!previous) this.routeClosures.delete(id); }
+      },
+      changed: async (id, boundary) => {
+        const row = await this.storage.get(id); if (!row) return;
+        this.emit('local-db:sessions:patched', { sessionId: id, patch: this.guiSession(row) });
+        if (boundary) {
+          const message = (await this.messages(id, { limit: Infinity }, true)).find(message => message.clientId === (boundary.kind === 'context-rebuild' ? `${boundary.clientId}:card` : boundary.clientId));
+          if (message) this.emit('local-db:messages:created', { sessionId: id, message });
+        }
+      },
+      pendingChanged: (id, intent) => this.emit('local-db:sessions:patched', { sessionId: id, patch: { agentSwitchIntent: intent } }),
+      replay: (...args) => this.replayRecoveredTask(...args),
+      hasExternalOwner: id => Boolean(this.channelBindings.store.findByTarget(id) || this.pluginSetup?.surface.isHeadlessGhostSetupTurn(id)),
+    });
     this.ready = this.initialize();
   }
   private async initialize() {
@@ -270,7 +299,8 @@ export class TerminalTaskHost {
   }
   private view(row: TerminalTaskMeta) {
     const live = this.live.get(row.id);
-    return { ...row, sessionId: row.id, status: live?.session.getStatus() ?? 'idle', isTurnRunning: this.isTurnRunning(row.id), pendingInteractions: [...this.pending.values()].filter(p => p.sessionId === row.id && !p.migrated).map(p => p.request), ...(this.persistenceFaults.has(row.id) ? { persistenceError: true } : {}) };
+    const { pendingHandoff: _handoff, goalContinuation: _goal, ...publicRow } = row;
+    return { ...publicRow, sessionId: row.id, status: live?.session.getStatus() ?? 'idle', isTurnRunning: this.isTurnRunning(row.id), pendingInteractions: [...this.pending.values()].filter(p => p.sessionId === row.id && !p.migrated).map(p => p.request), ...(this.persistenceFaults.has(row.id) ? { persistenceError: true } : {}) };
   }
   private guiSession(row: TerminalTaskMeta) {
     return {
@@ -279,6 +309,7 @@ export class TerminalTaskHost {
       runtimeStatus: this.live.get(row.id)?.session.getStatus() ?? 'idle',
       agentKind: row.agentKind === 'claude-code' ? 'cc' : row.agentKind,
       sdkSessionId: row.sdkSessionId ?? null, providerId: row.providerId ?? null,
+      agentSwitchIntent: this.routes.intent(row.id),
       planModeEnabled: row.planMode ?? false, fastMode: row.fastMode ?? false,
       pinnedAt: row.pinnedAt ? new Date(row.pinnedAt).toISOString() : null,
       parentSessionId: row.parentSessionId ?? null, remoteHostId: null, agentDeviceId: row.agentDeviceId ?? null,
@@ -356,13 +387,34 @@ export class TerminalTaskHost {
       },
     };
   }
-  private async contextMessages(id: string, limit: number): ReturnType<ImTurnHost['listMessagesForAgentHandoff']> {
+  private async contextMessages(id: string, limit: number): Promise<Array<import('@cindy/im-runtime/planReconcile').PlanReconcileCandidateRow & { rowid: number }>> {
     const rows = await this.messages(id, { limit }, true);
     return rows.reverse().map(row => {
       let content: unknown = row.content;
-      if (row.role === 'tool_use') { try { content = JSON.parse(row.content); } catch { /* historical plain text */ } }
-      return { clientId: row.clientId, role: row.role, content, createdAt: Date.parse(row.createdAt), agentMeta: row.agentMeta };
+      if (row.role === 'tool_use' || row.role === 'agent_switch') { try { content = JSON.parse(row.content); } catch { /* historical plain text */ } }
+      return { clientId: row.clientId, rowid: row.rowid!, role: row.role, content, createdAt: Date.parse(row.createdAt), agentMeta: row.agentMeta };
     });
+  }
+  private async replayRecoveredTask(...[id, content, wireContent, recovery]: Parameters<ContextOverflowRolloverDeps['replayUserMessage']>): Promise<{ accepted: boolean }> {
+    this.guard({ source: 'local', signal: recovery?.signal });
+    const row = await this.storage.get(id);
+    if (!row || row.deleted || row.archived || this.channelBindings.store.findByTarget(id) || this.pluginSetup?.surface.isHeadlessGhostSetupTurn(id)) return { accepted: false };
+    const projection = createAutoReviewIntentProjection();
+    const history = await this.contextMessages(id, Infinity);
+    const source = recovery?.continueFromHistory ? recovery.sourceUserContent : content;
+    const wire = persistedUserContentToWireMessage(wireContent ?? content);
+    const outgoing = await this.taskContext.prepareHandoff(id, typeof wire === 'string' ? { type: 'user', content: wire } : wire as UserMessage);
+    const task = await this.ensureLive(id);
+    const result = await task.session.send(outgoing.message, {
+      signal: recovery?.signal,
+      [AUTO_REVIEW_SOURCE_CONTENT]: projection.readText(source) ?? '',
+      [AUTO_REVIEW_USER_INTENT]: projection.restore(history.map(message => ({ ...message, agentMeta: message.agentMeta ?? null }))),
+      ...(recovery?.continueFromHistory ? { [INHERITED_CAPABILITY_SELECTION]: recovery.sourceCapabilitySelectionText,
+        [PI_CACHE_RECOVERY_EXPECTATION]: recovery.piCacheCompatibility, ...(recovery.piCacheCompatibility ? { retryUserClientId: recovery.sourceUserClientId } : {}) } : {}),
+      onAccepted: () => { this.guard({ source: 'local', signal: recovery?.signal }); this.turnLifecycle.noteUserSend(id); },
+    });
+    if (result.accepted) outgoing.accepted();
+    return { accepted: result.accepted };
   }
   channelTurnHost(): ImTurnHost {
     const guard = () => this.guard({ source: 'local' });
@@ -440,6 +492,9 @@ export class TerminalTaskHost {
       materializeLocalMarkdownImages: args => this.materializeChannelImages(args),
       changeSessionPermissionMode: args => this.changeChannelPermission(args),
     };
+  }
+  channelTurnDependencies(): import('@cindy/im-runtime/turnRunner').ImTurnRunnerDeps {
+    return { acquirePendingAgentSwitch: id => this.routes.acquireForSend(id) };
   }
   async persistChannelMessage(args: Parameters<ImTurnHost['persistUserMessage']>[0]): ReturnType<ImTurnHost['persistUserMessage']> {
     await this.ready;
@@ -748,7 +803,7 @@ export class TerminalTaskHost {
       }
     });
     try {
-      const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, vendorOptions: this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
+      const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, thinkingEnabled: row.thinkingEnabled, vendorOptions: this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
       const task: LiveTask = { revoke:()=>{revoked=true;plugin?.close();},plugin,capabilityRevision:capability.revision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
       installDesktopInteractionHandler(session,(request,shared)=>this.interaction(id,request,undefined,shared),(sourceRequestId,decision)=>{
         for(const pending of this.pending.values())if(pending.sessionId===id&&pending.sourceRequestId===sourceRequestId){pending.settle(decision);return true;}
@@ -893,10 +948,14 @@ export class TerminalTaskHost {
     this.pluginSetup?.bridge.cleanupForSession(id,'session_closed');
     const task = this.live.get(id);
     if (!task) return;
+    // Interrupted turns may have newer usage than the last done event. Save the
+    // final live reading before detach so a cold model switch sees that pressure.
+    await this.storage.updateIf(id, row => !row.deleted, { usage: task.session.getUsageSnapshot() }, () => {});
     for (const pending of [...this.pending.values()]) if (pending.sessionId === id) pending.settle(decisionForDismissal(pending.request));
     const requestId = this.activeSubmissions.get(id);
-    if (requestId) { this.activeSubmissions.delete(id); await this.updateReceipt(id, requestId, 'interrupted', 'SESSION_CLOSED', this.submissionText.get(id)); this.submissionText.delete(id); }
+    if (requestId && !this.routeClosures.has(id)) { this.activeSubmissions.delete(id); await this.updateReceipt(id, requestId, 'interrupted', 'SESSION_CLOSED', this.submissionText.get(id)); this.submissionText.delete(id); }
     task.revoke();
+    if (this.routeClosures.has(id)) await task.maker.closeSession(id, 'agent-switch');
     await task.maker.shutdown();
     await this.changes.store.finalizeTurnChangeSet(id, null, 'partial');
     this.changes.store.clearPendingTurnChangeSets(id);
@@ -976,10 +1035,10 @@ export class TerminalTaskHost {
       case 'maker:get-capabilities': {
         const kind=string(args[0]) as AgentKind;if(!ENGINES.includes(kind))throw new Error('INVALID_ENGINE');
         const capabilities=this.channelRuntime().getCapabilities(kind);
-        return {...capabilities,supportsSessionAgentSwitch:false,supportsModelWindowSwitchGuard:false,supportsScheduleIntervalNullClear:true,supportsSchedulePreRunHook:true};
+        return {...capabilities,supportsSessionAgentSwitch:true,supportsSessionAgentSwitchCas:true,supportsModelWindowSwitchGuard:true,supportsScheduleIntervalNullClear:true,supportsSchedulePreRunHook:true};
       }
       case 'maker:get-session-tree': return (await this.ensureLive(string(args[0]))).session.getSessionTree();
-      case 'maker:set-thinking-enabled': {if(typeof args[1]!=='boolean')throw new Error('INVALID_ARGUMENT');await (await this.ensureLive(string(args[0]))).session.setThinkingEnabled(args[1]);return {success:true};}
+      case 'maker:set-thinking-enabled': {if(typeof args[1]!=='boolean')throw new Error('INVALID_ARGUMENT');const id=string(args[0]);await (await this.ensureLive(id)).session.setThinkingEnabled(args[1]);await this.storage.update(id,{thinkingEnabled:args[1]});return {success:true};}
 
       case 'maker:session:handoff': {
         if(context.source!=='remote'||!context.deviceId||!context.assertCurrent||context.sharedTask)throw new Error('AUTHENTICATED_OWNER_REQUIRED');
@@ -1045,8 +1104,12 @@ export class TerminalTaskHost {
         if (this.persistenceFaults.has(id)) throw new Error('TASK_HISTORY_WRITE_FAILED');
         if (this.sending.has(id) || this.turnLifecycle.running(id) || this.live.get(id)?.session.isTurnRunning()) throw new Error('SESSION_RUNNING');
         const message = await this.message(id, args[1], context);
-        this.sending.add(id);
+        const releaseRoute = await this.routes.acquireForSend(id);
         try {
+          // Parsing attachments and waiting for the route lane can outlive
+          // another accepted turn. Recheck before appending a visible user row.
+          if (this.sending.has(id) || this.turnLifecycle.running(id) || this.live.get(id)?.session.isTurnRunning()) throw new Error('SESSION_RUNNING');
+          this.sending.add(id);
           const task = await this.ensureLive(id);
           this.guard(context);
           if(context.deliveryProof){await validateTaskDelivery(this.options.remoteInvoke,context.deliveryProof);this.guard(context);}
@@ -1068,16 +1131,22 @@ export class TerminalTaskHost {
             if (!result.accepted && changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id);
             return result;
           } catch (error) { if (changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id); throw error; }
-        } finally { this.sending.delete(id); }
+        } finally { this.sending.delete(id); releaseRoute(); }
       }
       case 'maker:steer': {const session=(await this.ensureLive(string(args[0]))).session;noteInteractionRouteSteer(session);return session.steer(typeof args[1] === 'string' ? args[1] : await this.message(string(args[0]), args[1], context));}
       case 'maker:get-context-usage': return (await this.ensureLive(string(args[0]))).session.getContextUsage();
+      case 'maker:get-session-agent-switch-intent': return this.routes.intent(string(args[0]));
+      case 'maker:switch-session-agent': {
+        const opts = args[6] === undefined ? {} : record(args[6]);
+        if (context.source === 'remote' && opts.confirmedContextWindow !== undefined) throw new Error('PRECONDITION_FAILED');
+        if (context.sharedTask && opts.agentDeviceId !== undefined) throw new Error('UNSUPPORTED_CAPABILITY');
+        return this.routes.select({ sessionId: args[0], targetAgentKind: args[1], model: args[2], providerId: args[3], effort: args[4], fastMode: args[5], thinking: args[7], ...(opts.agentDeviceId !== undefined ? { agentDeviceId: opts.agentDeviceId } : {}), ...(opts.confirmedContextWindow !== undefined ? { confirmedContextWindow: opts.confirmedContextWindow } : {}), assertSelectionCurrent: () => this.guard(context) });
+      }
       case 'maker:set-model': {
-        const id = string(args[0]); const row = await this.storage.get(id); if (!row) throw new Error('TASK_NOT_FOUND');
-        if (this.isTurnRunning(id)) throw new Error('SESSION_RUNNING');
-        const opts = args[2] === undefined ? {} : record(args[2]);
-        const chosen = await this.selection({ agentKind: row.agentKind, model: string(args[1]), providerId: opts.providerId ?? row.providerId, effort: opts.effort });
-        await this.closeTask(id); await this.storage.setSelection(id, chosen.selection); await this.ensureLive(id, chosen); return { success: true };
+        const terminalOptions = args[2] && typeof args[2] === 'object' ? record(args[2]) : undefined;
+        const opts = terminalOptions ?? (args[4] === undefined ? {} : record(args[4]));
+        if (context.source === 'remote' && opts.confirmedContextWindow !== undefined) throw new Error('PRECONDITION_FAILED');
+        return this.routes.selectModel(string(args[0]), string(args[1]), terminalOptions ? opts.providerId : args[2], opts, args[3], () => this.guard(context));
       }
       case 'maker:set-effort': { const task = await this.ensureLive(string(args[0])); const selection = { ...task.selection, effort: args[1] }; const chosen = await this.models.select(selection); await task.session.setEffort(chosen.selection.effort!); task.selection = chosen.selection; await this.storage.setSelection(task.session.id, chosen.selection); return { success: true }; }
       case 'maker:set-permission-mode': {
@@ -1257,6 +1326,23 @@ export class TerminalTaskHost {
         if (row.kind === 'user-meta') {
           const message = result.find(message => message.clientId === row.clientId && message.role === 'user');
           if (message) message.agentMeta = { ...message.agentMeta, ...row.agentMeta };
+          continue;
+        }
+        if (row.kind === 'boundary-meta') {
+          const boundary = result.find(message => message.clientId === row.clientId && message.role === 'agent_switch');
+          if (boundary && row.boundary) boundary.content = JSON.stringify(row.boundary);
+          continue;
+        }
+        if (row.kind === 'boundary' && row.boundary) {
+          assistant = undefined;
+          add({ id: `${id}:${row.sequence}`, clientId: row.clientId!, sessionId: id, role: 'agent_switch', content: JSON.stringify(row.boundary), createdAt: new Date(row.timestamp).toISOString(), agentKind: row.boundary.toAgentKind, agentMeta: null });
+          continue;
+        }
+        if (row.kind === 'context-rebuild' && row.contextRebuild) {
+          assistant = undefined;
+          const common = { clientId: row.clientId!, sessionId: id, createdAt: new Date(row.timestamp).toISOString(), agentKind: row.contextRebuild.sourceAgentKind ?? (task.agentKind === 'claude-code' ? 'cc' : task.agentKind), agentMeta: { contextRebuild: row.contextRebuild } };
+          if (internal) add({ ...common, id: `${id}:${row.sequence}`, role: 'context_rebuild', content: row.contextRebuild.handoff });
+          add({ ...common, id: `${id}:rebuild:${row.sequence}`, clientId: `${row.clientId}:card`, role: 'assistant', content: '' });
           continue;
         }
         if (row.kind === 'user' && row.message) {

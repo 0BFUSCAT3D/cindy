@@ -9,14 +9,15 @@ import { TerminalImBindings } from '../im/bindings.js';
 import { appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeCodeAgent, type AgentEvent, type AgentSessionHandle, type InteractionDecision, type InteractionResolver, type Logger, type StartSessionOptions } from '@cindy/maker-core';
+import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentEvent, type AgentSessionHandle, type InteractionDecision, type InteractionResolver, type Logger, type StartSessionOptions } from '@cindy/maker-core';
 import type { TerminalSecrets } from '../contracts.js';
 import { TerminalTaskHost } from './host.js';
 import type { RuntimeInput } from '../models/runtime.js';
 import { TerminalTaskStorage } from './storage.js';
 import { downloadRemoteFile } from '../file-transfers.js';
 import { TerminalMediaTransfer } from '../media-transfer.js';
-import { RemoteResourceRegistry } from '@cindy/device-link';
+import { RemoteResourceRegistry, REMOTE_AGENT_CHANNEL } from '@cindy/device-link';
+import { TerminalRemoteAgentService } from '../remote/agent.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
@@ -49,12 +50,16 @@ function engine() {
   const title = { reply: async () => '"Server task"' };
   const titleRequests: Array<{ prompt: string; options?: import('@cindy/maker-core').OneShotOptions }> = [];
   const sent: import('@cindy/maker-core').UserMessage[] = [];
+  const resumeFailures = new Set<string>();
+  const usageByModel = new Map<string, { contextTokens: number; contextWindow: number }>();
   const create = async (input: RuntimeInput) => {
     inputs.push(input);
-    const agent = new ClaudeCodeAgent({ binaryPath: process.execPath, auth: { getState: async () => ({ authenticated: true }), getAuthEnv: async () => ({}), triggerLogin: async () => ({ authenticated: true }), logout: async () => {} }, runtimeConfig: {}, logger });
+    const Agent = { 'claude-code': ClaudeCodeAgent, codex: CodexAgent, pi: PiAgent }[input.selection.agentKind];
+    const agent = new Agent({ binaryPath: process.execPath, auth: { getState: async () => ({ authenticated: true }), getAuthEnv: async () => ({}), triggerLogin: async () => ({ authenticated: true }), logout: async () => {} }, runtimeConfig: {}, logger });
     agent.oneShot = async (prompt, options) => { titleRequests.push({ prompt, options }); return title.reply(); };
     agent.startSession = async options => {
       starts.push(options);
+      if (options.resumeSessionId && resumeFailures.delete(options.resumeSessionId)) throw new Error('fixture native transcript expired');
       let running = false;
       let silentForever = false;
       let ended = false;
@@ -63,8 +68,8 @@ function engine() {
       const events: AgentEvent[] = [];
       const emit = (event: AgentEvent) => { events.push(event); awaken?.(); };
       const handle: AgentSessionHandle = {
-        id: options.resumeSessionId ?? `native-${options.sessionId}`,
-        agentKind: 'claude-code', model: options.model,
+        id: options.resumeSessionId ?? `${input.selection.agentKind === 'claude-code' ? 'native' : `${input.selection.agentKind}-native`}-${options.sessionId}`,
+        agentKind: input.selection.agentKind, model: options.model,
         async send(message) {
           sent.push(message);
           running = true;
@@ -74,6 +79,11 @@ function engine() {
             silentForever ||= text === 'silent-loop';
             running = false;
             emit({ type: 'done', data: { silentStop: true } });
+            return;
+          }
+          if (text === 'context-overflow-fixture') {
+            running = false;
+            emit({ type: 'error', data: { reason: 'context-overflow', message: 'maximum context length exceeded', isTerminal: true } });
             return;
           }
           if (text === 'permission') {
@@ -98,7 +108,7 @@ function engine() {
             else await new Promise<void>(resolve => { awaken = resolve; });
           }
         },
-        getUsageSnapshot: () => ({ tokenUsage: 0, contextTokens: 0, contextWindow: 200000, costUsd: 0 }),
+        getUsageSnapshot: () => ({ tokenUsage: 0, contextTokens: 0, contextWindow: input.route.model.contextWindow, costUsd: 0, ...usageByModel.get(options.model!) }),
         setInteractionResolver: value => { resolver = value; },
         async setPermissionMode(mode) { permissionModes.push(mode); },
         isTurnRunning: () => running,
@@ -107,10 +117,10 @@ function engine() {
     };
     return agent;
   };
-  return { create, starts, decisions, inputs, sent, permissionModes, title, titleRequests };
+  return { create, starts, decisions, inputs, sent, permissionModes, title, titleRequests, resumeFailures, usageByModel };
 }
 
-async function setup(native = engine()) {
+async function setup(native = engine(), overrides: Partial<ConstructorParameters<typeof TerminalTaskHost>[0]> = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-terminal-task-test-'));
   roots.push(root);
   const vault = new Map<string, string>();
@@ -119,7 +129,7 @@ async function setup(native = engine()) {
   const listeners = new Map<string, (payload: unknown) => void>();
   const nextPush = (channel: string) => new Promise<unknown>(resolve => { listeners.set(channel, resolve); });
   const create = () => {
-    const host = new TerminalTaskHost({ profileDir: root, secretStore: secrets, logger, binaryPaths: { 'claude-code': process.execPath }, createAgent: native.create, nativeStatus: async () => ({ authenticated: false }), emit: (channel, args) => { pushes.push({ channel, payload: args[0] }); listeners.get(channel)?.(args[0]); listeners.delete(channel); } });
+    const host = new TerminalTaskHost({ profileDir: root, secretStore: secrets, logger, binaryPaths: { 'claude-code': process.execPath, codex: process.execPath, pi: process.execPath }, createAgent: native.create, nativeStatus: async () => ({ authenticated: false }), ...overrides, emit: (channel, args) => { pushes.push({ channel, payload: args[0] }); listeners.get(channel)?.(args[0]); listeners.delete(channel); } });
     hosts.push(host);
     return host;
   };
@@ -130,6 +140,154 @@ async function setup(native = engine()) {
 }
 
 describe('terminal task host', () => {
+  // Real remote-agent controller/host on two isolated task owners. Only the
+  // authenticated transport and upstream vendor process are fixture adapters.
+  it('moves an existing task to another agent computer and back without moving its workspace', async () => {
+    const remote = await setup();
+    await remote.host.invoke('maker:provider:custom:create', [{ id: 'remote-fixture', name: 'Remote fixture', auth: { method: 'none' }, runtimes: { pi: { baseUrl: 'http://127.0.0.1:1', models: [{ id: 'remote-model', name: 'Remote model', contextWindow: 200000 }] } } }]);
+    const agents = new TerminalRemoteAgentService({ profileDir: remote.root, getOwnerScope: () => 'owner', readProviders: () => remote.host.models.views(), startHosted: input => remote.host.startHosted(input), isAgentAvailable: kind => remote.host.isAgentAvailable(kind) });
+    try {
+      await agents.setEnabled('remote-fixture', true, () => {});
+      const local = await setup(engine(), { remoteInvoke: async (device, channel, args) => {
+        expect(device).toBe('execution-computer');
+        if (channel === 'maker:provider:list') return { ok: true, result: { providers: await agents.views() } };
+        expect(channel).toBe(REMOTE_AGENT_CHANNEL);
+        return { ok: true, result: await agents.request(args[0], { source: { kind: 'owner', deviceId: 'task-computer', peerId: 'task-computer' }, controllerDeviceId: 'task-computer', sourceDeviceId: 'task-computer', ownerScope: 'owner', requestId: 'fixture-request', signal: new AbortController().signal, assertCurrent() {} }) };
+      } });
+      const task = await local.host.invoke('maker:create-session', [{ workingDir: local.root }]) as { id: string };
+      await local.host.invoke('maker:send', [task.id, { text: 'work stays on this computer', clientId: 'local-input' }]);
+      await local.host.invoke('terminal:tasks:wait', [task.id, 'local-input']);
+      await local.host.invoke('maker:switch-session-agent', [task.id, 'pi', 'remote-model', 'remote-fixture', undefined, undefined, { agentDeviceId: 'execution-computer' }]);
+      await local.host.invoke('maker:send', [task.id, { text: 'run on the other computer', clientId: 'remote-input' }]);
+      expect(await local.host.invoke('terminal:tasks:wait', [task.id, 'remote-input'])).toMatchObject({ status: 'completed' });
+      expect(remote.native.sent).toHaveLength(1);
+      expect(JSON.stringify(remote.native.sent[0])).toContain('work stays on this computer');
+      expect((await local.host.storage.get(task.id))?.workDir).toBe(local.root);
+      expect(remote.native.starts[0].deviceHosted?.workingDir).toBeTruthy();
+      await local.host.invoke('maker:switch-session-agent', [task.id, 'claude-code', 'test-model', 'fixture', undefined, undefined, { agentDeviceId: null }]);
+      await local.host.invoke('maker:send', [task.id, { text: 'back on this computer', clientId: 'back-input' }]);
+      expect(await local.host.invoke('terminal:tasks:wait', [task.id, 'back-input'])).toMatchObject({ status: 'completed' });
+      expect(local.native.sent).toHaveLength(2);
+      expect(JSON.stringify(local.native.sent.at(-1))).toContain('run on the other computer');
+      expect((await local.host.storage.get(task.id))?.agentDeviceId).toBeUndefined();
+      await local.host.close();
+    } finally { await agents.stop(); }
+  });
+  // The released SET_MODEL channel must preserve Codex's native compaction,
+  // and rebuild Claude/Pi context before a smaller model receives the next turn.
+  it.each(['claude-code', 'codex', 'pi'] as const)('protects smaller model windows through the real %s send boundary', async kind => {
+    const { host, native, create } = await setup();
+    await host.invoke('maker:provider:custom:create', [{ id: 'window-fixture', name: 'Window fixture', auth: { method: 'none' }, runtimes: { [kind]: { baseUrl: 'http://127.0.0.1:1', models: [
+      { id: 'big-model', name: 'Big', contextWindow: 200000 }, { id: 'small-model', name: 'Small', contextWindow: 100000 },
+    ] } } }]);
+    native.usageByModel.set('big-model', { contextTokens: 180000, contextWindow: 200000 });
+    const task = await host.invoke('maker:create-session', [{ agentKind: kind, providerId: 'window-fixture', model: 'big-model' }]) as { id: string };
+    await host.invoke('maker:send', [task.id, { text: 'keep the original task', clientId: 'big-input' }]);
+    await host.invoke('terminal:tasks:wait', [task.id, 'big-input']);
+    const original = (await host.storage.get(task.id))!.sdkSessionId;
+    await host.close();
+    const restored = create(); await restored.ready;
+    expect(await restored.invoke('maker:set-model', [task.id, 'small-model', 'window-fixture'])).toMatchObject({ deferred: true });
+    expect((await restored.storage.get(task.id))!.model).toBe('big-model');
+    await restored.invoke('maker:send', [task.id, { text: 'continue in the smaller model', clientId: 'small-input' }]);
+    expect(await restored.invoke('terminal:tasks:wait', [task.id, 'small-input'])).toMatchObject({ status: 'completed' });
+    expect(native.inputs.at(-1)?.selection.model).toBe('small-model');
+    const rebuilt = kind !== 'codex';
+    expect(native.starts.at(-1)?.resumeSessionId).toBe(rebuilt ? undefined : original);
+    if (rebuilt) expect(JSON.stringify(native.sent.at(-1))).toContain('keep the original task');
+    const messages = await restored.invoke('local-db:messages:list', [task.id, { limit: 100 }]) as Array<{ role: string; content: string; agentMeta?: { contextRebuild?: unknown } }>;
+    expect(messages.filter(message => message.agentMeta?.contextRebuild)).toHaveLength(rebuilt ? 1 : 0);
+    expect(messages.some(message => message.role === 'context_rebuild')).toBe(false);
+    expect(messages.filter(message => message.role === 'user').map(message => message.content)).toEqual(['continue in the smaller model', 'keep the original task']);
+  });
+  it('does not send on the old route when a queued engine choice is disabled', async () => {
+    const { host, native } = await setup();
+    await host.invoke('maker:provider:custom:create', [{ id: 'disabled-fixture', name: 'Disabled fixture', auth: { method: 'none' }, runtimes: { codex: { baseUrl: 'http://127.0.0.1:1', models: [{ id: 'disabled-model', name: 'Model' }] } } }]);
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    await host.invoke('maker:switch-session-agent', [task.id, 'codex', 'disabled-model', 'disabled-fixture']);
+    await host.invoke('maker:model-disable:set', [{ kind: 'model', providerId: 'disabled-fixture', modelIds: ['disabled-model'], disabled: true }]);
+    await host.invoke('maker:send', [task.id, { text: 'only use the selected model', clientId: 'disabled-input' }]);
+    expect(await host.invoke('terminal:tasks:wait', [task.id, 'disabled-input'])).toMatchObject({ status: 'failed', error: 'TASK_MODEL_SWITCH_NOT_READY' });
+    expect(native.sent).toHaveLength(0);
+    expect(await host.invoke('maker:get-session-agent-switch-intent', [task.id])).toMatchObject({ targetAgentKind: 'codex' });
+    expect(await host.invoke('local-db:messages:list', [task.id])).toEqual([]);
+  });
+  it('rebuilds a failed native context before the next user send without replaying a failed input', async () => {
+    const { host, native, create } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    for (const text of ['completed earlier work', 'context-overflow-fixture']) {
+      await host.invoke('maker:send', [task.id, { text, clientId: text.replaceAll(' ', '-') }]);
+      await host.invoke('terminal:tasks:wait', [task.id, text.replaceAll(' ', '-')]);
+    }
+    await host.close(); const restored = create(); await restored.ready;
+    await restored.invoke('maker:send', [task.id, { text: 'continue now', clientId: 'new-input' }]);
+    expect(await restored.invoke('terminal:tasks:wait', [task.id, 'new-input'])).toMatchObject({ status: 'completed' });
+    expect(native.starts.at(-1)?.resumeSessionId).toBeUndefined();
+    expect(JSON.stringify(native.sent.at(-1))).toContain('completed earlier work');
+    expect(JSON.stringify(native.sent.at(-1))).not.toContain('context-overflow-fixture');
+    expect(native.sent).toHaveLength(3);
+  });
+  // The public GUI channel stages a choice; the real Maker send boundary applies
+  // it, records context, and resumes the parked native engine when switching back.
+  it.each([false, true])('applies a queued engine choice and returns to its parked engine (expired: %s)', async expired => {
+    const { host, native, create } = await setup();
+    await host.invoke('maker:provider:custom:create', [{ id: 'codex-fixture', name: 'Codex fixture', auth: { method: 'apiKey' }, runtimes: { codex: { baseUrl: 'http://127.0.0.1:1', models: [{ id: 'codex-model', name: 'Codex model', contextWindow: 200000 }] } } }, { codex: 'invalid-codex-key-only' }]);
+    const task = await host.invoke('maker:create-session', [{ title: 'Engine switch' }]) as { id: string };
+    await host.invoke('maker:send', [task.id, { text: 'remember the original work' }]);
+    const original = (await host.storage.get(task.id))?.sdkSessionId;
+    expect(await host.invoke('maker:switch-session-agent', [task.id, 'codex', 'codex-model', 'codex-fixture'])).toMatchObject({ deferred: true });
+    expect((await host.storage.get(task.id))?.agentKind).toBe('claude-code');
+    expect(await host.invoke('maker:get-session-agent-switch-intent', [task.id])).toMatchObject({ targetAgentKind: 'codex', model: 'codex-model' });
+    await host.invoke('maker:send', [task.id, { text: 'continue with Codex', clientId: 'switched-message' }]);
+    expect(await host.invoke('terminal:tasks:wait', [task.id, 'switched-message'])).toMatchObject({ status: 'completed' });
+    await host.storage.flush();
+    expect(native.inputs.at(-1)?.selection.agentKind).toBe('codex');
+    expect(JSON.stringify(native.sent.at(-1))).toContain('remember the original work');
+    expect((await host.storage.get(task.id))?.agentKind).toBe('codex');
+    expect((await host.storage.submission(task.id, 'switched-message'))?.status).toBe('completed');
+    expect(await host.invoke('maker:get-session-agent-switch-intent', [task.id])).toBeNull();
+    await host.close();
+    const restarted = create(); await restarted.ready;
+    if (expired) native.resumeFailures.add(original!);
+    await restarted.invoke('maker:switch-session-agent', [task.id, 'claude-code', 'test-model', 'fixture']);
+    await restarted.invoke('maker:send', [task.id, { text: 'return to the original engine' }]);
+    expect(native.starts.at(-1)?.resumeSessionId).toBe(expired ? undefined : original);
+    if (expired) expect(JSON.stringify(native.sent.at(-1))).toContain('remember the original work');
+    expect(native.inputs.at(-1)?.selection.agentKind).toBe('claude-code');
+    const messages = await restarted.invoke('local-db:messages:list', [task.id, { limit: 50 }]) as Array<{ role: string; content: string }>;
+    expect(messages.filter(row => row.role === 'agent_switch')).toHaveLength(2);
+    expect(JSON.parse(messages.find(row => row.role === 'agent_switch')!.content)).toMatchObject({ fromAgentKind: 'codex', toAgentKind: 'cc', resumed: !expired });
+    expect(messages.filter(row => row.role === 'user').map(row => row.content)).toEqual(['return to the original engine', 'continue with Codex', 'remember the original work']);
+  });
+  // Filesystem transaction regression: a crash after the boundary append must
+  // recover its matching model and handoff, without adding a second boundary.
+  it('recovers an interrupted model commit before admitting any newer task writes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-route-commit-')); roots.push(root);
+    const store = new TerminalTaskStorage(root); await store.open();
+    await store.create({ id: 'task', agentKind: 'claude-code', model: 'old-model', workDir: root, title: 'Task' });
+    const boundary = { fromAgentKind: 'cc' as const, toAgentKind: 'codex' as const, fromModel: 'old-model', toModel: 'new-model', fromSdkSessionId: 'old-native', handoff: 'Preserve the previous context', consumed: false };
+    const write = platform.atomicPrivateWrite;
+    const failure = vi.spyOn(platform, 'atomicPrivateWrite').mockImplementation(async (file, content) => {
+      if (file === path.join(root, 'task', 'task.json')) throw new Error('fixture metadata write failed');
+      return write(file, content);
+    });
+    try {
+      await expect(store.commitRouteChange('task', { agentKind: 'codex', model: 'new-model' }, boundary, () => {})).rejects.toThrow('fixture metadata write failed');
+      await expect(store.append('task', { kind: 'user', message: { type: 'user', content: 'must wait for recovery' } })).rejects.toThrow('fixture metadata write failed');
+      await expect(store.get('task')).rejects.toThrow('fixture metadata write failed');
+    } finally { failure.mockRestore(); }
+    const recovered = new TerminalTaskStorage(root); await recovered.open();
+    expect(await recovered.get('task')).toMatchObject({ agentKind: 'codex', model: 'new-model', pendingHandoff: { text: boundary.handoff } });
+    const records = (await recovered.history('task')).records;
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ kind: 'boundary', boundary });
+    await expect(readFile(path.join(root, 'task', 'route-commit.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const fallback = { ...boundary, resumed: false, handoff: 'Full context after resume failure' };
+    await recovered.commitRouteChange('task', { sdkSessionId: undefined }, fallback, () => {}, records[0].clientId);
+    const restarted = new TerminalTaskStorage(root); await restarted.open();
+    expect((await restarted.get('task'))?.pendingHandoff?.text).toBe(fallback.handoff);
+    expect((await restarted.history('task')).records.map(row => row.kind)).toEqual(['boundary', 'boundary-meta']);
+  });
   // Integration: use the real shared channel runner, Maker, task journal and
   // restart recovery. Only network delivery and the native vendor are replaced.
   it('resumes a GUI task through the shared channel runner after restart and consumes its durable handoff once', async () => {

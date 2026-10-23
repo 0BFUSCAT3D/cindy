@@ -37,6 +37,11 @@ export class TerminalTaskContext {
   }
   /** Call after committing a new handoff with the model change. */
   refresh(id: string) { this.observed.delete(id); this.handoff.clear(id); }
+  publishHandoff(id: string, boundaryId: string, text: string, expectedGeneration?: number) {
+    if (expectedGeneration !== undefined && this.handoff.readGeneration(id) !== expectedGeneration) return;
+    this.observed.set(id, boundaryId);
+    this.handoff.set(id, text, expectedGeneration);
+  }
   async prepareHandoff(id: string, message: UserMessage) {
     const pending = await this.handoff.peek(id);
     this.host.assertCurrent();

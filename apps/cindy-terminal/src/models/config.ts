@@ -149,6 +149,7 @@ export class TerminalModelConfig {
     return buildRegistry(this.activeCatalog(), connected, {}, this.state.disabled);
   }
   snapshot() { return structuredClone(this.state); }
+  providerSources() { return this.activeCatalog().providers.map(({ id, source }) => ({ id, source })); }
   private generation = 0;
   revision() { return this.generation; }
   async select(input?: unknown): Promise<{ selection: ModelSelection; route: ResolvedRoute }> {

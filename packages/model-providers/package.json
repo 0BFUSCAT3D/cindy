@@ -20,7 +20,10 @@
     "./model-list": "./src/modelList.ts",
     "./classification": "./src/classification.ts",
     "./invocation": "./src/invocation.ts",
-    "./model-route-guard": "./src/modelRouteGuard.ts"
+    "./model-route-guard": "./src/modelRouteGuard.ts",
+    "./modelSwitchAssessment": "./src/modelSwitchAssessment.ts",
+    "./runtimeModelSwitchGate": "./src/runtimeModelSwitchGate.ts",
+    "./verifiedContextWindow": "./src/verifiedContextWindow.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

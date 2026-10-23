@@ -158,8 +158,8 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
       if(chosen===t.stop){await call('maker:abort-session',[taskId]);setForm(null);return;}
       if(chosen===controls.compact){await call('maker:compact-session',[taskId]);setForm(null);await load();return;}
       if(chosen===t.models){
-        const models=(await connectedModels(client,device)).filter(item=>item.agentKind===kind);
-        edit(t.models,[{key:'model',label:t.models,choices:models.map(item=>item.label)}],async values=>{const selection=models.find(item=>item.label===values.model);if(!selection)throw new Error('MODEL_NOT_CONFIGURED');await call('maker:set-model',[taskId,selection.model,{providerId:selection.providerId}]);setForm(null);await load();});return;
+        const models=await connectedModels(client,device);
+        edit(t.models,[{key:'model',label:t.models,choices:models.map(item=>item.label)}],async values=>{const selection=models.find(item=>item.label===values.model);if(!selection)throw new Error('MODEL_NOT_CONFIGURED');await call('maker:switch-session-agent',[taskId,selection.agentKind,selection.model,selection.providerId,undefined,undefined,{agentDeviceId:null}]);setForm(null);await load();});return;
       }
       const fieldChoices=chosen===controls.permission?['ask','auto','bypassPermissions']:chosen===controls.effort?(model!.efforts as string[]):[controls.off,controls.on];
       edit(chosen,[{key:'value',label:chosen,choices:fieldChoices}],async values=>{
@@ -475,7 +475,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         : task && reviewRequest && pending[0] && pending[0].kind!=='input_handoff' && pending[0].kind!=='plugin_setup' ? <InteractionView key={pending[0].requestId} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)} resolve={decision=>void action(async()=>{ await call('maker:resolve-interaction',[pending[0].requestId,decision]); setReviewRequest(false); await load(); })} />
         : task ? <>
           <Text bold>{label(taskInfo.title,t.newTask)}</Text>
-          <Text dimColor>{label(taskInfo.model)} · {({cc:'Claude Code','claude-code':'Claude Code',codex:'Codex',pi:'Pi'} as Record<string,string>)[label(taskInfo.agentKind)]??label(taskInfo.agentKind)} · {running ? t.working : t.ready}{pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}</Text>
+          <Text dimColor>{label(taskInfo.model)}{taskInfo.agentSwitchIntent ? ` → ${label(record(taskInfo.agentSwitchIntent).model)}` : ''} · {({cc:'Claude Code','claude-code':'Claude Code',codex:'Codex',pi:'Pi'} as Record<string,string>)[label(taskInfo.agentKind)]??label(taskInfo.agentKind)} · {running ? t.working : t.ready}{pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}</Text>
           <Box flexGrow={1} flexDirection="column" overflow="hidden">{chatLines.slice(Math.max(0,chatLines.length-chatPageSize-scroll), Math.max(0,chatLines.length-scroll)).map((line,index)=><Text key={index}>{terminalText(line)||' '}</Text>)}</Box>
           <Text dimColor>{'─'.repeat(Math.max(1,columns-2))}</Text>
           {attachments.length>0&&<Text dimColor>{attachments.map(file=>file.name).join(' · ')}</Text>}

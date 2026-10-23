@@ -430,7 +430,10 @@ async function main() {
       else if(subcommand==='archive'||subcommand==='restore')print(await call('local-db:sessions:patch-meta',[id(),{status:subcommand==='archive'?'archived':'active'}]));
       else if(subcommand==='compact')print(await call('maker:compact-session',[id(),rest.slice(1).join(' ')||undefined]));
       else if(subcommand==='queue')print(await call('maker:input:get-projection',[id()]));
-      else if(subcommand==='model')print(await call('maker:set-model',[id(),required(str('model')??rest[1]),{...(str('provider')?{providerId:str('provider')}:{})}]));
+      else if(subcommand==='model') {
+        const model=required(str('model')??rest[1]);
+        print(str('engine') ? await call('maker:switch-session-agent',[id(),str('engine'),model,...(str('provider')?[str('provider')]:[])]) : await call('maker:set-model',[id(),model,...(str('provider')?[str('provider')]:[])]));
+      }
       else if(subcommand==='effort')print(await call('maker:set-effort',[id(),required(str('effort')??rest[1])]));
       else if(subcommand==='permission')print(await call('maker:set-permission-mode',[id(),required(str('mode')??rest[1])]));
       else if(subcommand==='plan'||subcommand==='fast'){if(!['on','off'].includes(rest[1]))throw new Error('ON_OR_OFF_REQUIRED');print(await call(`maker:set-${subcommand==='plan'?'plan':'fast'}-mode`,[id(),rest[1]==='on']));}
