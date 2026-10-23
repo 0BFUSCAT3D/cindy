@@ -223,6 +223,7 @@ async function syncBotProfileFolder(
 }
 import { buildDefaultBotIdentity } from '../../../shared/botProfileDefaults.js';
 import { coordinateBotCanonicalReplacement } from '../../maker-ipc/botCanonicalReplacementCoordinator.js';
+import { coordinateBotModelSelection } from '../../maker-ipc/botModelSelectionCoordinator.js';
 import { searchConversations } from '../conversationSearch.js';
 import { registerBotAutonomyIpc } from '../../bot-autonomy/ipc.js';
 import { signalBotAutonomyBotsChanged } from '../../bot-autonomy/botsChangedSignal.js';
@@ -1996,26 +1997,35 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
   owner.assertCurrent();
   const changesPermissions = body.capabilities != null && typeof body.capabilities === 'object'
     && Object.prototype.hasOwnProperty.call(body.capabilities, 'permissions');
-  await client.tx('bots.updateProfile', {
-    id,
-    ...(modelSelectionChanged ? { clearScheduledModelBaseline: true } : {}),
-    ...(changesPermissions ? { canonicalPermissionMode: botSessionPermissionMode(normalizedNextConfig) } : {}),
-    ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
-    ...(patch.description !== undefined ? { description: patch.description } : {}),
-    ...(patch.avatar !== undefined ? { avatar: patch.avatar } : {}),
-    ...(patch.avatarColor !== undefined ? { avatarColor: patch.avatarColor } : {}),
-    ...(patch.status !== undefined ? { status: patch.status } : {}),
-    ...(hiddenAt !== undefined ? { hiddenAt } : {}),
-    ...(pinnedAt !== undefined ? { pinnedAt } : {}),
-    identitySource: nextIdentitySource,
-    capabilitiesJson: safeJson(normalizedNextConfig),
-    profileContentChanged,
-    expectedCurrentVersion: current.currentVersion,
-    clearBotAvatarRefs:
-      patch.avatar !== undefined &&
-      isManagedBotAvatarUrl(current.avatar) &&
-      !isManagedBotAvatarUrl(patch.avatar),
-    now,
+  const modelFollowers = modelSelectionChanged ? await db.select({ sessionId: botSessionLinks.sessionId })
+    .from(botSessionLinks).where(and(eq(botSessionLinks.botId, id),
+      inArray(botSessionLinks.role, ['canonical', 'group', 'channel', 'thread']),
+      isNull(botSessionLinks.archivedAt))) : [];
+  await coordinateBotModelSelection(modelFollowers.map((link) => link.sessionId), async () => {
+    // Lock acquisition can wait behind an automation. Recheck the account before
+    // committing; the worker still owns the profile-version CAS and atomic clear.
+    owner.assertCurrent();
+    await client.tx('bots.updateProfile', {
+      id,
+      ...(modelSelectionChanged ? { clearScheduledModelBaseline: true } : {}),
+      ...(changesPermissions ? { canonicalPermissionMode: botSessionPermissionMode(normalizedNextConfig) } : {}),
+      ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(patch.avatar !== undefined ? { avatar: patch.avatar } : {}),
+      ...(patch.avatarColor !== undefined ? { avatarColor: patch.avatarColor } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(hiddenAt !== undefined ? { hiddenAt } : {}),
+      ...(pinnedAt !== undefined ? { pinnedAt } : {}),
+      identitySource: nextIdentitySource,
+      capabilitiesJson: safeJson(normalizedNextConfig),
+      profileContentChanged,
+      expectedCurrentVersion: current.currentVersion,
+      clearBotAvatarRefs:
+        patch.avatar !== undefined &&
+        isManagedBotAvatarUrl(current.avatar) &&
+        !isManagedBotAvatarUrl(patch.avatar),
+      now,
+    });
   });
   owner.assertCurrent();
   if (changesPermissions) {

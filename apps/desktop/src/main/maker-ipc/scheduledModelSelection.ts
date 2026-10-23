@@ -31,6 +31,7 @@ export function createScheduledModelScope(deps: {
   apply: (sessionId: string, profile: ScheduledModelSelection) => Promise<void>;
   createId: () => string;
   ownerEpoch?: () => string;
+  prepareBaseline?: (sessionId: string) => Promise<void>;
 }) {
   const assertOwner = (owner: string | undefined) => {
     if (owner !== deps.ownerEpoch?.()) throw new Error('Account changed during scheduled model selection');
@@ -38,11 +39,20 @@ export function createScheduledModelScope(deps: {
   return {
     async begin(sessionId: string): Promise<string | undefined> {
       const owner = deps.ownerEpoch?.();
-      const row = await deps.read(sessionId);
+      let row = await deps.read(sessionId);
       assertOwner(owner);
       if (!row) return undefined;
       const existing = parseScheduledModelBaseline(row.baseline);
       if (existing) return existing.scopeId;
+      // Settings may have committed while their asynchronous runtime refresh is
+      // still queued. Align the owner under this same send lease before capture.
+      if (deps.prepareBaseline) {
+        await deps.prepareBaseline(sessionId);
+        assertOwner(owner);
+        row = await deps.read(sessionId);
+        assertOwner(owner);
+        if (!row) return undefined;
+      }
       const scopeId = deps.createId();
       await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId });
       return scopeId;

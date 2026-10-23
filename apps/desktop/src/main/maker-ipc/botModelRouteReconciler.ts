@@ -126,13 +126,17 @@ export function createBotModelRouteReconciler(deps: {
       if (inFlight.get(sessionId) === operation) inFlight.delete(sessionId);
     }
   };
+  const invalidate = (sessionId: string): void => {
+    syncOwner();
+    revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
+    configured.set(sessionId, '');
+  };
   return Object.assign(reconcile, {
+    invalidate,
     /** Explicit saves invalidate fallback even before the first send. A newer
      * save during an in-flight switch is reread before this promise settles. */
     profileChanged(sessionId: string): Promise<void> {
-      syncOwner();
-      revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
-      configured.set(sessionId, '');
+      invalidate(sessionId);
       return reconcile(sessionId);
     },
     /** Read-only preview: sharing the send decision must not consume a profile change. */

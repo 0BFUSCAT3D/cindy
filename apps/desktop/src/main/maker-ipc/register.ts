@@ -652,6 +652,7 @@ import { listBotRecallSessionIds } from '../localDb/botHistoryScope.js';
 import { createWireNoteMemory } from './wireNoteMemory.js';
 import { isBotCanonicalReplacementBusy } from './botCanonicalReplacementGuard.js';
 import { configureBotCanonicalReplacementCoordinator } from './botCanonicalReplacementCoordinator.js';
+import { configureBotModelSelectionCoordinator, createBotModelSelectionCoordinator } from './botModelSelectionCoordinator.js';
 import { botSessionInputBlockReason, isShadowedCompanionCanonical, SHADOWED_COMPANION_INPUT_MESSAGE } from './botSessionInputGuard.js';
 import { configureBotRuntimeEpochRefreshRequest } from './botRuntimeEpochRefreshSignal.js';
 import { createGitSnapshotCoordinator } from '../maker-host/git-snapshot-host.js';
@@ -11061,6 +11062,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   const scheduledModelScope = createScheduledModelScope({
     createId,
     ownerEpoch: captureSessionRuntimeControlOwnerEpoch,
+    prepareBaseline: async (sessionId) => {
+      await reconcileBotModelRoute(sessionId, true);
+      // Reconciliation applies idle companion choices through the normal switch
+      // path. A deferred or failed switch must not become a stale new baseline.
+      if (agentSwitchPending.get(sessionId) || getPendingSessionRuntimeMutation(sessionId)) {
+        if (!isSessionIdleForRouteApply(sessionId)) {
+          throw new ScheduledModelSelectionBusyError('Scheduled model selection waits for the saved companion route');
+        }
+        throwIpcError('HARNESS_SWITCH_NOT_READY', 'Saved companion route did not become ready');
+      }
+    },
     read: async (sessionId) => {
       const [row] = await getDbClient().drizzle.select({
         agentKind: sessions.agentKind, model: sessions.model, providerId: sessions.providerId,
@@ -16108,6 +16120,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     },
   });
+
+  configureBotModelSelectionCoordinator(createBotModelSelectionCoordinator({
+    acquireSessionLock: (sessionId) => acquireSendToSessionLock(sessionId),
+    invalidate: (sessionId) => reconcileBotModelRoute.invalidate(sessionId),
+  }));
 
   readPendingAgentSwitchRouteHolder = (sessionId) => {
     const intent = agentSwitchPending.get(sessionId);

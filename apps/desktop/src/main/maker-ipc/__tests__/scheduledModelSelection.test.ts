@@ -45,6 +45,20 @@ describe('one-run automation model preferences', () => {
     await scope.restore('task');
     expect(h.state()).toEqual({ profile: h.original, baseline: null });
   });
+  // #6895 unit regression: preparing a newly saved route may defer/fail. The
+  // stale session row must not become durable recovery state in that case.
+  it('does not capture an old baseline when preparing the saved choice fails', async () => {
+    const h = scopeFixture();
+    const prepareBaseline = vi.fn(async () => { throw new ScheduledModelSelectionBusyError('waiting'); });
+    const scope = createScheduledModelScope({ ...h.deps, prepareBaseline });
+    await expect(scope.begin('task')).rejects.toThrow(ScheduledModelSelectionBusyError);
+    expect(h.state().baseline).toBeNull();
+    await h.scope.begin('task');
+    // Existing scopes preserve the owner's original choice without switching
+    // away from the automation just to capture it again.
+    expect(await scope.begin('task')).toBe('scope-1');
+    expect(prepareBaseline).toHaveBeenCalledTimes(1);
+  });
   // PR #6559 + #6579 integration: the persisted scope must restore an
   // Ultrafast owner after automation/restart. Existing cases used booleans;
   // minimal failure is baseline JSON with fastMode='ultrafast'. Unit tier.

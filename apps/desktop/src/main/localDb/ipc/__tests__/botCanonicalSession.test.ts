@@ -26,6 +26,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BOT_TEMPLATE_PRESET_IDENTITIES } from '../../../../shared/botTemplatePreset';
 import { normalizeWorkingDirForStorage } from '../../../../shared/workingDir';
 import { createBotModelRouteReconciler } from '../../../maker-ipc/botModelRouteReconciler';
+import { configureBotModelSelectionCoordinator, createBotModelSelectionCoordinator } from '../../../maker-ipc/botModelSelectionCoordinator';
+import { createScheduledModelScope, type ScheduledModelSelection } from '../../../maker-ipc/scheduledModelSelection';
+import { acquireSendToSessionLock, withSendToSessionLock } from '../../../maker-ipc/sendToSessionLock';
 import type { BotModelRoute } from '../../../../shared/botModelChain';
 import type { AgentKind } from '@cindy/maker-core';
 import { createBotCapabilityService, type BotCapabilityServiceDeps, type BotCapabilityUpdate } from '../../../maker-ipc/botCapabilityService';
@@ -543,6 +546,7 @@ beforeEach(async () => {
     poolCapped: false,
   });
   configureBotCanonicalReplacementCoordinator(async (_sessionId, operation) => operation());
+  configureBotModelSelectionCoordinator(async (_sessionIds, operation) => operation());
   h.sqlite?.close();
   createDb();
   registerBotIpc();
@@ -9855,6 +9859,74 @@ describe('Bot self control uses the same profile authority as settings', () => {
 
 
 describe('Teammate model selection shares profile persistence and route reconciliation', () => {
+  // #6895 P1: the previous crash test stopped at the profile commit. A subsequent
+  // automation could recreate A before runtime refresh. DB tier: exercise the
+  // real save transaction, send locks, reconciler and baseline writer in both
+  // orders, then restore through a fresh scope (no runtime refresh or timers).
+  it.each(['save-first', 'automation-first'] as const)('does not resurrect an old route when %s races baseline capture', async (order) => {
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    const sessionId = created.session.id as string;
+    const read = async () => {
+      const row = h.sqlite!.prepare('SELECT agent_kind AS agentKind, model, provider_id AS providerId, effort, fast_mode AS fastMode, scheduled_model_baseline AS baseline FROM sessions WHERE id = ?')
+        .get(sessionId) as ScheduledModelSelection & { baseline: string | null };
+      return { profile: { ...row, fastMode: !!row.fastMode }, baseline: row.baseline };
+    };
+    const apply = async (_id: string, route: Omit<ScheduledModelSelection, 'effort'> & { effort: string | null }) => {
+      h.sqlite!.prepare('UPDATE sessions SET agent_kind = ?, model = ?, provider_id = ?, effort = ?, fast_mode = ? WHERE id = ?')
+        .run(route.agentKind, route.model, route.providerId, route.effort ?? '', Number(route.fastMode), sessionId);
+    };
+    const reconcile = createBotModelRouteReconciler({ ownerEpoch: () => h.ownerScopeKey,
+      withSessionLock: withSendToSessionLock,
+      read: async () => {
+        const state = await read();
+        const bot = await invoke('local-db:bots:get', 'bot-1');
+        return { chain: await modelSettings.readEffectiveBotModelChain(bot.capabilities),
+          current: state.profile, hasRuntimeOverride: true,
+          scheduledModelBaseline: state.baseline ? JSON.parse(state.baseline) : null };
+      }, apply,
+    });
+    let savingReachedLock!: () => void;
+    const waiting = new Promise<void>((resolve) => { savingReachedLock = resolve; });
+    configureBotModelSelectionCoordinator(createBotModelSelectionCoordinator({
+      acquireSessionLock: (id) => { savingReachedLock(); return acquireSendToSessionLock(id); },
+      invalidate: reconcile.invalidate,
+    }));
+    const deps = { read, apply, isBusy: () => false, createId: () => 'race-scope',
+      prepareBaseline: (id: string) => reconcile(id, true),
+      write: async (_id: string, baseline: unknown) => {
+        h.sqlite!.prepare('UPDATE sessions SET scheduled_model_baseline = ? WHERE id = ?')
+          .run(baseline ? JSON.stringify(baseline) : null, sessionId);
+      },
+    };
+    const scope = createScheduledModelScope(deps);
+    const save = () => invoke('local-db:bots:update', { id: 'bot-1', capabilities: {
+      modelChainOverride: [{ harness: 'codex', model: 'new-saved-model', providerId: null, effort: 'medium', fastMode: false }],
+    } });
+    if (order === 'automation-first') {
+      const release = await acquireSendToSessionLock(sessionId);
+      const saving = save();
+      try {
+        await waiting;
+        await scope.begin(sessionId);
+        expect(JSON.parse((await read()).baseline!).model).not.toBe('new-saved-model');
+      } finally { release(); }
+      await saving;
+      expect((await read()).baseline).toBeNull();
+    } else {
+      await save();
+    }
+    // requestRuntimeRefresh is inert in this fixture: begin must align the saved
+    // route itself rather than relying on the asynchronous refresh continuation.
+    await withSendToSessionLock(sessionId, () => scope.begin(sessionId));
+    expect(JSON.parse((await read()).baseline!)).toMatchObject({ agentKind: 'codex', model: 'new-saved-model' });
+    await apply(sessionId, { agentKind: 'pi', model: 'temporary', providerId: null, effort: null, fastMode: false });
+    await withSendToSessionLock(sessionId, () => createScheduledModelScope(deps).restore(sessionId));
+    expect((await read()).profile).toMatchObject({ agentKind: 'codex', model: 'new-saved-model' });
+    expect((await read()).baseline).toBeNull();
+  });
+
   // #6895 DB regression: a crash after the profile commit but before the async
   // runtime refresh must not restore the superseded choice on the next cold send.
   it('commits a new model and retires its restore before runtime refresh, while unrelated edits retain it', async () => {
