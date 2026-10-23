@@ -1,11 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createDirectRuntimeBridge, type DirectRuntimeCommand } from '../directRuntimeBridge.js';
 import { DirectLinkNegotiator, parseDirectSignal, type DirectRuntimeEvents } from '../directNegotiation.js';
+import { createDirectRuntimeHost } from '../directRuntimeBridge.js';
+import { createDirectRtcRuntime } from '../directRtcRuntime.js';
 
 // Production bridge/negotiator lifetimes absent from #6825: native queue pressure,
 // stale callbacks, pending handshake cancellation and authenticated stream binding.
 // Unit tier: in-memory native messages, fake time, no sockets or platform processes.
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 const observers = () => ({ open: vi.fn(), message: vi.fn(), drained: vi.fn(), closed: vi.fn() });
 
 it('counts UTF-8 bytes still crossing the native bridge and ignores stale buffer acknowledgements', async () => {
@@ -82,4 +84,53 @@ it('binds incoming negotiation to both current transport streams', async () => {
   expect(parseDirectSignal({ action: 'offer', id: 'valid', stream: 'a', targetStream: 'b', sdp: 'x'.repeat(128 * 1024 + 1) })).toBeNull();
   expect(parseDirectSignal({ action: 'offer', id: 'valid', stream: 'a', targetStream: 'b' })).toBeNull();
   controller.clear();
+});
+
+it.each(['small-then-large', 'progress-under-pressure'])('reports native RTC drain through the real bridge (%s)', async mode => {
+  vi.useFakeTimers();
+  // A real DataChannel only fires bufferedamountlow when it crosses its threshold.
+  // Model that contract rather than unconditionally notifying on drain.
+  class Channel {
+    label = 'device-link-v1'; ordered = true; maxRetransmits = null; maxPacketLifeTime = null;
+    readyState = 'open'; bufferedAmount = 0; bufferedAmountLowThreshold = 0;
+    onopen?: () => void; onclose?: () => void; onbufferedamountlow?: () => void;
+    send(bytes: ArrayBuffer) { this.bufferedAmount += bytes.byteLength; }
+    drain(amount = 0) {
+      const previous = this.bufferedAmount; this.bufferedAmount = amount;
+      if (previous > this.bufferedAmountLowThreshold && amount <= this.bufferedAmountLowThreshold) this.onbufferedamountlow?.();
+    }
+    close() { this.readyState = 'closed'; this.onclose?.(); }
+  }
+  const channel = new Channel();
+  vi.stubGlobal('RTCPeerConnection', class {
+    iceGatheringState = 'complete'; localDescription?: unknown;
+    createDataChannel() { return channel; }
+    async createOffer() { return { type: 'offer', sdp: 'fixture' }; }
+    async setLocalDescription(value: unknown) { this.localDescription = value; }
+    close() {}
+  });
+  const bridge = createDirectRuntimeBridge(), events = observers();
+  const host = createDirectRuntimeHost(createDirectRtcRuntime(), e => bridge.receive(e));
+  const detach = bridge.attach(c => { void host.command(c); });
+  const session = bridge.runtime.create('one', events);
+  try {
+    await session.offer(); channel.onopen?.();
+    if (mode === 'small-then-large') {
+      session.send('small');
+      expect(session.bufferedAmount).toBeGreaterThan(0);
+      channel.drain(); await Promise.resolve();
+      expect(session.bufferedAmount).toBe(0);
+      session.send('😀'.repeat(300_000));
+      expect(session.bufferedAmount).toBeGreaterThan(1024 * 1024);
+      channel.drain(); await Promise.resolve();
+      expect(session.bufferedAmount).toBe(0);
+    } else {
+      session.send('x'.repeat(1_200_000));
+      channel.drain(700_000);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(session.bufferedAmount).toBe(700_000);
+      channel.drain(); await Promise.resolve();
+      expect(session.bufferedAmount).toBe(0);
+    }
+  } finally { detach(); host.dispose(); }
 });

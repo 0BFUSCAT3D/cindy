@@ -13,27 +13,47 @@ export function createDirectRtcRuntime(): DirectRuntime {
     let receiveBytes = 0;
     let parts: Uint8Array[] = [];
     let receiveTimer: ReturnType<typeof setTimeout> | undefined;
+    let bufferTimer: ReturnType<typeof setTimeout> | undefined;
     const encoder = new TextEncoder();
     const decoder = new TextDecoder('utf-8', { fatal: true });
     const close = () => {
       if (closed) return;
       closed = true;
       clearTimeout(receiveTimer);
+      clearTimeout(bufferTimer);
       parts = [];
       dc?.close();
       pc.close();
       events.closed();
+    };
+    const scheduleBufferReport = () => {
+      if (!closed && dc && dc.bufferedAmount > 0 && !bufferTimer) {
+        bufferTimer = setTimeout(() => {
+          bufferTimer = undefined;
+          reportBuffer();
+        }, 100);
+      }
+    };
+    const reportBuffer = () => {
+      if (closed) return;
+      events.drained();
+      scheduleBufferReport();
     };
     const bind = (channel: RTCDataChannel) => {
       if (closed || dc || channel.label !== 'device-link-v1' || !channel.ordered
         || channel.maxRetransmits !== null || channel.maxPacketLifeTime !== null) { channel.close(); return; }
       dc = channel;
       dc.binaryType = 'arraybuffer';
-      dc.bufferedAmountLowThreshold = 128 * 1024;
+      // Always report the final zero, including messages smaller than a low-water mark.
+      dc.bufferedAmountLowThreshold = 0;
       dc.onopen = () => { if (!closed) events.open(); };
       dc.onclose = close;
       dc.onerror = close;
-      dc.onbufferedamountlow = () => { if (!closed) events.drained(); };
+      dc.onbufferedamountlow = () => {
+        clearTimeout(bufferTimer);
+        bufferTimer = undefined;
+        reportBuffer();
+      };
       dc.onmessage = ({ data }) => {
         try {
           if (closed || !(data instanceof ArrayBuffer) || data.byteLength < 2 || data.byteLength > 16 * 1024) throw new Error();
@@ -91,7 +111,9 @@ export function createDirectRtcRuntime(): DirectRuntime {
             frame.set(bytes.subarray(offset, end), 1);
             dc.send(frame.buffer);
           }
-          events.drained();
+          // Report ongoing drain while busy, then stop at zero. Never notify synchronously
+          // from send(): native bridges and the reliable sender must commit their sequence first.
+          scheduleBufferReport();
         } catch (error) { close(); throw error; }
       },
       get bufferedAmount() { return dc?.bufferedAmount ?? 0; },

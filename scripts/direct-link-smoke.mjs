@@ -74,13 +74,15 @@ try {
       for (const c of [mobile, other]) await c.openLink('desktop', { controllerName: 'Viewer', protocolVersion: 1, appVersion: '1' });
       await wait(() => mobile.getPeerPath('desktop') === 'direct' && other.getPeerPath('desktop') === 'direct');
       const before = physical.length;
+      await mobile.invoke('desktop', { channel: 'maker:remote-agent:v1', args: ['warmup'] });
+      await new Promise(resolve => setTimeout(resolve, 150));
       const reply = await mobile.invoke('desktop', { channel: 'maker:remote-agent:v1', args: ['large'] });
       const relayBusiness = physical.slice(before).filter(e => ['invoke', 'invoke-result'].includes(e.kind));
       if (reply.result !== large || relayBusiness.length) throw new Error('LAN transfer used relay or corrupted UTF-8');
       breakNext = true;
       const fallback = await mobile.invoke('desktop', { channel: 'maker:remote-agent:v1', args: ['poll'] });
       const healthy = await other.invoke('desktop', { channel: 'maker:remote-agent:v1', args: ['poll'] });
-      if (fallback.result !== 'provider-event' || healthy.result !== 'provider-event' || executions !== 3
+      if (fallback.result !== 'provider-event' || healthy.result !== 'provider-event' || executions !== 4
         || other.getPeerPath('desktop') !== 'direct') throw new Error('fallback duplicated work or disrupted another peer');
       return { directUtf8Bytes: new TextEncoder().encode(reply.result).length, relayBusinessFramesDuringDirect: relayBusiness.length,
         executions, fallback: fallback.ok, secondController: other.getPeerPath('desktop'),

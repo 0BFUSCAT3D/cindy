@@ -67,11 +67,13 @@ try {
       await client.openLink('desktop',{controllerName:'Desktop viewer',protocolVersion:1,appVersion:'1'});
       await wait(()=>client.getPeerPath('desktop')==='direct');
       console.log('DIRECT_READY');
+      await client.invoke('desktop',{channel:'maker:remote-agent:v1',args:['warmup']});
+      await new Promise(r=>setTimeout(r,150));
       const first=await client.invoke('desktop',{channel:'maker:remote-agent:v1',args:['large']});
       if(first.result!=='局域网😀'.repeat(80000))throw Error('corrupt result');
       console.log('DIRECT_RESULT');
       const second=await client.invoke('desktop',{channel:'maker:remote-agent:v1',args:['break']});
-      if(second.result!==2)throw Error('duplicated execution');
+      if(second.result!==3)throw Error('duplicated execution');
       console.log('ELECTRON_SMOKE_OK');client.stop();app.quit();
     }).catch(e=>{console.error(e);client?.stop();app.exit(1);});
   ` } });
@@ -107,12 +109,12 @@ try {
   assert.match(viewer.output(), /DIRECT_READY/); assert.match(viewer.output(), /ELECTRON_SMOKE_OK/);
   const relayReplays = physical.filter(e => e.kind === 'invoke').length;
   // Closing before its ACK can replay the second request with its original sequence.
-  // The fixture's result=2 proves that this copy did not execute the command twice.
+  // The fixture's result=3 proves that this copy did not execute the command twice.
   assert.ok(relayReplays <= 1, 'only the interrupted request may replay through relay');
   assert.equal(physical.filter(e => e.kind === 'invoke-result').length, 1, 'only the interrupted result should fall back to relay');
   host.child.stdin.write('stop\n'); await host.done;
   console.log(JSON.stringify({ nativeProcesses: 2, directUtf8Bytes: 1_040_000, relayReplays,
-    relayFallbackResults: 1, executions: 2, result: 'passed' }, null, 2));
+    relayFallbackResults: 1, executions: 3, result: 'passed' }, null, 2));
 } finally {
   for (const child of children) if (child.exitCode === null) child.kill();
   for (const socket of server.clients) socket.terminate();
