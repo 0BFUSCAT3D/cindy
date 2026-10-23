@@ -185,6 +185,7 @@ app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 // Windows 上 codex app-server 子进程不会随父死 → 残留孤儿, 持有 binary 文件锁,
 // 用户下次启动时撞 EBUSY / 端口占用 (anthropic-compat-proxy 等)。
 async function shutdownMaker(): Promise<{ piSessionFailures: number }> {
+  await disposeLocalAgentHost();
   stopWorktreeRecycleMaintenance();
   // Do not terminate Main while one workspace patch command is settling.
   await waitForTurnChangeSetActions();
@@ -280,6 +281,7 @@ import { RendererBootGuard } from './renderer-boot-guard';
 import yaml from 'js-yaml';
 import matter from 'gray-matter';
 import type { Maker } from '@cindy/maker-core';
+import { shouldPruneSkillScanDirectory } from '@cindy/maker-core/skill-scan-limits';
 import {
   im,
   feishuIm,
@@ -416,6 +418,8 @@ import {
   isCindyPersonalRuntime,
 } from './cindy-make/versionRuntimeIdentity.js';
 import { createStorageIpcHandlers } from './cindy-media/storageIpc';
+import { registerLocalAgentConfirmationIpc, cancelLocalAgentConfirmations } from './local-agent/confirmation.js';
+import { disposeLocalAgentHost, localAgentConnections, localAgentDeveloperConnection, revokeLocalAgentConnections } from './local-agent/service.js';
 import { clearLocalEntries } from './device-link/remoteMediaCacheStore';
 import {
   collectDatabaseSizeWarningStatus,
@@ -636,6 +640,7 @@ import {
   registerWorktreeIpc,
   WorktreePool,
   reconcilePendingSafeDirectoryCleanups,
+  worktreeStore,
 } from './worktree';
 // shadow savepoint 链的启动期对账(孤儿 refs/cindy/savepoints/* 清理)
 import { reconcileSavepointRefsForDeletedSessions } from './git-snapshot/savepointCleanup';
@@ -756,7 +761,7 @@ import { SidebarTabWindowsController } from './sidebar-tab-window/controller.js'
 import { resolveWindowBoundsNearPoint } from './windowBounds.js';
 import { createSidebarTabWindow } from './sidebar-tab-window/window.js';
 import { registerSidebarTabWindowIpc } from './sidebar-tab-window/ipc.js';
-import { setRightSidebarTabsChangeBroadcaster } from './localDb/ipc/rightSidebarTabs.js';
+import { hasAssignedBotWorkbenchTab, setRightSidebarTabsChangeBroadcaster } from './localDb/ipc/rightSidebarTabs.js';
 import {
   readRsbWindowSettings,
   resetRsbWindowSettingsForStartup,
@@ -764,8 +769,13 @@ import {
 } from './right-sidebar-window/settings-store.js';
 import {
   anySessionInTurn,
+  allowBotWorkbenchPendingPermission,
   applyCodexSpawnConfigChangeWithRestart,
   clearDeferredCodexRestartForOwnerBoundary,
+  restoreUsageLimitWaits,
+  suspendUsageLimitWaits,
+  flushUsageLimitWaits,
+  reconcileScheduledUsageLimitWaits,
   scheduleDeferredCodexRestart,
   clearWorkingDirectoryRecoveryForOwnerBoundary,
   collectAgentInputQueueScanTexts,
@@ -1129,7 +1139,7 @@ import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
-import { registerPluginMarketIpc, syncDefaultMarketPlugins } from './plugin-market/registerIpc.js';
+import { registerPluginMarketIpc, syncDefaultMarketPlugins, refreshForegroundMarketPlugins } from './plugin-market/registerIpc.js';
 import { getPluginMarketService } from './plugin-market/service.js';
 import { StableOwnerPostCommitStep } from './stableOwnerPostCommit.js';
 import { registerPluginPublisherIpc } from './plugin-publisher/registerIpc.js';
@@ -1285,6 +1295,8 @@ async function attemptStartSchedulerOnce(): Promise<void> {
   }
   const automationGitBaselineHooks = createAutomationUserTurnGitBaselineHooks();
   try {
+    await restoreUsageLimitWaits();
+    if (getGoalTeardownGeneration() !== goalGenBefore) return;
     const scheduler = await startScheduler({
       maker,
       getDb: () => getDbClient().drizzle,
@@ -1310,6 +1322,10 @@ async function attemptStartSchedulerOnce(): Promise<void> {
     // 内通过 registerScheduleHandlers() 提前挂好,handler 内部 awaitReady 等本行
     // setSchedulerReady 调用。
     if (!_scheduleIpcRegistered.has(scheduler)) {
+      scheduler.on('changed', event => {
+        void reconcileScheduledUsageLimitWaits(event.scheduleId).catch(error =>
+          console.warn('[usage-limit] schedule reconciliation failed', error));
+      });
       attachSchedulerEventListeners(scheduler, getScheduleStorage());
       registerProjectAutomationIpc(getProjectAutomationLoader());
       _scheduleIpcRegistered.add(scheduler);
@@ -1912,7 +1928,9 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
     // 等 relogin 后的 setSchedulerReady 喂入**新实例**(与 worker bug #1 的 relogin
     // 路径同构,这里关掉 teardown 路径的对偶窗口)。
     // 不 reject _pending — 让在途请求继续等下次 setSchedulerReady,30s 超时兜底。
+    suspendUsageLimitWaits();
     resetSchedulerReady();
+    await flushUsageLimitWaits();
     agentIslandService = getAgentIslandService();
     agentIslandService?.resetRuntimeState();
     // ② 再停旧 scheduler。scheduler 持有旧 user 的 storage drizzle 引用,必须在
@@ -2015,6 +2033,7 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
         // Marked before the await: `shutdownStarted` is set on entry, so the
         // singleton is poisoned even if this rejects.
         if (maker) shutdownRan = true;
+        await disposeLocalAgentHost();
         const shutdownReport = maker
           ? await maker.shutdown({ reason: 'account-boundary' })
           : undefined;
@@ -2293,6 +2312,18 @@ const rsbWindowController = new RsbWindowController({
 registerRsbWindowIpc({
   controller: rsbWindowController,
   getMainWindow: () => mainWindowRef,
+  allowBotWorkbenchPermission: allowBotWorkbenchPendingPermission,
+  authorizePoppedWorkbench: async (sender, botId) => {
+    const slot = sidebarTabWindowsController.slotForSender(sender);
+    if (!slot?.visible) return false;
+    const assignment = slot.assignment;
+    if (!assignment?.sessionId || assignment.context.remoteHostId !== null) return false;
+    const owner = await resolveRsbHostContextFromSession(assignment.sessionId);
+    if (owner?.botOwner?.botId !== botId || !owner.botOwner.canonical || owner.remoteHostId !== null) return false;
+    const hasTab = await hasAssignedBotWorkbenchTab(assignment.sessionId, assignment.tabs.map((tab) => tab.tabId), botId);
+    return hasTab && slot.visible && slot.assignment === assignment &&
+      sidebarTabWindowsController.slotForSender(sender) === slot;
+  },
 });
 
 
@@ -2508,6 +2539,7 @@ registerGhostIpc();
 registerPluginMarketIpc();
 registerPluginPublisherIpc();
 setAppSessionCommitBoundaryHook(() => {
+  cancelLocalAgentConfirmations();
   // 进行中的 Claude Code 登录属于旧 owner:结束 CLI 子进程,不让它在新 owner 下完成。
   cancelClaudeCliLogin();
   clearAllSessionAttention();
@@ -2527,6 +2559,12 @@ const builtinPostCommitStep = new StableOwnerPostCommitStep({
 // the entire batch (catalog/auth/locks included), not the lifetime of a write.
 const marketPostCommitStep = new StableOwnerPostCommitStep({
   name: 'plugin-market', timeoutMs: 180_000,
+  warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
+});
+// A lightweight catalog request must not occupy the full maintenance slot.
+// The service still coalesces catalog fetches and any overlapping full writes.
+const foregroundMarketPostCommitStep = new StableOwnerPostCommitStep({
+  name: 'plugin-market-foreground', timeoutMs: 180_000,
   warn: (message, meta) => ownerBackgroundLog.warn(message, meta),
 });
 const oauthPostCommitStep = new StableOwnerPostCommitStep({
@@ -2555,7 +2593,7 @@ authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId 
   let deferred = false;
   const marketOutcome = await marketPostCommitStep.run(scopeKey, async () => {
     if (!isCurrent()) return 'deferred';
-    return syncDefaultMarketPlugins();
+    return syncDefaultMarketPlugins('owner-ready');
   });
   if (!isCurrent()) return 'deferred';
   if (marketOutcome === 'failed') needsRetry = true;
@@ -3573,7 +3611,7 @@ app.on('browser-window-focus', (_event, win) => {
   const focusedAppContent = isAppContentWindow(win);
   syncAppFocusState();
   if (focusedAppContent) {
-    syncPluginMarketForActiveOwner(30_000);
+    syncPluginMarketForActiveOwner(30_000, 'foreground');
     // OAuth and system settings may complete outside Cindy. Focus is a
     // metadata-only fallback wake-up: each pending plugin is re-assessed, but
     // no stored value crosses the change bus.
@@ -4288,6 +4326,8 @@ let disposeProviderAccessAuthListener: (() => void) | null = null;
 let pluginMarketSyncInFlightScope: string | null = null;
 let lastPluginMarketSyncScope: string | null = null;
 let lastPluginMarketSyncAt = 0;
+let lastPluginMarketForegroundScope: string | null = null;
+let lastPluginMarketForegroundAt = 0;
 let pluginMarketPeriodicSyncTimer: ReturnType<typeof setInterval> | null = null;
 const PLUGIN_MARKET_PERIODIC_SYNC_MS = 30 * 60 * 1000;
 
@@ -4340,21 +4380,31 @@ function checkDatabaseSizeWarningAtStartup(): void {
 }
 
 /** Run market discovery and automatic updates for the current stable owner. */
-function syncPluginMarketForActiveOwner(minIntervalMs = 0): void {
+function syncPluginMarketForActiveOwner(minIntervalMs = 0, trigger: 'foreground' | 'resume' | 'periodic' = 'periodic'): void {
   const session = getActiveAppSession();
   if (!session.dataOwnerId || isAppSessionBoundaryPending()) return;
   const scope = activeOwnerScopeKey();
+  if (trigger === 'foreground') {
+    if (scope === lastPluginMarketForegroundScope && Date.now() - lastPluginMarketForegroundAt < minIntervalMs) return;
+    void foregroundMarketPostCommitStep.run(scope, async () => {
+      if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) return 'deferred';
+      lastPluginMarketForegroundScope = scope;
+      lastPluginMarketForegroundAt = Date.now();
+      return refreshForegroundMarketPlugins();
+    });
+    return;
+  }
   if (scope === pluginMarketSyncInFlightScope) return;
   const now = Date.now();
   if (scope === lastPluginMarketSyncScope && now - lastPluginMarketSyncAt < minIntervalMs) {
     return;
   }
   pluginMarketSyncInFlightScope = scope;
-  lastPluginMarketSyncScope = scope;
-  lastPluginMarketSyncAt = now;
   void marketPostCommitStep.run(scope, async () => {
     if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== scope) return 'deferred';
-    return syncDefaultMarketPlugins();
+    lastPluginMarketSyncScope = scope;
+    lastPluginMarketSyncAt = Date.now();
+    return syncDefaultMarketPlugins(trigger);
   }).finally(() => {
     if (pluginMarketSyncInFlightScope === scope) pluginMarketSyncInFlightScope = null;
   });
@@ -6117,6 +6167,7 @@ const registerIpcHandlers = () => {
   //    资料直写 auth-server,头像经 oss-server 预签名直传) ──
 
   const profileEditLog = createLogger('profileEdit');
+  const publicUploadLog = createLogger('serverApiClient:public-upload');
   const profileEditDeps: profileEdit.ProfileEditDeps = {
     getCurrentUserId: () => authManager.getCurrentUserId(),
     getAccountScopeKey: activeOwnerScopeKey,
@@ -6140,6 +6191,7 @@ const registerIpcHandlers = () => {
           fetchImpl: (input, init) => net.fetch(input, init),
           getBaseUrl: () => getClientEndpoint('ossApiBaseUrl'),
           getToken: () => authManager.getAccessToken(),
+          onError: (stage, message) => publicUploadLog.warn('avatar upload failed', stage, message),
         },
         { scene: 'avatar', contentType: mimeType, body: buffer },
       );
@@ -6829,7 +6881,8 @@ const registerIpcHandlers = () => {
 
   // Scans `{workingDir}/.claude/commands/*.md` and `.claude/skills/*.md` for
   // user-defined slash commands / skills (command-palette F1).
-  // Returns [] if dirs don't exist. No recursion.
+  // Returns [] if dirs don't exist. Skills may have one namespace level;
+  // deeper directories are not scanned.
   ipcMain.handle(
     'workspace:scan-slash-commands',
     async (
@@ -6907,17 +6960,32 @@ const registerIpcHandlers = () => {
           dirPath: string,
         ): Array<{ name: string; description?: string; source: 'user' | 'skill' }> => {
           if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return [];
-          const entries = fs.readdirSync(dirPath, { withFileTypes: true });
           const results: Array<{ name: string; description?: string; source: 'user' | 'skill' }> =
             [];
-          for (const ent of entries) {
-            if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
-            // Look for SKILL.md or skill.md inside the subdirectory
-            const subDir = path.join(dirPath, ent.name);
-            const skillFile = ['SKILL.md', 'skill.md'].find((f) =>
-              fs.existsSync(path.join(subDir, f)),
-            );
-            if (!skillFile) continue;
+          const isSymlinkDirectory = (target: string): boolean => {
+            try {
+              return fs.lstatSync(target).isSymbolicLink();
+            } catch {
+              return false;
+            }
+          };
+          const readEntries = (dir: string): fs.Dirent[] => {
+            try {
+              return fs.readdirSync(dir, { withFileTypes: true })
+                .sort((a, b) => a.name.localeCompare(b.name));
+            } catch {
+              return [];
+            }
+          };
+          const findSkillFile = (dir: string): string | null =>
+            ['SKILL.md', 'skill.md'].find((f) => {
+              try {
+                return fs.statSync(path.join(dir, f)).isFile();
+              } catch {
+                return false;
+              }
+            }) ?? null;
+          const addSkill = (subDir: string, name: string, skillFile: string): void => {
             let description: string | undefined;
             try {
               const raw = fs.readFileSync(path.join(subDir, skillFile), 'utf-8');
@@ -6925,7 +6993,44 @@ const registerIpcHandlers = () => {
             } catch {
               /* non-fatal */
             }
-            results.push({ name: ent.name, description, source: 'skill' });
+            results.push({ name, description, source: 'skill' });
+          };
+
+          const namespaces: Array<{ name: string; path: string }> = [];
+          for (const ent of readEntries(dirPath)) {
+            if (ent.name.startsWith('.') || /\.bak\.\d+$/.test(ent.name)) continue;
+            const subDir = path.join(dirPath, ent.name);
+            let stat: fs.Stats;
+            try {
+              stat = fs.statSync(subDir);
+            } catch {
+              continue;
+            }
+            if (!stat.isDirectory()) continue;
+            // Dirent can report a Windows junction as a directory; lstat keeps
+            // the no-recursive-symlink guarantee consistent across platforms.
+            const isSymlink = ent.isSymbolicLink() || isSymlinkDirectory(subDir);
+            const skillFile = findSkillFile(subDir);
+            if (skillFile) {
+              addSkill(subDir, ent.name, skillFile);
+              continue;
+            }
+            // Direct symlinked Skills are handled above; do not walk a symlinked namespace.
+            if (isSymlink || shouldPruneSkillScanDirectory(ent.name)) continue;
+            namespaces.push({ name: ent.name, path: subDir });
+          }
+
+          // At most one namespace/author level: <root>/<namespace>/<skill>.
+          // Direct Skills win over a same-name nested Skill regardless of
+          // namespace ordering.
+          for (const namespace of namespaces) {
+            for (const nested of readEntries(namespace.path)) {
+              if (nested.name.startsWith('.') || /\.bak\.\d+$/.test(nested.name)) continue;
+              if (results.some((result) => result.name === nested.name)) continue;
+              const nestedDir = path.join(namespace.path, nested.name);
+              const nestedSkillFile = findSkillFile(nestedDir);
+              if (nestedSkillFile) addSkill(nestedDir, nested.name, nestedSkillFile);
+            }
           }
           return results;
         };
@@ -8506,6 +8611,19 @@ const registerIpcHandlers = () => {
           ? Promise.resolve({ bytes: 0, fileCount: 0 })
           : withActiveChatAttachmentRoot((rootDir) => getFixedDirectoryStats(rootDir)),
     });
+    registerLocalAgentConfirmationIpc(() => mainWindowRef);
+    ipcMain.handle('local-agent:connections', (event) => {
+      assertTrustedAppRendererEvent(event);
+      return localAgentConnections(() => assertTrustedAppRendererEvent(event));
+    });
+    ipcMain.handle('local-agent:developer-connection', (event) => {
+      assertTrustedAppRendererEvent(event);
+      return localAgentDeveloperConnection(() => assertTrustedAppRendererEvent(event));
+    });
+    ipcMain.handle('local-agent:revoke', (event, connectionId?: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      return revokeLocalAgentConnections(connectionId, () => assertTrustedAppRendererEvent(event));
+    });
     ipcMain.handle('cindy-media:storage-stats', (event) => {
       assertTrustedAppRendererEvent(event);
       return storageHandlers.stats();
@@ -9161,6 +9279,7 @@ app.on('ready', async () => {
     readHistoryLiveMessages: getSessionThinkingSnapshots,
     resolveContextWindow: (session) => resolveSessionContextWindow(getActiveCatalog(), session),
     requestWorktreeRecycle,
+    lookupSessionWorktreeBinding: (sessionId) => worktreeStore.get(sessionId)?.path ?? null,
     closeIdleSessionForMove: async (sessionId) => {
       const maker = getMakerIfReady();
       if (maker?.getSession(sessionId)?.isTurnRunning()) return false;
@@ -9831,7 +9950,7 @@ app.on('ready', async () => {
     authCredentialRecovery.request();
     authManager.handleResume();
     handleProviderModelSystemResume();
-    syncPluginMarketForActiveOwner(30_000);
+    syncPluginMarketForActiveOwner(30_000, 'resume');
     // device-link:睡醒立即重连 relay,不干等退避计时器 + 心跳判死(最坏合计 ~75s)。
     handleDeviceLinkSystemResume();
   });
@@ -9900,10 +10019,12 @@ onQuit(
 onQuit(
   'session-active-turn-freeze',
   () => {
+    suspendUsageLimitWaits();
     freezeSessionActiveTurnMarkers();
   },
   'sync',
 );
+onQuit('usage-limit-waits-flush', flushUsageLimitWaits, 'async');
 onQuit(
   'reap-claude-children',
   () => {

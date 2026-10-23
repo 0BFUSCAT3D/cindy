@@ -1,13 +1,12 @@
 import { isRemoteAgentLimitsPatch } from '../../shared/remoteAgentLimits.js';
 import { readRemoteAgentLimitsState, saveRemoteAgentLimits } from '../remote-agent/host/limitsStore.js';
-import { remoteAgentLimitUsage } from './dispatch.js';
-import { isRemoteAgentIdleRelease } from '../../shared/remoteAgentIdleRelease.js';
-import { readRemoteAgentIdleReleaseState, saveRemoteAgentIdleRelease } from '../remote-agent/controller/idleReleaseStore.js';
+import { remoteAgentLimitUsage, revalidateRemoteModelAccess } from './dispatch.js';
 /**
  * 供应商分享的本机接线：分享者与受邀者两侧运行时的起停、推送给 Renderer、系统通知，以及
  * Renderer 的命令通道。账号操作只接受本机应用窗口，不能经设备互联从别的电脑调用。
  */
 import { app, BrowserWindow, ipcMain, Notification } from 'electron';
+import { PROVIDER_MEDIA_FIELDS } from '@cindy/model-providers';
 
 import {
   PROVIDER_SHARE_LINK_TTL_MS,
@@ -40,6 +39,8 @@ import { getAuthState, getDeviceId } from '../authManager.js';
 import { parseProviderShareInsights, PROVIDER_SHARE_INSIGHTS_CHANNEL } from '../../shared/providerShareInsights.js';
 import { isProviderGroupProviderId } from '../../shared/providerGroup.js';
 import { providerShareVisibility } from './providerShareVisibility.js';
+import { remoteModelAccess } from './remoteModelAccess.js';
+import { isRemoteModelSelection, type RemoteModelAccessView } from '../../shared/remoteModelAccess.js';
 import { createProviderShareInsightsReader } from './providerShareInsights.js';
 import { readProviderShareQuota, readProviderShareQuotaAccount } from './providerShareQuota.js';
 import { isDataOwnerPushStamp } from '../../shared/dataOwnerPush.js';
@@ -67,6 +68,8 @@ import {
   setProviderShareAccess,
 } from './dispatch.js';
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
+import { tapWindowBroadcast } from './broadcast-tap.js';
+import { MAKER_PUSH } from '../maker-ipc/channels.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
 import { configureProviderShareApprovalWindows } from './providerShareApprovalWindows.js';
 import {
@@ -345,6 +348,15 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throwIpcError('INVALID_PARAMS', 'Invalid command');
   const value = raw as Record<string, unknown>;
   switch (value.action) {
+    case 'get-model-access':
+    case 'set-model-access': {
+      if (!isProviderGroupProviderId(value.providerId)) throwIpcError('INVALID_PARAMS', 'Invalid providerId');
+      const memberId = value.memberId === undefined ? undefined : text(value.memberId, 'memberId', 128);
+      const scope = { providerId: value.providerId, ...(memberId !== undefined ? { memberId } : {}) };
+      if (value.action === 'get-model-access') return { action: value.action, ...scope };
+      if (!isRemoteModelSelection(value.models)) throwIpcError('INVALID_PARAMS', 'Invalid remote model selection');
+      return { action: value.action, ...scope, models: value.models === null ? null : [...value.models] };
+    }
     case 'get-visibility':
     case 'quota-account':
       if (!isProviderGroupProviderId(value.providerId)) throwIpcError('INVALID_PARAMS', 'Invalid providerId');
@@ -368,12 +380,6 @@ export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
     case 'set-run-limits':
       if (!isRemoteAgentLimitsPatch(value.limits)) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
       return { action: value.action, limits: { ...value.limits } };
-    case 'get-idle-release':
-    case 'reset-idle-release':
-      return { action: value.action };
-    case 'set-idle-release':
-      if (!isRemoteAgentIdleRelease(value.value)) throwIpcError('INVALID_PARAMS', 'Invalid idle release minutes');
-      return { action: value.action, value: { idleMinutes: value.value.idleMinutes } };
     case 'owned':
       return { action: 'owned', range: usageRange(value.range) };
     case 'own-usage':
@@ -719,6 +725,38 @@ async function createLink(
 async function execute(command: ProviderShareCommand, assertCurrent: () => void = () => undefined): Promise<unknown> {
   assertCurrent();
   switch (command.action) {
+    case 'get-model-access':
+    case 'set-model-access': {
+      const assertOwner = captureProviderManagementScope();
+      const assertScope = () => { assertCurrent(); assertOwner(); };
+      if (command.memberId) {
+        requireRunning();
+        await refreshProviderShareHost('management');
+        assertScope();
+        const found = getProviderShareHostSnapshot().some((share) => share.providerId === command.providerId
+          && share.members.some((member) => member.memberId === command.memberId));
+        if (!found) throwIpcError('NOT_FOUND', 'This shared provider member is no longer available');
+      }
+      const providers = await getDesktopProviderService().listProviders({ allowSideEffects: false });
+      assertScope();
+      const provider = providers.find((entry) => entry.id === command.providerId);
+      if (!provider) throwIpcError('NOT_FOUND', 'This provider is no longer available');
+      if (command.action === 'set-model-access') {
+        await remoteModelAccess.set(command.providerId, command.models, command.memberId, assertScope);
+        assertScope();
+        await revalidateRemoteModelAccess();
+        assertScope();
+        emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+        emit(MAKER_PUSH.PROVIDER_CHANGED, {});
+        tapWindowBroadcast(MAKER_PUSH.PROVIDER_CHANGED, {});
+      }
+      const availableModels = new Map<string, { id: string; name: string }>();
+      for (const entries of [...Object.values(provider.models), ...PROVIDER_MEDIA_FIELDS.map(field => provider[field])]) for (const model of entries ?? []) {
+        if (!model.disabled) availableModels.set(model.id, { id: model.id, name: model.name || model.id });
+      }
+      return { version: 1, ...remoteModelAccess.read(command.providerId, command.memberId),
+        availableModels: [...availableModels.values()] } satisfies RemoteModelAccessView;
+    }
     case 'get-visibility':
       return providerShareVisibility.read(command.providerId);
     case 'set-visibility': {
@@ -767,14 +805,6 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
       }
       return { ...readRemoteAgentLimitsState(), usage: remoteAgentLimitUsage() };
     }
-    case 'get-idle-release':
-    case 'set-idle-release':
-    case 'reset-idle-release':
-      if (command.action !== 'get-idle-release') {
-        await saveRemoteAgentIdleRelease(command.action === 'reset-idle-release' ? null : command.value);
-        assertCurrent();
-      }
-      return readRemoteAgentIdleReleaseState();
     case 'owned':
       if (running) markProviderShareHostActive(60_000);
       return ownerState(command.range);
@@ -959,6 +989,13 @@ export function registerProviderShareIpc(): void {
     quota: readProviderShareQuota,
   });
   setProviderShareAccess({
+    remoteModels: (providerId) => {
+      try { return remoteModelAccess.read(providerId).providerModels; } catch { return []; }
+    },
+    modelAllowed: (controller, providerId, model) => {
+      const access = providerShareGuestAccess(controller);
+      return access?.providerId === providerId && remoteModelAccess.allows(providerId, model, access.memberId);
+    },
     insights,
     insightsCurrent: insights.isCurrent,
     guestAccess: providerShareGuestAccess,

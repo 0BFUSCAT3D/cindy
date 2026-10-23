@@ -204,7 +204,7 @@ describe('dynamic lizi MCP session context', () => {
     const schemaKeys = Object.keys(
       tools(server).send_to_worker.inputSchema?.shape ?? {},
     );
-    expect(schemaKeys).toEqual(['target_session_id', 'message', 'delivery']);
+    expect(schemaKeys).toEqual(['target_session_id', 'message', 'delivery', 'images']);
     expect(schemaKeys).not.toContain('interrupt');
   });
 
@@ -280,6 +280,31 @@ describe('dynamic lizi MCP session context', () => {
     expect(result).toMatchObject({ ok: true, wake_kind: 'already-active' });
     expect(result).not.toHaveProperty('steer_fallback_reason');
     expect(vi.mocked(deps.sendToWorker).mock.calls[0]?.[0]).not.toHaveProperty('delivery');
+  });
+
+  it('forwards send_to_worker images to the host and omits them when absent', async () => {
+    const deps = createOrcaDeps();
+    const server = createOrcaMcpServer(deps, {
+      agentKind: 'codex',
+      workingDir: '/repo',
+      sessionId: 'lead-1',
+      vendorOptions: { orcaRole: 'lead' },
+    });
+
+    await tools(server).send_to_worker.handler({
+      target_session_id: 'worker-session-1',
+      message: 'review this',
+      images: ['/tmp/a.png', '/tmp/b.jpg'],
+    } as never);
+    expect(vi.mocked(deps.sendToWorker).mock.calls[0]?.[0]).toMatchObject({
+      images: ['/tmp/a.png', '/tmp/b.jpg'],
+    });
+
+    await tools(server).send_to_worker.handler({
+      target_session_id: 'worker-session-1',
+      message: 'text only',
+    } as never);
+    expect(vi.mocked(deps.sendToWorker).mock.calls[1]?.[0]).not.toHaveProperty('images');
   });
 
   it('reads the caller own input queue when get_worker_queue_status omits worker_id', async () => {
@@ -543,6 +568,8 @@ describe('dynamic lizi MCP session context', () => {
           effort: 'high',
           focused: true,
           working_dir: '/repo',
+          owns_worktree: true,
+          worktree: { path: '/repo', branch: 'worker/dev' },
         }],
       })),
       listWorkerQueuedMessages: vi.fn(async () => ({
@@ -567,7 +594,7 @@ describe('dynamic lizi MCP session context', () => {
     const queue = parse(
       await tools(server).get_worker_queue_status.handler({ worker_id: 'worker-1' }) as never,
     );
-    expect(workspace).toMatchObject({ workers: [{ queued_count: 1 }] });
+    expect(workspace).toMatchObject({ workers: [{ queued_count: 1, owns_worktree: true, worktree: { path: '/repo', branch: 'worker/dev' } }] });
     expect(queue).toMatchObject({ queued_count: 1, queue: [{ consuming: true }] });
   });
 
@@ -994,6 +1021,18 @@ describe('dynamic lizi MCP session context', () => {
       agent_kind: 'codex',
       working_dir: '/repo',
     });
+  });
+
+  // Runtime identity discovery must expose cross-device origin even when no local
+  // orcaRole exists (the 2026-10-21 live probe otherwise misidentified the Worker).
+  it('returns the execution-device Worker origin from the authoritative context', async () => {
+    const lead = { leadDeviceId: 'pc', leadSessionId: 'lead-1', workerLabel: 'tester' };
+    const server = createXdtHelperMcpServer({}, {
+      agentKind: 'codex', workingDir: '/worker', sessionId: 'remote-worker',
+      vendorOptions: { orcaRemoteWorker: true, orcaRemoteLead: lead },
+    });
+    const result = await tools(server).call_tool.handler({ name: 'get_current_session_id', args: {} });
+    expect(parse(result as never)).toMatchObject({ ok: true, session_id: 'remote-worker', orca_remote_lead: lead });
   });
 
   it('fails closed when the authoritative accessor cannot resolve a session', async () => {
