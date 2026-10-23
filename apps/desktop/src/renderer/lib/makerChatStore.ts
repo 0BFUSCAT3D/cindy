@@ -228,7 +228,9 @@ import { isSessionUpgrading } from '@/state/ccMgrUpgradeStore';
 import { i18n } from '@/i18n';
 import { toast } from '@/lib/toast';
 import { openUrlInSidebarBrowser } from '@/features/right-sidebar/lib/openInSidebarBrowser';
+import { openPluginTaskTab } from '@/features/right-sidebar/lib/openPluginTaskTab';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
+import { isSecondaryWindow } from '@/lib/secondaryWindow';
 import {
   extractUsageLimitRecoveryHint,
   type UsageLimitRecoveryHint,
@@ -447,6 +449,10 @@ export interface ChatMessage {
   cacheReceipt?: HistoryCacheReceipt;
   /** Private Bot reply provenance, projected from persisted/live agent metadata. */
   botPrivateReply?: boolean;
+  /** The user input (clientId) this assistant reply answers, from the turn's accepted input. */
+  replyToClientId?: string;
+  /** Companion-chat quote reply carried by this user message. */
+  replyQuote?: import('../../shared/chatReplyQuote').ChatReplyQuote;
   botLearning?: import('@cindy/maker-shared/bot-learning').BotLearningReceipt[];
   botTaskResults?: import('@cindy/maker-shared/botCollaboration').BotCollaborationMeta[];
   clientId: string;
@@ -3661,6 +3667,8 @@ function _purgeSession(sessionId: string): void {
   invalidateBackgroundTaskReconcile(sessionId);
   cancelBackgroundTaskReconcile(sessionId);
   backgroundTaskStaleRetrySessions.delete(sessionId);
+  // 同一 id 之后可能重新建出来(新建页的未发送任务)，预热提醒要重新开始计时。
+  lastPrewarmRequest.delete(sessionId);
   // 代际递增(bump 而非 delete,原因见 _messagesEpoch 注释):作废 in-flight 翻页,
   // 避免其提交把旧窗口 merge 进 purge 后重建的空 slice。
   releaseRemoteHistoryView(sessionId);
@@ -4195,6 +4203,8 @@ function resolveGatewayRecoveryProviderId(
 }
 
 function enterView(sessionId: string): () => void {
+  const entry = remoteHistoryViews.get(sessionId);
+  if (entry) entry.mirrorPaused = false;
   const view = getRemoteHistoryView(sessionId);
   const deviceId = remoteProjectsStore.getSessionDeviceId(sessionId);
   if (deviceId) view?.setNetworkAvailable(!isRemoteDeviceMarkedDisconnected(deviceId));
@@ -4319,6 +4329,8 @@ function leaveView(sessionId: string): void {
     return;
   }
   _activeViewSessions.delete(sessionId);
+  const entry = remoteHistoryViews.get(sessionId);
+  if (entry) entry.mirrorPaused = true;
   getRemoteHistoryView(sessionId)?.setActive(false);
   cancelIdlePlanDiscovery(sessionId);
   _lastViewedAt.set(sessionId, Date.now());
@@ -5761,6 +5773,7 @@ export function handleStreamEvent(
     : typeof phaseData?.phase === 'string' ? phaseData.phase : incomingMeta?.assistantPhase;
   const assistantMetaFields: {
     botPrivateReply?: boolean;
+    replyToClientId?: string;
     assistantPhase?: string;
     model?: string;
     parentToolUseId?: string;
@@ -5775,6 +5788,8 @@ export function handleStreamEvent(
       : {}),
     ...(incomingMeta?.turnCompleted === true ? { turnCompleted: true } : {}),
     ...(typeof incomingMeta?.botPrivateReply === 'boolean' ? { botPrivateReply: incomingMeta.botPrivateReply } : {}),
+    ...(typeof incomingMeta?.replyToClientId === 'string' && incomingMeta.replyToClientId
+      ? { replyToClientId: incomingMeta.replyToClientId } : {}),
   };
   switch (event.type) {
     case 'text': {
@@ -5925,7 +5940,8 @@ export function handleStreamEvent(
           assistantMetaFields.model !== undefined ||
           assistantMetaFields.parentToolUseId !== undefined ||
           assistantMetaFields.turnCompleted === true ||
-          assistantMetaFields.botPrivateReply !== undefined;
+          assistantMetaFields.botPrivateReply !== undefined ||
+          assistantMetaFields.replyToClientId !== undefined;
         const shouldCalibrateText = Boolean(
           isFullText === true &&
           text &&
@@ -9773,7 +9789,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
     window.electronAPI.ghosts,
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
-      if (isSidebarWindow()) return;
+      if (isSidebarWindow() || isSecondaryWindow()) return;
       const p = raw as {
         name?: string;
         iconDataUrl?: string;
@@ -9794,6 +9810,23 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       });
     },
     'ghosts-preview-open',
+  );
+
+  // ── 插件任务页开页(taskView 槽):main 已做资格审与落点解析,这里只在该任务的
+  // 右侧栏打开 / 聚焦任务页页签。只由主窗口处理；显式 focus 才按用户导航打开。
+  bindIpc(
+    (cb: (data: unknown, ownerStamp?: unknown) => void) =>
+      window.electronAPI.ghosts?.onTaskViewOpen?.(cb),
+    (raw: unknown, ownerStamp?: unknown) => {
+      if (!isCurrentLocalLiveIngress(ownerStamp)) return;
+      if (isSidebarWindow() || isSecondaryWindow()) return;
+      const p = raw as { instanceId?: unknown; sessionId?: unknown; focus?: unknown } | null;
+      if (!p || typeof p.instanceId !== 'string' || typeof p.sessionId !== 'string') return;
+      void openPluginTaskTab(p.sessionId, p.instanceId, { userInitiated: p.focus === true }).catch(() => {
+        /* 标签落地失败(任务桶异常等)不致命,静默 */
+      });
+    },
+    'ghosts-task-view-open',
   );
 
   // ── 后台活动熄灭 → stale running 对账(终态事件丢失的自动自愈)──
@@ -11698,6 +11731,7 @@ const remoteHistoryViews = new Map<string, {
   view: HistoryViewController<HistoryChatMessage> | undefined;
   intentQueue: { tail: Promise<void> };
   isCurrent(): boolean;
+  mirrorPaused: boolean;
 }>();
 function releaseRemoteHistoryView(sessionId: string, expected?: HistoryViewController<HistoryChatMessage>): void {
   const entry = remoteHistoryViews.get(sessionId);
@@ -11782,6 +11816,7 @@ function createRemoteHistoryView(sessionId: string) {
   if (existing) return existing;
   const entry = remoteHistoryViews.get(sessionId) ?? {
     view: undefined, intentQueue: { tail: Promise.resolve() }, isCurrent: () => false,
+    mirrorPaused: false,
   };
   const owner = getDataOwnerGeneration();
   // Begin the protected disk read before taking write tokens for remote requests.
@@ -11837,41 +11872,72 @@ function createRemoteHistoryView(sessionId: string) {
   entry.isCurrent = isCurrent;
   remoteHistoryViews.set(sessionId, entry);
   view.setNetworkAvailable(!deviceId || !isRemoteDeviceMarkedDisconnected(deviceId));
-  view.subscribe(() => {
-    if (persistTimer) clearTimeout(persistTimer);
-    if (!isCurrent() || !sessions.has(sessionId)) return;
+  let mirrorScheduled = false;
+  let mirrorEpoch = 0;
+  const mirrorSnapshot = () => {
+    mirrorScheduled = false;
+    if (!isCurrent() || !sessions.has(sessionId) || entry.mirrorPaused) return;
+    if ((_messagesEpoch.get(sessionId) ?? 0) !== mirrorEpoch) return;
     const snapshot = view.getSnapshot();
     if (isHistoryViewUnavailable(snapshot.error)) {
-      writeCache = undefined;
       // Keep the last usable mirror until the raw fallback succeeds and replaces it.
-      setState(sessionId, (state) => ({ ...state, messages: confirmRemoteUsers(state.messages,
-        new Set(state.messages.filter((row) => !row.isPendingPersist).map((row) => row.clientId))) }));
-    } else if (snapshot.ready && !snapshot.loading && !snapshot.error && writeCache) {
-      const writer = writeCache;
-      persistTimer = setTimeout(() => { if (isCurrent()) writer(snapshot); }, 1200);
-    }
-    if (!snapshot.ready) {
-      if (view.isActive() && isHistoryViewUnavailable(snapshot.error)) {
-        void reconcileRemoteMessages(sessionId, { force: true }).catch(() => undefined);
-      }
+      setState(sessionId, (state) => {
+        const messages = confirmRemoteUsers(state.messages,
+          new Set(state.messages.filter((row) => !row.isPendingPersist).map((row) => row.clientId)));
+        return messages === state.messages ? state : { ...state, messages };
+      });
       return;
     }
+    if (!snapshot.ready) return;
     const available = historyViewLeaves(snapshot.items).flatMap((item) => item.type === 'messages' ? item.messages : []);
     for (const detail of snapshot.details.values()) available.push(...detail.messages);
     // Restored page rows are cached too. Keep their read order when borrowing them
     // into the raw store, so a delayed disk receipt is comparable without treating live rows as old.
     const borrowed = deviceId && snapshot.stale ? available.map(message => ({ ...message,
       cacheHydrated: true as const, cacheReceipt: snapshot.readReceipt })) : available;
-    setState(sessionId, (state) => ({ ...state, historyLoaded: true,
-      messages: confirmRemoteUsers(
-        mergeMessages(borrowed, state.messages.filter((message) => !message.cacheHydrated
-          || historyCacheReceiptFollows(message.cacheReceipt, snapshot.readReceipt, snapshot.stale)), { addOnly: true }),
+    setState(sessionId, (state) => {
+      const rawMessages = state.messages.some((message) => message.cacheHydrated
+        && !historyCacheReceiptFollows(message.cacheReceipt, snapshot.readReceipt, snapshot.stale))
+        ? state.messages.filter((message) => !message.cacheHydrated
+          || historyCacheReceiptFollows(message.cacheReceipt, snapshot.readReceipt, snapshot.stale))
+        : state.messages;
+      const messages = confirmRemoteUsers(
+        mergeMessages(borrowed, rawMessages, { addOnly: true }),
         new Set(available.filter((message) => message.role === 'user').map((message) => message.clientId)),
-      ),
-      hasMoreMessages: snapshot.hasMore, isLoadingMore: view.isLoadingOlder(),
-      oldestMessageId: snapshot.nextCursor,
-      historyWindowHasIsland: false,
-    }));
+      );
+      const isLoadingMore = view.isLoadingOlder();
+      return state.historyLoaded && state.messages === messages
+        && state.hasMoreMessages === snapshot.hasMore
+        && state.isLoadingMore === isLoadingMore
+        && state.oldestMessageId === snapshot.nextCursor
+        ? state
+        : { ...state, historyLoaded: true, messages,
+            hasMoreMessages: snapshot.hasMore, isLoadingMore,
+            oldestMessageId: snapshot.nextCursor };
+    });
+  };
+  view.subscribe(() => {
+    if (persistTimer) clearTimeout(persistTimer);
+    if (!isCurrent() || !sessions.has(sessionId)) return;
+    const snapshot = view.getSnapshot();
+    if (!snapshot.ready && view.isActive() && isHistoryViewUnavailable(snapshot.error)) {
+      void reconcileRemoteMessages(sessionId, { force: true }).catch(() => undefined);
+    }
+    const historyUnavailable = isHistoryViewUnavailable(snapshot.error);
+    if (snapshot.ready || historyUnavailable) {
+      const isLoadingMore = historyUnavailable ? false : view.isLoadingOlder();
+      setState(sessionId, (state) => state.isLoadingMore === isLoadingMore
+        ? state : { ...state, isLoadingMore });
+    }
+    if (historyUnavailable) writeCache = undefined;
+    else if (snapshot.ready && !snapshot.loading && !snapshot.error && writeCache) {
+      const writer = writeCache;
+      persistTimer = setTimeout(() => { if (isCurrent()) writer(snapshot); }, 1200);
+    }
+    if (mirrorScheduled) return;
+    mirrorScheduled = true;
+    mirrorEpoch = _messagesEpoch.get(sessionId) ?? 0;
+    queueMicrotask(mirrorSnapshot);
   });
   void view.restoreCachedView(async () => {
     const snapshot = await cached;
@@ -12573,7 +12639,11 @@ function removeMessagesByClientIds(
   // 启动就把它 hydrate 回来(review: codex P1)。缓存是纯优化,清掉即可(下一次成功的
   // 最新页拉取会重新写上)。
   invalidateRemoteMessageCache(sessionId);
-  discardPendingTextDelta(sessionId);
+  // An older item can be retracted while the next item is still streaming.
+  // Retire only the deleted item's batch; keep unrelated text and its ingress fence.
+  const pending = pendingTextDeltaBatches.get(sessionId);
+  const pendingClientId = pending?.persistId ?? sessions.get(sessionId)?.streamingClientId;
+  if (!pendingClientId || deletedClientIds.has(pendingClientId)) discardPendingTextDelta(sessionId);
   // 作废删除提交前发起的历史分页，避免旧页响应把已经清除的行重新 merge 回来。
   if (options.invalidateHistory !== false) invalidateMessageHistoryWindow(sessionId);
   setState(sessionId, (s) => {
@@ -14072,6 +14142,7 @@ function buildQueuedMessage(
     };
     /** 订阅槽①:透传一次性跳过意识拦截钩标记(预留;v1 无强制发送 UI,无调用点置位)。 */
     bypassGhostHooks?: boolean;
+    replyQuote?: import('../../shared/chatReplyQuote').ChatReplyQuote;
   },
   identity?: { clientId: string; createdAt: string },
 ): QueuedMessage {
@@ -14101,6 +14172,7 @@ function buildQueuedMessage(
     ...(opts?.slashCommandRanges !== undefined && {
       slashCommandRanges: opts.slashCommandRanges,
     }),
+    ...(opts?.replyQuote && { replyQuote: opts.replyQuote }),
     ...(imageAttachments && imageAttachments.length > 0 && { images: imageAttachments }),
     ...(fileAttachments && fileAttachments.length > 0 && { files: fileAttachments }),
     ...(files && files.length > 0 && { retryFiles: files }),
@@ -14121,6 +14193,7 @@ function buildQueuedMessage(
     opts?.slashCommandRanges,
     [],
     opts?.agentReferences,
+    opts?.replyQuote,
   );
 
   return {
@@ -14243,12 +14316,28 @@ export function buildCreateOptsForCurrentSession(
   };
 }
 
-/** 同一任务连续打字只需偶尔提醒一次；任务所在电脑会在提醒时顺延预热进程的空闲回收。 */
+/**
+ * 同一任务连续打字只需偶尔提醒一次；任务所在电脑会在提醒时顺延预热进程的空闲回收。
+ * 换了模型、深度、权限、引擎或目录时任务所在电脑可能已关掉旧进程，下一次输入立即重新提醒。
+ */
 const PREWARM_REQUEST_INTERVAL_MS = 30_000;
-const lastPrewarmRequestAt = new Map<string, number>();
+const lastPrewarmRequest = new Map<string, { at: number; settings: string }>();
+
+function prewarmSettingsKey(createOpts: AgentInputCreateOpts): string {
+  return JSON.stringify([
+    createOpts.agentKind,
+    createOpts.workingDir,
+    createOpts.model,
+    createOpts.providerId ?? null,
+    createOpts.effort,
+    createOpts.permissionMode,
+    createOpts.fastMode ?? null,
+    createOpts.planMode ?? null,
+  ]);
+}
 
 /**
- * 输入框开始打字：请任务所在电脑（本机或被控电脑）提前启动 Agent。只在任务空闲、
+ * 输入框开始输入（打字、粘贴、开始语音输入）：请任务所在电脑（本机或被控电脑）提前启动 Agent。只在任务空闲、
  * 没有排队或在途发送时请求；createOpts 与下一次发送构造的相同，执行字段由任务所在
  * 电脑按数据库校正。尽力而为，结果不影响发送。
  */
@@ -14270,10 +14359,6 @@ function prewarmSession(
   ) {
     return;
   }
-  const now = Date.now();
-  const last = lastPrewarmRequestAt.get(sessionId);
-  if (last !== undefined && now - last < PREWARM_REQUEST_INTERVAL_MS) return;
-  lastPrewarmRequestAt.set(sessionId, now);
   const createOpts = buildCreateOptsForCurrentSession(
     sessionId,
     model,
@@ -14281,6 +14366,11 @@ function prewarmSession(
     permissionMode,
     workingDir,
   );
+  const settings = prewarmSettingsKey(createOpts);
+  const now = Date.now();
+  const last = lastPrewarmRequest.get(sessionId);
+  if (last && last.settings === settings && now - last.at < PREWARM_REQUEST_INTERVAL_MS) return;
+  lastPrewarmRequest.set(sessionId, { at: now, settings });
   void prewarmSessionFor(sessionId, createOpts).catch(() => undefined);
 }
 
@@ -14737,6 +14827,8 @@ async function updateQueueItemContent(
       slashCommandRanges: textUnchanged
         ? queued.chatMessage.slashCommandRanges
         : content.slashCommandRanges,
+      // The quote is part of the message, not of the edited text.
+      ...(queued.chatMessage.replyQuote ? { replyQuote: queued.chatMessage.replyQuote } : {}),
     },
     {
       clientId: queued.clientId,
@@ -14999,6 +15091,8 @@ type SendMessageOpts = {
   };
   /** 一次性跳过意识拦截钩(订阅槽①,预留;v1 无强制发送 UI):透传到排队项。 */
   bypassGhostHooks?: boolean;
+  /** 伙伴私聊引用回复:随消息落库,气泡显示引用块,宿主把原消息作背景附给伙伴。 */
+  replyQuote?: import('../../shared/chatReplyQuote').ChatReplyQuote;
   /** 远程预检在乐观投影建立后执行；false 时按 clientId 精确回滚。 */
   beforeEnqueue?: () => Promise<boolean>;
   /** Renderer-local correlation, never serialized into a message or wire payload. */
@@ -19512,6 +19606,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
         ...(parsed.images.length > 0 && { images: parsed.images }),
         ...(parsed.files.length > 0 && { files: parsed.files }),
         ...(parsed.quotesEncoded === true && { quotesEncoded: true }),
+        ...(parsed.replyQuote && { replyQuote: parsed.replyQuote }),
         ...(parsed.agentReferences?.length && {
           agentReferences: parsed.agentReferences,
         }),
@@ -19655,6 +19750,8 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
       ...(botStarterOptions.length ? { botStarterOptions } : {}),
       ...(m.role === 'assistant' ? { botLearning: m.agentMeta?.botLearning } : {}),
       ...(m.agentMeta?.botPrivateReply === true ? { botPrivateReply: true } : {}),
+      ...(m.role === 'assistant' && typeof m.agentMeta?.replyToClientId === 'string' && m.agentMeta.replyToClientId
+        ? { replyToClientId: m.agentMeta.replyToClientId } : {}),
       ...(m.role === 'assistant' && m.agentMeta?.turnCompleted === true
         ? { botTaskResults: readBotTaskResults(m.agentMeta.botTaskResults) } : {}),
       // tool_result 消息也带 toolUseId(DB 列),让 MessageStream 能按 id 配对

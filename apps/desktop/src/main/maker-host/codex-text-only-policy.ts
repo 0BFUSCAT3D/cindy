@@ -36,7 +36,7 @@ export function restrictCodexRequest(bytes: Buffer, options: { serial?: boolean;
   if (options.afterProvider && !options.serial) delete next.tool_choice;
   else next.tool_choice = 'none';
   delete next.parallel_tool_calls;
-  // Only the resolved ChatGPT Responses route needs the Lite serial flag.
+  // Responses-Lite requires an explicit serial flag, including on custom gateways.
   if (options.serial) next.parallel_tool_calls = false;
   return Buffer.from(JSON.stringify(next));
 }
@@ -143,13 +143,16 @@ export function codexTextOnlyRequestGuard(
   return {
     transformBody: (body, route) => restrictCodexRequest(body, {
       afterProvider: Boolean(route),
-      serial: Boolean(route) && requiresSerial(route?.upstreamBase),
+      // Local protocol bridges consume ingress before this final outbound pass.
+      // Keep their empty-tool compatibility; forwarded Lite requests need false.
+      serial: Boolean(route) && (requiresSerial(route?.upstreamBase)
+        || ctx.headers['x-openai-internal-codex-responses-lite'] === 'true'),
     }),
     response: headers => createCodexTextOnlyResponseGuard(String(headers['content-type'] ?? ''), String(headers['content-encoding'] ?? '')),
   };
 }
 
-export function codexTextOnlyWebSocketTransforms(disabled: () => boolean, requiresSerial = false) {
+export function codexTextOnlyWebSocketTransforms(disabled: () => boolean, requiresSerial = false, transformRequest: (message: Buffer) => Buffer = message => message) {
   // Frozen at each request, never relaxed by a subsequent UI send or teardown.
   let restricted = false;
   let completed = true;
@@ -159,7 +162,7 @@ export function codexTextOnlyWebSocketTransforms(disabled: () => boolean, requir
       if (restricted && !completed) reject();
       restricted = next;
       completed = false;
-      return restricted ? restrictCodexRequest(message, { serial: requiresSerial }) : message;
+      return transformRequest(restricted ? restrictCodexRequest(message, { serial: requiresSerial }) : message);
     }),
     inbound: createWebSocketMessageTransform(false, message => {
       if (restricted) {

@@ -45,6 +45,34 @@ describe('one-run automation model preferences', () => {
     await scope.restore('task');
     expect(h.state()).toEqual({ profile: h.original, baseline: null });
   });
+  // #6895 unit regression: preparing a newly saved route may defer/fail. The
+  // stale session row must not become durable recovery state in that case.
+  it('does not capture an old baseline when preparing the saved choice fails', async () => {
+    const h = scopeFixture();
+    const prepareBaseline = vi.fn(async () => { throw new ScheduledModelSelectionBusyError('waiting'); });
+    const scope = createScheduledModelScope({ ...h.deps, prepareBaseline });
+    await expect(scope.begin('task')).rejects.toThrow(ScheduledModelSelectionBusyError);
+    expect(h.state().baseline).toBeNull();
+    await h.scope.begin('task');
+    // Existing scopes preserve the owner's original choice without switching
+    // away from the automation just to capture it again.
+    expect(await scope.begin('task')).toBe('scope-1');
+    expect(prepareBaseline).toHaveBeenCalledTimes(1);
+  });
+  // #6895 unit regression: a lane outside the save's lock snapshot can see
+  // Profile B after preparation applied A. Do not stamp A with B's revision.
+  it('retries capture when the profile changes during route preparation', async () => {
+    const h = scopeFixture();
+    let profileRevision = 'A';
+    const write = vi.fn(h.deps.write);
+    const scope = createScheduledModelScope({ ...h.deps, write,
+      read: async () => ({ ...await h.deps.read(), profileRevision }),
+      prepareBaseline: async () => { profileRevision = 'B'; },
+    });
+    await expect(scope.begin('task')).rejects.toThrow(ScheduledModelSelectionBusyError);
+    expect(write).not.toHaveBeenCalled();
+    expect(h.state().baseline).toBeNull();
+  });
   // PR #6559 + #6579 integration: the persisted scope must restore an
   // Ultrafast owner after automation/restart. Existing cases used booleans;
   // minimal failure is baseline JSON with fastMode='ultrafast'. Unit tier.
@@ -143,12 +171,15 @@ describe('saved automation model selection at dispatch', () => {
     expect(deps.switchHarness).not.toHaveBeenCalled();
     expect(deps.applyModel).not.toHaveBeenCalled();
   });
-  it.each(['missing', 'archived', 'deleted'])('returns the resolved snapshot for %s target recovery without touching the target', async (status) => {
+  // PR #6832: recovery must not depend on a dead target's catalog. The previous
+  // fixture only resolved successfully, hiding offline/revoked-share failures.
+  // Unit tier: unresolved saved preferences reach the runner without remote I/O.
+  it.each(['missing', 'archived', 'deleted'])('preserves the saved choice for %s recovery without resolving the old catalog', async (status) => {
     const deps = fixture();
-    const expected = { ...selection, effort: 'medium' as const };
     deps.getTarget.mockResolvedValue(status === 'missing' ? null as never : { agentKind: 'codex', status });
-    deps.resolveSelection.mockResolvedValue(expected);
-    await expect(applyScheduledModelSelection(selection, deps)).resolves.toEqual(expected);
+    deps.resolveSelection.mockRejectedValue(new Error('old target offline or share revoked'));
+    await expect(applyScheduledModelSelection(selection, deps)).resolves.toEqual(selection);
+    expect(deps.resolveSelection).not.toHaveBeenCalled();
     expect(deps.switchHarness).not.toHaveBeenCalled();
     expect(deps.applyModel).not.toHaveBeenCalled();
   });
@@ -236,7 +267,7 @@ describe('saved effort uses the selected provider and Harness catalog copy', () 
 });
 
 describe('bound target Harness capability', () => {
-  it.each([{ remoteHostId: 'ssh-host' }, { orcaRole: 'lead' }, { orcaRole: 'worker' }])(
+  it.each([{ remoteHostId: 'ssh-host' }, { remoteHostId: 'ssh-host', orcaRole: 'lead' }])(
     'rejects cross-Harness overrides on %j while preserving same-Harness and follow modes', (restriction) => {
       const target = { agentKind: 'codex' as const, status: 'active', ...restriction };
       expect(() => assertScheduledHarnessSupported(target, 'pi')).toThrow('current Harness');
@@ -244,6 +275,37 @@ describe('bound target Harness capability', () => {
       expect(() => assertScheduledHarnessSupported(target, undefined)).not.toThrow();
     },
   );
+  // Regression: ordinary Orca switching supports all three Harnesses, but the
+  // scheduled guard blocked both the override and the next manual send's restore.
+  // Unit tier: enter a persisted scope, switch, reload it and restore via the real
+  // selection entry; the old guard fails before any model can be applied.
+  it.each(['lead', 'worker'])('applies and restores a cross-Harness override for an Orca %s', async (orcaRole) => {
+    let profile: ScheduledModelSelection = { ...selection, agentKind: 'codex', model: 'owner-model' };
+    const original = { ...profile };
+    let baseline: string | null = null;
+    const apply = async (_id: string, choice: ScheduledModelSelection) => {
+      await applyScheduledModelSelection(choice, {
+        getTarget: async () => ({ agentKind: profile.agentKind, status: 'active', orcaRole }),
+        isBusy: () => false,
+        resolveSelection: async (value) => value,
+        switchHarness: async (value) => { profile = { ...profile, agentKind: value.agentKind }; return { engineReady: true }; },
+        applyModel: async (value) => { profile = { ...value }; },
+      });
+    };
+    const deps = {
+      createId: () => 'scope', isBusy: () => false,
+      read: async () => ({ profile, baseline }),
+      write: async (_id: string, value: unknown) => { baseline = value ? JSON.stringify(value) : null; },
+      apply,
+    };
+    expect(() => assertScheduledHarnessSupported({ agentKind: 'codex', status: 'active', orcaRole }, 'pi')).not.toThrow();
+    await createScheduledModelScope(deps).begin('task');
+    await apply('task', selection);
+    expect(profile).toEqual(selection);
+    await createScheduledModelScope(deps).restore('task');
+    expect(profile).toMatchObject(original);
+    expect(baseline).toBeNull();
+  });
   it('preserves ordinary local cross-Harness selection and archived-target recovery', () => {
     expect(() => assertScheduledHarnessSupported({ agentKind: 'codex', status: 'active' }, 'pi')).not.toThrow();
     expect(() => assertScheduledHarnessSupported({ agentKind: 'codex', status: 'archived', remoteHostId: 'ssh-host' }, 'pi')).not.toThrow();

@@ -1,4 +1,16 @@
-import { openSession } from '../sessionOpening.js';
+import { ensureOpenedProjectGit, openSession } from '../sessionOpening.js';
+import {
+  claimOwnedProvisionalSession,
+  configureProvisionalSessions,
+  deleteUnsentSessionRow,
+  forgetProvisionalSession,
+  isProvisionalSession,
+  markProvisionalSession,
+  provisionalManagedDir,
+  removeEmptyDialogueDir,
+  sweepLeftoverProvisionalSessions,
+} from '../provisionalSessions.js';
+import { emitSessionCreated, emitSessionListChangedLocally } from './sessionCreatedBroadcast.js';
 /**
  * chat-data-localization F5：Sessions IPC handlers（C6）。
  *
@@ -77,7 +89,12 @@ import {
 import {
   normalizeWorkingDirForProjectSettings,
   normalizeWorkingDirForStorage,
+  workingDirEquals,
 } from '../../../shared/workingDir.js';
+import {
+  WORKTREE_MOVE_BLOCKED_CODE,
+  WORKTREE_MOVE_BLOCKED_MESSAGE,
+} from '../../../shared/worktreeMoveGuardError.js';
 import { assertRendererSessionSourceAllowed } from './sessionSourceGuard.js';
 import type { SessionReference } from '../../../shared/sessionReference.js';
 import * as broadcastTap from '../../device-link/broadcast-tap.js';
@@ -168,6 +185,20 @@ export interface RegisterSessionIpcOpts {
 }
 let sessionWorktreeRecycle: SessionWorktreeRecycle | null = null;
 
+/**
+ * 会话当前 worktree 绑定的查询口。source of truth 是 worktreeStore（electron-store）：
+ * `sessions.worktree_path` 只是反范式快照，且回收后刻意保留历史值（徽标看 store
+ * 是否存在），所以不能用它当「是否仍持有 worktree」的判据。
+ */
+type SessionWorktreeBindingLookup = (sessionId: string) => string | null;
+let sessionWorktreeBindingLookup: SessionWorktreeBindingLookup | null = null;
+
+/** Composition-root injection keeps the localDb IPC layer independent of worktree implementation modules. */
+export function setSessionWorktreeBindingLookup(
+  lookup: SessionWorktreeBindingLookup | null,
+): void {
+  sessionWorktreeBindingLookup = lookup;
+}
 /** Composition-root injection keeps the localDb IPC layer independent of worktree implementation modules. */
 export function setSessionWorktreeRecycle(recycle: SessionWorktreeRecycle | null): void {
   sessionWorktreeRecycle = recycle;
@@ -199,13 +230,16 @@ async function withStatusWriteLock<T>(
   status: unknown,
   task: () => Promise<T>,
   alreadyLocked = false,
+  beforeWrite?: () => void,
 ): Promise<T> {
   const write = async () => {
     const resources = status === undefined ? [] : await readSessionWorktreeResources(db, sessionId);
     const physicalResources = await Promise.all(resources.map(physicalWorktreeKey));
     const mutate = async () => {
+      beforeWrite?.();
       if (status === 'archived' || status === 'deleted')
         await requestWorktreeRecycle(sessionId, resources);
+      beforeWrite?.();
       const result = await task();
       for (const resource of physicalResources) notifyWorktreeRecycleOpportunity(resource);
       return result;
@@ -420,7 +454,10 @@ export function broadcastSessionPatched(
   const hasCapturedScope = ownerScope !== undefined && ownerScope !== null;
   const ownerStamp = hasCapturedScope ? ownerScope.ownerStamp : getSafeOwnerPushStamp();
   try {
-    if (hasCapturedScope) {
+    // 未发送任务只在本机可见，转正前不推给控制端。
+    if (isProvisionalSession(sessionId)) {
+      // local windows only
+    } else if (hasCapturedScope) {
       broadcastTap.tapWindowBroadcast(
         'local-db:sessions:patched',
         { sessionId, patch },
@@ -1074,6 +1111,68 @@ export async function touchUserSendInDb(id: string, atMs?: number): Promise<void
   }
 }
 
+/**
+ * 未发送任务转为普通任务（第一次发送）：补做建任务时延后的副作用，并让控制端看到它。
+ * 不是未发送任务时什么都不做。最近项目由随后的 touchUserSend 照常记录。
+ */
+export async function commitProvisionalSession(sessionId: string): Promise<boolean> {
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  const db = getDbClient().drizzle;
+  const [row] = await db
+    .select({
+      workingDir: sessions.workingDir,
+      workspaceKind: sessions.workspaceKind,
+      remoteHostId: sessions.remoteHostId,
+    })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+  if (!row) return false;
+  await ensureOpenedProjectGit({ id: sessionId, ...row }).catch((error) => {
+    log.warn('provisional session git bootstrap failed', {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  // The account may have changed during the awaits: then it stays an unsent leftover of the
+  // old account (claim parks it) instead of becoming an ordinary task there.
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  forgetProvisionalSession(sessionId);
+  emitSessionCreated(sessionId);
+  void import('../../cindy-brain/index.js')
+    .then((m) =>
+      m.notifyGhostSessionEvent('created', {
+        sessionId,
+        ...(row.workingDir ? { workdir: row.workingDir } : {}),
+      }),
+    )
+    .catch(() => {});
+  log.info('provisional session committed', { sessionId });
+  return true;
+}
+
+/**
+ * 删掉一个未发送任务（用户清空了新建页的输入）：仍未发送、没有消息时才真正删除行，
+ * 顺带删掉为它新建、仍为空的对话目录，并通知本机窗口移除。调用方负责先关掉它的 Agent。
+ */
+export async function discardProvisionalSessionRow(sessionId: string): Promise<boolean> {
+  if (claimOwnedProvisionalSession(sessionId) !== 'owned') return false;
+  const managedDir = provisionalManagedDir(sessionId);
+  const deleted = await deleteUnsentSessionRow(sessionId);
+  if (!deleted) {
+    // Already sent (or gone): it is an ordinary task now.
+    forgetProvisionalSession(sessionId);
+    return false;
+  }
+  removeEmptyDialogueDir(sessionId, managedDir);
+  forgetProvisionalSession(sessionId);
+  // Other local windows re-read their lists; the row is gone, so it drops out. No status
+  // patch: the same id may be opened again when the user types again.
+  emitSessionListChangedLocally(sessionId);
+  log.info('provisional session discarded', { sessionId });
+  return true;
+}
+
 /** fork 出来的会话的占位标题前缀("[Fork] …" / "[Fork·已剥离] …")。 */
 const FORK_PLACEHOLDER_TITLE_PREFIX = '[Fork';
 
@@ -1287,6 +1386,10 @@ export function registerSessionIpc(
   opts: RegisterSessionIpcOpts = {},
 ): void {
   registeredSessionIpcOpts = opts;
+  configureProvisionalSessions(() => app.getPath('userData'), {
+    // Windows that listed before the sweep finished drop the deleted leftover.
+    onSwept: (sessionId) => emitSessionListChangedLocally(sessionId),
+  });
   // interrupted-turn-resume 假阳性修复:每次 last_turn_ended_at 真正落库(正常收尾 /
   // barrier 版收尾 / ack)都广播 lastTurnEndedAt patch —— renderer 的 session 快照可能
   // 是在 turn 飞行中或「done → ended 落库」空窗里取的(startedAt > endedAt),此前
@@ -1321,6 +1424,9 @@ export function registerSessionIpc(
       void import('../../sessionTaskSummary.js').then((m) => m.backfillPinnedSessionSummaries());
       // 首次 list 即账号库就绪:预热插件后台任务索引,灵动岛/通知的同步判定从此可用。
       void ensureHiddenSessionRegistryLoaded();
+      // 同一时机清掉上次运行没来得及删的未发送任务；先等它清完再读列表，残留不会被列出来。
+      // 每个账号库只真正清理一次，之后直接返回同一个结果。
+      await sweepLeftoverProvisionalSessions().catch(() => undefined);
       const cap = clampLimit(limit, 20);
       const includePinned = shouldIncludePinnedSessions(options);
       const fresh = shouldBypassSessionListSingleFlight(options);
@@ -1404,7 +1510,7 @@ export function registerSessionIpc(
       };
       // key 用同一快照上的 userId + clientEpoch + 归一化参数。
       // forceRefresh / status 重拉带 fresh，不并入写前那次查询。
-      const result = usageHistory
+      const loaded = usageHistory
         ? await loadUsageHistoryRows()
         : userId && !fresh && !before && !ids
           ? await runSessionListSingleFlight(
@@ -1418,6 +1524,11 @@ export function registerSessionIpc(
               loadRows,
             )
           : await loadRows();
+      // 未发送任务只出现在本机任务列表里，手机 / 其它电脑在它第一次发送后才看到。
+      // 在 single-flight 之外过滤：同一次查询可能同时供本机与控制端使用。
+      const result = isDeviceLinkInvoke()
+        ? ((loaded as Array<{ id: string }>).filter((row) => !isProvisionalSession(row.id)) as typeof loaded)
+        : loaded;
       const finishedAt = performance.now();
       const filter = statusFilter ?? 'all';
       const elapsedMs = Math.round(finishedAt - startedAt);
@@ -1450,7 +1561,17 @@ export function registerSessionIpc(
     const now = Date.now();
     const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
     const id = resolveBusinessSessionId(bodyObj.id);
-    const createBody = bodyObj as Parameters<typeof sessionCreateToRow>[1];
+    // 未发送任务（新建页开始输入时先建出来，见 provisionalSessions.ts）：只给本机普通任务，
+    // 延后的创建副作用在第一次发送转正时补做。
+    const { provisional: provisionalFlag, ...bodyWithoutProvisional } = bodyObj;
+    const provisional = provisionalFlag === true;
+    if (provisional && (
+      bodyObj.remoteHostId || bodyObj.agentDeviceId || bodyObj.orcaRole || bodyObj.source !== undefined
+      || (Array.isArray(bodyObj.writableDirs) && bodyObj.writableDirs.length > 0)
+    )) {
+      throwIpcError('INVALID_PARAMS', 'only ordinary local tasks can be opened before the first send');
+    }
+    const createBody = bodyWithoutProvisional as Parameters<typeof sessionCreateToRow>[1];
     // M16: agentKind 白名单校验（防止 renderer 传非法值）
     const ALLOWED_AGENT_KINDS = new Set<string>(['cc', 'codex', 'pi']);
     if (bodyObj.agentKind !== undefined && !ALLOWED_AGENT_KINDS.has(bodyObj.agentKind as string)) {
@@ -1533,17 +1654,36 @@ export function registerSessionIpc(
         );
       }
     }
-    const { row: insertRow } = await openSession({ id, now,
-      body: { ...createBody, workspaceKind, workingDir },
-    }, async (prepared, assertCurrent) => {
-      const resource = !prepared.remoteHostId && prepared.workingDir
-        ? managedWorktreeRoot(prepared.workingDir) : null;
-      const insert = async () => { assertCurrent(); await db.insert(sessions).values(prepared); };
-      if (resource) await withWorktreeMutation([resource], insert);
-      else await insert();
-    });
-    const [row] = await db.select().from(sessions).where(eq(sessions.id, id));
+    // 未发送任务在写入之前就登记：行一出现，任务列表 / 控制端 / IM / hook 的过滤就已生效。
+    const markedProvisional = provisional && !isProvisionalSession(id);
+    if (markedProvisional) {
+      // Only a dialogue folder allocated here is ours to tidy up if the task is discarded.
+      const managedDir = workspaceKind === 'dialogue' && !explicitWorkingDir ? workingDir : undefined;
+      markProvisionalSession(id, now, managedDir);
+    }
+    let insertRow: Awaited<ReturnType<typeof openSession>>['row'];
+    let row: typeof sessions.$inferSelect | undefined;
+    try {
+      ({ row: insertRow } = await openSession({ id, now,
+        body: { ...createBody, workspaceKind, workingDir },
+        ...(provisional ? { deferGitInit: true } : {}),
+      }, async (prepared, assertCurrent) => {
+        const resource = !prepared.remoteHostId && prepared.workingDir
+          ? managedWorktreeRoot(prepared.workingDir) : null;
+        const insert = async () => { assertCurrent(); await db.insert(sessions).values(prepared); };
+        if (resource) await withWorktreeMutation([resource], insert);
+        else await insert();
+      }));
+      [row] = await db.select().from(sessions).where(eq(sessions.id, id));
+    } catch (error) {
+      if (markedProvisional) forgetProvisionalSession(id);
+      throw error;
+    }
     if (!row) throwIpcError('NOT_FOUND', 'Session 创建后查询失败');
+    if (provisional) {
+      log.info('provisional session opened', { sessionId: id, workspaceKind: insertRow.workspaceKind });
+      return sessionToCamel({ ...row, messageCount: 0 });
+    }
     // recent-workdirs: 项目目录走 sidebar 分组,要进"最近"列表;dialogue 目录是
     // app-managed 临时 cwd,跟用户选过的项目目录语义不同,不污染最近列表。
     // 失败仅日志,不阻断创建流程。
@@ -1737,6 +1877,8 @@ export function registerSessionIpc(
         status: sessions.status,
         title: sessions.title,
         agentKind: sessions.agentKind,
+        agentDeviceId: sessions.agentDeviceId,
+        remoteHostId: sessions.remoteHostId,
       })
       .from(sessions)
       .where(inArray(sessions.id, sessionIds));
@@ -1751,6 +1893,7 @@ export function registerSessionIpc(
         status: row.status,
         title: row.title,
         agentKind: normalizeDbAgentKind(row.agentKind),
+        agentDeviceId: row.agentDeviceId && !row.remoteHostId ? row.agentDeviceId : null,
       };
     });
   });
@@ -1890,6 +2033,10 @@ export function registerSessionIpc(
  * 会话操作工具(move / pin / delete 等)共用这一条路径:路由锁 + worktree 锁、
  * review 会话拒改、Pi/Codex 空闲 runtime 关闭、cc 转录目录搬迁、recent-workdir
  * 维护、sessions:patched 广播与 agent-island 通知都在这里,不得另起平行写入链路。
+ *
+ * 「绑定托管 worktree 的会话不得改到该 worktree 之外」是这里的不变量,所有入口
+ * (GUI 侧栏、MCP 工具、device-link)一并生效;GUI 侧的预检只为及时反馈,规则
+ * 以本函数为准,不得在入口层另立一份。
  */
 export async function updateSessionInDb(
   sid: string,
@@ -1981,6 +2128,46 @@ export async function updateSessionInDb(
               .where(eq(sessions.id, sid))
           )[0]
         : undefined;
+    // worktree-handoff:worktree 会话的工作区边界就是它绑定的 worktree。只改 workingDir
+    // 会留下「半移动」—— 侧栏按新项目归组,而聊天框底部路径、Git 上下文、worktree
+    // store 归属与回收义务仍留在旧 worktree。完整的 worktree → Local Handoff 是独立
+    // 特性(#2190/#2585,需显式处置未提交改动与 worktree 归属),落地前这里拒绝把会话
+    // 移出 worktree;worktree 创建流程(基线目录 → 自己的 worktree)与同 worktree 内的
+    // no-op 不受影响。拦截发生在关 runtime / 写库 / 转录迁移之前,拒绝不留部分写入。
+    //
+    // 归属以 worktreeStore(组合层注入)为真源:旧版允许过的「半移动」会给会话留下
+    // working_dir 在普通项目、绑定仍在旧 worktree 的状态,只看 cwd 会漏掉这类存量行;
+    // 反过来,DB 的 worktree_path 快照在回收后仍保留历史值,也不能当活绑定用。
+    const requestedWorkingDir = typeof p.workingDir === 'string' ? p.workingDir : null;
+    // 显式清空(`workingDir: null`,或空串/空白串经上面的归一化变成 null)也是改归属:
+    // 字符串判据放它过去的话,worktree 会话会被摘掉工作目录,留下同一类归属分裂。
+    // 只当键真的出现且归一化后为 null 时才算清空(未传该键的 update 不落库,不能算)。
+    const clearsWorkingDir = Object.prototype.hasOwnProperty.call(p, 'workingDir') && p.workingDir === null;
+    if (
+      beforeMove &&
+      !beforeMove.remoteHostId &&
+      (requestedWorkingDir !== null || clearsWorkingDir) &&
+      (clearsWorkingDir || !workingDirEquals(requestedWorkingDir, beforeMove.workingDir))
+    ) {
+      // 归属真源:装了绑定查询(生产路径)就以 store 的答案为唯一依据 —— 返回 null 就是
+      // **没有活绑定**(worktree 已被回收的会话仍会留着历史 worktree 路径),此时不能再
+      // 从 cwd 反推,否则这些会话会被永久拦死;未装查询的场景(单测/裁剪引导)才退回 cwd。
+      let ownedWorktreeRoot: string | null = null;
+      if (sessionWorktreeBindingLookup) {
+        const liveWorktreePath = sessionWorktreeBindingLookup(sid);
+        ownedWorktreeRoot = liveWorktreePath ? managedWorktreeRoot(liveWorktreePath) : null;
+      } else if (beforeMove.workingDir) {
+        ownedWorktreeRoot = managedWorktreeRoot(beforeMove.workingDir);
+      }
+      const targetWorktreeRoot = requestedWorkingDir
+        ? managedWorktreeRoot(requestedWorkingDir)
+        : null;
+      if (ownedWorktreeRoot && !workingDirEquals(ownedWorktreeRoot, targetWorktreeRoot)) {
+        // 错误码与文案是跨进程契约:renderer 按它把这次拒绝映射成同一条 toast
+        // (shared/worktreeMoveGuardError.ts),两侧共用常量避免文案漂移。
+        throwIpcError(WORKTREE_MOVE_BLOCKED_CODE, WORKTREE_MOVE_BLOCKED_MESSAGE);
+      }
+    }
     const movingLocalNonClaudeSession =
       beforeMove &&
       beforeMove.agentKind !== 'cc' &&
@@ -2261,7 +2448,7 @@ export async function patchSessionMetaInDb(
     title?: string;
     pinnedAt?: string | null;
   },
-  options: { routeLockHeld?: boolean; signal?: AbortSignal } = {},
+  options: { routeLockHeld?: boolean; signal?: AbortSignal; beforeWrite?: () => void } = {},
 ): Promise<ReturnType<typeof sessionToCamel>> {
   const ownerScope = captureOwnerScope();
   for (const k of Object.keys(patch)) {
@@ -2289,15 +2476,18 @@ export async function patchSessionMetaInDb(
   let deletedSideChats: SessionsSetTerminalStatusResult['deletedSideChats'] | undefined;
   const updated = await withStatusWriteLock(db, sessionId, patch.status, async () => {
     if (patch.status !== undefined) await assertGenericSessionLifecycleAllowed(db, sessionId);
+    options.beforeWrite?.();
     const terminal = patch.status === 'archived' || patch.status === 'deleted';
     if (terminal) {
       if (typeof dbClient.tx === 'function') {
         const { status: _status, ...nonTerminalPatch } = setObj;
         await writeSessionPatch(db, sessionId, nonTerminalPatch, undefined);
+        options.beforeWrite?.();
         deletedSideChats = await setTerminalSessionStatus(dbClient, sessionId, patch.status as 'archived' | 'deleted');
       } else {
         const prepared = await prepareSharedTaskClosure(sessionId, dbClient);
         try {
+          options.beforeWrite?.();
           await writeSessionPatch(db, sessionId, setObj, patch.status);
         } catch (error) {
           await rollbackSharedTaskClosure(dbClient, prepared);
@@ -2323,7 +2513,7 @@ export async function patchSessionMetaInDb(
       await closeSharedTaskForTask(sessionId, dbClient);
     }
     return sessionToCamel(row);
-  }, options.routeLockHeld);
+  }, options.routeLockHeld, options.beforeWrite);
   if (updated.status === 'deleted' && isOwnerScopeCurrent(ownerScope)) {
     clearSessionAttention(sessionId, 'explicit');
   }

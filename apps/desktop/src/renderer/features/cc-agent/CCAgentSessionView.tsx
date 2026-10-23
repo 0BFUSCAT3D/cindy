@@ -32,9 +32,14 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import {
+  getProvisionalDraftTaskId,
+  subscribeProvisionalDraftTaskId,
+} from './lib/provisionalDraftTaskId';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { CindyMakeSessionGate } from './CindyMakeSessionGate';
 import { SessionRouteOriginGate } from './SessionRouteOriginGate';
@@ -190,6 +195,7 @@ import {
 } from '@/lib/controlledTaskAgentLocation';
 import { resolveUsageAccountLocation } from '@/lib/usageAccountLocation';
 import { useProviderShareAgentDevices } from '@/features/provider-share/useProviderShareAgentDevices';
+import { offerSessionRebalance, useSessionRebalancePrefetch } from '@/features/provider-group/sessionRebalancePrompt';
 import {
   canExposeWritableDirsChange,
   resolveManualCompactChannel,
@@ -257,6 +263,10 @@ import {
 import { isCurrentSubagentRunsChange } from '@/features/right-sidebar/plugins/subagents/subagentChangeFence';
 import { startSubagentTabDiscovery } from './subagentTabDiscovery';
 import { requestChatTaskFocus, subscribeChatTaskFocus } from '@/features/right-sidebar/plugins/background-tasks/chatTaskFocusIntent';
+import { BotChatQuoteProvider, type BotChatQuoteValue } from '@/features/bots/botChatQuoteContext';
+import { BotChatQuoteComposerPreview } from '@/features/bots/BotChatQuoteViews';
+import { clearSentBotReplyQuote, getPendingBotReplyQuote, setPendingBotReplyQuote, usePendingBotReplyQuote } from '@/features/bots/botDmQuote';
+import { useBotReplyTargetPreference } from '@/features/bots/useBotReplyTargetPreference';
 import { canFocusWithoutJumpLoad } from '@/lib/searchJumpTargeting';
 import { getMakerMemoryEnabled } from '@/lib/memorySettingsStore';
 import { useWorktreeCreation, worktreeCreationStore } from '@/lib/worktreeCreationStore';
@@ -794,6 +804,12 @@ export function createWritableDirRemovalQueue() {
 
 export function CCAgentSessionView(props: CCAgentSessionViewProps) {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const provisionalDraftId = useSyncExternalStore(subscribeProvisionalDraftTaskId, getProvisionalDraftTaskId);
+  // 新建页里还没发送的任务从任何入口(侧栏、搜索、深链)打开都回到新建页继续编辑:
+  // 工作区、协同等草稿选项只在新建页上有。
+  if (!props.sessionIdProp && sessionId && sessionId === provisionalDraftId) {
+    return <Navigate to="/cc-agent/new" replace />;
+  }
   return (
     <SessionRouteOriginGate sessionId={props.sessionIdProp ?? sessionId}
       ownsWindowRoute={!props.navigationMode || props.navigationMode === 'route-owner'}>
@@ -1400,6 +1416,7 @@ function CCAgentSessionContent({
     }
   }, [session?.status, sessionId, navigate, ownsWindowRoute]);
   const vendorAuthGate = useVendorAuthGate();
+  const { confirmWithCheckbox } = useConfirmDialog();
 
   useEffect(() => {
     if (!sessionId || !searchJump) return;
@@ -1786,7 +1803,15 @@ function CCAgentSessionContent({
     slashCommandRanges?: SlashCommandRange[];
     onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
     onDeferredAccepted?: () => void;
+    literalText?: boolean;
+    resolveSubmission?: (accepted: boolean) => void;
   } | null>(null);
+
+  useEffect(() => () => {
+    // A picker abandoned by navigation must release the originating rich button.
+    pendingSendRef.current?.resolveSubmission?.(false);
+    pendingSendRef.current = null;
+  }, [sessionId]);
 
   const handleTitleUpdate = useCallback(() => {
     refreshSessions();
@@ -2131,6 +2156,8 @@ function CCAgentSessionContent({
   // 仍调 compact-session → pi 拒绝 → confirm 后吃 rejection toast」(codex P2)。
   const isRunningRef = useRef(agentStatus.isRunning);
   isRunningRef.current = agentStatus.isRunning;
+  // 任务空闲时预先问好要不要换号，发送时不再多等一次往返(provider-groups.md §6.2「任务进行中换号」)。
+  useSessionRebalancePrefetch(sessionId, remoteDeviceId, !agentStatus.isRunning && !readOnly);
   // live 供应商目录(含内置 + 自定义,按 agent 挂模型)—— vendor↔model 一致性校验的真源,
   // 与模型选择器同源(见下方 M35 vendor fallback effect)。本地 IPC 极快返回,有模块级缓存。
   // device-link 远程会话用被控端经隧道带来的 providers(per-provider,fast 判定与本地同口径)。
@@ -3281,6 +3308,7 @@ function CCAgentSessionContent({
     setFolderPickerOpen(open);
     // If user closed the popover without selecting, clear pending send
     if (!open) {
+      pendingSendRef.current?.resolveSubmission?.(false);
       pendingSendRef.current = null;
     }
   }, []);
@@ -3692,43 +3720,46 @@ function CCAgentSessionContent({
       pendingSendRef.current = null;
       void (async () => {
         try {
-          const slashDispatch = await maybeDispatchDesktopSlashCommand(
-            pending.message,
-            pending.files,
-            {
-              allowDesktopDispatch: pending.deliveryMode !== 'steer',
-              piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
-              workingDirOverride: newDir,
-              builtInSkillIntent: pending.builtInSkillIntent,
-              preparePiRuntime: async () => {
-                if (!sessionId || dbToMakerAgentKind(session?.agentKind) !== 'pi') return;
-                const createOpts = {
-                  id: sessionId,
-                  ...buildCreateOptsForCurrentSession(
-                    sessionId,
-                    pending.model,
-                    pending.effort,
-                    pending.permissionMode,
-                    newDir,
-                    pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : undefined,
-                  ),
-                  agentKind: 'pi' as const,
-                  workingDir: newDir,
-                  orcaRole: session?.orcaRole ?? null,
-                };
-                if (remoteDeviceId) {
-                  await window.electronAPI.deviceLink.invoke(
-                    remoteDeviceId,
-                    'maker:create-session',
-                    [createOpts],
-                  );
-                } else {
-                  await window.electronAPI.maker.createSession(createOpts);
-                }
-              },
-            },
-          );
+          const slashDispatch = pending.literalText
+            ? { handled: false, accepted: false, message: pending.message }
+            : await maybeDispatchDesktopSlashCommand(
+                pending.message,
+                pending.files,
+                {
+                  allowDesktopDispatch: pending.deliveryMode !== 'steer',
+                  piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
+                  workingDirOverride: newDir,
+                  builtInSkillIntent: pending.builtInSkillIntent,
+                  preparePiRuntime: async () => {
+                    if (!sessionId || dbToMakerAgentKind(session?.agentKind) !== 'pi') return;
+                    const createOpts = {
+                      id: sessionId,
+                      ...buildCreateOptsForCurrentSession(
+                        sessionId,
+                        pending.model,
+                        pending.effort,
+                        pending.permissionMode,
+                        newDir,
+                        pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : undefined,
+                      ),
+                      agentKind: 'pi' as const,
+                      workingDir: newDir,
+                      orcaRole: session?.orcaRole ?? null,
+                    };
+                    if (remoteDeviceId) {
+                      await window.electronAPI.deviceLink.invoke(
+                        remoteDeviceId,
+                        'maker:create-session',
+                        [createOpts],
+                      );
+                    } else {
+                      await window.electronAPI.maker.createSession(createOpts);
+                    }
+                  },
+                },
+              );
           if (slashDispatch.handled) {
+            pending.resolveSubmission?.(slashDispatch.accepted);
             if (slashDispatch.accepted) {
               pending.onDeferredAccepted?.();
               const resumedSessionId = sessionId;
@@ -3809,6 +3840,7 @@ function CCAgentSessionContent({
                 }
               : undefined,
           );
+          pending.resolveSubmission?.(accepted);
           if (accepted) {
             pending.onDeferredAccepted?.();
             const resumedSessionId = sessionId;
@@ -3820,6 +3852,7 @@ function CCAgentSessionContent({
             }
           }
         } catch (error) {
+          pending.resolveSubmission?.(false);
           log.warn(
             'pending send after working directory selection failed:',
             error instanceof Error ? error.message : String(error),
@@ -3895,7 +3928,7 @@ function CCAgentSessionContent({
     [fastMode, insertSystemCard, remoteDeviceId, session, sessionId, t, updateSystemCardData],
   );
 
-  // 开始打字时提前启动 Agent，把冷启动藏进打字时间（本机与远程任务相同）。
+  // 开始输入（打字、粘贴、开始语音输入）时提前启动 Agent，把冷启动藏进输入时间（本机与远程任务相同）。
   const handleComposerTyping = useCallback(() => {
     if (readOnly || cindyMakeInputLocked || !sessionId || !session?.workingDir) return;
     makerChatStore.prewarmSession(
@@ -3918,6 +3951,7 @@ function CCAgentSessionContent({
       opts?: {
         deliveryMode?: MessageDeliveryMode;
         literalText?: boolean;
+        independent?: boolean;
         beforeEnqueue?: () => Promise<boolean>;
         onInputCreated?: (clientId: string) => void;
         builtInSkillIntent?: BuiltInSkillDraftIntent;
@@ -4096,9 +4130,17 @@ function CCAgentSessionContent({
 
       // ② Working directory check
       if (!session?.workingDir) {
+        // Composer sends keep their existing deferred callback contract. A rich
+        // submission awaits acceptance so its receipt cannot disagree with dispatch.
+        let resolveSubmission: ((accepted: boolean) => void) | undefined;
+        const submission = opts?.independent
+          ? new Promise<boolean>((resolve) => { resolveSubmission = resolve; })
+          : false;
         pendingSendRef.current = {
           deliveryMode,
           builtInSkillIntent: opts?.builtInSkillIntent,
+          literalText: opts?.literalText,
+          resolveSubmission,
           message,
           model,
           effort,
@@ -4118,7 +4160,7 @@ function CCAgentSessionContent({
           ...(opts?.onDeferredAccepted ? { onDeferredAccepted: opts.onDeferredAccepted } : {}),
         };
         setFolderPickerOpen(true);
-        return false;
+        return submission;
       }
 
       // ③ Auto-unarchive: 在 archived session 中发消息视为"激活"——状态先落库到
@@ -4162,10 +4204,33 @@ function CCAgentSessionContent({
         message = finalDispatch.message;
       }
 
+      // 上一轮已经结束、用户发下一条消息：供应商组里另一个账号的配额明显更该先用时，问用户要不要换过去
+      // (provider-groups.md §6.2「任务进行中换号」)。只记下用户的选择，这条消息无论换不换都照常发出。
+      let recordRebalance: ((clientId: string) => Promise<void>) | undefined;
+      if (deliveryMode !== 'steer' && sessionId && !isRunningRef.current) {
+        recordRebalance = await offerSessionRebalance({
+          sessionId,
+          ...(remoteDeviceId ? { hostDeviceId: remoteDeviceId } : {}),
+          confirmWithCheckbox,
+          t,
+        });
+      }
+
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
+      let rebalanceClientId: string | undefined;
+      // 伙伴私聊引用回复:点发送时的待发引用随这条消息一起落库,送出后从输入框上方撤下。
+      const replyQuote = botChatIdentity && !opts?.independent ? getPendingBotReplyQuote(sessionId) : null;
       const sendOptions = {
-        beforeEnqueue: opts?.beforeEnqueue,
-        onInputCreated: opts?.onInputCreated,
+        ...(replyQuote ? { replyQuote } : {}),
+        beforeEnqueue: recordRebalance ? async () => {
+          if (await opts?.beforeEnqueue?.() === false) return false;
+          if (rebalanceClientId) await recordRebalance(rebalanceClientId);
+          return true;
+        } : opts?.beforeEnqueue,
+        onInputCreated: recordRebalance ? (clientId: string) => {
+          rebalanceClientId = clientId;
+          opts?.onInputCreated?.(clientId);
+        } : opts?.onInputCreated,
         ...orcaLeadVendorOptions,
         ...(opts?.quotesEncoded ? { quotesEncoded: true } : {}),
         ...(opts?.agentReferences?.length ? { agentReferences: opts.agentReferences } : {}),
@@ -4195,6 +4260,7 @@ function CCAgentSessionContent({
           mentions,
           sendOptions,
         );
+        if (accepted && sessionId && replyQuote) clearSentBotReplyQuote(sessionId, replyQuote);
         if (accepted && sessionId) {
           if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
             setFollowUpInvitationSession(sessionId);
@@ -4218,6 +4284,7 @@ function CCAgentSessionContent({
         mentions,
         sendOptions,
       );
+      if (accepted && sessionId && replyQuote) clearSentBotReplyQuote(sessionId, replyQuote);
       if (accepted && sessionId) {
         if (isDataOwnerGenerationCurrent(sendOwner) && currentSessionIdRef.current === sessionId) {
           setFollowUpInvitationSession(sessionId);
@@ -4248,9 +4315,11 @@ function CCAgentSessionContent({
       readOnly,
       t,
       vendorAuthGate,
+      confirmWithCheckbox,
       remoteDeviceId,
       sessionHandoffPreparing,
       cindyMakeInputLocked,
+      botChatIdentity,
     ],
   );
 
@@ -5112,6 +5181,39 @@ function CCAgentSessionContent({
     () => visibleVoiceCallMessages(sideChatMessages, activeVoiceCallId),
     [sideChatMessages, activeVoiceCallId],
   );
+  // 伙伴私聊的引用回复与「回复对应的消息」(cindy-bots-runtime.md):气泡经稳定读取函数找原消息，
+  // 流式输出不会让每个气泡跟着重渲染。
+  const { enabled: showBotReplyTargets } = useBotReplyTargetPreference();
+  const quoteMessagesRef = useRef(timelineMessages);
+  quoteMessagesRef.current = timelineMessages;
+  const getQuoteMessage = useCallback(
+    (clientId: string) => quoteMessagesRef.current.find((message) => message.clientId === clientId),
+    [],
+  );
+  const botQuoteOwnerName = t('bots.dmThread.you');
+  const botQuoteCompanionName = botChatIdentity?.name ?? '';
+  const botQuoteNames = useMemo(
+    () => ({ owner: botQuoteOwnerName, companion: botQuoteCompanionName }),
+    [botQuoteOwnerName, botQuoteCompanionName],
+  );
+  const pendingReplyQuote = usePendingBotReplyQuote(botChatIdentity && !readOnly ? sessionId : null);
+  const botChatQuote = useMemo<BotChatQuoteValue | null>(() => botChatIdentity && sessionId ? {
+    sessionId,
+    names: botQuoteNames,
+    getMessage: getQuoteMessage,
+    // The turn's last loaded reply carries the marker, so it shows once per turn.
+    isFirstReplyFor: (assistantClientId, replyToClientId) => {
+      const rows = quoteMessagesRef.current;
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index]!;
+        if (row.role === 'assistant' && row.replyToClientId === replyToClientId) return row.clientId === assistantClientId;
+      }
+      return false;
+    },
+    showReplyTargets: showBotReplyTargets,
+    quote: (quote) => { if (!readOnly) setPendingBotReplyQuote(sessionId, quote); },
+    locate: (clientId) => requestChatTaskFocus(sessionId, clientId),
+  } : null, [botChatIdentity, botQuoteNames, getQuoteMessage, readOnly, sessionId, showBotReplyTargets]);
   const openVoiceTask = useCallback((clientId: string) => {
     // Accepted queued work may not have a timeline row yet. Reveal its existing
     // queue instead of inventing another task or claiming it has begun running.
@@ -5122,6 +5224,7 @@ function CCAgentSessionContent({
     }
   }, [pendingQueue, sessionId, setQueueExpanded]);
   const messageStreamEl = (
+    <BotChatQuoteProvider value={botChatQuote}>
     <MessageReadAloudContext.Provider value={messageReadAloud.value}>
     <MessageStream
       key={sessionId}
@@ -5173,17 +5276,18 @@ function CCAgentSessionContent({
       onInlinePlanVisibilityChange={handleInlinePlanVisibilityChange}
     />
     </MessageReadAloudContext.Provider>
+    </BotChatQuoteProvider>
   );
 
   // Message-level controls (e.g. a Market teammate's starter buttons) send through this session's own path.
   const quickSend = useMemo<SessionQuickSend>(() => ({
-    send: async (text: string) => {
+    send: async (text, options) => {
       if (!session) return false;
-      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode)) !== false;
+      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode, undefined, undefined, { ...options, ...(options?.literalText ? { slashCommandRanges: [] } : {}) })) !== false;
     },
   }), [handleSend, session]);
   const messageStreamWithQuickSend = (
-    <SessionQuickSendProvider value={quickSend}>{messageStreamEl}</SessionQuickSendProvider>
+    <SessionQuickSendProvider value={readOnly || cindyMakeInputLocked ? null : quickSend}>{messageStreamEl}</SessionQuickSendProvider>
   );
 
   const composerRuntimeVisible =
@@ -5715,10 +5819,14 @@ function CCAgentSessionContent({
               )}
 
             {/* 零可用模型引导条:与首屏引导卡共享判定与 dismiss(useProviderOnboarding),
-              组件自判 visible、不可见渲染 null。device-link 远程会话不出——连接态在被控端。 */}
-            {!remoteDeviceId && (
-              <ConnectProviderBanner style={{ width: inputWidth }} className="py-1" />
-            )}
+              按下一轮 Agent 执行位置判断，本机连接状态不用于远程任务。 */}
+            <ConnectProviderBanner
+              style={{ width: inputWidth }}
+              className="py-1"
+              remote={!!remoteDeviceId || !!session?.remoteHostId || !!(
+                pendingAgentDeviceId !== undefined ? pendingAgentDeviceId : agentDeviceId
+              )}
+            />
 
             <div
               className="mx-auto flex flex-col items-center gap-[10px]"
@@ -5739,7 +5847,7 @@ function CCAgentSessionContent({
                 && !pendingRemoteDesktopConfirmation && !pendingInputHandoff && followUpInvitationSession === sessionId && (
                 remoteDeviceId
                   ? <RemoteBotFollowUpInvitation key={`${remoteDeviceId}:${sessionId}`} deviceId={remoteDeviceId} botId={botChatIdentity.id} />
-                  : <BotFollowUpInvitation key={sessionId} botId={botChatIdentity.id} engaged />
+                  : <BotFollowUpInvitation key={`follow-up-invitation:${sessionId}`} botId={botChatIdentity.id} engaged />
               )}
               <InteractionPromptHost
                 hasInteraction={
@@ -5794,6 +5902,8 @@ function CCAgentSessionContent({
                 ) : pendingAskUser ? (
                   <AskUserQuestionPrompt
                     voiceBridge={voiceModeOpen && voiceModeAvailable && !voiceModeBlocked ? voiceQuestionBridge : undefined}
+                    voiceShortcutPreferred={isOrcaLeadSessionView}
+                    hostVisible={viewVisible}
                     sessionId={sessionId}
                     workingDir={session?.workingDir ?? ''}
                     remoteHostId={session?.remoteHostId}
@@ -5919,6 +6029,9 @@ function CCAgentSessionContent({
                       sessionId={session.id}
                       messageId={cindyMakeRecoveryId}
                     />
+                  ) : pendingReplyQuote && sessionId ? (
+                    <BotChatQuoteComposerPreview sessionId={sessionId} quote={pendingReplyQuote}
+                      getMessage={getQuoteMessage} names={botQuoteNames} />
                   ) : remoteMakeCards.handlesSession ? <SessionResourceCards state={remoteMakeCards} /> : undefined}
                   onSend={handleSend}
                   onComposerTyping={handleComposerTyping}
@@ -5988,7 +6101,7 @@ function CCAgentSessionContent({
                   }
                   folderPickerOpen={folderPickerOpen}
                   onFolderPickerOpenChange={handleFolderPickerOpenChange}
-                  showFolderPicker={false}
+                  showFolderPicker={folderPickerOpen}
                   onModelDidChange={handleModelDidChange}
                   onEffortDidChange={handleEffortDidChange}
                   onPermissionModeDidChange={handlePermissionModeDidChange}
@@ -6100,7 +6213,7 @@ function CCAgentSessionContent({
                       <Spinner size={12} className="text-[var(--workingdir-icon)]" />
                       <span className="block min-w-0 truncate text-12 font-medium leading-none text-[var(--workingdir-text)]">
                         {t('ccAgent.layout.worktreeCreating', '正在创建 worktree')}{' '}
-                        <code className="font-mono text-11 opacity-80">
+                        <code className="font-mono text-11 text-[var(--text-tertiary)]">
                           {worktreeCreation.name}
                         </code>
                         …
@@ -6294,9 +6407,9 @@ function CCAgentSessionContent({
         // openai-chat 桥接 Codex 只挂在本地 proxy),与 main 侧 remote-worker
         // guard 同规则(codex review R28)。
         sshRemote={!!session?.remoteHostId}
-        // 首个 Worker 也可放到另一台电脑：仅本机 Lead(非 SSH、Agent 也在本机)。
+        // Lead 的 Agent 位置独立于 Worker 的工作电脑；SSH Lead 仍沿用原限制。
         executionDevicesEnabled={
-          !remoteDeviceId && !session?.remoteHostId && !session?.agentDeviceId
+          !remoteDeviceId && !session?.remoteHostId
         }
         // Worker 的 Agent 默认跟 Lead 的 Agent 所在电脑(远程供应商)，模型目录也先按那台读；
         // 面板里列出与输入框同一份其他电脑 / 分享的供应商，可以换到本机或别处。

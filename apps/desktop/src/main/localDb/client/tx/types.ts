@@ -56,9 +56,11 @@ export type DbTxName =
   | 'bots.archiveLifecycle'
   | 'bots.deleteProfile'
   | 'bots.prepareProfileDeletion'
+  | 'bots.reconcileLanePermission'
   | 'bots.persistSessionPermission'
   | 'bots.createGroupLane'
   | 'bots.createChannelLane'
+  | 'bots.createThreadLane'
   | 'bots.archiveChannelLanes'
   | 'botGroups.create'
   | 'botGroups.setMembers'
@@ -274,6 +276,7 @@ export interface OrcaRemoteWorkerProxySessionSeed {
   effort: string | null;
   permissionMode: string;
   fastMode: boolean | 'ultrafast';
+  agentDeviceId?: string | null;
 }
 
 export interface OrcaUpsertWorkerArgs {
@@ -666,6 +669,8 @@ export interface BotsCreateProfileArgs {
 
 export interface BotsUpdateProfileArgs {
   id: string;
+  /** A saved model choice supersedes automation restores in the same commit. */
+  clearScheduledModelBaseline?: boolean;
   /** Explicit settings changes also update the permanent chat in this transaction. */
   canonicalPermissionMode?: 'ask' | 'auto' | 'bypassPermissions';
   displayName?: string;
@@ -835,12 +840,26 @@ export interface BotGroupsCreateLaneArgs {
 export interface BotGroupsCreateLaneResult {
   sessionId: string;
   created: boolean;
+  /** Existing runtimes must follow a canonical permission repaired during creation. */
+  permissionRepairCanonicalSessionId?: string;
 }
 
 /** 伙伴接管的个人 IM 群 / 话题专线(`role = 'channel'`)。 */
 export interface BotsCreateChannelLaneArgs {
   botId: string;
   routeKey: string;
+  session: BotsReplaceCanonicalSessionArgs['session'];
+}
+
+/**
+ * 主人私聊里的话题(`role = 'thread'`)。根消息必须是这位伙伴当前主任务里可见的
+ * user / assistant 消息;`routeKey` 由调用方按 `botDmThreadRouteKey` 生成。
+ */
+export interface BotsCreateThreadLaneArgs {
+  botId: string;
+  routeKey: string;
+  rootSessionId: string;
+  rootClientId: string;
   session: BotsReplaceCanonicalSessionArgs['session'];
 }
 
@@ -1421,9 +1440,11 @@ export type DbTxArgsByName = {
   'bots.archiveLifecycle': BotsArchiveLifecycleArgs;
   'bots.deleteProfile': BotsDeleteProfileArgs;
   'bots.prepareProfileDeletion': { botId: string };
+  'bots.reconcileLanePermission': { sessionId: string };
   'bots.persistSessionPermission': { sessionId: string; mode: string };
   'bots.createGroupLane': BotGroupsCreateLaneArgs;
   'bots.createChannelLane': BotsCreateChannelLaneArgs;
+  'bots.createThreadLane': BotsCreateThreadLaneArgs;
   'bots.archiveChannelLanes': BotsArchiveChannelLanesArgs;
   'botGroups.create': BotGroupsCreateArgs;
   'botGroups.setMembers': BotGroupsSetMembersArgs;
@@ -1519,9 +1540,11 @@ export type DbTxResultByName = {
   'bots.archiveLifecycle': { sessions: number };
   'bots.deleteProfile': { sessionIds: string[]; status: 'archived' | 'deleted' };
   'bots.prepareProfileDeletion': undefined;
+  'bots.reconcileLanePermission': { mode: string | null; changed: boolean; canonicalSessionId?: string };
   'bots.persistSessionPermission': { updated: boolean };
   'bots.createGroupLane': BotGroupsCreateLaneResult;
   'bots.createChannelLane': BotGroupsCreateLaneResult;
+  'bots.createThreadLane': BotGroupsCreateLaneResult;
   'bots.archiveChannelLanes': { archivedSessionIds: string[] };
   'botGroups.create': undefined;
   'botGroups.setMembers': BotGroupsSetMembersResult;

@@ -30,6 +30,8 @@ import { REMOTE_AGENT_CHANNEL } from './remoteAgent.js';
 import {
   ORCA_EXECUTION_DEVICES_CHANNEL,
   ORCA_REMOTE_WORKER_CAPS_CHANNEL,
+  ORCA_REMOTE_WORKER_BRIDGE_CHANNEL,
+  ORCA_REMOTE_WORKER_MODELS_CHANNEL,
   ORCA_REMOTE_WORKER_OPEN_CHANNEL,
   ORCA_REMOTE_WORKER_OPEN_TIMEOUT_MS,
   ORCA_REMOTE_WORKER_RELEASE_CHANNEL,
@@ -418,6 +420,9 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // 副作用;语义在被控端执行才正确(灵动岛 / Dock 角标 / 侧栏红绿点的未读真相都在被控端
   // main)。老被控端无此 channel → CHANNEL_NOT_ALLOWED → 控制端吞掉降级(仅本地清点)。
   'notification:clear-session-attention',
+  // Completed-card action, guarded by an owner-issued token before any mutation.
+  // Old hosts reject this channel; callers must not fall back to unguarded writes.
+  'agent-island:completion-action',
   // —— Project automation ——
   'maker:project-automation:reconcile',
   'maker:project-automation:list-consents',
@@ -445,6 +450,8 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // 业务 handler 不依赖 sender、无本机 UI 副作用；来源电脑取 server 盖章的 src。
   // 老版本无 handler → CHANNEL_NOT_ALLOWED，控制端提示更新而不回退普通建任务。
   ORCA_REMOTE_WORKER_CAPS_CHANNEL,
+  ORCA_REMOTE_WORKER_BRIDGE_CHANNEL,
+  ORCA_REMOTE_WORKER_MODELS_CHANNEL,
   ORCA_REMOTE_WORKER_OPEN_CHANNEL,
   ORCA_REMOTE_WORKER_RELEASE_CHANNEL,
   // 远程控制 Lead 所在电脑时，读取那台视角下可选的运行设备(只读，真相在被控端)。

@@ -2,6 +2,7 @@ import type { AgentKind, Effort } from '@cindy/maker-core';
 import { effectiveSourceIdForModel, findCatalogModel, type ProviderView } from '@cindy/model-providers';
 import { resolveCompatibleSessionRuntimeEffort } from './sessionRuntimeControl';
 import { parseScheduledModelBaseline, type ScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
+import { throwIpcError } from '../utils/ipcValidate';
 
 /** A saved automation choice, applied only while its target's send lock is held. */
 export interface ScheduledModelSelection {
@@ -15,22 +16,23 @@ export interface ScheduledModelSelection {
 export interface ScheduledModelSelectionLease {
   release: () => void;
   selection: ScheduledModelSelection;
-  restore?: () => Promise<void>;
 }
 
-/** All calls run under the existing session send lock. The saved preference survives restart. */
+/** Send-boundary operations only. The saved preference survives idle time and restart. */
 export function createScheduledModelScope(deps: {
   read: (sessionId: string) => Promise<{
     profile: Omit<ScheduledModelSelection, 'effort'> & {
       effort: ScheduledModelSelection['effort'] | '';
     };
     baseline: string | null;
+    profileRevision?: string | null;
   } | null>;
-  write: (sessionId: string, baseline: ScheduledModelBaseline | null) => Promise<void>;
+  write: (sessionId: string, baseline: ScheduledModelBaseline | null, profileRevision?: string | null) => Promise<void | boolean>;
   isBusy: (sessionId: string) => boolean;
   apply: (sessionId: string, profile: ScheduledModelSelection) => Promise<void>;
   createId: () => string;
   ownerEpoch?: () => string;
+  prepareBaseline?: (sessionId: string) => Promise<void>;
 }) {
   const assertOwner = (owner: string | undefined) => {
     if (owner !== deps.ownerEpoch?.()) throw new Error('Account changed during scheduled model selection');
@@ -38,13 +40,29 @@ export function createScheduledModelScope(deps: {
   return {
     async begin(sessionId: string): Promise<string | undefined> {
       const owner = deps.ownerEpoch?.();
-      const row = await deps.read(sessionId);
+      let row = await deps.read(sessionId);
       assertOwner(owner);
       if (!row) return undefined;
       const existing = parseScheduledModelBaseline(row.baseline);
       if (existing) return existing.scopeId;
+      const profileRevision = row.profileRevision;
+      // Settings may have committed while their asynchronous runtime refresh is
+      // still queued. Align the owner under this same send lease before capture.
+      if (deps.prepareBaseline) {
+        await deps.prepareBaseline(sessionId);
+        assertOwner(owner);
+        row = await deps.read(sessionId);
+        assertOwner(owner);
+        if (!row) return undefined;
+      }
+      if (row.profileRevision !== profileRevision) {
+        throw new ScheduledModelSelectionBusyError('Companion profile changed during baseline preparation');
+      }
       const scopeId = deps.createId();
-      await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId });
+      const written = await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId }, profileRevision);
+      if (written === false) {
+        throw new ScheduledModelSelectionBusyError('Companion profile changed during baseline capture');
+      }
       return scopeId;
     },
     async restore(sessionId: string, expectedScopeId?: string): Promise<void> {
@@ -62,6 +80,26 @@ export function createScheduledModelScope(deps: {
   };
 }
 
+/** Fence even lanes linked after the settings save took its send-lock snapshot.
+ * The revision is read with the route; checking and writing are one DB statement.
+ * Ordinary sessions use null, so acquiring a companion link also invalidates capture.
+ */
+export async function writeScheduledModelBaselineIfProfileCurrent(
+  db: { exec: (sql: string, params: unknown[]) => Promise<{ changes: number }> },
+  sessionId: string,
+  baseline: ScheduledModelBaseline,
+  profileRevision: string | null,
+): Promise<boolean> {
+  const result = await db.exec(`UPDATE sessions SET scheduled_model_baseline = ?
+    WHERE id = ? AND status = 'active'
+      AND (SELECT json_array(p.id, p.current_version)
+           FROM bot_session_links l JOIN bot_profiles p ON p.id = l.bot_id
+           WHERE l.session_id = sessions.id AND l.archived_at IS NULL
+             AND l.role IN ('canonical', 'group', 'channel', 'thread') LIMIT 1) IS ?`,
+  [JSON.stringify(baseline), sessionId, profileRevision]);
+  return result.changes === 1;
+}
+
 export class ScheduledModelSelectionBusyError extends Error {}
 
 interface ScheduledModelTarget {
@@ -77,8 +115,10 @@ export function assertScheduledHarnessSupported(
   agentKind: AgentKind | undefined,
 ): void {
   if (target?.status !== 'active' || !agentKind || target.agentKind === agentKind) return;
-  if (target.remoteHostId || target.orcaRole) {
-    throw new Error('SSH and Orca automation targets must keep their current Harness');
+  // Orca Lead/Worker use the ordinary handoff transaction, including restoration
+  // before the next manual send. Only SSH still lacks cross-Harness handoff.
+  if (target.remoteHostId) {
+    throwIpcError('SSH_HARNESS_SWITCH_UNSUPPORTED', 'SSH automation targets must keep their current Harness');
   }
 }
 
@@ -92,7 +132,7 @@ export function resolveScheduledModelSelection(
   const provider = providers.find((candidate) => candidate.id === providerId);
   const model = findCatalogModel(provider, selection.model, selection.agentKind, { exact: true });
   if (!provider?.connected || !model) {
-    throw new Error(`Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
+    throwIpcError('MODEL_SELECTION_UNAVAILABLE', `Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
   }
   return {
     ...selection,
@@ -114,16 +154,19 @@ export async function applyScheduledModelSelection(
   },
 ): Promise<ScheduledModelSelection> {
   const target = await deps.getTarget();
-  // The runner owns missing/archived target recovery, including persistent-task rebinding.
+  // The runner restores ordinary archived targets before selection and owns
+  // deleted/missing-target rebinding for persistent tasks.
+  // Its replacement resolves at the schedule's saved location. Do not query the old
+  // target's catalog: that device may be offline or its provider share revoked.
   if (!target || target.status === 'archived' || target.status === 'deleted') {
-    return deps.resolveSelection(selection);
+    return selection;
   }
   if (deps.isBusy()) throw new ScheduledModelSelectionBusyError('Scheduled model selection waits for the current turn');
   assertScheduledHarnessSupported(target, selection.agentKind);
   const resolved = await deps.resolveSelection(selection);
   if (target.agentKind !== resolved.agentKind) {
     const result = await deps.switchHarness(resolved);
-    if (!result.engineReady || result.retryPending) throw new Error('Scheduled Harness switch did not become ready');
+    if (!result.engineReady || result.retryPending) throwIpcError('HARNESS_SWITCH_NOT_READY', 'Scheduled Harness switch did not become ready');
   }
   await deps.applyModel(resolved);
   return resolved;

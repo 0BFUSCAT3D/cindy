@@ -1,4 +1,8 @@
 {
+  "paneResize": {
+    "label": "分欄寬度",
+    "hint": "左右拖動可調整兩欄寬度"
+  },
   "sideChat": {
     "collapse": "收起追問",
     "resume": "繼續追問",
@@ -438,6 +442,13 @@
     "copyFailed": "複製失敗",
     "deleteConfirmTitle": "刪除任務？",
     "deleteConfirmBody": "刪除後不可恢復。",
+    "archiveScheduleConfirmTitle": "歸檔任務？",
+    "archiveScheduleConfirmBody_one": "關聯的自動化{{names}}仍會執行，並恢復此任務。",
+    "archiveScheduleConfirmBody_other": "關聯的自動化{{names}}仍會執行，並恢復此任務。",
+    "archiveScheduleName": "「{{name}}」",
+    "archiveScheduleNameSeparator": "、",
+    "archiveScheduleBulkNotice_one": "其中 {{count}} 個任務關聯了自動化，後續執行時會恢復這些任務。",
+    "archiveScheduleBulkNotice_other": "其中 {{count}} 個任務關聯了自動化，後續執行時會恢復這些任務。",
     "dirAlreadyAdded": "這個目錄已經在列表裡。",
     "resetCodexTitle": "重置 Codex 用量？",
     "resetCodexBody": "將為 {{account}} 消耗 1 次重置。配額視窗會立即重開，此操作不能撤銷。",
@@ -578,6 +589,9 @@
     "taskAlreadyCreated": "電腦上已建立這個任務，已保存的訊息會在原任務中繼續傳送。"
   },
   "remoteError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "此 SSH 任務暫不支援切換 Harness。請選擇目前 Harness 下的模型，或使用所需 Harness 建立新的 SSH 任務。",
+    "MODEL_SELECTION_UNAVAILABLE": "所選模型在該供應商下已無法使用。請在設定中檢查連線，或重新選擇可用模型。",
+    "HARNESS_SWITCH_NOT_READY": "Harness 尚未完成切換。請查看錯誤詳細資訊，待 Harness 就緒後重試。",
     "REMOTE_AGENT_GROUP_USAGE_LIMIT": "此模型的可用帳號已達到用量上限。可改用其他模型，或等配額重置後繼續。",
     "REMOTE_AGENT_GROUP_UNAVAILABLE": "供應商組裡的電腦現在都不能執行這個任務：可能都離線、已暫停分配、正在冷卻，或沒有這個模型。可以在電腦上這個供應商的「遠端與分享」頁查看組內電腦。",
     "REMOTE_DAEMON_CLOSED": "遠端連線中斷了，可能正在更新。這一輪已經結束，請重新傳送。",
@@ -734,5 +748,14 @@
     "start": "開始跟進",
     "notNow": "暫不開啟",
     "saveFailed": "沒能儲存，請重試"
+  },
+  "providerGroupRebalance": {
+    "title": "換到 {{label}} 繼續？",
+    "body": "為了平均用完各帳號的配額，建議這則訊息換到 {{label}} 傳送（{{quota}}）。換過去會帶上最近幾輪對話和摘要，更早的細節可能記不全。",
+    "quota": "還剩 {{left}}%",
+    "quotaReset": "還剩 {{left}}%，{{reset}}後重置",
+    "confirm": "換過去",
+    "remember": "換過去，以後自動換（僅此任務）",
+    "cancel": "取消"
   }
 }
