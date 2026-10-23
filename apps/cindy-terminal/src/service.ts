@@ -481,7 +481,7 @@ export class TerminalService {
     }
     if(channel==='terminal:service:stop'){if((this.tasks.isBusy()||this.companions?.hasRunningWork())&&(!args[0]||object(args[0]).stopTasks!==true))throw new Error('STOP_RUNNING_TASKS_BEFORE_SERVICE_STOP');setImmediate(()=>void this.close());return {stopping:true};}
     if(channel==='terminal:service:inspect')return this.manager.inspect();
-    if(channel==='terminal:service:install')return this.manager.install();
+    if(channel==='terminal:service:install'){try{return await this.manager.install();}catch(error){const detail=(e:any):any=>e?{name:e.name,message:e.message,code:e.code,stderr:e.stderr,stack:e.stack,cause:detail(e.cause)}:undefined;process.stderr.write(JSON.stringify(detail(error))+'\n');throw error;}}
     if(channel==='terminal:service:uninstall')return this.manager.uninstall();
     await this.ownerChange;
     if(this.ownerSuspended)throw new Error('ACCOUNT_CHANGE_IN_PROGRESS');

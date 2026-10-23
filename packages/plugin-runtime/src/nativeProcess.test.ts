@@ -92,16 +92,52 @@ describe('native plugin worker', () => {
     } finally { await broker.stopAndWait('fixture'); }
   });
 
+  // Behavior tier: terminal vault reads wait for encrypted writes. Revoking the
+  // owner during that await must never deliver the old account's key to a worker.
+  it('awaits a native vault read and rejects owner changes before worker dispatch', async () => {
+    const installed: NodeRuntimeInstallation = { dir: directory, enabled: true, manifest: {
+      id: 'vault-fixture', name: 'Vault fixture', node: { entry: 'worker.cjs', protocol: 'json-rpc-stdio',
+        secretBindings: [{key:'api_key',label:'API key',methods:['echo']}] },
+    } };
+    let generation = 1, started = false;
+    let release!: (value: string) => void;
+    let reading!: () => void;
+    const readStarted = new Promise<void>(resolve => { reading = resolve; });
+    const broker = new GhostNodeRuntimeBroker({
+      getGhost: () => installed, instanceId: () => 'vault-fixture',
+      ownerScope: {capture: () => generation, isCurrent: value => value === generation, isStable: () => true},
+      readSecret: async () => { reading(); return new Promise<string>(resolve => { release = resolve; }); },
+      spawnProcess: () => { started = true; throw new Error('Revoked request must not start'); },
+      spawnChildProcess: () => { throw new Error('Not declared'); },
+      bindDeviceAuthorizationTarget: () => { throw new Error('Not declared'); },
+      bindPluginAuthorizationTarget: () => { throw new Error('Not declared'); },
+    });
+    try {
+      const pending = broker.handleRequest('vault-fixture', {type:'node-request',method:'echo',params:{}});
+      await readStarted; generation++; release('synthetic-only-key');
+      expect(await pending).toMatchObject({ok:false,errorCode:'PERMISSION_DENIED'});
+      expect(started).toBe(false);
+    } finally { broker.destroyAll(); }
+  });
+
   it('loads an approved installed plugin and preserves receipts across native host restart', async () => {
     const root = path.join(directory, 'approved-store');
     const options = {
       manager: { getRootDir: () => path.join(root, 'content'), getStateDir: () => path.join(root, 'state') },
       node: { nodePath: process.execPath, workerPath, snapshotWorkerPath },
       broker: {},
+      ...(process.env.CINDY_TEST_CHROMIUM ? {web: {
+        executablePath: process.env.CINDY_TEST_CHROMIUM,
+        mailRuntimeSource: await fs.readFile(new URL('./mailComposeRuntime.js', import.meta.url), 'utf8'),
+        receive: async () => ({ok:false,errorCode:'UNSUPPORTED_CAPABILITY'}),
+      }} : {}),
     };
     const archive = new JSZip();
     archive.file('ghost.json', JSON.stringify({ schemaVersion: 2, id: 'fixture', name: 'Fixture', version: '1.0.0', kind: 'chip', entry: 'main.js', slots: ['tool', 'node', 'skill'], tools: [{ name: 'echo', description: 'Echo' }], node: { entry: 'worker.cjs', protocol: 'json-rpc-stdio', lifecycle: 'resident' }, skill: { items: [{ name: 'fixture-guide', description: 'Fixture guide', dir: 'skills/fixture-guide' }] } }));
-    archive.file('main.js', '/* Browser logic is not replaced by Node RPC. */');
+    archive.file('main.js', `cindy.onHostMessage(async request => {
+      const reply = await cindy.node.request({method:'echo',params:request.args,callId:request.callId,cancelWithCall:true});
+      await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:reply});
+    });`);
     archive.file('skills/fixture-guide/SKILL.md', '---\nname: fixture-guide\ndescription: Fixture guide\n---\n\nUse the fixture.\n');
     archive.file('worker.cjs', `require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:r.params})+'\\n');});`);
     const file = path.join(directory, 'fixture.cindy'); await fs.writeFile(file, await archive.generateAsync({ type: 'nodebuffer' }));
@@ -117,6 +153,9 @@ describe('native plugin worker', () => {
       const id = installedGhostStoragePart(ghost);
       expect(first.node.stateOf(id)).toBe('running');
       expect(await first.handleNodeRequest(id, { type: 'node-request', method: 'echo', params: 'native-store' })).toEqual({ ok: true, result: 'native-store' });
+      if (first.dispatcher) {
+        expect(await first.dispatcher.callGhostTool({ghostId:id,tool:'echo',args:{browserToNode:true},timeoutMs:2000})).toEqual({ok:true,result:{ok:true,result:{browserToNode:true}}});
+      }
       const revision = ghost.approval;
       await first.close();
       const second = new NativePluginHost(options);

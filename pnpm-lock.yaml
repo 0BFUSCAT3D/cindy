@@ -34,6 +34,9 @@ patchedDependencies:
   harmonyos-sans-sc-webfont-splitted:
     hash: 272e3ded46880ee2f9eaff39327b8465de6df4072271de03caf73950e6e57822
     path: dependency-patches/harmonyos-sans-sc-webfont-splitted.patch
+  node-pty@1.1.0:
+    hash: 158f936be4b27ebaf010e1b9c2f2ba3b57cd2de917dc557a66272911b4b1de3d
+    path: dependency-patches/node-pty@1.1.0.patch
   react-native-gesture-handler@2.32.0:
     hash: a96d1b54b92694aef8a0b6b70c61978aac2cb4e6fc5c9c32dddb48d669877666
     path: dependency-patches/react-native-gesture-handler@2.32.0.patch
@@ -172,7 +175,7 @@ importers:
         version: 7.0.0(@types/react@19.2.17)(react-devtools-core@6.1.5)(react@19.2.3)
       node-pty:
         specifier: ^1.0.0
-        version: 1.1.0
+        version: 1.1.0(patch_hash=158f936be4b27ebaf010e1b9c2f2ba3b57cd2de917dc557a66272911b4b1de3d)
       react:
         specifier: 19.2.3
         version: 19.2.3
@@ -575,7 +578,7 @@ importers:
         version: 1.1.12
       node-pty:
         specifier: ^1.0.0
-        version: 1.1.0
+        version: 1.1.0(patch_hash=158f936be4b27ebaf010e1b9c2f2ba3b57cd2de917dc557a66272911b4b1de3d)
       pdfjs-dist:
         specifier: ^5.7.284
         version: 5.7.284
@@ -1664,6 +1667,9 @@ importers:
       '@cindy/maker-shared':
         specifier: workspace:*
         version: link:../maker-shared
+      '@cindy/media-core':
+        specifier: workspace:*
+        version: link:../media-core
       '@cindy/plugin-protocol':
         specifier: workspace:*
         version: link:../plugin-protocol
@@ -1676,6 +1682,9 @@ importers:
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
+      playwright-core:
+        specifier: 1.60.0
+        version: 1.60.0
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -1872,7 +1881,7 @@ importers:
     dependencies:
       node-pty:
         specifier: ^1.0.0
-        version: 1.1.0
+        version: 1.1.0(patch_hash=158f936be4b27ebaf010e1b9c2f2ba3b57cd2de917dc557a66272911b4b1de3d)
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -15425,9 +15434,7 @@ snapshots:
       metro-runtime: 0.84.5
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 
@@ -21186,7 +21193,7 @@ snapshots:
 
   node-machine-id@1.1.12: {}
 
-  node-pty@1.1.0:
+  node-pty@1.1.0(patch_hash=158f936be4b27ebaf010e1b9c2f2ba3b57cd2de917dc557a66272911b4b1de3d):
     dependencies:
       node-addon-api: 7.1.1
 

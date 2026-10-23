@@ -60,8 +60,8 @@ export interface GhostNodeRuntimeBrokerDeps {
    * 读取当前插件自己声明的 Node 凭证。生产接 safeStorage；返回 null =
    * 未保存或保险库不可用。调用方不得记录返回值。
    */
-  readSecret?: (ghostId: string, secretKey: string) => string | null;
-  secretSaved?: (ghostId: string, secretKey: string) => boolean;
+  readSecret?: (ghostId: string, secretKey: string) => string | null | Promise<string | null>;
+  secretSaved?: (ghostId: string, secretKey: string) => boolean | Promise<boolean>;
   /** 只解析本插件显式引用的 OAuth 槽；不交付 refresh token。 */
   resolveOauthSecret?: (ghostId: string, secretKey: string, accountId?: string) => Promise<
     { ok: true; accessToken: string } | { ok: false; error: string }
@@ -624,7 +624,13 @@ export class GhostNodeRuntimeBroker {
     let needsSecretInput = request.promptSecrets === true;
     try {
       if (signal && !needsSecretInput && this.deps.openSecretInput && this.deps.secretSaved) {
-        needsSecretInput = manualBindings.some(binding => !this.deps.secretSaved!(ghostId, binding.key));
+        for (const binding of manualBindings) {
+          const saved = await this.deps.secretSaved(ghostId, binding.key);
+          if (!requestStillCurrent() || !this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
+            return errorResult('PERMISSION_DENIED', 'Plugin owner boundary is not stable');
+          }
+          if (!saved) { needsSecretInput = true; break; }
+        }
       }
     } catch {
       return errorResult('INTERNAL', 'Plugin credential status is unavailable');
@@ -692,7 +698,11 @@ export class GhostNodeRuntimeBroker {
             }
             value = resolved.accessToken;
           } else {
-            value = this.deps.readSecret?.(ghostId, binding.key) ?? null;
+            value = await this.deps.readSecret?.(ghostId, binding.key) ?? null;
+            if (!requestStillCurrent() || !this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
+              clearHostSecrets(hostSecrets);
+              return errorResult('PERMISSION_DENIED', 'Plugin owner boundary is not stable');
+            }
           }
           if (value === null) {
             clearHostSecrets(hostSecrets);

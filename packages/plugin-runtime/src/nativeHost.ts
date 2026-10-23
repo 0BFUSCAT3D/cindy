@@ -4,20 +4,28 @@ import { createNativeNodeWorkerProcess, type NativeNodeWorkerOptions } from './n
 import { createNativeSnapshotMutation } from './nativeSnapshot.js';
 import { bindDeviceAuthorizationTarget, bindPluginAuthorizationTarget } from './authorization/targetPolicy.js';
 import { ghostInstallApprovalToken, type GhostManifest, type InstalledGhost } from './shared/ghost.js';
-import { installedGhostStoragePart } from './shared/pluginIdentity.js';
+import { HeadlessGhostSandbox, type HeadlessSandboxOptions } from './headlessSandbox.js';
+import { GhostRuntime } from './GhostRuntime.js';
+import { GhostPipeDispatcher } from './pipeDispatcher.js';
+import { isGhostOwnerScopeUsable } from './ghostOwnerScope.js';
+import { resolvePluginInstanceQuery, installedGhostStoragePart } from './shared/pluginIdentity.js';
 
 export interface NativePluginHostOptions {
   manager: GhostManagerOptions;
+  web?: Omit<HeadlessSandboxOptions, 'capture' | 'receive'> & { receive(instanceId: string, payload: unknown): Promise<unknown> };
   node: NativeNodeWorkerOptions & { snapshotWorkerPath: string };
   broker: Omit<GhostNodeRuntimeBrokerDeps, 'getGhost' | 'instanceId' | 'spawnProcess' | 'spawnChildProcess' | 'bindDeviceAuthorizationTarget' | 'bindPluginAuthorizationTarget'>;
 }
 
 /** Shared installed/approved store and published Node ABI, without Electron.
- * The web logic/panel runtime remains a distinct required host adapter. This
- * class never substitutes direct Node RPC for a plugin's main.js tool logic. */
+ * An optional native Chromium adapter runs main.js through the same dispatcher.
+ * Core startup does not launch a browser; only enabled resident/called plugins do. */
 export class NativePluginHost {
   readonly manager: GhostManager;
   readonly node: GhostNodeRuntimeBroker;
+  readonly web?: HeadlessGhostSandbox;
+  readonly runtime?: GhostRuntime;
+  readonly dispatcher?: GhostPipeDispatcher;
   private installed = new Map<string, InstalledGhost>();
   private refreshTail: Promise<void> = Promise.resolve();
   private closed = false;
@@ -27,11 +35,53 @@ export class NativePluginHost {
       mutateSnapshot: options.manager.mutateSnapshot ?? createNativeSnapshotMutation({ nodePath: options.node.nodePath, workerPath: options.node.snapshotWorkerPath }),
       onChanged: ghosts => { options.manager.onChanged?.(ghosts); void this.refresh().catch(error => options.manager.log?.warn('plugin runtime refresh failed', { code: error instanceof Error ? error.name : 'Error' })); },
     });
+    if (options.web) {
+      this.web = new HeadlessGhostSandbox({ ...options.web,
+        capture: ghost => {
+          const id = installedGhostStoragePart(ghost), approval = ghostInstallApprovalToken(ghost.approval);
+          const owner = options.broker.ownerScope?.capture();
+          return () => {
+            const current = this.installed.get(id);
+            return !this.closed && !!current?.enabled && current.dir === ghost.dir &&
+              ghostInstallApprovalToken(current.approval) === approval && isGhostOwnerScopeUsable(options.broker.ownerScope, owner);
+          };
+        },
+        receive: async (id, payload) => {
+          const type = (payload as {type?:unknown} | null)?.type;
+          if (type === 'tool-result') { this.dispatcher!.handleToolResult(id, payload); return { ok: true }; }
+          if (type === 'tool-progress') { this.dispatcher!.handleToolProgress(id, payload); return { ok: true }; }
+          // The browser route already binds this identity to its owner and
+          // approval. Never re-resolve a plugin-supplied identity here.
+          if (type === 'node-request') return this.handleNodeRequest(id, payload);
+          return options.web!.receive(id, payload);
+        },
+      });
+      this.runtime = new GhostRuntime({ adapter: this.web, log: options.manager.log,
+        onStateChanged: (id, state) => this.dispatcher?.onRuntimeState(id, state),
+      });
+      this.dispatcher = new GhostPipeDispatcher({
+        ownerScope: options.broker.ownerScope, log: options.manager.log,
+        getGhost: (id, namespace) => {
+          if (this.closed) return null;
+          const result = resolvePluginInstanceQuery([...this.installed.values()], id, namespace);
+          return result.status === 'unique' && result.ghost.approval?.state === 'approved' ? result.ghost : null;
+        },
+        runtimeStateOf: id => this.runtime!.stateOf(id),
+        spawn: async ghost => {
+          const result = await this.runtime!.spawn(ghost);
+          if (!result.ok) return result;
+          return await this.runtime!.waitUntilRunning(installedGhostStoragePart(ghost)) ? { ok: true } : { ok: false, reason: 'PLUGIN_BRIDGE_NOT_READY' };
+        },
+        sendToGhost: (id, payload) => this.web!.send(id, payload),
+      });
+    }
     const spawnProcess = (entry: string, cwd: string, id: string, args?: string[]) => createNativeNodeWorkerProcess(options.node, entry, cwd, id, args);
     this.node = new GhostNodeRuntimeBroker({ ...options.broker,
       instanceId: installedGhostStoragePart,
+      ...(this.dispatcher ? { getCallSignal: (id: string, callId: string) => this.dispatcher!.getPendingCallSignal(id, callId), getCallSessionId: (id: string, callId: string) => this.dispatcher!.getPendingCallSessionId(id, callId) } : {}),
       getGhost: id => this.closed ? null : this.installed.get(id) ?? null,
       spawnProcess, spawnChildProcess: spawnProcess,
+      sendToGhost: (id, payload) => { this.web?.send(id, payload); options.broker.sendToGhost?.(id, payload); },
       bindDeviceAuthorizationTarget: (manifest, url) => { const assertTarget = bindDeviceAuthorizationTarget(manifest as GhostManifest, url); return current => assertTarget(current as GhostManifest); },
       bindPluginAuthorizationTarget: (manifest, request) => { const assertTarget = bindPluginAuthorizationTarget(manifest as GhostManifest, request); return current => assertTarget(current as GhostManifest); },
     });
@@ -53,13 +103,15 @@ export class NativePluginHost {
       const current = new Map(ghosts.map(ghost => [installedGhostStoragePart(ghost), ghost]));
       for (const [id, previous] of this.installed) {
         const replacement = current.get(id);
-        if (!replacement?.enabled || ghostInstallApprovalToken(previous.approval) !== ghostInstallApprovalToken(replacement.approval) || previous.dir !== replacement.dir) await this.node.stopAndWait(id);
+        if (!replacement?.enabled || ghostInstallApprovalToken(previous.approval) !== ghostInstallApprovalToken(replacement.approval) || previous.dir !== replacement.dir) { this.runtime?.stop(id); await this.node.stopAndWait(id); }
       }
       if (this.closed) return;
       this.installed = current;
       for (const ghost of ghosts) {
         if (this.closed) return;
-        if (ghost.enabled && ghost.approval?.state === 'approved' && ghost.manifest.node?.lifecycle === 'resident') await this.node.startResident(ghost);
+        if (!ghost.enabled || ghost.approval?.state !== 'approved') continue;
+        if (ghost.manifest.node?.lifecycle === 'resident') await this.node.startResident(ghost);
+        if (this.runtime && (ghost.manifest.launch === 'resident' || ghost.manifest.routineEvents !== undefined)) await this.runtime.spawn(ghost);
       }
     });
     this.refreshTail = next;
@@ -77,6 +129,8 @@ export class NativePluginHost {
     this.closed = true;
     // Clear lookup authority before awaiting pending work or process teardown.
     const ids = [...this.installed.keys()]; this.installed.clear();
+    this.runtime?.destroyAll();
+    await this.web?.close();
     await this.refreshTail.catch(() => {});
     for (const id of ids) await this.node.stopAndWait(id);
     this.node.destroyAll();

@@ -124,6 +124,8 @@ try {
   await run(['service', 'stop']);
 } catch (error) {
   record('platform acceptance', 'FAIL', String(error.message)); process.exitCode = 1;
+  // This entire profile contains synthetic acceptance data only.
+  console.log('SYNTHETIC_SERVICE_DIAGNOSTIC', await readFile(path.join(profile, 'service.log'), 'utf8').catch(() => 'No service log'));
 } finally {
   if (tuiOutput) await writeFile(path.join(report, 'tui.ansi'), tuiOutput);
   if (registered) await run(['service', 'uninstall'], { raw: true }).catch(() => {});
