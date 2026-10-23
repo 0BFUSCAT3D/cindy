@@ -168,6 +168,18 @@ describe('permission persistence without a live runtime', () => {
     expect(() => valid()).not.toThrow();
   });
 
+  // A permission writer may need the same send/restart fence already owned by
+  // preparation. The guard must reject, not wait for that writer to finish.
+  it('rejects dispatch preparation while a permission writer is waiting on its send fence', async () => {
+    let release!: () => void;
+    const waitingOnSend = new Promise<void>(resolve => { release = resolve; });
+    const change = withBotPermissionChangeForBot('bot-1', () => waitingOnSend);
+    const session = { id: 'chat', stablePermissionModeState: { mode: 'ask' } } as unknown as Session;
+    try {
+      await expect(prepareBotPermissionDispatch(session)).rejects.toThrow('Bot permissions are changing before dispatch');
+    } finally { release(); await change; }
+  });
+
   it('does not replace a newer profile version with a stale capabilities snapshot', async () => {
     sqlite.prepare('UPDATE bot_profiles SET current_version = 3 WHERE id = ?').run('bot-1');
     sqlite.prepare('INSERT INTO bot_profile_versions VALUES (?, ?, ?)').run('bot-1', 3, '{"permissions":"ask","memory":false}');

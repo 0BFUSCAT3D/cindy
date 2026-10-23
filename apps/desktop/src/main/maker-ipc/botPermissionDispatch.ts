@@ -6,8 +6,6 @@ import { throwIpcError } from '../utils/ipcValidate.js';
 interface PermissionRevision {
   revision: number;
   pending: number;
-  idle: Promise<void>;
-  resolveIdle: () => void;
   changes: Promise<void>;
 }
 const revisions = new WeakMap<object, Map<string, PermissionRevision>>();
@@ -17,7 +15,7 @@ function revisionFor(owner: object, botId: string): PermissionRevision {
   if (!bots) { bots = new Map(); revisions.set(owner, bots); }
   let state = bots.get(botId);
   if (!state) {
-    state = { revision: 0, pending: 0, idle: Promise.resolve(), resolveIdle: () => {}, changes: Promise.resolve() };
+    state = { revision: 0, pending: 0, changes: Promise.resolve() };
     bots.set(botId, state);
   }
   return state;
@@ -30,7 +28,7 @@ export async function withBotPermissionChangeForBot<T>(
   const owner = getCurrentDbClientSnapshot();
   if (!owner) return change();
   const state = revisionFor(owner, botId);
-  if (state.pending++ === 0) state.idle = new Promise(resolve => { state.resolveIdle = resolve; });
+  state.pending++;
   state.revision++;
   const run = () => {
     if (owner !== getCurrentDbClientSnapshot()) throwIpcError('PRECONDITION_FAILED', 'Account changed during permission update');
@@ -41,7 +39,7 @@ export async function withBotPermissionChangeForBot<T>(
   const operation = state.changes.then(run);
   state.changes = operation.then(() => undefined, () => undefined);
   try { return await operation; }
-  finally { if (--state.pending === 0) state.resolveIdle(); }
+  finally { state.pending--; }
 }
 
 export async function withBotPermissionChange<T>(
@@ -56,7 +54,7 @@ export async function withBotPermissionChange<T>(
   return link ? withBotPermissionChangeForBot(link.botId, change) : change();
 }
 
-/** Capture after pending changes settle; check again synchronously after vision/authorization awaits. */
+/** Reject overlapping edits without waiting under a send fence; recheck again after preparation. */
 export async function prepareBotPermissionDispatch(session: Session): Promise<() => void> {
   const owner = getCurrentDbClientSnapshot();
   if (!owner) return () => {};
@@ -69,7 +67,9 @@ export async function prepareBotPermissionDispatch(session: Session): Promise<()
   const state = revisionFor(owner, link.botId);
   for (;;) {
     if (owner !== getCurrentDbClientSnapshot()) throwIpcError('PRECONDITION_FAILED', 'Account changed before dispatch');
-    if (state.pending) { await state.idle; continue; }
+    // Dispatch may already own the send fence that a permission writer needs
+    // for a runtime restart. Waiting for that writer here would deadlock.
+    if (state.pending) throwIpcError('PRECONDITION_FAILED', 'Bot permissions are changing before dispatch');
     const revision = state.revision;
     // A saved lane may itself be the stale snapshot under repair. Read the
     // authoritative canonical/Profile value, so repairs need no dispatch fence
@@ -85,7 +85,8 @@ export async function prepareBotPermissionDispatch(session: Session): Promise<()
       LEFT JOIN bot_session_links cl ON cl.bot_id = p.id AND cl.role = 'canonical' AND cl.archived_at IS NULL
       LEFT JOIN sessions c ON c.id = cl.session_id AND c.source = 'bot' AND c.status = 'active'
       WHERE l.session_id = ? AND l.archived_at IS NULL AND s.status = 'active' AND p.status = 'active'`, [session.id]);
-    if (state.pending || state.revision !== revision) continue;
+    if (state.pending) throwIpcError('PRECONDITION_FAILED', 'Bot permissions are changing before dispatch');
+    if (state.revision !== revision) continue;
     return () => {
       if (owner !== getCurrentDbClientSnapshot() || state.pending || state.revision !== revision
         || !row || session.stablePermissionModeState?.mode !== row.mode) {
