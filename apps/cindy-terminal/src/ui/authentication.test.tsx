@@ -278,6 +278,29 @@ it('edits resource defaults and returns to the collection after deletion',async(
   expect(removed).toBe(true);expect(actionInputs.delete).toEqual({__revision:'rev-1'});expect(screen.latest()).toContain('Records');expect(screen.latest()).not.toContain('Saved record');
 });
 
+// Unit: settings forms previously sent raw secrets to generic remote resources.
+// Exercise the real keyboard path and assert the local-only protected entry.
+it('saves remote plugin credentials through the local protected controller without echo',async()=>{
+  const host=fakeClient(),ref={collectionId:'plugins',kind:'plugin',id:'fixture'};
+  const key=Buffer.from(JSON.stringify(['key','installed-1'])).toString('base64url');
+  const item={ref,revision:'1',links:[],display:{title:'Fixture'}};
+  const calls:Array<{channel:string;args:unknown[];device?:string}>=[];
+  host.handle((channel)=>{
+    if(channel==='maker:remote-resources:manifest')return {collections:[{id:'plugins',resourceKind:'plugin',title:'Plugins'}]};
+    if(channel==='maker:remote-resources:list')return {items:[item]};
+    if(channel==='maker:remote-resources:get')return {...item,actions:[{id:'credentials',label:'Credentials',fields:[{id:'key',label:'Key',kind:'select',options:[{value:key,label:'API Key'}]},{id:'value',label:'New value',kind:'secret'}]}]};
+    if(channel==='terminal:plugin-secret')return {saved:true};
+  });
+  const client:TerminalClient={...host.client,invoke:(async(channel,args=[],device)=>{calls.push({channel,args,device});return host.client.invoke(channel,args);}) as TerminalClient['invoke']};
+  const screen=await mount(client,{node:<Resources client={client} device="target-device" locale="en" initialCollection="plugins" onTask={()=>{}}/>});
+  await screen.press('\r');await screen.press('\r');await screen.press('\r');
+  await screen.press('synthetic-protected-key');await screen.press('\r');
+  expect(calls.find(call=>call.channel==='terminal:plugin-secret')).toEqual({channel:'terminal:plugin-secret',args:[{pluginId:'fixture',key,value:'synthetic-protected-key',deviceId:'target-device'}],device:undefined});
+  expect(JSON.stringify(calls.filter(call=>call.device))).not.toContain('synthetic-protected-key');
+  expect(calls.some(call=>call.channel==='maker:remote-resources:invoke')).toBe(false);
+  expect(screen.all()).not.toContain('synthetic-protected-key');
+});
+
 // Unit: real Ink typing must use the dedicated setup submission, never a
 // generic permission answer or unmasked frame. Replaces the absent TUI route.
 it('submits a market installation confirmation to the destination plugin collection',async()=>{

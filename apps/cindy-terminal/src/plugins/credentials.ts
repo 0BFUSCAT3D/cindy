@@ -81,7 +81,7 @@ export class TerminalPluginCredentials {
     if (!secret?.oauth) return { ok: false as const, error: 'PLUGIN_SECRET_NOT_DECLARED' };
     return this.oauth.getFreshAccessToken(id, key, secret.oauth, accountId);
   }
-  async request(id: string, request: Request, current: () => boolean): Promise<Response | null> {
+  async request(id: string, request: Request, current: () => boolean, confirmConnection?: (label: string, host: string) => Promise<boolean>): Promise<Response | null> {
     const pathname = new URL(request.url).pathname;
     if (!/^\/(secrets|oauth|connections)(\/|$)/.test(pathname)) return null;
     this.guard(); const ghost = this.host.installed(id);
@@ -101,7 +101,7 @@ export class TerminalPluginCredentials {
     } else if (pathname === '/connections' || pathname.startsWith('/connections/')) {
       outcome = await this.host.withCredentialMutation(id, () => handleGhostConnectionsRequest({ ...base,
         decls: new Map((network?.connections ?? []).map(decl => [decl.key, { label: decl.label, maxConnections: decl.maxConnections ?? GHOST_NETWORK_MAX_CONNECTIONS_PER_DECL }])), manager: this.connections,
-        confirmAddHost: (label, host) => this.options.confirmAddHost(id, label, host), onChanged: changed,
+        confirmAddHost: (label, host) => confirmConnection ? confirmConnection(label, host) : this.options.confirmAddHost(id, label, host), onChanged: changed,
       }));
     } else {
       const keys = new Set((network?.secrets ?? []).filter(secret => ['user', 'gh-cli'].includes(secret.source ?? 'user')).map(secret => secret.key));

@@ -7,6 +7,8 @@ import { createTerminalPluginForge } from './forge.js';
 import { createTerminalPluginTask } from './mcp.js';
 import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
 import { TerminalPluginSetup } from './setup.js';
+import { TerminalPluginPages } from './pages.js';
+import { parsePluginSecretForm } from './secret-form.js';
 import { TerminalProtectedInput } from '../protected-input.js';
 import { createPluginSecretPresentation } from '@cindy/plugin-runtime/shared/pluginOauth';
 import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
@@ -84,8 +86,15 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     fetchImpl:async(input:Parameters<typeof fetch>[0],init?:RequestInit)=>{expect(String(input)).toBe('https://accounts.example.com/token');expect(new URLSearchParams(String(init?.body)).get('client_id')).toBe('fixture-client');return Response.json({access_token:'synthetic-oauth-access',refresh_token:'synthetic-oauth-refresh',expires_in:3600,scope:'read'});},
   },root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},cards:{persist:(row:import('@cindy/plugin-runtime/cardService').GhostCardRow)=>media.savePluginCard(row,()=>{}),broadcast:(payload:unknown)=>{cardPushes.push(payload);}},fs:{getSessionSnapshot:async()=>({workingDir:directory,permissionMode:'bypassPermissions',planModeEnabled:false,remoteHostId:null,isCurrent:()=>active}),requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
   const host=new TerminalPlugins(options);
+  const pages=new TerminalPluginPages(host,{assertCurrent:options.assertCurrent,translate:key=>key});
+  const wire:unknown[]=[];
+  const registry=new RemoteResourceRegistry();registerPluginResources(registry,host,pages);
+  const makeAuthorization=(id:string):TerminalProtectedInput=>new TerminalProtectedInput({root:path.join(directory,id),secrets,scope:()=>({realm:'global',membershipId:'fixture-owner',deviceId:id}),assertCurrent:options.assertCurrent,remoteEnabled:()=>true,taskExists:async()=>true,emit:()=>{},
+    invoke:async(_device,channel,args)=>{wire.push({channel,args});try{return {ok:true,result:channel==='maker:remote-resources:invoke'?await registry.invoke({controllerDeviceId:id,assertCurrent:options.assertCurrent},args[0] as import('@cindy/device-link').RemoteActionInvokeRequest):await hostAuthorization.request(id,args[0])};}catch{return {ok:false,error:{code:'IPC_ERROR',message:'Synthetic exchange rejected'}};}},
+  });
+  const hostAuthorization=makeAuthorization('host-device'),controllerAuthorization=makeAuthorization('controller-a');
+  hostAuthorization.configurePlugins({bind:async action=>pages.pages.settingsBinding(action),run:()=>false,settingsRequest:(peer,request)=>pages.pages.settingsRequest(peer,request)});
   try{
-    const registry=new RemoteResourceRegistry();registerPluginResources(registry,host);
     const context={controllerDeviceId:'controller-a',assertCurrent:options.assertCurrent},client={protocolVersion:1 as const,primitives:['text','actions'],locale:'en'};
     const prepared=await host.prepareInstall(file,'controller-a');
     expect(await host.list()).toEqual([]);
@@ -99,7 +108,14 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     const binding=resource.actions?.find(action=>action.id==='credentials')?.fields?.find(field=>field.id==='key')?.options?.[0].value;
     expect(binding).toBeTruthy();
     const saveRequest={client,collectionId:'plugins',resourceRef:resource.ref,actionId:'credentials',input:{key:binding,value:'synthetic-acceptance-key'}};
-    await registry.invoke(context,saveRequest);
+    await expect(registry.invoke(context,saveRequest)).rejects.toThrow('PROTECTED_INPUT_REQUIRED');
+    // Integration: the public controller entry pins the installed revision and
+    // commits through the signed settings exchange. Generic resource traffic
+    // must never carry the entered value, including local controller wrappers.
+    const form=parsePluginSecretForm({pluginId:instance,...saveRequest.input});
+    await controllerAuthorization.saveRemotePluginSecret('host-device',instance,form.key,form.approval,form.value);
+    expect(host.readSecretSync(instance,'key')).toBe('synthetic-acceptance-key');
+    expect(JSON.stringify(wire)).not.toContain('synthetic-acceptance-key');
     // Integration tier: the public terminal pipe downloads real bytes through
     // the shared verifier, then leases the receipt to the real Node worker.
     const download=await host.receive(instance,{type:'download-request',kind:'start',id:'native-artifact',url:'https://api.example.com/artifact',sha256:artifactHash,bytes:artifact.length}) as {ok:boolean;token:string};
@@ -182,7 +198,9 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     archive.file('ghost.json',JSON.stringify(updated));await writeFile(file,await archive.generateAsync({type:'nodebuffer'}));
     const update=await host.prepareInstall(file,'controller-a');await host.confirmInstall(update.id,'controller-a');
     expect(await (await settings('/oauth')).json()).toMatchObject([{key:'oauth',accounts:[{status:'expired'}]}]);
-    await expect(registry.invoke(context,saveRequest)).rejects.toThrow('PLUGIN_CHANGED');
+    await expect(controllerAuthorization.saveRemotePluginSecret('host-device',instance,form.key,form.approval,'stale-secret')).rejects.toThrow('PLUGIN_SECRET_FORM_STALE');
+    expect(host.readSecretSync(instance,'key')).toBe('synthetic-acceptance-key');
+    expect(JSON.stringify(wire)).not.toContain('stale-secret');
     // Integration: switching authoring provenance must isolate credentials/KV
     // instead of silently handing the old account to the new package source.
     host.kv.write(instance,{preserve:'source-owned-value'});
@@ -212,7 +230,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
       expect(recovered.kv.read(instance)).toEqual({});
       active=false;await expect(recovered.list()).rejects.toThrow('OWNER_CHANGED');
     }finally{await recovered.close();}
-  }finally{await host.close();vault.lock();await media.close();}
+  }finally{pages.close();await controllerAuthorization.close();await hostAuthorization.close();await host.close();vault.lock();await media.close();}
   // Native Windows vault ACL commands run for each durable mutation. Preserve
   // the local 5s budget while allowing that real OS work on the CI runner.
 },process.platform==='win32'?30_000:5_000);

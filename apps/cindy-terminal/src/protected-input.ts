@@ -12,6 +12,8 @@ import { OauthTransactions, type OauthTransactionDeps } from '@cindy/plugin-runt
 import { createInputHandoffAuthorization } from '@cindy/plugin-runtime/authorization/inputHandoffBinding';
 import { resolveOauthPeerIdentity } from '@cindy/plugin-runtime/authorization/identityResolver';
 import { assistPluginOauth } from '@cindy/plugin-runtime/authorization/controller';
+import { onOauthCardClosed } from '@cindy/plugin-runtime/authorization/context';
+import { PLUGIN_SETTINGS_ACTION, oauthId } from '@cindy/device-link';
 import { INPUT_HANDOFF_GHOST_ID, INPUT_HANDOFF_ACTION_ID, PLUGIN_OAUTH_CHANNEL, parseInputHandoffPresentation, parseInputHandoffSubmission, type InputHandoffPresentation, type InputHandoffSubmission, type InvokeResultPayload } from '@cindy/device-link';
 import type { TerminalSecrets } from './contracts.js';
 import { privateDirectory } from './platform.js';
@@ -40,6 +42,7 @@ export class TerminalProtectedInput {
   private key?: Buffer;
   private preparing?: Promise<OauthIdentityStore>;
   private closed = false;
+  private readonly unsubscribeClosed:()=>void;
   private plugins?:Pick<OauthTransactionDeps,'bind'|'run'|'settingsRequest'>;
 
   constructor(private readonly options: ProtectedInputOptions) {
@@ -62,6 +65,7 @@ export class TerminalProtectedInput {
       settingsRequest: (peer:string,request:import('@cindy/device-link').PluginSettingsRequest) => this.plugins?.settingsRequest?.(peer,request) ?? Promise.reject(new Error('PLUGIN_PAGE_UNAVAILABLE')),
     };
     this.transactions = new OauthTransactions(deps);
+    this.unsubscribeClosed=onOauthCardClosed(id=>this.transactions.cancelRequest(id));
     this.authenticated = new AuthenticatedOauthHost({ ...deps,
       identity: async () => {
         this.guard(); const scope = options.scope(); if (!scope) return null;
@@ -72,7 +76,10 @@ export class TerminalProtectedInput {
         const key=await this.identityFlight;
         this.guard(); return { ...scope, key };
       },
-      request: (peer, raw) => this.transactions.request(peer, raw),
+      request: (peer, raw) => {
+        const request=raw as import('@cindy/device-link').PluginOauthRequest;
+        return request.op==='settings'?deps.settingsRequest(peer,request):this.transactions.request(peer,raw);
+      },
     });
   }
   private guard() { if (this.closed) throw new Error('INPUT_HANDOFF_CLOSED'); this.options.assertCurrent(); }
@@ -134,6 +141,27 @@ export class TerminalProtectedInput {
     return assistPluginOauth(deps,action);
   }
 
+  async saveRemotePluginSecret(device:string,ghostId:string,key:string,expectedInstalledApproval:string,value:string){
+    this.guard();const scope=this.options.scope();if(!scope)throw new Error('AUTH_REQUIRED');
+    const owner=JSON.stringify(scope);
+    const assertCurrent=()=>{this.guard();if(JSON.stringify(this.options.scope())!==owner)throw new Error('OWNER_CHANGED');};
+    const target=await resolveOauthPeerIdentity({scope:this.options.scope,invoke:this.options.invoke},device,assertCurrent);
+    const opened=await this.options.invoke(device,'maker:remote-resources:invoke',[{client:{protocolVersion:1,primitives:['text','actions']},collectionId:'plugins',resourceRef:{collectionId:'plugins',kind:'plugin',id:ghostId},actionId:'settings:form',input:{expectedInstalledApproval}}]);
+    assertCurrent();
+    if(!opened.ok)throw new Error('PLUGIN_SECRET_FORM_STALE');
+    const document=(opened.result as {result?:{pageId?:unknown;pluginId?:unknown}}|undefined)?.result;
+    if(!document||!oauthId(document.pageId)||document.pluginId!==ghostId)throw new Error('PLUGIN_SECRET_FORM_STALE');
+    const id=document.pageId,store=await this.identityStore();
+    const invoke=await authenticateOauthController({target,peer:scope.deviceId,ghostId,action:{requestId:id,actionId:PLUGIN_SETTINGS_ACTION,expectedRevision:0},assertCurrent,
+      trustIdentity:(identity,check)=>store.trustPeer(scope,identity.deviceId,identity.publicKey,check),
+      invoke:async request=>{const result=await this.options.invoke(device,PLUGIN_OAUTH_CHANNEL,[request]);if(!result.ok)throw new Error('OAUTH_BRIDGE_UNAVAILABLE');return result.result;},
+    });
+    try{
+      const result=await invoke({op:'settings',id,command:{kind:'fetch',path:`/secrets/${encodeURIComponent(key)}`,method:value?'PUT':'DELETE',...(value?{body:JSON.stringify({value})}:{})}}) as {status?:number};
+      assertCurrent();if(result?.status!==204)throw new Error('PLUGIN_SECRET_SAVE_FAILED');
+    }finally{await invoke({op:'settings',id,command:{kind:'close'}}).catch(()=>{});}
+  }
+
   private identityStore(): Promise<OauthIdentityStore> {
     if (this.store) return Promise.resolve(this.store);
     this.preparing ??= (async () => {
@@ -153,6 +181,7 @@ export class TerminalProtectedInput {
     return this.preparing;
   }
   async close() {
+    this.unsubscribeClosed();
     this.handoff.cleanupAll(); this.closed = true;this.plugins=undefined;
     this.authenticated.invalidate(); this.transactions.cancelPeer();
     await this.askpass.close(); await this.preparing?.catch(() => {}); await this.identityFlight?.catch(() => {});

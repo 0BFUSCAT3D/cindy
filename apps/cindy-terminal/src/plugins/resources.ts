@@ -3,6 +3,7 @@ import { installedGhostStoragePart } from '@cindy/plugin-runtime/shared/pluginId
 import { ghostInstallApprovalToken, ghostPermissionItems, type GhostPermissionItem, type InstalledGhost } from '@cindy/plugin-runtime/shared/ghost';
 import type { TerminalPlugins } from './host.js';
 import permissions from './permissions.json';
+import type { TerminalPluginPages } from './pages.js';
 
 const copy={
   plugins:['Plugins','插件','外掛','プラグイン','플러그인'],install:['Install package','安装插件包','安裝外掛套件','パッケージをインストール','패키지 설치'],
@@ -27,7 +28,7 @@ function secretFields(ghost:InstalledGhost){
   return [...keys].map(([key,label])=>({value:Buffer.from(JSON.stringify([key,ghostInstallApprovalToken(ghost.approval)])).toString('base64url'),label}));
 }
 
-export function registerPluginResources(registry:RemoteResourceRegistry,host:TerminalPlugins){
+export function registerPluginResources(registry:RemoteResourceRegistry,host:TerminalPlugins,pages?:TerminalPluginPages){
   const installed=(ghost:InstalledGhost,locale?:string):RemoteResource=>{
     const id=installedGhostStoragePart(ghost),secrets=secretFields(ghost);
     return {ref:ref(id),revision:host.version(),display:{title:ghost.manifest.name,subtitle:ghost.manifest.version},links:[],
@@ -51,7 +52,13 @@ export function registerPluginResources(registry:RemoteResourceRegistry,host:Ter
         .filter(item=>!query||`${item.display.title} ${item.display.subtitle}`.toLowerCase().includes(query));
       return {collectionId:'plugins',revision:host.version(),items:items.slice(offset,offset+limit),...(offset+limit<items.length?{nextCursor:String(offset+limit)}:{})};
     },
-    get:async(context,request)=>request.ref.id.startsWith('install:')?prepared(request.ref.id.slice(8),context.controllerDeviceId,request.client.locale):installed(await host.get(request.ref.id),request.client.locale),
+    get:async(context,request)=>{
+      if(request.ref.id.startsWith('install:'))return prepared(request.ref.id.slice(8),context.controllerDeviceId,request.client.locale);
+      const resource=installed(await host.get(request.ref.id),request.client.locale);
+      if(!pages)return resource;
+      const shared=await pages.provider.get!(context,request);
+      return {...shared,actions:[...resource.actions??[],...shared.actions?.filter(action=>action.id.startsWith('open:'))??[]],blocks:[...shared.blocks??[],...resource.blocks??[]]};
+    },
     invoke:async(context,request)=>{
       context.assertCurrent?.();const id=request.resourceRef?.id;
       if(request.actionId==='install'){
@@ -67,12 +74,9 @@ export function registerPluginResources(registry:RemoteResourceRegistry,host:Ter
       }else if(['enable','disable'].includes(request.actionId))await host.setEnabled(id,request.actionId==='enable');
       else if(request.actionId==='remove')await host.uninstall(id);
       else if(request.actionId==='credentials'){
-        const key=request.input?.key,value=request.input?.value;if(typeof key!=='string'||typeof value!=='string')throw new Error('PLUGIN_SECRET_INVALID');
-        let binding:unknown;
-        try{binding=JSON.parse(Buffer.from(key,'base64url').toString());}catch{throw new Error('PLUGIN_SECRET_FORM_STALE');}
-        if(!Array.isArray(binding)||binding.length!==2||binding.some(part=>typeof part!=='string'))throw new Error('PLUGIN_SECRET_FORM_STALE');
-        await host.saveSecret(id,binding[0],value,binding[1],context.assertCurrent);
-      }else throw new Error('INVALID_ACTION');
+        throw new Error('PROTECTED_INPUT_REQUIRED');
+      }else if(pages)return pages.provider.invoke!(context,request);
+      else throw new Error('INVALID_ACTION');
       return {effects:[{kind:'refresh-collection',collectionId:'plugins'}]};
     },
   });

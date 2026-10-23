@@ -50,10 +50,19 @@ jobs:
         run: pnpm --filter cindy-terminal exec playwright-core install --with-deps chromium
       - name: Select the pinned headless browser for integration tests
         run: pnpm --filter cindy-terminal exec node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'CINDY_TEST_CHROMIUM='+require('playwright-core').chromium.executablePath()+'\n')"
+      - name: Allow only the test browser to create its Linux sandbox
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          node -e 'const fs=require("fs"),path=require("path"); const binary=fs.realpathSync(process.env.CINDY_TEST_CHROMIUM); if (!/^\/[a-zA-Z0-9_./-]+$/.test(binary)) throw Error("Invalid browser path"); fs.writeFileSync(path.join(process.env.RUNNER_TEMP,"cindy-terminal-chromium.apparmor"), "abi <abi/4.0>,\ninclude <tunables/global>\nprofile cindy-terminal-chromium "+binary+" flags=(unconfined) {\n  userns,\n}\n");'
+          sudo install -m 644 "$RUNNER_TEMP/cindy-terminal-chromium.apparmor" /etc/apparmor.d/cindy-terminal-chromium
+          sudo apparmor_parser -r /etc/apparmor.d/cindy-terminal-chromium
       - name: Targeted authentication, vault, transport and engine tests
         run: pnpm --filter cindy-terminal exec vitest run src/host.integration.test.ts src/remote/service.test.ts src/tasks/host.test.ts src/engines/engines.test.ts src/ui/authentication.test.tsx src/maintenance.test.ts src/plugins/account.test.ts src/plugins/market.test.ts src/plugins/host.native.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing verified downloads and plugin download policy
         run: pnpm --filter desktop exec vitest run src/main/downloader/__tests__/download.test.ts src/main/downloader/__tests__/scheduler.test.ts src/main/downloader/__tests__/requestInjection.test.ts src/main/cindy-brain/__tests__/downloadSlot.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Existing remote plugin pages and encrypted settings
+        run: pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mobilePageService.test.ts src/main/cindy-brain/__tests__/remotePluginSettings.test.ts src/main/cindy-brain/__tests__/mobilePageRelay.test.ts src/main/cindy-brain/__tests__/mobilePageAssets.test.ts src/main/cindy-brain/__tests__/mobilePluginConfiguration.test.ts src/main/cindy-brain/__tests__/mobilePluginUsage.test.ts src/main/cindy-brain/__tests__/mobilePreview.test.ts --maxWorkers=1 --minWorkers=1
       - name: Native plugin worker and existing broker ABI
         run: pnpm --filter @cindy/plugin-runtime exec vitest run src/nativeProcess.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal

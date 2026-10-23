@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { TerminalBrowserRuntime } from './plugins/browser.js';
 import { TerminalPlugins } from './plugins/host.js';
 import { registerPluginResources } from './plugins/resources.js';
+import { parsePluginSecretForm } from './plugins/secret-form.js';
 import { registerLibraryResources } from './plugins/library-resources.js';
 import { DirDepositVault, SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
 import { fetchSingleHopWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';
@@ -399,7 +400,7 @@ export class TerminalService {
       emit:(channel,payload)=>{guardPlugin();if(this.ownerSuspended)return;this.transport.publish(channel,[payload]);void this.remote.publish(channel,payload).catch(()=>{});},
     });
     await this.pluginTasks.ready;
-    registerPluginResources(this.resources.registry,this.plugins);
+    registerPluginResources(this.resources.registry,this.plugins,this.pluginTasks.pages);
     registerLibraryResources(this.resources.registry,this.plugins);
 
     this.projects=new TerminalProjects(ownerDir,{guard:guardKnowledge,createSession:async(workingDir,title)=>{const created=await this.tasks.invoke('maker:create-session',[{workingDir,title}],{source:'local',assertCurrent:guardKnowledge}) as {sessionId?:string;id?:string};const id=created.sessionId??created.id;if(!id)throw new Error('SESSION_CREATE_FAILED');return id;}});
@@ -456,6 +457,13 @@ export class TerminalService {
     const local=context.source==='local';
     if(this.closing)throw new Error('SERVICE_STOPPING');
     context.assertCurrent?.();
+    if(channel==='terminal:plugin-secret'){
+      if(!local)throw new Error('LOCAL_ONLY_COMMAND');
+      const input=parsePluginSecretForm(args[0]);
+      if(input.deviceId)await this.protectedInput!.saveRemotePluginSecret(input.deviceId,input.pluginId,input.key,input.approval,input.value);
+      else await this.plugins!.saveSecret(input.pluginId,input.key,input.value,input.approval,context.assertCurrent);
+      return {saved:true};
+    }
     if(channel==='terminal:plugin-authorizations'){
       if(!local)throw new Error('LOCAL_ONLY_COMMAND');
       for(const [id,item] of this.pluginAuthorizations)if(item.expiresAt<=Date.now())this.pluginAuthorizations.delete(id);

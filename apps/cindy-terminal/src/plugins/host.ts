@@ -119,16 +119,18 @@ export class TerminalPlugins {
         readSecret:(id,key)=>this.readSecret(id,key),secretSaved:async(id,key)=>(await this.readSecret(id,key))!==null},
       web:{executablePath:options.executablePath,mailRuntimeSource:()=>readFile(path.join(options.runtimeDirectory,'plugin-mail-runtime.js'),'utf8'),
         receive:(id,payload)=>this.receive(id,payload),
-        request:async(id,request,current)=>{
-          if(new URL(request.url).pathname!=='/kv')return this.credentials.request(id,request,()=>this.current()&&current());
-          const outcome=await handleGhostKvRequest({method:request.method,readBodyText:()=>readBoundedBodyText(request),store:this.kv,ghostId:id,isCurrent:()=>this.current()&&current(),log:options.log});
-          if(request.method!=='GET'&&outcome.status<300)this.credentialsChanged(id,'kv');
-          return new Response(outcome.body??null,{status:outcome.status,headers:{'Content-Type':'application/json'}});
-        }},
+        request:(id,request,current)=>this.settingsRequest(id,request,current)},
     });
     this.ready=this.open();
   }
   /** Only the native sandbox supplies the bound instance, never payload JSON. */
+  async settingsRequest(id:string,request:Request,current:()=>boolean,confirmConnection?:(label:string,host:string)=>Promise<boolean>):Promise<Response|null>{
+    this.guard();
+    if(new URL(request.url).pathname!=='/kv')return this.credentials.request(id,request,()=>this.current()&&current(),confirmConnection);
+    const outcome=await handleGhostKvRequest({method:request.method,readBodyText:()=>readBoundedBodyText(request),store:this.kv,ghostId:id,isCurrent:()=>this.current()&&current(),log:this.options.log});
+    if(request.method!=='GET'&&outcome.status<300)this.credentialsChanged(id,'kv');
+    return new Response(outcome.body??null,{status:outcome.status,headers:{'Content-Type':'application/json'}});
+  }
   async receive(id:string,payload:unknown):Promise<unknown>{
     this.guard();const type=(payload as {type?:unknown}|null)?.type;
     if(type==='fetch-request'&&this.network)return this.network.handleFetchRequest(id,payload);

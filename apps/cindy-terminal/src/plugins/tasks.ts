@@ -8,6 +8,7 @@ import type { TerminalPlugins } from './host.js';
 import type { TerminalPluginAccount } from './account.js';
 import { TerminalPluginPreferences } from './preferences.js';
 import { TerminalPluginSetup } from './setup.js';
+import { TerminalPluginPages } from './pages.js';
 import { TerminalPluginPublisher } from './publisher.js';
 import { createTerminalPluginTask } from './mcp.js';
 import { createTerminalPluginForge } from './forge.js';
@@ -17,6 +18,7 @@ import translations from './translations.json';
 /** Owner-scoped wiring; no process-global Desktop singleton is borrowed. */
 export class TerminalPluginTasks {
   readonly setup:TerminalPluginSetup;
+  readonly pages:TerminalPluginPages;
   readonly preferences:TerminalPluginPreferences;
   readonly publisher:TerminalPluginPublisher;
   readonly ready:Promise<void>;
@@ -35,7 +37,10 @@ export class TerminalPluginTasks {
       isAvailableForActiveSession:id=>{guard();const ghost=options.host.installed(id);return !!ghost&&(!isCindyAccountGhostId(ghost.manifest.id)||options.signedIn());},
       isDisabledForWorkdir:(id,dir)=>this.preferences.disabled(id,dir),
     };
+    this.pages=new TerminalPluginPages(options.host,{assertCurrent:guard,translate:(key,locale)=>((translations as Record<string,Record<string,string>>)[locale??options.locale()]??translations.en)[key]??(translations.en as Record<string,string>)[key]??key});
+    const pages=this.pages.pages;
     this.setup=new TerminalPluginSetup(options.host,{visibility,owner:()=>JSON.stringify(options.owner()),remoteAvailable:options.remoteAvailable,translate,assertCurrent:guard,emit:options.emit,
+      settings:{bind:action=>pages.settingsBinding(action),bindAuthorization:action=>pages.settingsAuthorizationBinding(action),runAuthorization:action=>pages.runSettingsAuthorization(action),request:(peer,request)=>pages.settingsRequest(peer,request)},
       navigate:(sessionId,target,ghostId)=>options.emit('terminal:plugin-settings',{sessionId,target,ghostId}),
     });
     this.publisher=new TerminalPluginPublisher({stagingDirectory:path.join(options.root,'plugin-publish-staging'),host:options.host,account:options.account,owner:options.owner,assertCurrent:guard,
@@ -52,5 +57,5 @@ export class TerminalPluginTasks {
     },this.setup);
     this.ready=this.preferences.refresh();
   }
-  close(){if(this.closed)return;this.closed=true;this.setup.close();this.publisher.close();}
+  close(){if(this.closed)return;this.closed=true;this.pages.close();this.setup.close();this.publisher.close();}
 }

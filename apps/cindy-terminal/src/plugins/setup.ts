@@ -24,6 +24,7 @@ export class TerminalPluginSetup {
     navigate(sessionId: string, target: 'plugin_settings' | 'client_settings', ghostId: string): void;
     assertCurrent(): void;
     translate(key: string): string;
+    settings?: NonNullable<Parameters<typeof createPluginOauthCardBindings>[0]['settings']>;
   }) {
     const assertActive=()=>{if(this.closed)throw new Error('PLUGIN_SETUP_CLOSED');options.assertCurrent();};
     this.bridge = new GhostSetupInteractionBridge({ channels: { request: 'maker:interaction-request', dismissed: 'maker:interaction-dismissed' }, broadcast: options.emit });
@@ -69,6 +70,7 @@ export class TerminalPluginSetup {
     });
     this.authorization = createPluginOauthCardBindings({
       bridge: this.bridge, bots: () => null, owner: options.owner, available: options.remoteAvailable,
+      settings: options.settings,
       bindConnection: ({ ghostId, actionId, onCommitted }) => {
         const manifest = host.installed(ghostId)?.manifest;
         if (!manifest) return null;

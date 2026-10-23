@@ -65,6 +65,11 @@ export class HeadlessGhostSandbox implements SandboxHostAdapter {
   }
 
   send(instanceId: string, payload: unknown): boolean { return this.handles.get(instanceId)?.send(payload) ?? false; }
+  async evaluate(instanceId: string, script: string): Promise<unknown> {
+    const handle = this.handles.get(instanceId);
+    if (!handle) throw new Error('PLUGIN_PAGE_UNAVAILABLE');
+    return handle.evaluate(script);
+  }
   retire(handle: HeadlessHandle, closing: Promise<void>) {
     if (this.handles.get(handle.id) === handle) this.handles.delete(handle.id);
     this.closing.add(closing); void closing.finally(() => this.closing.delete(closing));
@@ -165,6 +170,13 @@ class HeadlessHandle implements SandboxHandle {
       const body = Buffer.from(await response.arrayBuffer()); this.guard();
       await route.fulfill({ status: response.status, headers, body });
     } catch { await route.fulfill({ status: this.live() ? 404 : 403, body: '' }).catch(() => {}); }
+  }
+  async evaluate(script: string): Promise<unknown> {
+    this.guard();
+    if (!this.page || this.page.isClosed()) throw new Error('PLUGIN_PAGE_UNAVAILABLE');
+    const result = await this.page.evaluate(script);
+    this.guard();
+    return result;
   }
   send(payload: unknown): boolean {
     if (!this.live() || !this.page || this.page.isClosed()) return false;
