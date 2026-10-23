@@ -47,7 +47,12 @@ async function waitForStopped(directory:string) {
   const deadline=Date.now()+45_000;
   while(Date.now()<deadline){
     try{await fs.access(path.join(directory,'service.json'));}
-    catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+    catch(error){
+      if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+      // Windows' scheduled action owns a supervisor. Let the normal child
+      // exit finish that action before /Run, which otherwise ignores it.
+      if(process.platform!=='win32'||!(await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).inspect()).running)return;
+    }
     await pause(100);
   }
   throw new Error('SERVICE_STOP_TIMEOUT');
@@ -173,7 +178,17 @@ async function main() {
     try { await service.start(); } catch(error) { if(error instanceof Error&&error.message==='SERVICE_ALREADY_RUNNING')return;throw error; }
     const stop=()=>{void service.close().catch(()=>{process.exitCode=1;});};
     process.once('SIGINT',stop);process.once('SIGTERM',stop);
-    await service.stopped;return;
+    const supervised=process.env.CINDY_SERVICE_SUPERVISED==='1'&&!!process.send;
+    const supervisorMessage=(message:unknown)=>{if((message as {type?:unknown}|null)?.type==='cindy:service-stop')stop();};
+    if(supervised){
+      process.on('message',supervisorMessage);
+      process.once('disconnect',stop);
+      if(!process.connected)stop();
+    }
+    await service.stopped;
+    process.off('SIGINT',stop);process.off('SIGTERM',stop);
+    if(supervised){process.off('message',supervisorMessage);process.off('disconnect',stop);if(process.connected)process.disconnect();}
+    return;
   }
   if(command==='logs'||command==='service'&&subcommand==='logs'){
     const file=path.join(directory,'service.log');
@@ -223,10 +238,15 @@ async function main() {
       if(subcommand==='restart'){client=await startBackground(directory);try{print(await client.invoke('terminal:status'));}finally{client.close();}return;}
       else if(subcommand==='uninstall'){
         const manager=new TerminalServiceManager(directory,fileURLToPath(import.meta.url));
+        await manager.stopIdleSupervisor();
         let result=await manager.uninstall();
         if(result.requiresLocalCompletion)result=await manager.completeUninstall();
         print(result);return;
-      }else{print({running:false,...(command==='service'?{service:await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).inspect()}: {})});return;}
+      }else{
+        const manager=new TerminalServiceManager(directory,fileURLToPath(import.meta.url));
+        if(command==='service'&&subcommand==='stop')await manager.stopIdleSupervisor();
+        print({running:false,...(command==='service'?{service:await manager.inspect()}: {})});return;
+      }
     }else throw error;
   }
   const device=str('device');

@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, openSync, writeFileSync, fsyncSync, closeSync, renameSync, rmSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -106,4 +106,20 @@ export async function atomicPrivateWrite(file: string, data: string | Buffer): P
     }
   }
   finally { await fs.rm(temp, { force: true }); }
+}
+
+/** Synchronous transaction boundary for the shared plugin credential managers.
+ * Same private-file and durable rename contract as atomicPrivateWrite. */
+export function atomicPrivateWriteSync(file: string, data: string | Buffer): void {
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  const handle = openSync(temp, 'wx', 0o600);
+  try {
+    try { writeFileSync(handle, data); fsyncSync(handle); }
+    finally { closeSync(handle); }
+    renameSync(temp, file);
+    if (process.platform !== 'win32') {
+      const directory = openSync(path.dirname(file), 'r');
+      try { fsyncSync(directory); } finally { closeSync(directory); }
+    }
+  } finally { rmSync(temp, { force: true }); }
 }

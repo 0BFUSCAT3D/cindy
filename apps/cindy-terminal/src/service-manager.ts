@@ -13,6 +13,7 @@ const xml = (value: string) => value.replace(/[&<>"']/g, char => ({ '&':'&amp;',
 const scheduledTaskXml = (value: string) => Buffer.from('\ufeff' + value.replace('encoding="UTF-8"', 'encoding="UTF-16"'), 'utf16le');
 const readScheduledTaskXml = (value: Buffer) => value[0] === 0xff && value[1] === 0xfe ? value.subarray(2).toString('utf16le') : value.toString('utf8');
 const windowsArg = (value: string) => `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
+const systemdEnvironment = (key: string, value: string) => `"${key}=${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`;
 const systemdArg = (value: string) => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%').replace(/\$/g, '$$$$')}"`;
 // WorkingDirectory is a path setting, not an ExecStart argument: systemd
 // treats quotes literally. The final /. also protects trailing whitespace or
@@ -45,7 +46,7 @@ export class TerminalServiceManager {
   private readonly interactive: NonNullable<ServiceEnvironment['interactive']>;
   constructor(readonly profileDir: string, readonly entry: string, readonly node = process.execPath, runtime: ServiceEnvironment = {}) {
     this.platform = runtime.platform ?? process.platform;
-    this.home = runtime.home ?? os.homedir();
+    this.home = runtime.home ?? os.userInfo().homedir;
     this.uid = runtime.uid ?? process.getuid?.();
     this.env = runtime.env ?? process.env;
     this.execute = runtime.execute ?? execute;
@@ -83,10 +84,10 @@ export class TerminalServiceManager {
       await this.execute('launchctl', ['enable', this.launchdTarget()], { timeout: 10_000 });
     } else if (this.platform === 'linux') {
       const config = this.env.XDG_CONFIG_HOME || path.join(this.home, '.config');
-      if (!path.isAbsolute(config)) throw new Error('INVALID_CONFIG_HOME');
+      if (!path.isAbsolute(config) || /[\r\n\0]/.test(config)) throw new Error('INVALID_CONFIG_HOME');
       file = path.join(config, 'systemd', 'user', `${this.id}.service`);
       await fs.mkdir(path.dirname(file), { recursive: true });
-      await atomicPrivateWrite(file, `[Unit]\nDescription=Cindy terminal host\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[this.node,...args].map(systemdArg).join(' ')}\nWorkingDirectory=${systemdDirectory(this.profileDir)}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`);
+      await atomicPrivateWrite(file, `[Unit]\nDescription=Cindy terminal host\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[this.node,...args].map(systemdArg).join(' ')}\nWorkingDirectory=${systemdDirectory(this.profileDir)}\nEnvironment=${systemdEnvironment('HOME',this.home)} ${systemdEnvironment('XDG_CONFIG_HOME',config)} ${systemdEnvironment('XDG_RUNTIME_DIR',`/run/user/${this.userId()}`)}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`);
       try {
         await this.userSystemctl(['daemon-reload']);
         await this.userSystemctl(['enable', `${this.id}.service`]);
@@ -100,7 +101,8 @@ export class TerminalServiceManager {
       const { stdout } = await this.execute(windowsSystemCommand('whoami',this.env), ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 });
       const sid = stdout.match(/S-1-5-(?:\d+-)*\d+/)?.[0];
       if (!sid) throw new Error('SERVICE_USER_UNAVAILABLE');
-      await atomicPrivateWrite(file, scheduledTaskXml(`<?xml version="1.0" encoding="UTF-8"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>Cindy terminal host</Description></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${sid}</UserId></LogonTrigger></Triggers><Principals><Principal id="Cindy"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context="Cindy"><Exec><Command>${xml(this.node)}</Command><Arguments>${xml(args.map(windowsArg).join(' '))}</Arguments><WorkingDirectory>${xml(this.profileDir)}</WorkingDirectory></Exec></Actions></Task>\n`));
+      const supervisedArgs = [path.join(path.dirname(this.entry), 'service-supervisor.cjs'), this.entry, this.profileDir];
+      await atomicPrivateWrite(file, scheduledTaskXml(`<?xml version="1.0" encoding="UTF-8"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>Cindy terminal host</Description></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${sid}</UserId></LogonTrigger></Triggers><Principals><Principal id="Cindy"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context="Cindy"><Exec><Command>${xml(this.node)}</Command><Arguments>${xml(supervisedArgs.map(windowsArg).join(' '))}</Arguments><WorkingDirectory>${xml(this.profileDir)}</WorkingDirectory></Exec></Actions></Task>\n`));
       try { await this.execute(windowsSystemCommand('schtasks',this.env), ['/Create', '/TN', this.id, '/XML', file, '/F'], { windowsHide: true, timeout: 15_000 }); }
       catch (cause) { throw new Error('SERVICE_REGISTRATION_FAILED', { cause }); }
     } else throw new Error('PLATFORM_NOT_SUPPORTED');
@@ -255,6 +257,15 @@ export class TerminalServiceManager {
   private userId(): string {
     if (this.uid === undefined || !Number.isSafeInteger(this.uid) || this.uid < 0) throw new Error('SERVICE_USER_UNAVAILABLE');
     return String(this.uid);
+  }
+
+  /** Foreground recovery when there is no host IPC (for example during a
+   * Windows crash backoff). Normal stop still lets the host finish its work. */
+  async stopIdleSupervisor(): Promise<void> {
+    if (this.platform !== 'win32' || !(await this.status())) return;
+    if ((await this.inspect()).running) {
+      await this.execute(windowsSystemCommand('schtasks',this.env), ['/End', '/TN', this.id], { timeout: 15_000, windowsHide: true });
+    }
   }
 
   private async lingers(): Promise<boolean> {

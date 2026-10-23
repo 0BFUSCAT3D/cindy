@@ -651,7 +651,7 @@ export class GhostFsSlot {
     let confirmedMemoryKey: string | null = null;
     if (verdict === 'confirm') {
       const parentDir = path.dirname(target);
-      const memoryKey = `${info.sessionId} ${ghostId} ${foldCase(parentDir)}`;
+      const memoryKey = `${info.sessionId}\0${ghostId}\0${foldCase(parentDir)}`;
       const targetToken = installedGhostMutationTargetToken(ghost, '');
       const bindingKey = memoryKey + '\u0000' + targetToken;
       if (automaticReview || targetToken === null || !this.workdirGrants.has(bindingKey)) {
@@ -705,7 +705,7 @@ export class GhostFsSlot {
 
   /** 会话关闭时清掉该会话的确认记忆(防 Set 无界增长)。 */
   cleanupForSession(sessionId: string): void {
-    const prefix = `${sessionId} `;
+    const prefix = `${sessionId}\0`;
     for (const key of Array.from(this.workdirGrants)) {
       if (key.startsWith(prefix)) this.workdirGrants.delete(key);
     }

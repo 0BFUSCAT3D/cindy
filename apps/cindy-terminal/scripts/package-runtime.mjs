@@ -95,6 +95,19 @@ try {
   // traversing Ink/reconciler would cause real TUI hooks to use another runtime.
   for (const name of ['react', 'ink', '@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2', 'playwright-core']) await copyPackage(name, app, path.join(output, 'app'));
 
+  // The published macOS node-pty prebuild can have mode 0644 even though
+  // posix_spawn requires its spawn-helper to be executable. Fix the shipped
+  // artifact, independently of npm lifecycle scripts on the build computer.
+  if (process.platform === 'darwin') {
+    let found = false;
+    for (const relative of ['build/Release', 'build/Debug', `prebuilds/darwin-${process.arch}`]) {
+      const helper = path.join(output, 'app/node_modules/node-pty', relative, 'spawn-helper');
+      try { await access(helper); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      await chmod(helper, 0o755); found = true;
+    }
+    if (!found) throw new Error('Packaged node-pty spawn-helper is missing');
+  }
+
   const [suffix, digest] = runtimes[target];
   const archiveName = `node-v${nodeVersion}-${suffix}`;
   const response = await fetch(`https://nodejs.org/dist/v${nodeVersion}/${archiveName}`, { signal: AbortSignal.timeout(120_000) });

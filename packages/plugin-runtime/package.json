@@ -27,7 +27,8 @@
     "@cindy/maker-core": "workspace:*",
     "cindy-tools": "workspace:*",
     "drizzle-orm": "^0.45.2",
-    "undici": "^8.3.0"
+    "undici": "^8.3.0",
+    "@cindy/auth-client": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

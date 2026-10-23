@@ -67,7 +67,11 @@ try {
   const wrong = await run(['vault', 'unlock', '--passphrase-stdin'], { input: 'wrong-test-passphrase\n', raw: true });
   assert.notEqual(wrong.code, 0); record('vault rejects wrong passphrase after daemon restart', 'PASS');
   await run(['vault', 'unlock', '--passphrase-stdin'], { input: 'test-only-platform-passphrase\n' }); record('vault survives real process restart', 'PASS');
-  for (const kind of ['claude-code', 'codex', 'pi']) {
+  // Local follow-up may omit unchanged engine downloads already validated in
+  // a preceding artifact run; CI always executes the complete matrix.
+  const engineKinds=process.env.CINDY_ACCEPTANCE_SKIP_ENGINES==='1'?[]:['claude-code','codex','pi'];
+  if(!engineKinds.length)record('official engine downloads','SKIPPED','Previously validated; this run checks packaging and services');
+  for (const kind of engineKinds) {
     const state = await run(['engines', 'install', kind], { timeout: 10 * 60_000 });
     assert.equal(state.source, 'managed'); assert.ok(state.version); record(`official ${kind} download + native --version`, 'PASS', state.version);
   }
@@ -133,8 +137,8 @@ try {
     assert.ok(restarted.startedAt>previousStart); assert.equal(restarted.deviceId,activated.status.deviceId);
     const running=await run(['service','status']);assert.equal(running.service.running,true);
     record('native user-service restart preserves profile', 'PASS');
-    // Crash only the exact synthetic service, then observe the OS manager's
-    // recovery. status is passive and cannot create a substitute daemon.
+    // Crash only the exact synthetic service, then observe the installed service's
+    // recovery (the Windows task owns a supervising process). status is passive and cannot create a substitute daemon.
     const endpoint=JSON.parse(await readFile(path.join(profile,'service.json'),'utf8'));
     assert.ok(Number.isSafeInteger(endpoint.pid)&&endpoint.pid>0);
     console.log('SYNTHETIC_SERVICE_CRASH_PID',endpoint.pid);
@@ -147,7 +151,18 @@ try {
     }
     if(!recovered)console.log('SYNTHETIC_RECOVERY_STATE',JSON.stringify({lastRecoveryState,lastRecoveryError}));
     assert.ok(recovered,'Native service manager must recover its crashed host');
-    record('OS-managed crash recovery without CLI auto-start', 'PASS');
+    record('Managed host crash recovery without CLI auto-start', 'PASS');
+    await run(['service','stop']);
+    let stopped=false;
+    const stopDeadline=Date.now()+45_000;
+    while(Date.now()<stopDeadline){
+      const state=await run(['service','status'],{timeout:25_000});
+      if(!state.startedAt&&!state.service?.running){stopped=true;break;}
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    assert.ok(stopped,'An intentional stop must finish the managed service');
+    record('intentional stop does not trigger crash recovery','PASS');
+    await run(['service','start'],{timeout:90_000});
     await run(['service', 'uninstall']); registered = false;
     record('native user-service removal', 'PASS');
   }

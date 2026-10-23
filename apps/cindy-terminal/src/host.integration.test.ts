@@ -86,10 +86,16 @@ describe('terminal private host', () => {
     const dir=path.join(directory,'machine');
     const store=new TerminalSecretStore(dir);await store.open();
     expect(store.status().initialized).toBe(false);
-    await store.initialize('machine');await Promise.all([store.set('one','invalid-one'),store.set('two','invalid-two')]);
+    await store.initialize('machine');
+    // Integration: plugin refresh writes must commit before returning and must
+    // not be overwritten by an older queued account write (shared-vault rule).
+    const earlier=store.set('one','old-value');store.setSync('one','invalid-one');
+    const second=store.set('two','invalid-two');store.setSync('removed','synthetic');store.deleteSync('removed');
+    await Promise.all([earlier,second]);
+    expect(store.getSync('one')).toBe('invalid-one');expect(store.getSync('removed')).toBeNull();
     store.lock();const next=new TerminalSecretStore(dir);await next.open();
     expect(await next.get('one')).toBe('invalid-one');expect(await next.get('two')).toBe('invalid-two');
-    next.lock();
+    next.lock();expect(()=>next.getSync('one')).toThrow('VAULT_LOCKED');expect(()=>next.setSync('one','changed')).toThrow('VAULT_LOCKED');
   });
 
   it('authenticates calls, fans out events, retains the owner and redacts errors', async () => {

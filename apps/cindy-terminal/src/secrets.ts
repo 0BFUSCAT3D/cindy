@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCallback
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { atomicPrivateWrite, privateDirectory, readPrivateFile } from './platform.js';
+import { atomicPrivateWrite, atomicPrivateWriteSync, privateDirectory, readPrivateFile } from './platform.js';
 import type { TerminalSecrets } from './contracts.js';
 
 const deriveKey = promisify(scryptCallback);
@@ -87,17 +87,31 @@ export class TerminalSecretStore implements TerminalSecrets {
   set(key: string, value: string): Promise<void> { return this.change(key, value); }
   delete(key: string): Promise<void> { return this.change(key, null); }
 
+  /** Shared plugin OAuth and connection managers require a durable boolean
+   * result before advancing their account state. All post-unlock mutations use
+   * this same synchronous commit, so async callers cannot overwrite them later. */
+  getSync(key: string): string | null {
+    if (!this.values || !this.envelope?.iv) throw new Error('VAULT_LOCKED');
+    return Object.hasOwn(this.values,key) ? this.values[key] : null;
+  }
+  setSync(key: string, value: string): void { this.changeSync(key,value); }
+  deleteSync(key: string): void { this.changeSync(key,null); }
+
   private change(key: string, value: string | null): Promise<void> {
-    if (!key || key.length > 1024 || (value !== null && (typeof value !== 'string' || Buffer.byteLength(value) > 4 * 1024 * 1024))) return Promise.reject(new Error('VAULT_ENTRY_INVALID'));
-    const operation = this.pending.then(async () => {
-      if (!this.values) throw new Error('VAULT_LOCKED');
-      const previous = this.values;
-      this.values = Object.assign(Object.create(null), previous) as Record<string, string>;
-      if (value === null) delete this.values[key]; else this.values[key] = value;
-      try { await this.persist(); } catch (error) { if (this.key) this.values = previous; throw error; }
-    });
-    this.pending = operation.catch(() => undefined);
-    return operation;
+    try { this.changeSync(key,value); return Promise.resolve(); }
+    catch (error) { return Promise.reject(error); }
+  }
+  private changeSync(key: string, value: string | null): void {
+    if (!key || key.length > 1024 || (value !== null && (typeof value !== 'string' || Buffer.byteLength(value) > 4 * 1024 * 1024))) throw new Error('VAULT_ENTRY_INVALID');
+    if (!this.values || !this.envelope?.iv) throw new Error('VAULT_LOCKED');
+    const previous = this.values;
+    this.values = Object.assign(Object.create(null), previous) as Record<string,string>;
+    if (value === null) delete this.values[key]; else this.values[key] = value;
+    try {
+      const envelope=this.encode();
+      atomicPrivateWriteSync(this.vaultPath,JSON.stringify(envelope));
+      this.envelope=envelope;
+    } catch (error) { this.values=previous; throw error; }
   }
 
   private decrypt(key: Buffer): void {
@@ -115,6 +129,11 @@ export class TerminalSecretStore implements TerminalSecrets {
   }
 
   private async persist(): Promise<void> {
+    const envelope=this.encode();
+    await atomicPrivateWrite(this.vaultPath,JSON.stringify(envelope));
+    this.envelope=envelope;
+  }
+  private encode(): Envelope {
     if (!this.key || !this.values || !this.envelope) throw new Error('VAULT_LOCKED');
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', this.key, iv);
@@ -124,8 +143,7 @@ export class TerminalSecretStore implements TerminalSecrets {
       if (plain.length > 8 * 1024 * 1024) throw new Error('VAULT_CAPACITY_EXCEEDED');
       const data = Buffer.concat([cipher.update(plain), cipher.final()]);
       const envelope: Envelope = { ...this.envelope, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') };
-      await atomicPrivateWrite(this.vaultPath, JSON.stringify(envelope));
-      this.envelope = envelope;
+      return envelope;
     } finally { plain.fill(0); }
   }
 }
