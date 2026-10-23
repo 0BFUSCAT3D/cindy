@@ -1539,6 +1539,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
               origin: soForReconcile.persistUserMessage?.origin,
               sourcePlugin: soForReconcile.persistUserMessage?.sourcePlugin,
               sharedTaskAuthor: soForReconcile.persistUserMessage?.sharedTaskAuthor,
+              autoReviewUserText: soForReconcile.persistUserMessage?.[FORWARDED_REQUEST_RECEIPT],
             },
             {
               visibleText: reconcilePersistText,

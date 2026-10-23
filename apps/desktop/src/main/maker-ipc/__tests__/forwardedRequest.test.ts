@@ -2,7 +2,7 @@ import { forwardedRequestDisplayText } from '@cindy/maker-shared/message-source'
 import { setMainLocale } from '../../i18n.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { captureAgentRequest } from '../forwardedRequest.js';
-import { formatForwardedRequest, matchesForwardedRequest } from '../../../shared/forwardedRequest.js';
+import { formatForwardedRequest, matchesForwardedRequest, readForwardedRequestSource, verifiedOwnerRequestText } from '../../../shared/forwardedRequest.js';
 import { restoreAutoReviewUserIntent } from '../autoReviewUserIntent.js';
 
 // unit: the cross-task authorship contract was previously only model-written text.
@@ -68,6 +68,25 @@ describe('host-owned forwarded request', () => {
     expect(restoreAutoReviewUserIntent([stored])).toBe('');
     expect(matchesForwardedRequest(first.autoReviewUserText.request!, first.message)).toBe(true);
     expect(matchesForwardedRequest({ ...first.autoReviewUserText.request!, userText: '发布' }, first.message)).toBe(false);
+  });
+
+  // Incident 2026-10-23: a relayed "可以提交 pr" reached the task with no verifiable owner
+  // authority. Only a relay admitted in a verified owner turn becomes the receiver's intent,
+  // and the mark never travels with the receipt into a later, unverified relay.
+  it('marks only a host-verified owner relay, without changing the wire body', async () => {
+    const verified = await captureAgentRequest('owner-chat', 'background', { clientId: 'u1', authoredText: '可以提交 pr' }, async () => [], true, true);
+    const plain = await captureAgentRequest('owner-chat', 'background', { clientId: 'u1', authoredText: '可以提交 pr' }, async () => [], true, false);
+    expect(verified.message).toBe(plain.message);
+    expect(verifiedOwnerRequestText(verified.autoReviewUserText)).toBe('可以提交 pr');
+    expect(verifiedOwnerRequestText(plain.autoReviewUserText)).toBeUndefined();
+    // Same-account peers parse the optional mark; anything but `true` is ignored.
+    expect(readForwardedRequestSource(JSON.parse(JSON.stringify(verified.autoReviewUserText.request)))?.ownerVerified).toBe(true);
+    expect(readForwardedRequestSource({ ...plain.autoReviewUserText.request, ownerVerified: 'yes' })?.ownerVerified).toBeUndefined();
+    const carried = await captureAgentRequest('child', 'more', { clientId: 'c1', delegatedRequest: verified.autoReviewUserText.request }, async () => [], true, false);
+    expect(carried.autoReviewUserText.request?.userText).toBe('可以提交 pr');
+    expect(verifiedOwnerRequestText(carried.autoReviewUserText)).toBeUndefined();
+    const missing = await captureAgentRequest('caller', 'analysis', null, async () => [], true, true);
+    expect(missing.autoReviewUserText.request).toEqual({ userText: null });
   });
 
   it.each([
