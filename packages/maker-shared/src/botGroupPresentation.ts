@@ -227,7 +227,9 @@ export function botGroupComposerPlanState(plan: BotGroupPlanView | null, replyMo
   if (!plan) return null;
   if (plan.status === 'proposed') return { kind: 'proposed' };
   const current = currentBotGroupPlanStep(plan);
-  const botName = current?.botName.trim() ?? '';
+  // Keep the work-plan state for the division gate, but name a recipient only when
+  // ordinary text is actually forwarded to that worker (including legacy plans).
+  const botName = replyMode === 'mentioned' ? '' : current?.botName.trim() ?? '';
   // Only promise additions when unmentioned words actually reach the speaking teammate.
   if (plan.status === 'running' && plan.kind === 'talk') return plan.canAdd === false || replyMode === 'mentioned' ? null : { kind: 'running', botName, talk: true };
   if (plan.status === 'running') return { kind: 'running', botName };

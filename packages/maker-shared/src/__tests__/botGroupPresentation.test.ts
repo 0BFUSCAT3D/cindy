@@ -139,6 +139,13 @@ describe('plan follow-up and composer state', () => {
   });
 
   // bot-group-chat.md §4.0: only words that will reach the speaking teammate are promised to it.
+  // Legacy work plans still block a new division even when ordinary text stays quiet (unit).
+  it.each(['running', 'waiting'] as const)('keeps the %s work-plan gate without promising unmentioned delivery', status => {
+    const state = botGroupComposerPlanState(plan({ kind: 'work', status }), 'mentioned');
+    expect(state).toMatchObject({ kind: status, botName: '' });
+    expect(isBotGroupDivisionBlocked(state)).toBe(true);
+  });
+
   it.each([
     ['who may add to it', 'running', true, 'all', { kind: 'running', botName: 'A', talk: true }],
     ['who cannot add to it', 'running', false, 'all', null],

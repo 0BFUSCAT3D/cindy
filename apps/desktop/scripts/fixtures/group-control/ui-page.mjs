@@ -47,6 +47,10 @@ export default {
       about: 'Single-speaker server group, nobody named: the queue card stands on its own, Aster answered and Nova is speaking next by itself',
       data: { ...base, arrangement: 'running' },
     },
+    'work-mentioned': {
+      about: 'Preserved running work plan in mentioned mode: ordinary text has no implicit worker recipient',
+      data: { ...base, arrangement: 'running', workMentioned: true },
+    },
     'arrangement-done': {
       about: 'The same queue once every turn is done: no 继续 row',
       data: { ...base, arrangement: 'done' },
@@ -119,6 +123,10 @@ export default {
       assert.equal(await replyMode.innerText(), await ui.t('bots.groupChat.settings.replyModeMentioned'));
       for (const key of ['bots.groupChat.settings.speakingMode', 'bots.groupChat.organizer', 'bots.groupChat.settings.projectDir'])
         assert.equal(await drawer.getByText(await ui.t(key), { exact: true }).count(), 0, key);
+      return;
+    }
+    if (ui.case === 'work-mentioned') {
+      assert.equal(await input.getAttribute('placeholder'), await ui.t('bots.groupChat.composer.placeholder'));
       return;
     }
     if (ui.case.startsWith('arrangement')) {

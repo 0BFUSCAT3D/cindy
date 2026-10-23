@@ -52,7 +52,7 @@ describe('parseBotGroupChatData', () => {
     ['all', 'talk', true, { kind: 'running', botName: '咪咪', talk: true }],
     ['mentioned', 'talk', true, null],
     ['all', 'talk', false, null],
-    ['mentioned', 'future', 'true', { kind: 'running', botName: '咪咪' }],
+    ['mentioned', 'future', 'true', { kind: 'running', botName: '' }],
   ] as const)('keeps the host queue reply policy through parsing (%s, %s, %s)', (replyMode, kind, canAdd, expected) => {
     const data = chatData({ replyMode, plans: [{ ...chatData().plans[0], status: 'running', kind, canAdd }] });
     const parsed = parseBotGroupChatData(data)!;
