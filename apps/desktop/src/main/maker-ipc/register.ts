@@ -172,6 +172,7 @@ import type {
   UserMessage,
 } from '@cindy/maker-core';
 import {
+  actualSourceIdForModel,
   effectiveSourceIdForModel,
   isModelSelectableForNewRoute,
   buildUserProvider,
@@ -1293,6 +1294,7 @@ import {
   resolveCompatibleSessionRuntimeEffort,
   resolveCompatibleSessionRuntimeAxisPatch,
   resolveSessionRuntimeAxes,
+  resolveSessionRuntimeRefreshEffort,
   sessionRuntimeGenerationMatches,
   sessionRuntimeControlOwnerEpochMatches,
   settlePendingSessionRuntimeMutation,
@@ -21907,13 +21909,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return { deferred: false, superseded: true };
       }
       const routeExplicit = internalOptions.routeExplicit !== false;
-      // Pi configuration refreshes (including scheduled sends) omit selection.
-      // Omission must preserve the effective effort, including an explicit null;
-      // otherwise the UI and the next send see a different axis from native Pi.
-      const currentRuntimeProfile = getSessionRuntimeControlSnapshot(sessionId).effectiveOverride;
-      const currentEffort = currentRuntimeProfile
-        ? currentRuntimeProfile.effort
-        : ((getSessionEffort(sessionId) ?? runtimeStatus.effort ?? null) as SessionRuntimeProfile['effort']);
       // 同引擎重选是 switch ack 后的第二段写入。另一控制端若在两段之间更新（含
       // set→clear ABA），修订号已变化：旧 SET_MODEL 必须在任何 route/DB 副作用前让位。
       if (
@@ -21986,6 +21981,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const sshCodexProviders = runtimeStatus.remoteHostId && runtimeStatus.agentKind === 'codex'
         ? await readSshCodexModelList({ id: runtimeStatus.remoteHostId }, listSshCodexProviders)
         : null;
+      // Route-only refreshes preserve the current axes. A cleared store can mean a
+      // fixed-effort model, so normalize the NOT NULL row against the SOURCE model
+      // before using it; the requested target must not revive its historical rank.
+      const currentRuntimeProfile = getSessionRuntimeControlSnapshot(sessionId).effectiveOverride;
+      const currentLiveSession = maker.getSession(sessionId);
+      const currentAgentKind = currentLiveSession?.agentKind ?? dbToMakerAgentKind(runtimeStatus.agentKind);
+      const currentModelId = currentLiveSession?.model ?? internalOptions.previousPiRoute?.model ?? runtimeStatus.model;
+      const runtimeProviders = sshCodexProviders ?? await getDesktopProviderService().listProviders({
+        allowSideEffects: false,
+        catalog: getActiveCatalog(),
+      });
+      const currentSourceId = currentProviderId ?? actualSourceIdForModel(
+        runtimeProviders, null, currentModelId, currentAgentKind,
+      );
+      const currentEffort = currentRuntimeProfile
+        ? currentRuntimeProfile.effort
+        : resolveSessionRuntimeRefreshEffort({
+            model: findCatalogModel(runtimeProviders.find(p => p.id === currentSourceId),
+              currentModelId, currentAgentKind, { exact: true }) ?? null,
+            storedEffort: getSessionEffort(sessionId) as SessionRuntimeProfile['effort'],
+            persistedEffort: runtimeStatus.effort ?? null,
+          });
       if (sshCodexProviders) {
         assertSshCodexModel(sshCodexProviders, model, guardProviderId);
       } else if (routeExplicit) {
@@ -22028,10 +22045,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           effectiveProviderId === null
             ? null
             : (normalizeSessionProviderId(effectiveProviderId) ?? currentProviderId);
-        const runtimeProviders = sshCodexProviders ?? await getDesktopProviderService().listProviders({
-          allowSideEffects: false,
-          catalog: getActiveCatalog(),
-        });
         const actualProviderId =
           selectedProviderId ??
           effectiveSourceIdForModel(runtimeProviders, null, model, runtimeAgentKind);
