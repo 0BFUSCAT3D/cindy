@@ -61,6 +61,7 @@ export interface BotImLaneActivity {
 export interface BotImLaneStore {
   listLinks(botId: string): Promise<BotImLaneLink[]>;
   readActivity(sessionId: string): Promise<BotImLaneActivity>;
+  readLastActivityAt(sessionId: string): Promise<number | null>;
 }
 
 export interface BotImLaneListOptions {
@@ -86,6 +87,21 @@ function readOrigin(agentMeta: string | null): BotImLaneActivity['origin'] {
   } catch {
     return { chatName: null, senderName: null };
   }
+}
+
+/** Keep archive reclamation and list activity on the same visible-message boundary. */
+async function readLatestActivity(db: ReturnType<typeof getDbClient>['drizzle'], sessionId: string) {
+  const [latest] = await db
+    .select({ role: messages.role, createdAt: messages.createdAt })
+    .from(messages)
+    .where(and(
+      eq(messages.sessionId, sessionId),
+      isNull(messages.rewindAt),
+      inArray(messages.role, ['user', 'assistant', 'error']),
+    ))
+    .orderBy(desc(messages.createdAt), desc(sql<number>`rowid`))
+    .limit(1);
+  return latest;
 }
 
 const dbLaneStore: BotImLaneStore = {
@@ -129,12 +145,7 @@ const dbLaneStore: BotImLaneStore = {
       .where(and(eq(messages.sessionId, sessionId), eq(messages.role, 'context_rebuild')))
       .orderBy(desc(messages.createdAt), desc(messageRowid))
       .limit(1);
-    const [latest] = await db
-      .select({ role: messages.role, createdAt: messages.createdAt })
-      .from(messages)
-      .where(and(visible, inArray(messages.role, ['user', 'assistant', 'error'])))
-      .orderBy(desc(messages.createdAt), desc(messageRowid))
-      .limit(1);
+    const latest = await readLatestActivity(db, sessionId);
     const [lastUser] = await db
       .select({ agentMeta: messages.agentMeta })
       .from(messages)
@@ -153,6 +164,10 @@ const dbLaneStore: BotImLaneStore = {
       contextMessageCount: Number(counted?.n ?? 0),
       origin: readOrigin(lastUser?.agentMeta ?? null),
     };
+  },
+
+  async readLastActivityAt(sessionId) {
+    return (await readLatestActivity(getDbClient().drizzle, sessionId))?.createdAt ?? null;
   },
 };
 
@@ -315,14 +330,14 @@ export async function archiveBotImConnectionLane(
         cutoffs[archivedId] = cutoff;
         continue;
       }
-      let activity: BotImLaneActivity | null = null;
+      let lastActivityAt: number | null = null;
       try {
-        activity = await store.readActivity(archivedId);
+        lastActivityAt = await store.readLastActivityAt(archivedId);
       } catch {
         // Missing activity evidence must not reveal a still-archived row.
       }
       assertCurrent();
-      if (activity && activity.lastActivityAt !== null && activity.lastActivityAt > cutoff) cutoffs[archivedId] = cutoff;
+      if (lastActivityAt !== null && lastActivityAt > cutoff) cutoffs[archivedId] = cutoff;
     }
     if (Object.keys(cutoffs).length) reclaimable.push({ connection: candidate, cutoffs });
   }
