@@ -135,6 +135,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
       {isText?<Input value={input} onChange={setInput} active={!busy} secret={fieldDescriptor?.kind==='secret'} multiline={fieldDescriptor?.kind==='multiline'} onSubmit={nextField} onCancel={()=>setAction(undefined)} />
         :choices.map((choice,index)=><Text key={index} bold={index===selected}>{index===selected?'› ':'  '}{choice}</Text>)}
     </>:lines.slice(start,start+pageSize).map((line,index)=><Text key={line.id} bold={selected===index+start}>{selected===index+start?'› ':'  '}{line.title}</Text>)}
+    {!action&&!busy&&!error&&lines.length===0&&<Text dimColor>{t.emptyResources}</Text>}
     {notice&&<Text>{notice}</Text>}{error&&<Text color="red">{error}</Text>}
   </Box>;
 }

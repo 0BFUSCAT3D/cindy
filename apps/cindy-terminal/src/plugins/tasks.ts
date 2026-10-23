@@ -23,7 +23,7 @@ export class TerminalPluginTasks {
   private closed=false;
   constructor(private readonly options:{
     root:string;runtimeDirectory:string;host:TerminalPlugins;account:TerminalPluginAccount;market:TerminalPluginMarket;
-    tasks:TerminalTaskHost;protectedInput:TerminalProtectedInput;deposits:DirDepositVault;saves:SaveDepositVault;
+    tasks:TerminalTaskHost;protectedInput:Pick<TerminalProtectedInput,'configurePlugins'>;deposits:DirDepositVault;saves:SaveDepositVault;
     owner():import('@cindy/plugin-runtime/owner').PluginOwner;
     signedIn():boolean;remoteAvailable(peer:string):boolean;locale():string;assertCurrent():void;
     emit(channel:string,payload:unknown):void;

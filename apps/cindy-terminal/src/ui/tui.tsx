@@ -417,7 +417,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
       edit(t.commands,[{key:'page',label:t.commands,choices:pages.map(page=>t[page])}],async values=>navigate(pages.find(page=>t[page]===values.page)??'tasks'));return;
     }
     if(!task&&page!=='resources'&&(key.ctrl&&input==='f'||input==='/')){edit(t.search,[{key:'query',label:t.search,value:filter,optional:true}],async values=>{setFilter(values.query);setSelected(0);setForm(null);});return;}
-    if (key.tab) { const pages=['tasks','models','connections','service']; navigate(pages[(pages.indexOf(page)+(key.shift?pages.length-1:1))%pages.length]);return; }
+    if (key.tab) { const pages=['tasks','models','connections','resources','service']; navigate(pages[(pages.indexOf(page)+(key.shift?pages.length-1:1))%pages.length]);return; }
     if (page === 'resources') return;
     if (key.escape) { if (task) {setTask(undefined);setDraft('');} else if(page==='engine')navigate('engines');else if(page==='engines'||page==='providers')navigate('models');else navigate('tasks'); return; }
     if (task) {
@@ -451,7 +451,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   });
   return <Box flexDirection="column" width={columns} height={height} paddingX={1}>
     <Box justifyContent="space-between" gap={2}><Text bold>Cindy</Text><Box flexShrink={1}><Text wrap="truncate-end">{device ? deviceLabel||label(device) : label(status.deviceName,t.local)} · {connected && targetOnline ? t.connected : t.offline}</Text></Box></Box>
-    <Box gap={columns<65?1:2} flexWrap="wrap" marginTop={1}>{(['tasks','models','connections','service'] as const).map(key => <Text key={key} bold={page === key} underline={page === key}>{t[key]}</Text>)}</Box>
+    <Box gap={columns<65?1:2} flexWrap="wrap" marginTop={1}>{(['tasks','models','connections','resources','service'] as const).map(key => <Text key={key} bold={page === key} underline={page === key}>{t[key]}</Text>)}</Box>
     <Text dimColor>{'─'.repeat(Math.max(1,columns-2))}</Text>
     <Box flexGrow={1} flexDirection="column" overflow="hidden">
       {page === 'login' ? <Authentication client={client} locale={locale} sso={initialSso} onDone={()=>navigate('tasks')} onNeedsVault={()=>navigate('service')} />

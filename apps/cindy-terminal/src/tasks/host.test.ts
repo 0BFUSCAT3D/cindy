@@ -20,6 +20,11 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
+import { TerminalPlugins } from '../plugins/host.js';
+import { TerminalPluginTasks } from '../plugins/tasks.js';
+import { TerminalPluginMarket } from '../plugins/market.js';
+import { TerminalPluginAccount } from '../plugins/account.js';
+import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
 
 const logger: Logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child: () => logger };
 const roots: string[] = [];
@@ -101,6 +106,26 @@ async function setup(native = engine()) {
 }
 
 describe('terminal task host', () => {
+  // Integration: the live CLI could not create any task once the market tools
+  // were wired. The full plugin composition must precede native session startup
+  // without eagerly requiring its not-yet-created incarnation.
+  it('starts and sends a task with the full plugin market composition installed',async()=>{
+    const {host,root,vault}=await setup();
+    const account=new TerminalPluginAccount({endpoints:()=>({authApiBaseUrl:'https://auth.example.invalid',pluginApiBaseUrl:'https://plugins.example.invalid'}),membership:()=>null,token:()=>null,refresh:async()=>{},assertCurrent:()=>{}});
+    const plugins=new TerminalPlugins({root,runtimeDirectory:root,executablePath:'unused',account,assertCurrent:()=>{},locale:()=> 'en',changed:()=>{},receive:async()=>({}),
+      secrets:{get:async key=>vault.get(key)??null,set:async(key,value)=>{vault.set(key,value);},delete:async key=>{vault.delete(key);},getSync:key=>vault.get(key)??null,setSync:(key,value)=>{vault.set(key,value);},deleteSync:key=>{vault.delete(key);},setManySync:entries=>{for(const [key,value] of Object.entries(entries))if(value===null)vault.delete(key);else vault.set(key,value);}},
+      cards:{persist:async()=>{},broadcast:()=>{}},fs:{getSessionSnapshot:async()=>null,requestWriteConfirm:async()=>({confirmed:false,reason:'cancelled'}),writeSaveDeposit:async()=>null},
+    });
+    const market=new TerminalPluginMarket({root,host:plugins,account,assertCurrent:()=>{}});
+    const tasks=new TerminalPluginTasks({root,runtimeDirectory:root,host:plugins,account,market,tasks:host,protectedInput:{configurePlugins:()=>{}},deposits:new DirDepositVault(),saves:new SaveDepositVault(),owner:()=>({mode:'local',dataOwnerId:'test',generation:1}),signedIn:()=>false,remoteAvailable:()=>false,locale:()=> 'en',assertCurrent:()=>{},emit:()=>{}});
+    try{
+      await plugins.ready;await tasks.ready;
+      const task=await host.invoke('maker:create-session',[{title:'Plugin composition'}]) as {id:string};
+      await host.invoke('maker:send',[task.id,{text:'plugin-ready'}]);
+      const history=await host.invoke('local-db:messages:list',[task.id,{limit:10}]) as Array<{content:string}>;
+      expect(history.map(item=>item.content)).toContain('Echo: plugin-ready');
+    }finally{await host.close();tasks.close();await market.close();await plugins.close();account.close();}
+  });
   it('persists user/assistant history and resumes the original native task after a daemon restart', async () => {
     const { host, root, create, native } = await setup();
     const task = await host.invoke('maker:create-session', [{ title: 'Persistent task' }]) as { id: string };

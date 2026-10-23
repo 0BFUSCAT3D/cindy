@@ -11,6 +11,7 @@ const copy={
   confirm:['Move this library to trash?','将此作品库移入回收站？','將此作品庫移至垃圾桶？','このライブラリをゴミ箱に移動しますか？','이 라이브러리를 휴지통으로 이동할까요?'],
   ready:['Available','可用','可用','利用可能','사용 가능'],empty:['Empty','空','空','空','비어 있음'],
   unavailable:['Unavailable','不可用','無法使用','利用不可','사용 불가'],retained:['Retained data','保留的数据','保留的資料','保持されたデータ','보관된 데이터'],
+  files:['Files','文件','檔案','ファイル','파일'],
 } as const;
 const label=(key:keyof typeof copy):RemoteLocalizedText=>{const [fallback,cn,tw,ja,ko]=copy[key];return {fallback,translations:{en:fallback,'zh-CN':cn,'zh-TW':tw,ja,ko}};};
 const text=(key:keyof typeof copy,locale='en')=>label(key).translations?.[locale]??label(key).fallback;
@@ -22,7 +23,7 @@ export function registerLibraryResources(registry:RemoteResourceRegistry,host:Te
     const row=await host.library.overview(id),action=(name:string)=>`${name}:${row.revision}`;
     return {ref:ref(id),revision:row.revision,display:{title:row.name,subtitle:[text(row.state,locale),row.orphaned?text('retained',locale):''].filter(Boolean).join(' · ')},
       blocks:[{id:'location',primitive:'text',fallbackMarkdown:row.root??text('unavailable',locale)},
-        ...(row.bytes===null?[]:[{id:'usage',primitive:'text' as const,fallbackMarkdown:`${row.files} · ${(row.bytes/1024/1024).toFixed(1)} MiB`}])],
+        ...(row.bytes===null?[]:[{id:'usage',primitive:'text' as const,fallbackMarkdown:`${text('files',locale)}: ${row.files} · ${(row.bytes/1024/1024).toFixed(1)} MiB`}])],
       actions:row.state==='unavailable'?[]:[
         {id:action('relocate'),label:label('relocate'),fields:[{id:'directory',label:label('folder'),kind:'text',required:true}]},
         ...(row.location==='custom'?[{id:action('default'),label:label('defaults')}]:[]),

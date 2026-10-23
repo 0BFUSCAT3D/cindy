@@ -263,4 +263,4 @@ it('persists plugin works through restart and uninstall while isolating a change
     const trashed=(await readdir(path.join(root,'libraries-trash'))).find(name=>name.startsWith(archived))!;
     expect(await readFile(path.join(root,'libraries-trash',trashed,'works/note.txt'),'utf8')).toBe('retained work');
   }finally{await host.close();}
-});
+},process.platform==='win32'?30_000:5_000);

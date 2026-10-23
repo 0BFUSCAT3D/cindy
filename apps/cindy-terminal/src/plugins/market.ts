@@ -73,9 +73,11 @@ export class TerminalPluginMarket {
     const item=this.files.get(id);if(item){this.files.delete(id);await rm(item.file,{force:true});}
   }
   task(context:PluginTaskContext,requestPermission:HostPermissionRequester,translate:(key:string)=>string):Pick<CindyGhostsMcpDeps,'searchMarket'|'installMarket'>{
-    const controller=`task:${context.sessionId}:${context.instanceId()}`;
     return {searchMarket:async query=>{context.assertCurrent();const catalog=await this.list(query);context.assertCurrent();return {ok:true,plugins:catalog.plugins.map(plugin=>({pluginId:plugin.id,id:plugin.ghostId,name:plugin.name,description:plugin.description,namespace:plugin.namespace??null,scope:plugin.scope,version:plugin.currentRelease.version,releaseId:plugin.currentRelease.id})),...(catalog.organizationAccessError?{organizationAccessError:catalog.organizationAccessError}:{})};},
       installMarket:async(request,signal)=>{
+        // Factories are composed before Maker creates the native session. Bind
+        // the confirmation to its incarnation only when an install is invoked.
+        context.assertCurrent();const controller=`task:${context.sessionId}:${context.instanceId()}`;
         let pending:string|undefined;
         try{
           context.assertCurrent();const prepared=await this.prepare(request.pluginId,request.releaseId,controller,signal);pending=prepared.id;context.assertCurrent();

@@ -1,5 +1,6 @@
 export type Locale = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko';
 const en = {
+  emptyResources:'Nothing here yet',
   protocol:'API protocol',engines:'Model engines',install:'Install',update:'Update',notInstalled:'Not installed',providerLogin:'Sign in to provider',you: 'You', tasks: 'Sessions', models: 'Models', connections: 'Connections', service: 'Service',
   local: 'This computer', emptyTasks: 'No sessions yet', newTask: 'New session', send: 'Send',
   back: 'Back', cancel: 'Cancel', save: 'Save', next: 'Next', quit: 'Detach',
@@ -31,6 +32,7 @@ const en = {
 };
 type Messages = typeof en;
 const zhCN: Messages = {
+  emptyResources:'暂无内容',
   protocol:'API 协议',engines:'模型引擎',install:'安装',update:'更新',notInstalled:'未安装',providerLogin:'登录模型账号',you:'你',tasks:'任务',models:'模型',connections:'连接',service:'服务',local:'这台电脑',emptyTasks:'还没有任务',newTask:'新建任务',send:'发送',
   back:'返回',cancel:'取消',save:'保存',next:'下一步',quit:'退出界面',loading:'正在加载…',working:'正在处理…',ready:'就绪',offline:'已断开',
   reconnect:'重新连接',refresh:'刷新',error:'操作未完成',noModel:'连接模型后即可开始',addProvider:'添加连接',providerName:'连接名称',address:'API 地址',
@@ -45,6 +47,7 @@ const zhCN: Messages = {
   continueLocal:'使用自己的模型',connectionLost:'连接已断开，重新连接后查看执行结果。',refreshLogin:'重新登录',notImplemented:'这台电脑尚不具备此能力。',
 };
 const zhTW: Messages = {
+  emptyResources:'尚無內容',
   protocol:'API 協定',engines:'模型引擎',install:'安裝',update:'更新',notInstalled:'未安裝',providerLogin:'登入模型帳號',you:'你',tasks:'任務',models:'模型',connections:'連線',service:'服務',local:'這部電腦',emptyTasks:'還沒有任務',newTask:'新增任務',send:'傳送',
   back:'返回',cancel:'取消',save:'儲存',next:'下一步',quit:'退出介面',loading:'正在載入…',working:'正在處理…',ready:'就緒',offline:'已中斷',
   reconnect:'重新連線',refresh:'重新整理',error:'操作未完成',noModel:'連接模型後即可開始',addProvider:'新增連線',providerName:'連線名稱',address:'API 位址',
@@ -59,6 +62,7 @@ const zhTW: Messages = {
   continueLocal:'使用自己的模型',connectionLost:'連線已中斷，重新連線後查看執行結果。',refreshLogin:'重新登入',notImplemented:'這部電腦尚不具備此能力。',
 };
 const ja: Messages = {
+  emptyResources:'まだ項目がありません',
   protocol:'API プロトコル',engines:'モデルエンジン',install:'インストール',update:'更新',notInstalled:'未インストール',providerLogin:'プロバイダーにログイン',you:'あなた',tasks:'セッション',models:'モデル',connections:'接続',service:'サービス',local:'このコンピューター',emptyTasks:'セッションはありません',newTask:'新規セッション',send:'送信',
   back:'戻る',cancel:'キャンセル',save:'保存',next:'次へ',quit:'画面を閉じる',loading:'読み込み中…',working:'処理中…',ready:'準備完了',offline:'切断済み',
   reconnect:'再接続',refresh:'更新',error:'操作を完了できませんでした',noModel:'モデルを接続すると開始できます',addProvider:'接続を追加',providerName:'接続名',address:'API アドレス',
@@ -73,6 +77,7 @@ const ja: Messages = {
   continueLocal:'自分のモデルを使用',connectionLost:'接続が切れました。再接続して結果を確認してください。',refreshLogin:'再ログイン',notImplemented:'このホストでは利用できません。',
 };
 const ko: Messages = {
+  emptyResources:'아직 항목이 없습니다',
   protocol:'API 프로토콜',engines:'모델 엔진',install:'설치',update:'업데이트',notInstalled:'설치되지 않음',providerLogin:'공급자 로그인',you:'나',tasks:'세션',models:'모델',connections:'연결',service:'서비스',local:'이 컴퓨터',emptyTasks:'세션이 없습니다',newTask:'새 세션',send:'보내기',
   back:'뒤로',cancel:'취소',save:'저장',next:'다음',quit:'화면 닫기',loading:'불러오는 중…',working:'처리 중…',ready:'준비됨',offline:'연결 끊김',
   reconnect:'다시 연결',refresh:'새로 고침',error:'작업을 완료하지 못했습니다',noModel:'모델을 연결하면 시작할 수 있습니다',addProvider:'연결 추가',providerName:'연결 이름',address:'API 주소',
