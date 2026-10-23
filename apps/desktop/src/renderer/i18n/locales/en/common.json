@@ -1791,6 +1791,16 @@
           "description": "Resize text only in code blocks, change comparisons, and editors. Inline code, status numbers, badges, and path labels keep their size.",
           "aria": "Adjust code font size"
         },
+        "terminalFamily": {
+          "label": "Terminal font",
+          "description": "Used only by the built-in terminal. A monospace font is recommended.",
+          "aria": "Select terminal font"
+        },
+        "terminalSize": {
+          "label": "Terminal font size",
+          "description": "Adjust the text size in the built-in terminal.",
+          "aria": "Adjust terminal font size"
+        },
         "presetsUi": {
           "default": "Inter (Default)",
           "codexStyle": "Codex style",
@@ -1800,8 +1810,12 @@
           "default": "Codex style (Default)",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "Monospace (Default)"
+        },
         "previewSamples": {
-          "ui": "The quick brown fox jumps over the lazy dog ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "The quick brown fox jumps over the lazy dog ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"Terminal font preview\"\nTerminal font preview\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {

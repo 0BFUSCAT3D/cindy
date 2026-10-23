@@ -1762,6 +1762,16 @@
           "description": "コードブロック、変更の比較、エディターの文字サイズのみを調整します。文中のコード、状態を示す数値、バッジ、パスのラベルは変わりません。",
           "aria": "コードのフォントサイズを調整"
         },
+        "terminalFamily": {
+          "label": "ターミナルのフォント",
+          "description": "内蔵ターミナルでのみ使用します。等幅フォントを推奨します。",
+          "aria": "ターミナルのフォントを選択"
+        },
+        "terminalSize": {
+          "label": "ターミナルのフォントサイズ",
+          "description": "内蔵ターミナルのフォントサイズを調整します。",
+          "aria": "ターミナルのフォントサイズを調整"
+        },
         "presetsUi": {
           "default": "Inter（デフォルト）",
           "codexStyle": "Codex スタイル",
@@ -1771,8 +1781,12 @@
           "default": "Codex スタイル（デフォルト）",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "等幅フォント（デフォルト）"
+        },
         "previewSamples": {
-          "ui": "日本語フォントは読みやすく美しい ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "日本語フォントは読みやすく美しい ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"ターミナルのフォントプレビュー\"\nターミナルのフォントプレビュー\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {

@@ -1762,6 +1762,16 @@
           "description": "仅调整代码块、修改对比和编辑器字号；不影响行内代码、状态数字、徽标和路径标签",
           "aria": "调整代码字号"
         },
+        "terminalFamily": {
+          "label": "终端字体",
+          "description": "仅用于内置终端，建议使用等宽字体。",
+          "aria": "选择终端字体"
+        },
+        "terminalSize": {
+          "label": "终端字号",
+          "description": "调整内置终端中的文字大小。",
+          "aria": "调整终端字号"
+        },
         "presetsUi": {
           "default": "Inter（默认）",
           "codexStyle": "Codex 风格",
@@ -1771,8 +1781,12 @@
           "default": "Codex 风格（默认）",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "等宽字体（默认）"
+        },
         "previewSamples": {
-          "ui": "中文字体预览，清晰锐利 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "中文字体预览，清晰锐利 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"终端字体预览\"\n终端字体预览\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {
