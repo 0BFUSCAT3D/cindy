@@ -47,7 +47,7 @@ describe('terminal offline maintenance', () => {
     expect(await fs.readFile(path.join(restoredOwner, 'cindy-media', 'blobs', 'image-test'), 'utf8')).toBe('private-media-test');
     const settings = JSON.parse(await fs.readFile(path.join(restored, 'settings.json'), 'utf8'));
     expect(settings.deviceId).not.toBe('old-device'); expect(settings.overrides).toEqual({ language: 'ja', remoteEnabled: false });
-  });
+  }, process.platform === 'win32' ? 20_000 : 5_000);
   it('rejects a wrong backup passphrase without changing an existing profile', async () => {
     const profile = path.join(root, 'existing'); await privateDirectory(profile);
     await atomicPrivateWrite(path.join(profile, 'sentinel'), 'original-data');

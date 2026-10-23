@@ -15,8 +15,9 @@ await build({
 });
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-start-diagnostic-'));
 const home = path.join(temporary, 'home'); await mkdir(home);
+const inheritedKeys = new Set(['path', 'systemroot', 'windir', 'comspec', 'pathext', 'temp', 'tmp', 'tmpdir', 'lang', 'lc_all', 'ci']);
 for (const key of Object.keys(process.env)) {
-  if (!['PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'CI'].includes(key)) delete process.env[key];
+  if (!inheritedKeys.has(key.toLowerCase())) delete process.env[key];
 }
 Object.assign(process.env, { HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.local/state') });
 const { TerminalService } = await import(pathToFileURL(output).href);
