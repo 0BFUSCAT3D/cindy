@@ -71,7 +71,8 @@ const txMock = vi.fn(async () => ({}));
 
 let sqlite: Database.Database;
 let client: DbClient;
-let commitRewindAtMessage: typeof import('../maker-orchestration/rewind').commitRewindAtMessage;
+// Load the production module once during collection, outside per-case setup.
+const { commitRewindAtMessage } = await import('../maker-orchestration/rewind');
 
 function insertSession(over: { clearedAt?: number | null } = {}): void {
   client.drizzle
@@ -172,9 +173,6 @@ beforeEach(async () => {
     isGitRepo: false,
     isInsideWorktree: false,
   });
-  if (!commitRewindAtMessage) {
-    ({ commitRewindAtMessage } = await import('../maker-orchestration/rewind'));
-  }
 });
 
 afterEach(() => {

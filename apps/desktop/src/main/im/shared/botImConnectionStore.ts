@@ -176,10 +176,26 @@ export async function updateBotImConnectionRecord(
   return next;
 }
 
+// Reserve most of the 256 KiB connection file for bindings/group preferences.
+// This is an owner-wide budget, so adding connections cannot multiply it.
+const MAX_ARCHIVED_TASK_ROWS = 512;
+const MAX_ARCHIVED_TASK_BYTES = 64 * 1024;
+
+function assertArchiveCapacity(connections: BotImConnectionDocument['connections']): void {
+  const count = Object.values(connections).reduce((sum, record) => sum + Object.keys(record.archivedTaskRows ?? {}).length, 0);
+  const withoutArchives = Object.fromEntries(Object.entries(connections).map(([id, record]) => [id, { ...record, archivedTaskRows: undefined }]));
+  const archiveBytes = Buffer.byteLength(JSON.stringify({ connections }, null, 2), 'utf8')
+    - Buffer.byteLength(JSON.stringify({ connections: withoutArchives }, null, 2), 'utf8');
+  if (count > MAX_ARCHIVED_TASK_ROWS || archiveBytes > MAX_ARCHIVED_TASK_BYTES) {
+    throw new Error('ARCHIVE_CAPACITY_REACHED');
+  }
+}
+
 /** Archive a row in one connection, without touching its session or route link. */
 export async function archiveBotImTaskRow(
   expected: BotImConnectionRecord,
   sessionId: string,
+  reclaimable: Readonly<Record<string, number>> = {},
 ): Promise<BotImConnectionRecord | null> {
   const owner = activeOwnerScopeKey();
   let next: BotImConnectionRecord | null = null;
@@ -187,12 +203,19 @@ export async function archiveBotImTaskRow(
     if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('OWNER_CHANGED');
     const existing = current.value.connections[expected.id];
     if (!existing || existing.botId !== expected.botId || existing.channel !== expected.channel || existing.botContextId !== expected.botContextId) return current.value;
+    const archivedTaskRows = { ...existing.archivedTaskRows };
+    for (const [id, observedCutoff] of Object.entries(reclaimable)) {
+      // A newer archive made while activity was being read must survive.
+      if (archivedTaskRows[id] === observedCutoff) delete archivedTaskRows[id];
+    }
     const merged = {
       ...existing,
-      archivedTaskRows: { ...existing.archivedTaskRows, [sessionId]: Date.now() },
+      archivedTaskRows: { ...archivedTaskRows, [sessionId]: Date.now() },
     };
+    const connections = { ...current.value.connections, [expected.id]: merged };
+    assertArchiveCapacity(connections);
     next = { id: expected.id, ...merged };
-    return { connections: { ...current.value.connections, [expected.id]: merged } };
+    return { connections };
   }, { preserveDefaults: true });
   if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner) throw new Error('OWNER_CHANGED');
   return next;

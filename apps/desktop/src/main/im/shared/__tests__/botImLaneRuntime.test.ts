@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   records: new Map<string, unknown>(),
   archived: new Set<string>(),
   owner: 'owner-a',
+  reclaimable: [] as Record<string, number>[],
 }));
 
 vi.mock('../../../appSessionState.js', () => ({ activeOwnerScopeKey: () => h.owner, isAppSessionBoundaryPending: () => false }));
@@ -22,7 +23,8 @@ vi.mock('../../../localDb/client/current', () => ({ getDbClient: vi.fn() }));
 vi.mock('../../../localDb/schema', () => ({ botSessionLinks: {}, messages: {}, sessions: {} }));
 vi.mock('../botImConnectionStore', () => ({
   readBotImConnection: (id: string) => h.records.get(id) ?? null,
-  archiveBotImTaskRow: async (record: BotImConnectionRecord, sessionId: string) => {
+  archiveBotImTaskRow: async (record: BotImConnectionRecord, sessionId: string, reclaimable: Record<string, number> = {}) => {
+    h.reclaimable.push(reclaimable);
     const next = { ...record, archivedTaskRows: { ...record.archivedTaskRows, [sessionId]: Date.now() } };
     h.records.set(record.id, next);
     h.archived.add(sessionId);
@@ -84,6 +86,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.records.clear();
   h.archived.clear();
+  h.reclaimable.length = 0;
   h.owner = 'owner-a';
   h.records.set(TELEGRAM.id, TELEGRAM);
   __testing.setStore({ listLinks, readActivity });
@@ -91,6 +94,30 @@ beforeEach(() => {
 });
 
 describe('botImLaneRuntime', () => {
+  // Only route/activity evidence may release archive capacity; dormant records
+  // must stay hidden and a later concurrent archive is checked by the store.
+  it('identifies only unlinked or superseded cutoffs for reclamation', async () => {
+    h.records.set(TELEGRAM.id, { ...TELEGRAM, archivedTaskRows: { 's-main': 200, 's-topic': 1, removed: 1 } });
+    await archiveBotImConnectionLane(TELEGRAM.id, 's-group');
+    expect(h.reclaimable).toEqual([{ 's-topic': 1, removed: 1 }]);
+    expect(restartSession).not.toHaveBeenCalled();
+  });
+
+  it('does not reclaim a cutoff when activity lookup fails', async () => {
+    h.records.set(TELEGRAM.id, { ...TELEGRAM, archivedTaskRows: { 's-topic': 1 } });
+    readActivity.mockRejectedValueOnce(new Error('activity unavailable'));
+    await archiveBotImConnectionLane(TELEGRAM.id, 's-group');
+    expect(h.reclaimable).toEqual([{}]);
+  });
+
+  it('rejects an account change during reclamation lookup before any archive write', async () => {
+    h.records.set(TELEGRAM.id, { ...TELEGRAM, archivedTaskRows: { 's-topic': 1, 's-main': 1 } });
+    readActivity.mockImplementationOnce(async () => { h.owner = 'owner-b'; return ACTIVITY['s-topic']; });
+    await expect(archiveBotImConnectionLane(TELEGRAM.id, 's-group')).rejects.toThrow(/OWNER_CHANGED/);
+    expect(h.archived.size).toBe(0);
+    expect(readActivity).toHaveBeenCalledTimes(1);
+  });
+
   // 用户确认的专线归档：既有覆盖只有重启；unit 注入存储验证列表移除与越权拒绝。
   it('archives only the selected connection row and preserves all session links', async () => {
     const payload = await archiveBotImConnectionLane(TELEGRAM.id, 's-topic');

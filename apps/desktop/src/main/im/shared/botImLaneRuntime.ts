@@ -290,14 +290,33 @@ export async function archiveBotImConnectionLane(
   };
   assertCurrent();
   const record = requireRecord(id);
-  const link = (await listScopedLinks(record)).find((item) => item.sessionId === sessionId);
+  const links = await listScopedLinks(record);
+  const link = links.find((item) => item.sessionId === sessionId);
+  assertCurrent();
+  if (!link) throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
+  const linkedIds = new Set(links.map((item) => item.sessionId));
+  const reclaimable: Record<string, number> = Object.create(null);
+  for (const [id, cutoff] of Object.entries(record.archivedTaskRows ?? {})) {
+    if (id === sessionId) continue;
+    if (!linkedIds.has(id)) {
+      reclaimable[id] = cutoff;
+      continue;
+    }
+    let activity: BotImLaneActivity | null = null;
+    try {
+      activity = await store.readActivity(id);
+    } catch {
+      // Missing activity evidence must not reveal a still-archived row.
+    }
+    assertCurrent();
+    if (activity && activity.lastActivityAt !== null && activity.lastActivityAt > cutoff) reclaimable[id] = cutoff;
+  }
   assertCurrent();
   const current = requireRecord(id);
   if (current.botId !== record.botId || current.botContextId !== record.botContextId || current.channel !== record.channel) {
     throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
   }
-  if (!link) throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
-  if (!await archiveBotImTaskRow(record, sessionId)) throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
+  if (!await archiveBotImTaskRow(record, sessionId, reclaimable)) throwIpcError('NOT_FOUND', 'LANE_NOT_FOUND');
   assertCurrent();
   const payload = await listBotImConnectionLanes(id, options);
   assertCurrent();

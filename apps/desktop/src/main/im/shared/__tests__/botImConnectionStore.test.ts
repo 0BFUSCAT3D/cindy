@@ -148,4 +148,66 @@ describe('bot im connection store', () => {
     h.owner = 'owner-b';
     expect(listBotImConnections()).toEqual([]);
   });
+
+  // PR #6899 review: accumulated archive markers must not consume the shared
+  // connection settings budget. Exercise the real file writer, not a mock.
+  it.each(['count', 'bytes'] as const)('reserves connection settings space when archive %s capacity is reached', async (limit) => {
+    const first = await addBotImConnectionRecord({ botId: 'bot-a', channel: 'feishu' }, { id: () => 'aaaaaaaaaaaa' });
+    const second = await addBotImConnectionRecord({ botId: 'bot-b', channel: 'telegram' }, { id: () => 'bbbbbbbbbbbb' });
+    const document = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    const count = limit === 'count' ? 512 : 330;
+    for (const [index, id] of [first.id, second.id].entries()) {
+      document.connections[id].archivedTaskRows = Object.fromEntries(Array.from({ length: count / 2 }, (_, i) => [
+        `s-${index}-${i}${limit === 'bytes' ? '-'.repeat(185) : ''}`, 1,
+      ]));
+    }
+    fs.writeFileSync(file(), JSON.stringify(document, null, 2));
+    const before = fs.readFileSync(file(), 'utf8');
+    await expect(archiveBotImTaskRow(first, 'new-session')).rejects.toThrow(/ARCHIVE_CAPACITY_REACHED/);
+    expect(fs.readFileSync(file(), 'utf8')).toBe(before);
+    await addBotImConnectionRecord({ botId: 'bot-c', channel: 'telegram' }, { id: () => 'cccccccccccc' });
+    await setBotImConnectionGroupActivation(second.id, '-1001', 'always');
+    expect(readBotImConnection(second.id)?.groupActivation).toEqual({ '-1001': 'always' });
+    expect(listBotImConnections()).toHaveLength(3);
+    const obsolete = Object.fromEntries(Object.keys(document.connections[first.id].archivedTaskRows)
+      .slice(0, limit === 'count' ? 1 : count / 2).map((id) => [id, 1]));
+    await archiveBotImTaskRow(first, 'new-session', obsolete);
+    const archives = readBotImConnection(first.id)?.archivedTaskRows;
+    expect(archives?.['new-session']).toEqual(expect.any(Number));
+    for (const id of Object.keys(obsolete)) expect(archives?.[id]).toBeUndefined();
+    expect(readBotImConnection(second.id)?.archivedTaskRows).toEqual(document.connections[second.id].archivedTaskRows);
+  });
+
+  it('serializes concurrent archives at the owner-wide limit', async () => {
+    const record = await addBotImConnectionRecord({ botId: 'bot-a', channel: 'feishu' }, { id: () => 'aaaaaaaaaaaa' });
+    const document = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    document.connections[record.id].archivedTaskRows = Object.fromEntries(Array.from({ length: 511 }, (_, i) => [`existing-${i}`, 1]));
+    fs.writeFileSync(file(), JSON.stringify(document));
+    const results = await Promise.allSettled([archiveBotImTaskRow(record, 'new-a'), archiveBotImTaskRow(record, 'new-b')]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(Object.keys(readBotImConnection(record.id)?.archivedTaskRows ?? {})).toHaveLength(512);
+  });
+
+  it('reclaims only observed obsolete cutoffs and preserves a concurrent rearchive', async () => {
+    const record = await addBotImConnectionRecord({ botId: 'bot-a', channel: 'feishu' }, { id: () => 'aaaaaaaaaaaa' });
+    const document = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    document.connections[record.id].archivedTaskRows = { obsolete: 1, rearchived: 2, dormant: 1 };
+    fs.writeFileSync(file(), JSON.stringify(document));
+    // The runtime observed cutoff=1 before another writer rearchived this row.
+    await archiveBotImTaskRow(record, 'new-session', { obsolete: 1, rearchived: 1 });
+    expect(readBotImConnection(record.id)?.archivedTaskRows).toEqual({
+      rearchived: 2, dormant: 1, 'new-session': expect.any(Number),
+    });
+  });
+
+  it('keeps valid prototype-named task ids as ordinary archive entries', async () => {
+    const record = await addBotImConnectionRecord({ botId: 'bot-a', channel: 'feishu' }, { id: () => 'aaaaaaaaaaaa' });
+    await archiveBotImTaskRow(record, '__proto__');
+    await archiveBotImTaskRow(record, 'constructor');
+    const archived = readBotImConnection(record.id)?.archivedTaskRows;
+    expect(Object.hasOwn(archived ?? {}, '__proto__')).toBe(true);
+    expect(archived?.['__proto__']).toEqual(expect.any(Number));
+    expect(archived?.constructor).toEqual(expect.any(Number));
+  });
 });
