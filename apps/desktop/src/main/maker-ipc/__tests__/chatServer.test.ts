@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const avatarUpload = vi.hoisted(() => vi.fn());
+vi.mock('../../ossPublicUpload.js', () => ({ uploadPublicAsset: avatarUpload }));
 const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> => []), download: vi.fn(), packaged: true, urls: [] as string[], wsUrls: [] as string[], exists: vi.fn(), config: '', handle: vi.fn(), profiles: [] as unknown[], sockets: [] as import('ws').WebSocket[], token: 'isolated-test-token', refresh: vi.fn(async () => true), requests: [] as Array<{ url: string; token: string; actor?: string }> }));
 vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, refresh: fixture.refresh }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
@@ -15,7 +17,8 @@ vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: asyn
 vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
 const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
-vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' } }));
+vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' },
+  nativeImage: { createFromBuffer: () => ({ isEmpty: () => false, getSize: () => ({ width: 1, height: 1 }) }) } }));
 // The real filesystem, except an `lstat` failure a test injects for a delivery file.
 const fsFault = vi.hoisted(() => ({ lstat: null as Error | null }));
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -163,6 +166,45 @@ describe('Chat Server result delivery and refresh', () => {
     await service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 7 });
     expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}`, 'PATCH', expect.objectContaining({ name: 'Draft', expectedRevision: 7 }));
   });
+  // Group avatar regression: exercise the production manage entry, real image
+  // validation and HTTP payload, with only the network/image decoder faked.
+  it.each(['set', 'reset', 'keep', 'invalid', 'unsupported', 'upload-failure', 'account-change'] as const)(
+    'keeps group avatar %s scoped to the current room and account', async mode => {
+      let currentAccount = true;
+      service.dispose();
+      deps.captureOwnerScope = () => ({}) as ReturnType<NonNullable<typeof deps.captureOwnerScope>>;
+      deps.isOwnerScopeCurrent = () => currentAccount;
+      service = withChatServer({ listGroups: async () => ({ ok: true, groups: [] }), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      fixture.handle.mockImplementation(route => {
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupMemberAvatar: mode === 'unsupported' ? undefined : 1 } } };
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [
+          { id: selfId, kind: 'human', name: 'Me', displayName: 'Account me', ownerActorId: selfId, state: 'joined', role: 'owner',
+            avatar: 'https://example.com/group.png', groupAvatar: 'https://example.com/group.png', defaultAvatarUrl: 'https://example.com/account.png' },
+        ], messages: [], cursor: '1' } };
+        return response(route);
+      });
+      avatarUpload.mockImplementation(async () => {
+        if (mode === 'account-change') currentAccount = false;
+        return mode === 'upload-failure' ? { ok: false, stage: 'put', status: 500 }
+          : { ok: true, publicUrl: 'https://example.com/new-group.png' };
+      });
+      const bytes = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6sQAAAABJRU5ErkJggg==', 'base64'));
+      const avatar = mode === 'reset' || mode === 'keep' ? { type: mode }
+        : { type: 'set' as const, data: mode === 'invalid' ? new Uint8Array([1]) : bytes, mimeType: 'image/png' };
+      const result = await service.chatServer!.manage({ groupId: roomId, action: { type: 'avatar', actorId: selfId, avatar } });
+      const writes = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/nickname` && method === 'POST');
+      if (mode === 'set' || mode === 'reset') {
+        expect(result).toEqual({ ok: true });
+        expect(writes).toEqual([[`/conversations/${roomId}/nickname`, 'POST', {
+          operationId: expect.any(String), actorId: selfId, avatar: mode === 'reset' ? null : 'https://example.com/new-group.png',
+        }]]);
+      } else {
+        expect(writes).toEqual([]);
+        expect(result.ok).toBe(mode === 'keep');
+      }
+      if (['keep', 'reset', 'invalid', 'unsupported'].includes(mode)) expect(avatarUpload).not.toHaveBeenCalled();
+      expect(fixture.urls.some(url => url.includes('/api/me/profile'))).toBe(false);
+    });
   it('preserves a server revision conflict after the host precheck', async () => {
     fixture.handle.mockImplementation((route, method) => method === 'PATCH'
       ? { status: 409, body: { error: { code: 'REVISION_CONFLICT', message: 'private server detail' } } }
@@ -304,11 +346,11 @@ describe('Chat Server result delivery and refresh', () => {
         buildBotGroupQuoteCard({ messageId: '70000000-0000-4000-8000-000000000009', authorName: 'Someone', authorKind: 'user',
           excerpt: 'nested quote', attachmentCount: 0, attachmentName: null, sequence: 3 }),
         { type: 'text', text: 'Original\n\nwords' }, { type: 'media', mediaId, caption: 'plan.pdf' }], ...overrides });
-    function quoteResponse(original: unknown) {
+    function quoteResponse(original: unknown, responseMode = 'all') {
       return (route: string, method: string) => {
         if (route === `/conversations/${roomId}/messages/${quotedId}`) return original ? { body: original } : { status: 404, body: { error: { code: 'MESSAGE_NOT_FOUND' } } };
         if (route.endsWith('/members')) return { body: [botMember] };
-        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [botMember], messages: [], cursor: '1' } };
+        if (route.endsWith('/snapshot')) return { body: { room: { ...room(roomId), response_mode: responseMode }, members: [botMember], messages: [], cursor: '1' } };
         if (route.endsWith('/messages') && method === 'POST') return { body: { id: 'saved-quote' } };
         return response(route);
       };
@@ -331,8 +373,11 @@ describe('Chat Server result delivery and refresh', () => {
       expect(body).not.toHaveProperty('replyToId');
     });
 
-    it.each([['quote', false], ['thread', false], ['quote', true], ['thread', true]] as const)('addresses the server-read bot author through %s (explicit=%s)', async (entry, explicit) => {
-      fixture.handle.mockImplementation(quoteResponse(quoted()));
+    it.each([
+      ['quote', false, 'all'], ['thread', false, 'all'], ['quote', true, 'all'], ['thread', true, 'all'],
+      ['quote', false, 'mentioned'], ['thread', false, 'mentioned'],
+    ] as const)('addresses the server-read bot author through %s (explicit=%s, mode=%s)', async (entry, explicit, responseMode) => {
+      fixture.handle.mockImplementation(quoteResponse(quoted(), responseMode));
       const input = { groupId: roomId, text: 'Please continue', clientId: `reply-author-${entry}`, mentions: { all: false, botIds: explicit ? [botId] : [] } };
       const result = entry === 'thread'
         ? await service.chatServer!.reply({ ...input, rootId: quotedId })
@@ -342,7 +387,7 @@ describe('Chat Server result delivery and refresh', () => {
     });
 
     it.each(['quote', 'thread'] as const)('does not infer a bot recipient from a human-authored %s', async entry => {
-      fixture.handle.mockImplementation(quoteResponse(quoted({ authorId: selfId, author: { kind: 'human', name: 'Bot' } })));
+      fixture.handle.mockImplementation(quoteResponse(quoted({ authorId: selfId, author: { kind: 'human', name: 'Bot' } }), 'mentioned'));
       const input = { groupId: roomId, text: 'Agreed', clientId: `reply-human-${entry}`, mentions: { all: false, botIds: [] } };
       expect(entry === 'thread'
         ? await service.chatServer!.reply({ ...input, rootId: quotedId })
@@ -1583,11 +1628,13 @@ describe('Chat Server result delivery and refresh', () => {
     it.each([
       ['waiting for 继续: a new request replaces it', 'waiting', `/conversations/${roomId}/messages`],
       ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
-    ] as const)('with an open queue %s', async (_label, status, route) => {
+      ['mention-only mid-turn: unmentioned words stay ordinary messages', 'running', `/conversations/${roomId}/messages`, 'mentioned'],
+    ] as const)('with an open queue %s', async (_label, status, route, responseMode: string = 'all') => {
       const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
         creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
         steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
-      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] } : undefined);
+      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] }
+        : route.endsWith('/snapshot') ? { body: { room: { ...room(roomId), response_mode: responseMode }, members: members(), messages: [], cursor: '1' } } : undefined);
       expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: `queue-${status}`, mentions: { all: false, botIds: [] } }))
         .toMatchObject({ ok: true });
       await vi.advanceTimersByTimeAsync(0);

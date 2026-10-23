@@ -47,7 +47,8 @@ export function BotRoutines({
   backRef?: { current: (() => Promise<boolean>) | null };
 }) {
   const { confirm } = useConfirmDialog();
-  const routinesApi = useBotSettingsTarget().routines;
+  const settingsTarget = useBotSettingsTarget();
+  const routinesApi = settingsTarget.routines;
   const inFlight = useRef(false);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
@@ -268,13 +269,19 @@ export function BotRoutines({
           {!loading && !error && !routines.length && (
             <p className="text-[var(--text-secondary)]">{t('routines.empty')}</p>
           )}
-          {routines.map((routine) => routine.builtin === 'follow-up' ? (
-            <BuiltinFollowUpRow
+          {routines.map((routine) => routine.builtin ? (
+            <BuiltinRoutineRow
               key={routine.id}
               routine={routine}
               disabled={busy}
               onEnabledChange={(enabled) =>
-                void act(() => routinesApi.save(botId, routineInput({ ...routine, enabled }), routine.id))
+                void act(() =>
+                  // 每天查待办与近况开关同一个入口：恢复时按当前模板重建，并通知近况。
+                  // 远程伙伴还没有这个入口，按普通例行任务在伙伴所在的电脑上切换。
+                  routine.builtin === 'todo-check' && settingsTarget.kind === 'local'
+                    ? window.electronAPI.localDb.bots.todos.dailyCheck(botId, enabled)
+                    : routinesApi.save(botId, routineInput({ ...routine, enabled }), routine.id),
+                )
               }
             />
           ) : (
@@ -863,7 +870,10 @@ function routineInput(routine: Routine): RoutineInput {
 /**
  * 宿主内置的「跟进」：指令与触发条件由宿主维护，这里不进编辑器、不能删，只能暂停或恢复。
  */
-function BuiltinFollowUpRow({
+/** 内置例行任务（跟进、每天查待办）的文案键；名称与说明随界面语言，不用宿主存的名字。 */
+const BUILTIN_COPY = { 'follow-up': 'routines.builtinFollowUp', 'todo-check': 'routines.builtinTodoCheck' } as const;
+
+function BuiltinRoutineRow({
   routine,
   disabled,
   onEnabledChange,
@@ -873,7 +883,8 @@ function BuiltinFollowUpRow({
   onEnabledChange: (enabled: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const name = t('routines.builtinFollowUp.name');
+  const copy = BUILTIN_COPY[routine.builtin ?? 'follow-up'];
+  const name = t(`${copy}.name`);
   return (
     <div className="flex min-h-12 w-full items-start gap-3 rounded-lg px-3 py-3">
       {routine.activity ? (
@@ -886,7 +897,7 @@ function BuiltinFollowUpRow({
       <span className="min-w-0 flex-1">
         <span className="block truncate">{name}</span>
         {/* 触发条件由宿主维护、条数多且来源重复，这里只写一句白话，不逐条列出。 */}
-        <span className="block text-12 text-[var(--text-secondary)]">{t('routines.builtinFollowUp.hint')}</span>
+        <span className="block text-12 text-[var(--text-secondary)]">{t(`${copy}.hint`)}</span>
       </span>
       <Switch
         aria-label={name}

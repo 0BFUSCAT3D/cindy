@@ -25,7 +25,8 @@ import { botImConnectionApi } from './botImConnectionClient';
 import type { BotCapabilityEntry, BotCapabilityKind, BotSettingsTarget } from './botSettingsTarget';
 
 const api = () => window.electronAPI.localDb.bots;
-const ALL_PAGES = ['profile', 'personality', 'memory', 'model', 'voice', 'capabilities', 'channels', 'routines', 'history', 'advanced'] as const;
+// `projects` lists folders on this computer: a remote teammate's target never offers it.
+const ALL_PAGES = ['profile', 'personality', 'memory', 'projects', 'model', 'voice', 'capabilities', 'channels', 'routines', 'history', 'advanced'] as const;
 
 /** Runtime / MCP facts that change which references a teammate can use. */
 const CATALOG_PATCH_KEYS = [

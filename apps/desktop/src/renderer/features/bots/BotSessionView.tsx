@@ -18,6 +18,7 @@ import type { BotChatIdentity } from './BotSessionContentHeader';
 import type { BotChatBinding } from './botChatPresentation';
 import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
 import { BotDmThreadHost } from './BotDmThreadHost';
+import { useBotPluginFocusedSession } from './useBotPluginFocusedSession';
 
 type BotSessionGate =
   | { kind: 'loading' }
@@ -94,7 +95,9 @@ function BotSessionGateView() {
   // there, like the roster (cloud-companions.md §6); read live, the gate's list is a one-off.
   const readyMentions = gate.kind === 'ready' ? gate.mentions : null;
   const mentions = useMemo(() => (readyMentions ? withoutShadowedBots(readyMentions, cloud) : []), [readyMentions, cloud]);
-  useBotIslandVisibleSession(gate.kind === 'ready' ? sessionId ?? null : null);
+  const ownedSessionId = gate.kind === 'ready' ? sessionId ?? null : null;
+  useBotIslandVisibleSession(ownedSessionId);
+  useBotPluginFocusedSession(ownedSessionId);
   // The gate proves ownership once; name and avatar edited in settings must
   // still reach the open chat's header and composer.
   const liveProfile = useBotProfiles().find((profile) => profile.id === botId);
