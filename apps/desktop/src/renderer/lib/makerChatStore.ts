@@ -9809,16 +9809,16 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
   );
 
   // ── 插件任务页开页(taskView 槽):main 已做资格审与落点解析,这里只在该任务的
-  // 右侧栏打开 / 聚焦任务页页签。与 preview 同样只由主窗口处理,不抢前台。
+  // 右侧栏打开 / 聚焦任务页页签。只由主窗口处理；显式 focus 才按用户导航打开。
   bindIpc(
     (cb: (data: unknown, ownerStamp?: unknown) => void) =>
       window.electronAPI.ghosts?.onTaskViewOpen?.(cb),
     (raw: unknown, ownerStamp?: unknown) => {
       if (!isCurrentLocalLiveIngress(ownerStamp)) return;
       if (isSidebarWindow() || isSecondaryWindow()) return;
-      const p = raw as { instanceId?: unknown; sessionId?: unknown } | null;
+      const p = raw as { instanceId?: unknown; sessionId?: unknown; focus?: unknown } | null;
       if (!p || typeof p.instanceId !== 'string' || typeof p.sessionId !== 'string') return;
-      void openPluginTaskTab(p.sessionId, p.instanceId, { userInitiated: false }).catch(() => {
+      void openPluginTaskTab(p.sessionId, p.instanceId, { userInitiated: p.focus === true }).catch(() => {
         /* 标签落地失败(任务桶异常等)不致命,静默 */
       });
     },
