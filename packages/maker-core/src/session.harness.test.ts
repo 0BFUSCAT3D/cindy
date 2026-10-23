@@ -58,6 +58,61 @@ function fixture() {
 }
 
 describe("Session Harness hooks preserve permission authority", () => {
+  // Unit regressions: waiting interactions must still stop, while user input
+  // cannot join the native compact lane, including after async preparation.
+  it('interrupts a turn waiting for permission while keeping compaction blocked', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.handle.isTurnRunning = () => true;
+    f.handle.abort = vi.fn(async () => {});
+    f.handle.requestHarnessCompaction = vi.fn(async () => ({ noop: true }));
+    let release!: (value: InteractionDecision) => void;
+    const waiting = f.session.runHostInteraction(f.request, () => new Promise(resolve => { release = resolve; }));
+    try {
+      expect(await f.session.runHarnessAction('context.compact', 0)).toMatchObject({ errorCode: 'BUSY' });
+      expect(await f.session.runHarnessAction('turn.interrupt', 0)).toMatchObject({ ok: true, value: { state: 'requested' } });
+      expect(f.handle.abort).toHaveBeenCalledOnce();
+      expect(f.handle.requestHarnessCompaction).not.toHaveBeenCalled();
+    } finally {
+      release({ kind: 'permission', behavior: 'deny' });
+      await waiting;
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])('rejects steering during compaction after preparation=%s', async (afterPreparation) => {
+    const f = fixture();
+    let running = afterPreparation;
+    let finish!: () => void;
+    f.session.capabilities.sameTurnSteer = { supported: true };
+    f.handle.isTurnRunning = () => running;
+    f.handle.steer = vi.fn(async () => {});
+    f.handle.requestHarnessCompaction = () => {
+      running = true;
+      return new Promise<{ noop: true }>(resolve => { finish = () => { running = false; resolve({ noop: true }); }; });
+    };
+    let release!: () => void;
+    let prepared!: () => void;
+    const entered = new Promise<void>(resolve => { prepared = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const pending = afterPreparation ? f.session.steer('late input', {
+      beforeProviderStart: () => { prepared(); return held; },
+    }) : undefined;
+    if (afterPreparation) await entered;
+    running = false;
+    const compact = f.session.runHarnessAction('context.compact', 0);
+    try {
+      const rejected = expect(pending ?? f.session.steer('new input')).rejects.toThrow('no active turn to steer');
+      release();
+      await rejected;
+      expect(f.handle.steer).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await compact;
+    }
+  });
+
   // Unit regression for the Desktop pre-dispatch cancellation repro: two sends
   // reserve the same number, but a late permission verdict must stay with the
   // first attempt. Existing native-id-change coverage never reused a generation.

@@ -1204,7 +1204,7 @@ export class Session {
     if (!this.capabilities.sameTurnSteer.supported) {
       throw new NotSupportedError('sameTurnSteer', this.capabilities.sameTurnSteer);
     }
-    if (!this.handle.isTurnRunning?.()) {
+    if (this.harnessActionInFlight || !this.handle.isTurnRunning?.()) {
       throw new Error(`Session ${this.id} has no active turn to steer`);
     }
     // 记录发起时的 turn generation：异步视觉转换期间原 turn 可能结束、同 Session
@@ -1226,7 +1226,7 @@ export class Session {
     // 异步视觉转换期间 turn 可能已完成/被中止（视觉后端慢、用户已切任务等）：
     // 转换结果此时已无人接收，必须先复查原 turn 生命周期再调用 handle.steer，
     // 否则底层以「No active turn to steer」拒绝或 Pi 把迟到消息交给已结束的 turn。
-    if (this.getTurnGeneration() !== steerTurnGeneration || !this.handle.isTurnRunning?.()) {
+    if (this.harnessActionInFlight || this.getTurnGeneration() !== steerTurnGeneration || !this.handle.isTurnRunning?.()) {
       throw new Error(`Session ${this.id} has no active turn to steer`);
     }
     this.startEventLoopIfNeeded();
@@ -1708,9 +1708,9 @@ export class Session {
   async runHarnessAction(name: 'context.compact' | 'turn.interrupt', expectedGeneration: number) {
     this.ensureActive();
     if (expectedGeneration !== this.turnGeneration) return { ok: false as const, errorCode: 'STALE_RUNTIME' as const };
-    if (this.harnessActionInFlight || this.pendingInteractions > 0 || this.permissionModeChangesInFlight > 0)
+    if (this.harnessActionInFlight || this.permissionModeChangesInFlight > 0)
       return { ok: false as const, errorCode: 'BUSY' as const };
-    if (name === 'context.compact' && (this.isTurnRunning() || this.hasUnsettledTurn()))
+    if (name === 'context.compact' && (this.pendingInteractions > 0 || this.isTurnRunning() || this.hasUnsettledTurn()))
       return { ok: false as const, errorCode: 'BUSY' as const };
     if (!this.getHarnessCapabilities().actions.includes(name))
       return { ok: false as const, errorCode: 'UNAVAILABLE' as const };

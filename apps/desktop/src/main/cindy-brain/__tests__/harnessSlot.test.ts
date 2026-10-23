@@ -5,7 +5,7 @@ import { GhostHarnessSlot } from '../harnessSlot.js';
 import { GhostSubscriptionGateway } from '../subscriptionGateway.js';
 import type { GhostPipeEventPush, InstalledGhost } from '../../../shared/ghost.js';
 
-function fixture() {
+function fixture(remote: { remoteHostId?: string; agentDeviceId?: string } = {}) {
   let owner = true;
   let live = true;
   let nativeId = 'native-1';
@@ -43,6 +43,8 @@ function fixture() {
     id: 's',
     agentKind: 'codex',
     model: 'model',
+    remoteHostId: remote.remoteHostId ?? null,
+    agentDeviceId: remote.agentDeviceId ?? null,
     get requestSessionId() {
       return nativeId;
     },
@@ -62,18 +64,18 @@ function fixture() {
       actions: ['turn.interrupt'],
     }),
     runHarnessAction: vi.fn(async () => ({ ok: true, value: { state: 'requested' } })),
-    setHarnessHookHandler: (handler: HarnessHookHandler) => {
+    setHarnessHookHandler: vi.fn((handler: HarnessHookHandler) => {
       hook = handler;
       return () => {
         hook = undefined;
       };
-    },
-    onEvent: (handler: (event: AgentEvent) => void) => {
+    }),
+    onEvent: vi.fn((handler: (event: AgentEvent) => void) => {
       observe = handler;
       return () => {
         observe = undefined;
       };
-    },
+    }),
   } as unknown as Session;
   const eligible = vi.fn(async (): Promise<'eligible' | 'ineligible' | 'retry'> => 'eligible');
   const readHistory = vi.fn(async () => ({
@@ -128,6 +130,62 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe('Harness host bridge', () => {
+  // Unit regressions for the local-only, per-turn and per-runtime contracts.
+  // Existing cases only used local bindings and current event generations.
+  it.each([{ remoteHostId: 'ssh-host' }, { agentDeviceId: 'other-device' }])(
+    'does not bind remote execution %j', async (remote) => {
+      const f = fixture(remote);
+      expect(await f.slot.handleRequest('a', {
+        kind: 'read', name: 'runtime', sessionId: 's',
+      }, () => true)).toMatchObject({ errorCode: 'SESSION_UNAVAILABLE' });
+      expect(f.session.setHarnessHookHandler).not.toHaveBeenCalled();
+      expect(f.session.onEvent).not.toHaveBeenCalled();
+      f.dispose();
+    },
+  );
+
+  it('drops old turn events before publishing or replacing usage', async () => {
+    const f = fixture();
+    await f.slot.handleRequest('a', { kind: 'read', name: 'usage', sessionId: 's' }, () => true);
+    f.emit({ type: 'done', sessionTurnGeneration: 1, data: { usage: { inputTokens: 10 } } });
+    f.emit({ type: 'done', sessionTurnGeneration: 0, data: { usage: { inputTokens: 999 } } });
+    f.emit({ type: 'tool_result_full', sessionTurnGeneration: 0,
+      data: { toolUseId: 'old', fullText: 'old result' } });
+    f.emit({ type: 'tool_result_full', sessionTurnGeneration: 1,
+      data: { toolUseId: 'current', fullText: 'current result' } });
+    expect(f.events).toHaveLength(1);
+    expect(f.events[0]).toMatchObject({ name: 'tool.completed', data: { turnGeneration: 1 } });
+    expect(await f.slot.handleRequest('a', {
+      kind: 'read', name: 'usage', sessionId: 's',
+    }, () => true)).toMatchObject({ value: { inputTokens: 10 } });
+    f.dispose();
+  });
+
+  it('resets an old hook opt-out before selecting the new runtime recipients', async () => {
+    const f = fixture();
+    f.ghosts[1].enabled = false;
+    const runtime = await f.slot.handleRequest('a', {
+      kind: 'read', name: 'runtime', sessionId: 's',
+    }, () => true) as { runtimeId: string };
+    await f.slot.handleRequest('a', {
+      kind: 'hook', name: 'permission.request', sessionId: 's',
+      runtimeId: runtime.runtimeId, enabled: false,
+    }, () => true);
+    f.changeNative();
+    const decision = f.screen();
+    try {
+      await vi.waitFor(() => expect(f.messages).toHaveLength(1));
+      const sent = f.messages[0].payload;
+      if (sent.type !== 'harness-hook') throw new Error('expected hook');
+      expect(sent.data.runtimeId).not.toBe(runtime.runtimeId);
+      f.slot.handleVerdict('a', { hookId: sent.hookId, action: 'block' });
+      expect(await decision).toMatchObject({ action: 'block' });
+    } finally {
+      f.dispose();
+      await decision;
+    }
+  });
+
   it('releases an outstanding decision when its hook is unregistered and ignores the late verdict', async () => {
     const f = fixture();
     f.ghosts[1].enabled = false;

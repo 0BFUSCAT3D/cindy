@@ -88,6 +88,8 @@ export class GhostHarnessSlot {
   constructor(private readonly deps: GhostHarnessSlotDeps) {}
 
   bind(session: Session, isCurrent: () => boolean): () => void {
+    // This bridge covers local execution only; remote sessions use separate authority.
+    if (session.remoteHostId || session.agentDeviceId) return () => {};
     const owner = this.deps.ownerScope.capture();
     const binding: Binding = {
       session,
@@ -408,6 +410,8 @@ export class GhostHarnessSlot {
     if (
       binding.eligibilityState === 'ineligible' ||
       !binding.current() ||
+      (event.sessionTurnGeneration !== undefined &&
+        event.sessionTurnGeneration !== binding.session.getTurnGeneration()) ||
       // Pi marks idle manual compaction as background work within this task.
       (event.turnScope === 'background' && !(event.type === 'compact_boundary' && raw.trigger === 'manual')) ||
       event.runtimeRecovery ||
@@ -525,6 +529,7 @@ export class GhostHarnessSlot {
   }
 
   private async screen(binding: Binding, request: HarnessHookRequest): Promise<HarnessHookResult> {
+    this.sync(binding);
     const ghosts = this.deps
       .listGhosts()
       .filter(
