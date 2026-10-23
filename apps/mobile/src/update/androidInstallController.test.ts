@@ -26,6 +26,51 @@ function setup(overrides: Partial<AndroidInstallIO> = {}) {
 }
 
 describe('Android in-app installation', () => {
+  // PR #6977 discussion_r4359353797 (unit): the previous Later fix also
+  // suppressed Cancel. Drive manual close -> automatic rediscovery -> stale
+  // resolve/reject; existing tests only reopened manually, bypassing suppression.
+  it.each(['downloading', 'installing'] as const)('Cancel during %s still allows automatic rediscovery', async (phase) => {
+    const oldDownload = deferred<string>();
+    const oldInstall = deferred<void>();
+    let oldSignal!: AbortSignal;
+    let waitingDownload = phase === 'downloading';
+    const { controller, io } = setup({
+      hasPermission: vi.fn(async () => true),
+      download: vi.fn(async (_url: string, signal: AbortSignal) => {
+        if (waitingDownload) {
+          waitingDownload = false;
+          oldSignal = signal;
+          return oldDownload.promise;
+        }
+        return file;
+      }),
+      install: vi.fn(async (_file: string, _version: string, signal: AbortSignal) => {
+        oldSignal = signal;
+        return oldInstall.promise;
+      }),
+    });
+    controller.start(target); await settle();
+    expect(controller.getSnapshot().phase).toBe(phase);
+    controller.close();
+    expect(oldSignal.aborted).toBe(true);
+    controller.start(target, { automatic: true }); await settle();
+    expect(controller.getSnapshot().phase).toBe('ready');
+    if (phase === 'downloading') oldDownload.resolve(file);
+    else oldInstall.reject(new Error('cancelled old install'));
+    await settle();
+    expect(controller.getSnapshot().phase).toBe('ready');
+    expect(io.install).toHaveBeenCalledTimes(phase === 'installing' ? 1 : 0);
+  });
+
+  it('replacing a ready target does not count as choosing Later', async () => {
+    const { controller } = setup();
+    const newer = { ...target, version: '1.2.4' };
+    controller.start(target, { automatic: true }); await settle();
+    controller.start(newer, { automatic: true }); await settle();
+    controller.start(target, { automatic: true }); await settle();
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'ready', target });
+  });
+
   // PR #6977: permission/denial cards also expose Later. Existing dismissal
   // coverage only closed ready; the same target must stay suppressed here too.
   it.each([false, true])('remembers Later from the permission card (denied=%s)', async (denied) => {

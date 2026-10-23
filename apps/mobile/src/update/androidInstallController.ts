@@ -26,6 +26,12 @@ export interface AndroidInstallIO {
 }
 const IDLE: AndroidInstallState = { phase: 'idle', target: null, progress: null };
 
+/** The button label and its effect share one rule: Cancel stops this operation;
+ * Later suppresses subsequent automatic offers for the target. */
+export function androidUpdateDismissAction(phase: AndroidInstallPhase): 'later' | 'cancel' {
+  return phase === 'downloading' || phase === 'installing' ? 'cancel' : 'later';
+}
+
 export function isDirectApkUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -64,7 +70,7 @@ export class AndroidInstallController {
       // obsolete silent target, but must not interrupt a user's installation.
       if (same && options.automatic) return true;
       if (!this.state.silent && !(this.state.phase === 'ready' && !same && !this.operation)) return true;
-      this.close();
+      this.cancel();
     }
     this.awaitingConfirm = options.confirm === true;
     this.update({ phase: 'permission', target, progress: null, silent: options.automatic === true });
@@ -145,7 +151,7 @@ export class AndroidInstallController {
   }
 
   close = (): void => {
-    if (!this.state.silent && this.state.target) {
+    if (!this.state.silent && this.state.target && androidUpdateDismissAction(this.state.phase) === 'later') {
       this.dismissedAutomaticTarget = JSON.stringify([this.state.target.installUrl, this.state.target.version]);
     }
     this.cancel();
