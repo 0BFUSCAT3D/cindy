@@ -27,8 +27,8 @@ describe.each(['\n', '\r\n'])('automatic scan budget fallback owners (%j)', (new
     for (const current of [true, false]) {
       reconcile.mockClear();
       callback(desktopSource, '  view.subscribe(() => {', '\n  });\n  void view.restoreCachedView',
-        ['isCurrent', 'sessions', 'sessionId', 'view', 'isHistoryViewUnavailable', 'reconcileRemoteMessages', 'persistTimer', 'writeCache', 'setState', 'mirrorScheduled', 'mirrorSnapshot'],
-        [() => current, new Set(['s']), 's', view, isHistoryViewUnavailable, reconcile, undefined, undefined, vi.fn(), false, vi.fn()]);
+        ['isCurrent', 'sessions', 'sessionId', 'view', 'isHistoryViewUnavailable', 'reconcileRemoteMessages', 'persistTimer', 'writeCache', 'setState', 'mirrorScheduled', 'mirrorSnapshot', '_messagesEpoch', 'mirrorEpoch', 'mirrorLease', '_activeViewSessions'],
+        [() => current, new Set(['s']), 's', view, isHistoryViewUnavailable, reconcile, undefined, undefined, vi.fn(), false, vi.fn(), new Map(), 0, 0, new Map()]);
       await Promise.resolve();
       expect(reconcile).toHaveBeenCalledTimes(active && current ? 1 : 0);
       if (active && current) expect(reconcile).toHaveBeenCalledWith('s', { force: true });

@@ -291,13 +291,16 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
     const leave = makerChatStore.enterView(s);
     let off = () => {};
+    let offView = () => {};
     try {
       makerChatStore.ensureInitialMessages(s);
       await flush();
       const view = getRemoteHistoryView(s)!;
       expect(view.getSnapshot().ready).toBe(true);
       const notify = vi.fn();
+      const publishNotified: boolean[] = [];
       off = makerChatStore.subscribe(s, notify);
+      offView = view.subscribe(() => publishNotified.push(notify.mock.calls.length > 0));
       host.seedSession(s, {}, [
         dbMessage(s, 'first', 'first', '2026-06-15T00:00:00Z'),
         dbMessage(s, 'second', 'second', '2026-06-15T00:00:01Z'),
@@ -305,10 +308,39 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
       const read = view.refresh();
       expect(notify).not.toHaveBeenCalled();
       await read;
-      await flush();
+      expect(publishNotified.length).toBeGreaterThanOrEqual(2);
+      expect(publishNotified.every((notified) => notified === false)).toBe(true);
       expect(notify).toHaveBeenCalled();
       expect(makerChatStore.getSnapshot(s).messages.map((message) => message.clientId))
         .toEqual(['client-first', 'client-second']);
+      notify.mockClear();
+      await view.refresh();
+      await flush();
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      offView();
+      off();
+      leave();
+    }
+  });
+
+  it('does not mirror a history publish after the view leaves', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    host.seedSession(s, {}, [dbMessage(s, 'first', 'first', '2026-06-15T00:00:00Z')]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    const leave = makerChatStore.enterView(s);
+    const notify = vi.fn();
+    let off = () => {};
+    try {
+      makerChatStore.ensureInitialMessages(s);
+      await flush();
+      const view = getRemoteHistoryView(s)!;
+      off = makerChatStore.subscribe(s, notify);
+      leave();
+      await flush();
+      expect(view.isActive()).toBe(false);
+      expect(notify).not.toHaveBeenCalled();
     } finally {
       off();
       leave();

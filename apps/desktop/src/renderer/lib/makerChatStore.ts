@@ -11867,9 +11867,13 @@ function createRemoteHistoryView(sessionId: string) {
   remoteHistoryViews.set(sessionId, entry);
   view.setNetworkAvailable(!deviceId || !isRemoteDeviceMarkedDisconnected(deviceId));
   let mirrorScheduled = false;
+  let mirrorEpoch = 0;
+  let mirrorLease = 0;
   const mirrorSnapshot = () => {
     mirrorScheduled = false;
     if (!isCurrent() || !sessions.has(sessionId)) return;
+    if ((_activeViewSessions.get(sessionId) ?? 0) < mirrorLease) return;
+    if ((_messagesEpoch.get(sessionId) ?? 0) !== mirrorEpoch) return;
     const snapshot = view.getSnapshot();
     if (isHistoryViewUnavailable(snapshot.error)) {
       // Keep the last usable mirror until the raw fallback succeeds and replaces it.
@@ -11888,9 +11892,13 @@ function createRemoteHistoryView(sessionId: string) {
     const borrowed = deviceId && snapshot.stale ? available.map(message => ({ ...message,
       cacheHydrated: true as const, cacheReceipt: snapshot.readReceipt })) : available;
     setState(sessionId, (state) => {
+      const rawMessages = state.messages.some((message) => message.cacheHydrated
+        && !historyCacheReceiptFollows(message.cacheReceipt, snapshot.readReceipt, snapshot.stale))
+        ? state.messages.filter((message) => !message.cacheHydrated
+          || historyCacheReceiptFollows(message.cacheReceipt, snapshot.readReceipt, snapshot.stale))
+        : state.messages;
       const messages = confirmRemoteUsers(
-        mergeMessages(borrowed, state.messages.filter((message) => !message.cacheHydrated
-          || historyCacheReceiptFollows(message.cacheReceipt, snapshot.readReceipt, snapshot.stale)), { addOnly: true }),
+        mergeMessages(borrowed, rawMessages, { addOnly: true }),
         new Set(available.filter((message) => message.role === 'user').map((message) => message.clientId)),
       );
       const isLoadingMore = view.isLoadingOlder();
@@ -11898,11 +11906,10 @@ function createRemoteHistoryView(sessionId: string) {
         && state.hasMoreMessages === snapshot.hasMore
         && state.isLoadingMore === isLoadingMore
         && state.oldestMessageId === snapshot.nextCursor
-        && state.historyWindowIslands.length === 0
         ? state
         : { ...state, historyLoaded: true, messages,
             hasMoreMessages: snapshot.hasMore, isLoadingMore,
-            oldestMessageId: snapshot.nextCursor, historyWindowIslands: EMPTY_WINDOW_ISLANDS };
+            oldestMessageId: snapshot.nextCursor };
     });
   };
   view.subscribe(() => {
@@ -11924,6 +11931,8 @@ function createRemoteHistoryView(sessionId: string) {
     }
     if (mirrorScheduled) return;
     mirrorScheduled = true;
+    mirrorEpoch = _messagesEpoch.get(sessionId) ?? 0;
+    mirrorLease = _activeViewSessions.get(sessionId) ?? 0;
     queueMicrotask(mirrorSnapshot);
   });
   void view.restoreCachedView(async () => {
