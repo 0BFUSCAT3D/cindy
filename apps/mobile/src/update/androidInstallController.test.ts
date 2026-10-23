@@ -16,6 +16,7 @@ function setup(overrides: Partial<AndroidInstallIO> = {}) {
     hasPermission: vi.fn(async () => false),
     requestPermission: vi.fn(async () => true),
     download: vi.fn(async () => file),
+    waitForForeground: vi.fn(async () => undefined),
     install: vi.fn(async () => undefined),
     remove: vi.fn(async () => undefined),
     openBrowser: vi.fn(async () => undefined),
@@ -25,6 +26,49 @@ function setup(overrides: Partial<AndroidInstallIO> = {}) {
 }
 
 describe('Android in-app installation', () => {
+  // Unit: automatic discovery must download before prompting, without asking for
+  // install permission. Existing manual-entry tests do not exercise this ordering.
+  it('offers a completed automatic download only in the foreground, then asks for permission on tap', async () => {
+    const foreground = deferred<void>();
+    const { controller, io } = setup({ waitForForeground: () => foreground.promise });
+    controller.start(target, { automatic: true });
+    await settle();
+    expect(controller.getSnapshot()).toMatchObject({ silent: true, phase: 'downloading' });
+    expect(io.hasPermission).not.toHaveBeenCalled();
+    expect(io.install).not.toHaveBeenCalled();
+    foreground.resolve(); await settle();
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'ready', progress: 1 });
+    expect(controller.getSnapshot().silent).not.toBe(true);
+    controller.retry(); await settle();
+    expect(controller.getSnapshot().phase).toBe('permission-required');
+    controller.retry(); await settle();
+    expect(io.install).toHaveBeenCalledOnce();
+    expect(io.download).toHaveBeenCalledOnce();
+  });
+
+  it('keeps automatic failures quiet and allows a later discovery to retry', async () => {
+    const { controller } = setup({ download: vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(file) });
+    controller.start(target, { automatic: true }); await settle();
+    expect(controller.getSnapshot().phase).toBe('idle');
+    controller.start(target, { automatic: true }); await settle();
+    expect(controller.getSnapshot().phase).toBe('ready');
+    controller.close();
+    controller.start(target, { automatic: true }); await settle();
+    expect(controller.getSnapshot().phase).toBe('idle');
+    controller.start({ ...target, version: '1.2.4' }, { automatic: true }); await settle();
+    expect(controller.getSnapshot().target?.version).toBe('1.2.4');
+  });
+
+  it('replaces a silent obsolete target and ignores its late completion', async () => {
+    const old = deferred<string>();
+    const { controller, io } = setup({ download: vi.fn().mockImplementationOnce(() => old.promise).mockResolvedValue(file) });
+    controller.start(target, { automatic: true }); await settle();
+    controller.start({ ...target, version: '1.2.4' }, { automatic: true }); await settle();
+    old.resolve('old.apk'); await settle();
+    expect(controller.getSnapshot()).toMatchObject({ phase: 'ready', target: { version: '1.2.4' } });
+    expect(io.install).not.toHaveBeenCalled();
+  });
+
   it('explains the permission before opening settings; only the explicit action requests it', async () => {
     const { controller, io } = setup();
     expect(controller.start(target)).toBe(true);
@@ -152,7 +196,7 @@ describe('Android in-app installation', () => {
     await settle();
     expect(controller.getSnapshot().phase).toBe('idle');
     expect(io.install).not.toHaveBeenCalled();
-    expect(io.remove).toHaveBeenCalledWith(file);
+    expect(io.remove).not.toHaveBeenCalled(); // The completed target cache remains reusable.
   });
 
   it('an immediate restart after cancellation is not swallowed or overwritten by the old download', async () => {
@@ -169,7 +213,7 @@ describe('Android in-app installation', () => {
     await settle();
     expect(controller.getSnapshot().phase).toBe('ready');
     expect(io.install).toHaveBeenCalledOnce();
-    expect(io.remove).toHaveBeenCalledWith('file:///cache/cindy-updates/old.apk');
+    expect(io.remove).not.toHaveBeenCalled(); // The downloader cleans obsolete targets.
   });
 
   it('a download failure offers retry and browser fallback without unhandled rejections', async () => {

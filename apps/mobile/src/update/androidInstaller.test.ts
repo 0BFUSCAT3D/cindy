@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   onProgress: undefined as ((data: { bytesWritten: number; totalBytes: number }) => void) | undefined,
   file: '', resumeData: undefined as string | undefined,
   files: new Map<string, number>(),
+  network: { type: 'WIFI', isConnected: true, isInternetReachable: true },
+  networkListener: undefined as ((state: { type: string; isConnected: boolean; isInternetReachable: boolean }) => void) | undefined,
+  networkUnsubscribe: vi.fn(),
   download: vi.fn<() => Promise<object | null>>(),
   resolveDownload: undefined as ((value: object | null) => void) | undefined,
   rejectDownload: undefined as ((error: Error) => void) | undefined,
@@ -23,9 +26,17 @@ vi.mock('react-native', () => ({
   Linking: { openURL: mocks.browser },
 }));
 vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => mocks.native }));
+vi.mock('expo-network', () => ({
+  NetworkStateType: { WIFI: 'WIFI' },
+  getNetworkStateAsync: vi.fn(async () => mocks.network),
+  addNetworkStateListener: (listener: typeof mocks.networkListener) => {
+    mocks.networkListener = listener;
+    return { remove: mocks.networkUnsubscribe };
+  },
+}));
 vi.mock('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/', makeDirectoryAsync: vi.fn(async () => undefined),
-  readDirectoryAsync: vi.fn(async () => []),
+  readDirectoryAsync: vi.fn(async () => [...mocks.files.keys()].map((file) => file.split('/').at(-1))),
   getInfoAsync: vi.fn(async (file: string) => mocks.files.has(file)
     ? { exists: true, isDirectory: false, size: mocks.files.get(file), modificationTime: Date.now() / 1000 }
     : { exists: false }),
@@ -58,6 +69,8 @@ const pending = () => mocks.download.mockImplementation(() => new Promise((resol
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks(); mocks.files.clear();
   mocks.state.currentState = 'active'; mocks.rejectDownload = undefined; mocks.resolveDownload = undefined;
+  mocks.network = { type: 'WIFI', isConnected: true, isInternetReachable: true };
+  mocks.networkListener = undefined;
   mocks.download.mockResolvedValue({});
   mocks.cancel.mockImplementation(async () => mocks.resolveDownload?.(null));
 });
@@ -67,10 +80,68 @@ afterEach(async () => { androidInstaller.close(); await settle(); vi.useRealTime
 // Seed on-disk bytes (including a previous process's file) and observe the resume
 // offset and installation through start/retry, not just storage helper calls.
 describe('Android installer IO', () => {
+  // Unit: automatic start previously prompted before download and retained obsolete
+  // APKs for 24h. Seed a fresh old package on cellular and drive real network events.
+  it('cleans obsolete packages immediately on cellular, downloads on Wi-Fi, and only then offers installation', async () => {
+    const old = 'file:///cache/cindy-updates/update-123-abc.apk';
+    const unrelated = 'file:///cache/cindy-updates/user.apk';
+    mocks.files.set(old, 500); mocks.files.set(unrelated, 200);
+    mocks.network.type = 'CELLULAR';
+    androidInstaller.start({ ...target, version: '2.0.1' }, { automatic: true }); await settle();
+    expect(mocks.files.has(old)).toBe(false);
+    expect(mocks.files.has(unrelated)).toBe(true);
+    expect(mocks.download).not.toHaveBeenCalled();
+    expect(androidInstaller.getSnapshot().silent).toBe(true);
+    mocks.networkListener!({ ...mocks.network, type: 'WIFI' }); await settle();
+    expect(androidInstaller.getSnapshot().phase).toBe('ready');
+    expect(androidInstaller.getSnapshot().silent).not.toBe(true);
+    expect(mocks.native.install).not.toHaveBeenCalled();
+    expect(mocks.native.hasPermission).not.toHaveBeenCalled();
+    androidInstaller.retry(); await settle();
+    expect(mocks.native.install).toHaveBeenCalledOnce();
+    expect(mocks.networkUnsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('pauses when Wi-Fi disappears and resumes the partial only when Wi-Fi returns', async () => {
+    pending();
+    androidInstaller.start({ ...target, version: '2.0.2' }, { automatic: true }); await settle();
+    mocks.files.set(mocks.file, 256);
+    mocks.networkListener!({ ...mocks.network, type: 'CELLULAR' }); await settle();
+    expect(mocks.cancel).toHaveBeenCalledOnce();
+    expect(mocks.download).toHaveBeenCalledOnce();
+    expect(androidInstaller.getSnapshot().silent).toBe(true);
+    mocks.download.mockResolvedValue({});
+    mocks.networkListener!({ ...mocks.network, type: 'WIFI' }); await settle();
+    expect(mocks.resumeData).toBe('256');
+    expect(androidInstaller.getSnapshot().phase).toBe('ready');
+    expect(mocks.native.install).not.toHaveBeenCalled();
+  });
+
+  it('lets a manual update take over while automatic download waits for Wi-Fi', async () => {
+    mocks.network.type = 'CELLULAR';
+    const next = { ...target, version: '2.0.3' };
+    androidInstaller.start(next, { automatic: true }); await settle();
+    androidInstaller.start(next); await settle();
+    expect(mocks.download).toHaveBeenCalledOnce();
+    expect(mocks.native.install).toHaveBeenCalledOnce();
+    expect(mocks.networkUnsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('reuses a completed automatic APK after dismissal even without Wi-Fi', async () => {
+    const next = { ...target, version: '2.0.4' };
+    androidInstaller.start(next, { automatic: true }); await settle();
+    const cached = [...mocks.files.keys()][0];
+    androidInstaller.close(); await settle();
+    mocks.network.type = 'CELLULAR';
+    androidInstaller.start(next); await settle();
+    expect(mocks.download).toHaveBeenCalledOnce();
+    expect(mocks.native.install).toHaveBeenCalledWith(cached, next.version);
+  });
+
   it('retains the downloaded APK for the system installer', async () => {
     androidInstaller.start(target); await settle();
     expect(mocks.file).toMatch(/^file:\/\/\/cache\/cindy-updates\/update-resume-[a-f0-9]{64}\.apk$/);
-    expect(mocks.native.install).toHaveBeenCalledWith(expect.stringMatching(/\/update-[0-9]+-[a-z0-9]+\.apk$/), target.version);
+    expect(mocks.native.install).toHaveBeenCalledWith(expect.stringMatching(/\/update-ready-[a-f0-9]{64}\.apk$/), target.version);
     expect(androidInstaller.getSnapshot().phase).toBe('ready');
     expect(mocks.remove).not.toHaveBeenCalled();
     expect(mocks.release).toHaveBeenCalledOnce();
@@ -87,7 +158,8 @@ describe('Android installer IO', () => {
     androidInstaller.start(target); await settle();
     expect(mocks.resumeData).toBeUndefined();
     expect(mocks.files.has(handedOff)).toBe(true);
-    expect(mocks.native.install.mock.calls[1][0]).not.toBe(handedOff);
+    expect(mocks.native.install.mock.calls[1][0]).toBe(handedOff);
+    expect(mocks.download).toHaveBeenCalledOnce();
   });
 
   it('retains interrupted bytes and resumes from disk on retry', async () => {
@@ -170,6 +242,23 @@ describe('Android installer IO', () => {
     androidInstaller.close(); await settle();
     expect(mocks.native.install).not.toHaveBeenCalled();
     expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('waits for rejected APK deletion before a reopened update can reuse the cache', async () => {
+    let finishRemoval!: () => void;
+    mocks.remove.mockImplementationOnce(async (file) => {
+      await new Promise<void>((resolve) => { finishRemoval = resolve; });
+      mocks.files.delete(file);
+    });
+    mocks.native.install.mockRejectedValueOnce(new Error('invalid APK'));
+    androidInstaller.start(target); await settle();
+    androidInstaller.close(); androidInstaller.start(target); await settle();
+    expect(mocks.download).toHaveBeenCalledOnce();
+    finishRemoval(); await settle();
+    expect(mocks.download).toHaveBeenCalledTimes(2);
+    expect(androidInstaller.getSnapshot().phase).toBe('ready');
+    const installed = mocks.native.install.mock.calls[1][0];
+    expect(mocks.files.has(installed)).toBe(true);
   });
 
   it('waits for the foreground before opening installation', async () => {
