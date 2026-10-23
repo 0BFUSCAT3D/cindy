@@ -203,6 +203,7 @@ export function createProcessMonitorSampler(
     const { rows, childrenByParent } = cachedSnapshot;
     const rowByPid = new Map(rows.map((r) => [r.pid, r]));
     const entries: ProcessUsageEntry[] = [];
+    const liveSessions = new Set<string>();
     for (const row of rows) {
       if (row.ppid !== deps.selfPid) continue;
       const kind = deps.classify(row.cmdLineLower);
@@ -223,11 +224,12 @@ export function createProcessMonitorSampler(
       }
       const terminable =
         row.startIdentity != null && registrationMatchesKind && registeredRole === 'task-host';
+      const liveSessionId =
+        registrationMatchesKind ? registration?.sessionId ?? null : null;
       // 标题解析在后台进行（不阻塞采样帧）：首帧可能还没有，下一帧生效；
       // 解析失败或任务已删只丢标题，不影响 CPU / 内存与终止授权。
-      const sessionLabel = registrationMatchesKind && registration?.sessionId
-        ? cachedSessionLabel(registration.sessionId)
-        : null;
+      const sessionLabel = liveSessionId ? cachedSessionLabel(liveSessionId) : null;
+      if (liveSessionId) liveSessions.add(liveSessionId);
       entries.push({
         pid: row.pid,
         kind: AGENT_KIND_TO_USAGE_KIND[kind],
@@ -241,6 +243,10 @@ export function createProcessMonitorSampler(
         ...(agentRole ? { agentRole } : {}),
         ...(sessionLabel ? { sessionLabel } : {}),
       });
+    }
+    // 剪枝:本帧仍存活的任务以外,标题缓存逐条清除,长驻应用不积累旧任务。
+    for (const sessionId of [...sessionLabels.keys()]) {
+      if (!liveSessions.has(sessionId)) sessionLabels.delete(sessionId);
     }
     return entries;
   }

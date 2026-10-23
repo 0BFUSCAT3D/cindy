@@ -297,6 +297,49 @@ describe('createProcessMonitorSampler', () => {
     });
   });
 
+  it('进程退出后剪枝对应任务的标题缓存', async () => {
+    const lookups: string[] = [];
+    const { state, sampler } = makeHarness({
+      snapshot: snapshotOf([
+        osRow({ pid: 921, ppid: SELF_PID, cmdLineLower: 'pi-marker host' }),
+      ]),
+      deps: {
+        resolveAgentProcessRegistration: () => ({
+          kind: 'pi',
+          role: 'task-host',
+          sessionId: 'session-7',
+          instanceId: 'inst:921',
+        }),
+        resolveSessionLabel: (sessionId) => {
+          lookups.push(sessionId);
+          return Promise.resolve('任务七');
+        },
+      },
+    });
+    await sampler.sample();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(entryByPid(await sampler.sample(), 921)).toMatchObject({ sessionLabel: '任务七' });
+    expect(lookups).toEqual(['session-7']);
+
+    // 进程退出后,缓存被剪枝;进程重新出现时重新后台解析。
+    // (快照按 5s 周期缓存,先推进时钟让换入的快照生效。)
+    state.nowMs += 5_000;
+    state.snapshot = snapshotOf([]);
+    await sampler.sample();
+    state.nowMs += 5_000;
+    state.snapshot = snapshotOf([
+      osRow({ pid: 922, ppid: SELF_PID, cmdLineLower: 'pi-marker host' }),
+    ]);
+    await sampler.sample();
+    expect(lookups).toEqual(['session-7', 'session-7']);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(entryByPid(await sampler.sample(), 922)).toMatchObject({ sessionLabel: '任务七' });
+  });
+
   it('OS 扫描按周期缓存:未过期不重扫,过期后重扫', async () => {
     const { state, sampler } = makeHarness();
     await sampler.sample();
