@@ -186,6 +186,7 @@ import type {
   UserMessage,
 } from '@cindy/maker-core';
 import {
+  actualSourceIdForModel,
   effectiveSourceIdForModel,
   isModelSelectableForNewRoute,
   buildUserProvider,
@@ -1308,6 +1309,7 @@ import {
   resolveCompatibleSessionRuntimeEffort,
   resolveCompatibleSessionRuntimeAxisPatch,
   resolveSessionRuntimeAxes,
+  resolveSessionRuntimeRefreshEffort,
   sessionRuntimeGenerationMatches,
   sessionRuntimeControlOwnerEpochMatches,
   settlePendingSessionRuntimeMutation,
@@ -10968,6 +10970,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     isBusy: () => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning(),
     resolveSelection: async (route) => {
+      // Agent 在另一台电脑运行的任务:自动化的选择按那台的已授权目录解析,本机停用轴不适用。
+      const row = await agentSwitchDeps.getSessionRow(sessionId);
+      if (row?.agentDeviceId && !row.remoteHostId) {
+        return resolveScheduledModelSelectionLive(route, { agentDeviceId: row.agentDeviceId });
+      }
       const reroute = await assertModelRouteUsable(route.agentKind, route.model, route.providerId);
       return resolveScheduledModelSelectionLive({ ...route,
         providerId: reroute && shouldApplyExclusiveProviderRerouteLive(route.providerId)
@@ -22033,6 +22040,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const sshCodexProviders = runtimeStatus.remoteHostId && runtimeStatus.agentKind === 'codex'
         ? await readSshCodexModelList({ id: runtimeStatus.remoteHostId }, listSshCodexProviders)
         : null;
+      // Route-only refreshes preserve the current axes. A cleared store can mean a
+      // fixed-effort model, so normalize the NOT NULL row against the SOURCE model
+      // before using it; the requested target must not revive its historical rank.
+      const currentRuntimeProfile = getSessionRuntimeControlSnapshot(sessionId).effectiveOverride;
+      const currentLiveSession = maker.getSession(sessionId);
+      const currentAgentKind = currentLiveSession?.agentKind ?? dbToMakerAgentKind(runtimeStatus.agentKind);
+      const currentModelId = currentLiveSession?.model ?? internalOptions.previousPiRoute?.model ?? runtimeStatus.model;
+      const runtimeProviders = sshCodexProviders ?? await getDesktopProviderService().listProviders({
+        allowSideEffects: false,
+        catalog: getActiveCatalog(),
+      });
+      const currentSourceId = currentProviderId ?? actualSourceIdForModel(
+        runtimeProviders, null, currentModelId, currentAgentKind,
+      );
+      const currentEffort = currentRuntimeProfile
+        ? currentRuntimeProfile.effort
+        : resolveSessionRuntimeRefreshEffort({
+            model: findCatalogModel(runtimeProviders.find(p => p.id === currentSourceId),
+              currentModelId, currentAgentKind, { exact: true }) ?? null,
+            storedEffort: getSessionEffort(sessionId) as SessionRuntimeProfile['effort'],
+            persistedEffort: runtimeStatus.effort ?? null,
+          });
       if (sshCodexProviders) {
         assertSshCodexModel(sshCodexProviders, model, guardProviderId);
       } else if (routeExplicit) {
@@ -22075,10 +22104,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           effectiveProviderId === null
             ? null
             : (normalizeSessionProviderId(effectiveProviderId) ?? currentProviderId);
-        const runtimeProviders = sshCodexProviders ?? await getDesktopProviderService().listProviders({
-          allowSideEffects: false,
-          catalog: getActiveCatalog(),
-        });
         const actualProviderId =
           selectedProviderId ??
           effectiveSourceIdForModel(runtimeProviders, null, model, runtimeAgentKind);
@@ -22195,6 +22220,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                     ? getSessionProvider(sessionId)
                     : (normalizeSessionProviderId(effectiveProviderId) ?? null),
                 atomicSelection,
+                currentEffort,
                 currentFastMode: getSessionFastMode(sessionId),
               }),
             })
@@ -23159,13 +23185,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           generation = acceptSessionRuntimeAxisMutation({
             sessionId,
             source: internalOptions.source,
-            profile: {
+            profile: buildDeferredRuntimeSelectionProfile({
               agentKind: maker.getSession(sessionId)?.agentKind ?? meta?.agentKind ?? 'claude-code',
               model,
               providerId: getSessionProvider(sessionId),
-              effort: atomicSelection?.effort ?? previousRuntime.effort ?? null,
-              fastMode: atomicSelection?.fastMode ?? previousRuntime.fastMode,
-            },
+              atomicSelection,
+              currentEffort,
+              currentFastMode: previousRuntime.fastMode,
+            }),
             pendingPatch: pendingAxisPatch,
           });
         } else {
@@ -23175,16 +23202,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             source: internalOptions.source,
             previousProfile: internalOptions.previousProfile,
             deferred: response.deferred,
-            profile: {
+            profile: buildDeferredRuntimeSelectionProfile({
               agentKind: maker.getSession(sessionId)?.agentKind ?? meta?.agentKind ?? 'claude-code',
               model,
               providerId:
                 effectiveProviderId === undefined
                   ? getSessionProvider(sessionId)
                   : (normalizeSessionProviderId(effectiveProviderId) ?? null),
-              effort: atomicSelection?.effort ?? null,
-              fastMode: atomicSelection?.fastMode ?? getSessionFastMode(sessionId),
-            },
+              atomicSelection,
+              currentEffort,
+              currentFastMode: getSessionFastMode(sessionId),
+            }),
           });
         }
         if (!internalOptions.applyingPiCredentialPending && (rebuildLiveOrcaWorker || modelWindowRebuilt || atomicSelection ||
@@ -23238,7 +23266,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const projectionMeta = await maker.getSessionMeta(sessionId);
         const userBaselineOverride =
           internalOptions.source === 'user'
-            ? {
+            ? buildDeferredRuntimeSelectionProfile({
                 agentKind:
                   maker.getSession(sessionId)?.agentKind ??
                   projectionMeta?.agentKind ??
@@ -23248,13 +23276,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                   effectiveProviderId === undefined
                     ? getSessionProvider(sessionId)
                     : (normalizeSessionProviderId(effectiveProviderId) ?? null),
-                effort:
-                  atomicSelection?.effort ??
-                  (getSessionEffort(sessionId) as SessionRuntimeProfile['effort'] | undefined) ??
-                  projectionMeta?.effort ??
-                  null,
-                fastMode: atomicSelection?.fastMode ?? getSessionFastMode(sessionId),
-              }
+                atomicSelection,
+                currentEffort,
+                currentFastMode: getSessionFastMode(sessionId),
+              })
             : undefined;
         await broadcastSessionRuntimeProjection(sessionId, userBaselineOverride).catch((error) => {
           log.debug('session runtime projection broadcast failed', {

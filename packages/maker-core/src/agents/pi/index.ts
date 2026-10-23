@@ -66,6 +66,7 @@ import {
   AgentStartupCleanupPendingError,
   AgentStartupStoppedError,
   BaseAgent,
+  LOCAL_AGENT_CLIENT,
   MAIN_OWNED_SEND_CONTEXT,
   ASYNC_QUESTION_ANSWER,
   PINNED_SKILL_INVOCATION,
@@ -3341,7 +3342,7 @@ export class PiAgent extends BaseAgent {
     // directory. Keep the capability absent until the wire protocol owns those
     // files remotely end-to-end.
     const localSubagentSupported = Boolean(
-      !reviewMode
+      !reviewMode && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly
       && !remote
       // 设备托管：子代理进程继承 CINDY_PI_HOSTED 与同一份 cindy-bridge，文件与命令工具同样经
       // 隧道回到任务所在电脑(隧道随任务关闭，任务结束后仍在后台跑的子代理会失去工具)。
@@ -3696,7 +3697,12 @@ export class PiAgent extends BaseAgent {
       opts.remoteHostId && this.deps.remotePiSkipMcpBridge?.(opts.remoteHostId));
     const mcpReadyStartedAt = Date.now();
     let mcpReadyStatus: 'ok' | 'degraded' | 'skipped' = 'skipped';
-    if (hosted) {
+    if (opts[LOCAL_AGENT_CLIENT]) {
+      const client = opts[LOCAL_AGENT_CLIENT]!;
+      mcpBridge = { token: client.token, servers: [{ name: client.mcpName ?? 'client', url: client.url }] };
+      registeredMcpServerNames.add(client.mcpName ?? 'client');
+      mcpReadyStatus = 'ok';
+    } else if (hosted) {
       // 设备托管：Cindy 工具都在任务所在电脑上，经隧道访问；本机的 MCP 桥不参与。
       mcpBridge = deviceHostedPiMcpBridge(hosted);
       for (const server of mcpBridge.servers) registeredMcpServerNames.add(server.name);
@@ -3864,7 +3870,7 @@ export class PiAgent extends BaseAgent {
       ? [] : [...(this.deps.getDisabledSkillPaths?.() ?? [])];
     let disabledSkillLaunch = snapshotDisabledSkillLaunch(disabledSkillPaths);
     const disabledSkillSnapshot = disabledSkillLaunch.identities;
-    const loadProjectResourcesInPlace = !reviewMode && !opts.botRuntimeProfile && !opts.remoteHostId;
+    const loadProjectResourcesInPlace = !reviewMode && !opts.botRuntimeProfile && !opts.remoteHostId && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly;
     let projectResourceAssembly = unavailablePiProjectResourceAssembly(
       reviewMode ? 'review-mode-project-resources-disabled' : 'approval-resolver-unavailable',
     );
@@ -3917,7 +3923,7 @@ export class PiAgent extends BaseAgent {
     if (!reviewMode && !opts.remoteHostId && !hostedGuest) {
       if (this.deps.resolvePiNativePackagePaths) {
         try {
-          nativePackagePaths = await this.deps.resolvePiNativePackagePaths();
+          nativePackagePaths = opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? [] : await this.deps.resolvePiNativePackagePaths();
           await this.writePiRuntimeSettings(configHome, {
             contextWindow: startupContextWindow,
             workingContextWindow: startupWorkingContextWindow,
@@ -4003,7 +4009,7 @@ export class PiAgent extends BaseAgent {
     try {
       const managedSkillGrants = snapshotManagedSkillGrants(opts.botRuntimeProfile?.skillPolicy);
       // 受邀者不带本机安装的托管技能(属于本机用户与其组织)。
-      const managedSkills = opts.remoteHostId || reviewMode || hostedGuest ? [] : await this.deps.getManagedSkills?.() ?? [];
+      const managedSkills = opts.remoteHostId || reviewMode || hostedGuest || opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? [] : await this.deps.getManagedSkills?.() ?? [];
       const managedDisabledPaths = snapshotDisabledSkillLaunch(opts.remoteHostId || reviewMode || hostedGuest ? [] : this.deps.getDisabledSkillPaths?.() ?? []);
       const managedSourceIdentities = new Set(managedSkills.flatMap((skill) =>
         skill.path ? [canonicalSkillPath(skill.path)] : []));
@@ -4013,7 +4019,7 @@ export class PiAgent extends BaseAgent {
       // The catalog path may alias a managed source. Apply the managed grant and
       // activation checks once, including paths already selected by the Bot.
       const additionalSkillPaths = [...new Map([
-        ...(loadProjectResourcesInPlace ? [] : botSkillSelection.explicitSkillPaths.filter((skillPath) =>
+        ...(loadProjectResourcesInPlace || opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? [] : botSkillSelection.explicitSkillPaths.filter((skillPath) =>
           !managedSourcePaths.has(path.resolve(skillPath)) && !managedSourceIdentities.has(canonicalSkillPath(skillPath)))),
       ].map((skillPath) => [canonicalSkillPath(skillPath), skillPath])).values()];
 
@@ -4048,6 +4054,7 @@ export class PiAgent extends BaseAgent {
         '--model',
         initialWireModel,
         ...(reviewMode ? ['--tools', 'read,grep,find,ls'] : []),
+        ...(opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? ['--no-skills', '--no-context-files', '--no-prompt-templates'] : []),
         // Bot sessions must not absorb project/global AGENTS.md or CLAUDE.md from
         // the cwd chain — their context is the Bot profile, not the workspace.
         ...(opts.botRuntimeProfile ? ['--no-context-files'] : []),
@@ -4068,7 +4075,7 @@ export class PiAgent extends BaseAgent {
         '--extension',
         bridgeExtensionPath,
         ...(localSubagentSupported ? ['--extension', subagentExtensionPath] : []),
-        ...(!reviewMode && planModeExtAvailable ? ['--extension', planModeExtPath] : []),
+        ...(!reviewMode && !opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly && planModeExtAvailable ? ['--extension', planModeExtPath] : []),
         ...(loadProjectResourcesInPlace
           ? piProjectResourceCliArgs(projectResourceCli)
           : []),
@@ -4706,7 +4713,7 @@ export class PiAgent extends BaseAgent {
       }
       const requestId = `pi-subagent:${key}`;
       const turnPolicyForcePrompt = (() => {
-        if (!activeTurnPermissionPolicy) return false;
+        if (!activeTurnPermissionPolicy || permissionMode === 'bypassPermissions') return false;
         try {
           return activeTurnPermissionPolicy.forceConfirmToolCall(toolName, input) === true;
         } catch (error) {
@@ -4744,7 +4751,7 @@ export class PiAgent extends BaseAgent {
           unregister = registerPendingPrompt(requestId, {
             // control-plane writes must keep forcePrompt across a Full Access
             // hot-switch; otherwise dismissAllPendingPrompts would allow them.
-            forcePrompt: options.forcePrompt || adopted || turnPolicyForcePrompt,
+            forcePrompt: options.forcePrompt || adopted,
             ...(options.unavailableHandoff ? { unavailableHandoff: true } : {}),
             // Durable child: losing the surface parks the question.
             deferWhenSurfaceLost: true,
@@ -4815,7 +4822,7 @@ export class PiAgent extends BaseAgent {
         if (controlPlaneWrite) return requestUserDecision({ forcePrompt: true });
         if (adopted && permissionMode !== 'auto') return requestUserDecision({ forcePrompt: true });
         if (permissionMode === 'bypassPermissions') {
-          return turnPolicyForcePrompt ? 'system-deny' : 'allow';
+          return 'allow';
         }
         const mcpTarget = resolveMcpToolTarget(toolName, registeredMcpServerNames);
         const mcpPolicy = (() => {
@@ -4845,7 +4852,7 @@ export class PiAgent extends BaseAgent {
         const hostAutoApprove = mcpPolicy === 'auto-approve' && !turnPolicyForcePrompt && !adopted;
         const reviewPermissionMode = permissionMode;
         if (reviewPermissionMode !== 'auto' && !hostAutoApprove) {
-          return requestUserDecision({ forcePrompt: turnPolicyForcePrompt || mcpPolicy === 'prompt-each-time' });
+          return requestUserDecision({ forcePrompt: mcpPolicy === 'prompt-each-time' });
         }
         checkingAutomaticPermission = true;
         try {
@@ -5580,6 +5587,7 @@ export class PiAgent extends BaseAgent {
         // 支持者（如 Anthropic）可避免较长会话在短 TTL 后重新计费。
         PI_CACHE_RETENTION: 'long',
         ...(mcpBridge && mcpBridge.servers.length > 0 ? { [PI_MCP_BRIDGE_ENV]: JSON.stringify(mcpBridge) } : {}),
+        CINDY_LOCAL_HOST_TOOLS_ONLY: opts[LOCAL_AGENT_CLIENT]?.hostToolsOnly ? '1' : '',
       };
       // 不继承宿主进程里碰巧存在的同名变量；Windows 环境键大小写不敏感，必须先清掉
       // 所有 casing 再写入 host 校验并 stage 后的唯一绝对路径。
@@ -8832,6 +8840,7 @@ export class PiAgent extends BaseAgent {
           const toolName = payload.args === undefined ? 'cindy_pi_extension' : 'cindy_pi_command';
           const toolInput = payload.args === undefined ? { action: payload.action, source } : { args: payload.args };
           const forcePrompt = (() => {
+            if (context.permissionMode === 'bypassPermissions') return false;
             try { return context.turnPermissionPolicy?.forceConfirmToolCall(toolName, toolInput) === true; }
             catch { return true; }
           })();
@@ -8865,7 +8874,7 @@ export class PiAgent extends BaseAgent {
             return;
           }
           if (autoDecision?.unavailable) context.notifyAutoReviewUnavailable();
-          const approved = (!forcePrompt && getPermissionCtx().permissionMode === 'bypassPermissions')
+          const approved = getPermissionCtx().permissionMode === 'bypassPermissions'
             || (!forcePrompt && autoDecision?.verdict === 'allow' && getPermissionCtx().permissionMode === 'auto')
             || await new Promise<boolean>((resolve) => {
             if (!context.resolver) {
@@ -8886,7 +8895,7 @@ export class PiAgent extends BaseAgent {
               resolve(value);
             };
             unregister = context.registerPendingPrompt(`${id}:pi-extension-mutation`, {
-              forcePrompt,
+              forcePrompt: false,
               unavailableHandoff: autoDecision?.unavailable,
               settle: (resolveAs, reason) => {
                 if (settled) return;
@@ -9159,7 +9168,7 @@ export class PiAgent extends BaseAgent {
        * 代码:同步抛错不能变成放行,按"必须询问" fail-closed(与 CC/Codex 同口径)。
        */
       const turnPolicyForcePrompt = ((): boolean => {
-        if (!turnPermissionPolicy) return false;
+        if (!turnPermissionPolicy || permissionMode === 'bypassPermissions') return false;
         try {
           return turnPermissionPolicy.forceConfirmToolCall(toolName, input) === true;
         } catch (err) {
@@ -9262,8 +9271,8 @@ export class PiAgent extends BaseAgent {
        */
       const isFullAccessNow = (): boolean => getPermissionCtx().permissionMode === 'bypassPermissions';
       /**
-       * MCP 逐次确认和 AI ask 不覆盖 Full access；来源/本轮范围约束与需要用户输入的
-       * 交互仍保留。是否允许持久化决定，不等于是否继承会话权限。
+       * MCP 逐次确认、AI ask 和 IM 策略不覆盖主人当前选择的 Full access；
+       * 需要用户输入或明确确认的控制面操作仍保留。
        */
       const requestUserConfirmation = async (
         opts?: {
@@ -9273,19 +9282,17 @@ export class PiAgent extends BaseAgent {
         },
       ): Promise<PiPermissionResolution> => {
         // 发起确认前:已切到 Full access 就不该再弹卡。
-        // 本轮范围仍由 policy 约束，不能把 MCP 风险标记当成第二份会话权限。
         if (isFullAccessNow() && opts?.requireExplicitDecision !== true) {
-          return turnPolicyForcePrompt ? 'system-deny' : 'allow';
+          return 'allow';
         }
         const outcome = await requestUserDecision({
-          forcePrompt: turnPolicyForcePrompt || opts?.requireExplicitDecision === true,
+          forcePrompt: opts?.requireExplicitDecision === true,
           ...(opts?.unavailableHandoff ? { unavailableHandoff: true } : {}),
         });
         // 已有决策(用户明确表态,或切档时代为 settle)→ 以它为准,不再被档位二次翻转。
         if (outcome.decided) return outcome.resolution;
         // 拿不到决策:Full access 下按 bypass 语义放行,其余一律 fail-closed。
-        return turnPolicyForcePrompt
-          || opts?.requireExplicitDecision === true
+        return opts?.requireExplicitDecision === true
           || !isFullAccessNow()
           ? outcome.resolution
           : 'allow';
@@ -9295,9 +9302,7 @@ export class PiAgent extends BaseAgent {
         // 已把普通 bypass 拦在冒泡之前,但档位是热切换的:confirm 冒泡之后用户仍可能切到 Full access。此时
         // MCP 策略 / 灰区审阅 / 弹窗都不该再改变「全放行」语义,也不该因为没有 resolver 就
         // 拒掉工具调用(与 auto 分支既有的 modeAfterReview bypass 收口同口径)。
-        // 本轮策略命中时不吃 Full Access 短路:policy + bypassPermissions 已在 send 预检
-        // 拒绝、且 policy turn 持 host lease 堵死热切到 bypass,故此处 turnPolicyForcePrompt
-        // 为真本不可达;仍显式 fail-closed,避免任一上游闸门被绕过就静默放行破坏性调用。
+        // IM 任务中主人显式切档与普通任务一致，不再由本轮旧策略阻塞。
         if (controlPlaneWrite) {
           sendPermissionResolution(await requestUserConfirmation({
             forcePrompt: true,
@@ -9305,7 +9310,7 @@ export class PiAgent extends BaseAgent {
           }));
           return;
         }
-        if (isFullAccessNow() && !turnPolicyForcePrompt) {
+        if (isFullAccessNow()) {
           sendPermissionResolution('allow');
           return;
         }
@@ -9372,7 +9377,7 @@ export class PiAgent extends BaseAgent {
           //   - 仍是 auto → 按本次审查 verdict 收口(下方原逻辑)。
           const modeAfterReview = getPermissionCtx().permissionMode;
           if (modeAfterReview === 'bypassPermissions') {
-            sendPermissionResolution(turnPolicyForcePrompt ? 'system-deny' : 'allow');
+            sendPermissionResolution('allow');
             return;
           }
           if (modeAfterReview !== permissionMode) {
