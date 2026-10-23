@@ -31,7 +31,10 @@ function isFileTarget(value: string): boolean {
   if (!value || /^[#?]/.test(value)) return false;
   value = withoutLineLocator(value);
   if (/^(?:file|xdt-file|sandbox):/i.test(value) || /^[A-Za-z]:[\\/]/.test(value)) return true;
-  return !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value);
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false;
+  // Match the renderer's local-path shape; `about` is navigation, while
+  // `./README`, `documents/report.pdf` and `report.pdf` are explicit files.
+  return /[\\/]/.test(value) || /\.[a-z0-9]{1,10}(\?.*)?$/i.test(value);
 }
 
 /** Only actual Markdown file links are deliveries; code, images and remote URLs are not. */
@@ -43,8 +46,10 @@ export function replyFileLinks(text: string) {
     const start = node.position?.start.offset, end = node.position?.end.offset;
     if (start === undefined || end === undefined) return;
     const raw = text.slice(start, end);
-    const normalized = raw.replace(/(\[[^\]\n]+\]\()&lt;([^\n]*?)&gt;(\))/g,
-      (match, before, target, after) => isFileTarget(target) ? `${before}<${target}>${after}` : match);
+    // The closing label delimiter can follow a separate image AST node.
+    // Definitions with escaped space-containing targets are text until reparsed.
+    const normalized = raw.replace(/(\]\(|(?:^|\n)[ \t]{0,3}\[[^\]\n]+\]:[ \t]*)&lt;([^\n]*?)&gt;/g,
+      (match, before, target) => isFileTarget(target) ? `${before}<${target}>` : match);
     if (normalized !== raw) escaped.push({ start, end, text: normalized });
   });
   for (const edit of escaped.sort((a, b) => b.start - a.start))
@@ -188,9 +193,12 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
     const lexicalRoot = path.resolve(scope.workingDir!);
     if (!isPathWithin(lexicalRoot, source) && !isPathWithin(root, source)) throw unavailable();
     const canonicalSource = isPathWithin(root, source) ? source : path.resolve(root, path.relative(lexicalRoot, source));
-    if (seen.has(canonicalSource)) continue;
+    // Windows path identity ignores case; preserve the original spelling for
+    // subsequent realpath, descriptor and workdir checks.
+    const identity = process.platform === 'win32' ? canonicalSource.toLowerCase() : canonicalSource;
+    if (seen.has(identity)) continue;
     if (attachments.length >= BOT_GROUP_ATTACHMENTS_MAX) throw unavailable();
-    seen.add(canonicalSource);
+    seen.add(identity);
     let digest: string | undefined;
     attachments.push({ id: canonicalSource, name: path.basename(source), category: 'file',
       mimeType: path.extname(source).toLowerCase() === '.pdf' ? 'application/pdf' : 'application/octet-stream',

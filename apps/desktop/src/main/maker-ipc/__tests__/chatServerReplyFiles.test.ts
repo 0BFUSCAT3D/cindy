@@ -77,6 +77,38 @@ describe('group reply file delivery', () => {
     expect((await result.attachments[0]!.readBytes!()).toString()).toBe('percent report');
   });
 
+  it('leaves ordinary relative navigation targets unchanged without file authority', async () => {
+    scope.snapshot = null;
+    const text = '[help](about) [guide][nav]\n\n[nav]: getting-started';
+    expect(await prepareChatReplyFiles(text, 'lane', () => {})).toEqual({ text, attachments: [] });
+  });
+
+  it.each(['image', 'reference', 'image-reference'])('recovers escaped file targets with %s labels', async mode => {
+    const image = '![preview](./preview.png)';
+    const body = mode === 'image' ? `[${image}](&lt;${pdf}&gt;)`
+      : `[${mode === 'reference' ? 'report' : image}][r]\n\n[r]: &lt;${pdf}&gt;`;
+    const result = await prepareChatReplyFiles(body, 'lane', () => {});
+    expect(result.attachments).toHaveLength(1);
+    expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
+    expect(result.text.trim()).toBe(mode === 'reference' ? 'report' : image);
+  });
+
+  it('does not recover escaped targets in code or HTML examples', async () => {
+    const text = '`[report](&lt;missing file.pdf&gt;)`\n\n```md\n[r]: &lt;missing file.pdf&gt;\n```\n\n<div>\n[report](&lt;missing file.pdf&gt;)\n</div>';
+    scope.snapshot = null;
+    expect(await prepareChatReplyFiles(text, 'lane', () => {})).toEqual({ text, attachments: [] });
+  });
+
+  it('deduplicates case variants according to the host path semantics before applying the count limit', async () => {
+    const names = process.platform === 'win32'
+      ? Array.from({ length: 32 }, (_, mask) => [...'report'].map((c, i) => mask & (1 << i) ? c.toUpperCase() : c).join('') + '.pdf')
+      : ['Report.pdf', 'report.pdf'];
+    for (const name of names) await fs.writeFile(path.join(work, name), 'case report');
+    const result = await prepareChatReplyFiles(names.map(name => `[report](${name})`).join(' '), 'lane', () => {});
+    expect(result.attachments).toHaveLength(process.platform === 'win32' ? 1 : 2);
+    for (const attachment of result.attachments) expect((await attachment.readBytes!()).toString()).toBe('case report');
+  });
+
   it('preserves persisted Markdown for an empty SDK result without changing ordinary text replies', async () => {
     scope.reply = { content: JSON.stringify({ text: `[报告][r]\n\n[r]: <${pdf}>` }) };
     const result = await prepareChatReplyFiles(`[报告][r] [r]: <${pdf}>`, 'lane', () => {}, 'reply-client');
