@@ -133,7 +133,7 @@
   签名地址过期——对象存储返回 401/403）时这一轮停下、下一轮连同这条消息重试，换电脑时的下载与合并 Cindy 时的搬运同样按这条区分（暂时失败则
   接管或合并本次失败、稍后重试）。只发附件没有文字的消息同样同步。
 - 伙伴回复里引用的产物随回复上云（`replyArtifacts.ts`）：正文里的 `cindy-media://blobs/…` 地址（该任务能读、本机有字节的），
-  以及回复里点名的文件——Markdown 链接目标、`xdt-file://` 链接、行内代码或正文里的路径（`documents/报告.docx`），代码块里的示例不算。
+  以及回复里点名的文件——Markdown 链接目标、`xdt-file://` 链接、行内代码或正文里的路径（`documents/报告.docx`；Windows 写法 `documents\报告.docx`、`C:\work\报告.docx` 同样识别，后者要真的落在该任务工作目录里；UNC 路径仍不读），代码块里的示例不算。
   **不论路径怎么写，只上传交付类扩展名**：docx / doc / xlsx / xls / pptx / ppt / pages / numbers / key、pdf、csv / tsv、zip、md、
   图片（png / jpg / jpeg / gif / webp / heic / bmp）、音频（mp3 / wav / m4a / aac / ogg / flac）、视频（mp4 / mov / webm / m4v）；
   代码、配置、json / yaml / toml / env / txt、证书与密钥类一律不传，即使在工作目录里也被回复点了名（`config/production.yml`、

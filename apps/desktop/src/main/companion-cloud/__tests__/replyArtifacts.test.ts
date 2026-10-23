@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { collectReplyReferences, replyArtifactAttachments, replyTextWithFiles, toolResultImageUrls, REPLY_ARTIFACTS_MAX } from '../replyArtifacts.js';
+import { collectReplyReferences, replyArtifactAttachments, replyPathToLookup, replyTextWithFiles, toolResultImageUrls, REPLY_ARTIFACTS_MAX } from '../replyArtifacts.js';
 
 const HASH = 'a'.repeat(64);
 
@@ -25,6 +25,15 @@ describe('collectReplyReferences', () => {
 
   it('does not take a bare word with a dot, or a name without a deliverable extension, as a file', () => {
     expect(collectReplyReferences('版本是 v1.2，见 config.json 和 notes.txt').paths).toEqual([]);
+  });
+
+  it('takes Windows paths as paths: relative with backslashes, with a drive letter, in prose and in code', () => {
+    const text = [
+      '做好了 documents\\report.docx，另见 `out\\charts\\q3.png`。',
+      '绝对路径 C:\\work\\documents\\summary.pdf 和 `D:\\data\\sheet.xlsx`',
+      '不交付：config\\prod.yml、src\\keys\\id.json、tools\\run.bat',
+    ].join('\n');
+    expect(collectReplyReferences(text).paths).toEqual(['documents\\report.docx', 'out\\charts\\q3.png', 'C:\\work\\documents\\summary.pdf', 'D:\\data\\sheet.xlsx']);
   });
 
   it('names only deliverable formats, whatever form the path is written in', () => {
@@ -70,6 +79,21 @@ describe('replyArtifactAttachments', () => {
     // A link to a configuration file by an allowed name does not make it a delivery either.
     await fs.symlink(path.join(root, 'config', 'production.yml'), path.join(root, 'documents', 'looks-fine.pdf'));
     const text = '见 config/production.yml、src/keys/service-account.json、src/index.ts、documents/report.docx、[图](documents/chart.png)、documents/looks-fine.pdf';
+    const files = await replyArtifactAttachments({ id: 'm1' }, text, 's1', deps());
+    expect(files.map(file => file.name).sort()).toEqual(['chart.png', 'report.docx']);
+  });
+
+  it('finds a file named with backslashes inside the work folder, and still refuses what is outside, hidden or not a delivery', async () => {
+    await fs.writeFile(path.join(root, 'documents', 'chart.png'), 'png');
+    await fs.writeFile(path.join(root, 'documents', 'prod.yml'), 'x: 1');
+    await fs.writeFile(path.join(outside, 'secret.docx'), 'secret');
+    await fs.mkdir(path.join(root, '.private'));
+    await fs.writeFile(path.join(root, '.private', 'notes.docx'), 'hidden');
+    const text = [
+      '见 documents\\report.docx、`documents\\chart.png`、documents\\prod.yml、',
+      `..\\${path.basename(outside)}\\secret.docx、.private\\notes.docx、`,
+      '[表](documents\\report.docx)、C:\\no\\such\\drive\\a.docx',
+    ].join('');
     const files = await replyArtifactAttachments({ id: 'm1' }, text, 's1', deps());
     expect(files.map(file => file.name).sort()).toEqual(['chart.png', 'report.docx']);
   });
@@ -152,5 +176,16 @@ describe('replyTextWithFiles', () => {
       { name: 'a (1).docx', path: '/att/a (1).docx', url: null },
       { name: 'gone.pdf', path: null, url: null },
     ])).toBe(`看这个\n\n![chart.png](cindy-media://blobs/${'b'.repeat(64)}.png)\n\n[a (1).docx](xdt-file://local/?path=%2Fatt%2Fa%20%281%29.docx)\n\n[附件: gone.pdf]`);
+  });
+});
+
+describe('replyPathToLookup', () => {
+  it('reads a relative name with either separator as folders inside the root, and leaves an absolute path alone', () => {
+    expect(replyPathToLookup('documents\\report.docx', '/work', path.posix)).toBe('/work/documents/report.docx');
+    expect(replyPathToLookup('documents/report.docx', '/work', path.posix)).toBe('/work/documents/report.docx');
+    expect(replyPathToLookup('/work/documents/report.docx', '/other', path.posix)).toBe('/work/documents/report.docx');
+    expect(replyPathToLookup('documents\\report.docx', 'C:\\work', path.win32)).toBe('C:\\work\\documents\\report.docx');
+    expect(replyPathToLookup('documents/report.docx', 'C:\\work', path.win32)).toBe('C:\\work\\documents\\report.docx');
+    expect(replyPathToLookup('C:\\work\\documents\\report.docx', 'C:\\other', path.win32)).toBe('C:\\work\\documents\\report.docx');
   });
 });

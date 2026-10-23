@@ -67,7 +67,8 @@ export function collectReplyReferences(text: string): ReplyReferences {
     // Chinese text is written without spaces: try the token as is and without the words stuck to its ends.
     const bare = token.replace(/^[\u3400-\u9fff\uff00-\uffef]+/, '');
     for (const candidate of new Set([token, bare, token.replace(/[\u3400-\u9fff\uff00-\uffef]+$/, ''), bare.replace(/[\u3400-\u9fff\uff00-\uffef]+$/, '')])) {
-      if (candidate.includes('/') ? candidate.length > 1 : /^[\p{L}\p{N}_.@ -]+$/u.test(candidate)) add(candidate);
+      // A Windows path (`documents\report.docx`, `C:\work\report.docx`) has a folder part just like a `/` one.
+      if (/[\\/]/.test(candidate) ? candidate.length > 1 : /^[\p{L}\p{N}_.@ -]+$/u.test(candidate)) add(candidate);
     }
   }
   return { blobs, paths };
@@ -125,6 +126,16 @@ function within(root: string, target: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+/**
+ * The path to look up for a name the reply gave: an absolute one as written, a relative one inside
+ * `root`. Where the separator is `/`, a relative name written with backslashes (a reply composed on
+ * Windows) is read as folders too; where it is `\`, `join` already takes both.
+ */
+export function replyPathToLookup(candidate: string, root: string, impl: Pick<typeof path, 'isAbsolute' | 'join' | 'sep'> = path): string {
+  if (impl.isAbsolute(candidate)) return candidate;
+  return impl.join(root, impl.sep === '/' ? candidate.replace(/\\/g, '/') : candidate);
+}
+
 export interface ReplyArtifactDeps {
   /** The real folders this companion's task may read from (its work folder); empty when none. */
   roots: (sessionId: string) => Promise<string[]>;
@@ -170,7 +181,7 @@ export async function replyArtifactAttachments(
     if (NETWORK_PATH.test(candidate)) continue;
     try {
       // Relative names are the work folder's; an absolute one must still end up inside it.
-      const real = await fs.realpath(path.isAbsolute(candidate) ? candidate : path.join(roots[0]!, candidate));
+      const real = await fs.realpath(replyPathToLookup(candidate, roots[0]!));
       if (!isDeliverablePath(real)) continue;
       const root = roots.find(item => within(item, real));
       if (!root || seen.has(real)) continue;
