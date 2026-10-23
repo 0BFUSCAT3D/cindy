@@ -15,16 +15,27 @@ import type { CompanionMirrorAttachment } from './mirror.js';
 export const REPLY_ARTIFACTS_MAX = 8;
 
 const BLOB_URL = /\bcindy-media:\/\/blobs\/[0-9a-f]{64}\.[a-z0-9]+/g;
-/** A bare file name (no folder) counts only for the formats people are handed as deliverables. */
-const DELIVERABLE_EXT = new Set(['docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'pdf', 'csv', 'tsv', 'zip', 'key', 'pages', 'numbers']);
+/**
+ * Only deliverables go to the room, whatever form the path is written in: documents, spreadsheets,
+ * presentations, PDF, CSV/TSV, archives, Markdown, images, audio and video. Code, configuration,
+ * data (json/yaml/env/txt) and key files are never sent, even inside the work folder, because the
+ * reply naming them is not the owner choosing to hand them over.
+ */
+const DELIVERABLE_EXT = new Set([
+  'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'pages', 'numbers', 'key', 'pdf', 'csv', 'tsv', 'zip', 'md',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'bmp',
+  'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'mp4', 'mov', 'webm', 'm4v',
+]);
 const MIME_BY_EXT: Record<string, string> = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
-  pdf: 'application/pdf', zip: 'application/zip', csv: 'text/csv', tsv: 'text/tab-separated-values',
-  txt: 'text/plain', md: 'text/markdown', json: 'application/json', html: 'text/html',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', bmp: 'image/bmp',
+  pdf: 'application/pdf', zip: 'application/zip', csv: 'text/csv', tsv: 'text/tab-separated-values', md: 'text/markdown',
+  mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', flac: 'audio/flac',
+  mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4v: 'video/x-m4v',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
+const isDeliverablePath = (candidate: string) => DELIVERABLE_EXT.has(/\.([A-Za-z0-9]{1,8})$/.exec(candidate)?.[1]?.toLowerCase() ?? '');
 /** UNC / WebDAV / device paths are never opened (realpath could contact a remote server). */
 const NETWORK_PATH = /^[\\/]{2}|^[\\/]\?\?[\\/]/;
 
@@ -36,7 +47,7 @@ export function collectReplyReferences(text: string): ReplyReferences {
   const blobs = [...new Set(prose.match(BLOB_URL) ?? [])];
   const paths: string[] = [];
   const add = (candidate: string | null) => {
-    if (candidate && !candidate.includes('\0') && !paths.includes(candidate)) paths.push(candidate);
+    if (candidate && !candidate.includes('\0') && isDeliverablePath(candidate) && !paths.includes(candidate)) paths.push(candidate);
   };
   // Markdown link / image targets (a local path, or an xdt-file link).
   for (const match of prose.matchAll(/\]\(\s*<?([^)>\n]+?)>?(?:\s+"[^"]*")?\s*\)/g)) {
@@ -54,9 +65,7 @@ export function collectReplyReferences(text: string): ReplyReferences {
     // Chinese text is written without spaces: try the token as is and without the words stuck to its ends.
     const bare = token.replace(/^[\u3400-\u9fff\uff00-\uffef]+/, '');
     for (const candidate of new Set([token, bare, token.replace(/[\u3400-\u9fff\uff00-\uffef]+$/, ''), bare.replace(/[\u3400-\u9fff\uff00-\uffef]+$/, '')])) {
-      const ext = /\.([A-Za-z0-9]{1,8})$/.exec(candidate)?.[1]?.toLowerCase();
-      if (!ext) continue;
-      if (candidate.includes('/') ? candidate.length > 1 : DELIVERABLE_EXT.has(ext) && /^[\p{L}\p{N}_.@ -]+$/u.test(candidate)) add(candidate);
+      if (candidate.includes('/') ? candidate.length > 1 : /^[\p{L}\p{N}_.@ -]+$/u.test(candidate)) add(candidate);
     }
   }
   return { blobs, paths };
@@ -156,6 +165,7 @@ export async function replyArtifactAttachments(
     try {
       // Relative names are the work folder's; an absolute one must still end up inside it.
       const real = await fs.realpath(path.isAbsolute(candidate) ? candidate : path.join(roots[0]!, candidate));
+      if (!isDeliverablePath(real)) continue;
       const root = roots.find(item => within(item, real));
       if (!root || seen.has(real)) continue;
       // Hidden files and folders (.env, .git, …) are never part of a delivery.

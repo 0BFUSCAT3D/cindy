@@ -10,7 +10,7 @@ describe('collectReplyReferences', () => {
   it('finds media addresses and the files a reply names, in prose, inline code and links', () => {
     const text = [
       `![chart](cindy-media://blobs/${HASH}.png)`,
-      '做好了 documents/报告.docx，另见 `notes/todo.txt`。',
+      '做好了 documents/报告.docx，另见 `notes/todo.md`。',
       '[表格](documents/q3.xlsx) 和 [导出](xdt-file:///work/out/data.csv)',
       '放在了summary.pdf里，见documents/a.pdf。',
       '```\ndocuments/example-only.docx\n```',
@@ -18,13 +18,22 @@ describe('collectReplyReferences', () => {
     ].join('\n');
     const found = collectReplyReferences(text);
     expect(found.blobs).toEqual([`cindy-media://blobs/${HASH}.png`]);
-    expect(found.paths).toEqual(expect.arrayContaining(['documents/报告.docx', 'notes/todo.txt', 'documents/q3.xlsx', '/work/out/data.csv', 'summary.pdf', 'documents/a.pdf']));
+    expect(found.paths).toEqual(expect.arrayContaining(['documents/报告.docx', 'notes/todo.md', 'documents/q3.xlsx', '/work/out/data.csv', 'summary.pdf', 'documents/a.pdf']));
     expect(found.paths).not.toContain('documents/example-only.docx');
     expect(found.paths.some(item => item.includes('example.com') || item.includes('x.dev'))).toBe(false);
   });
 
   it('does not take a bare word with a dot, or a name without a deliverable extension, as a file', () => {
-    expect(collectReplyReferences('版本是 v1.2，见 README.md 和 config.json').paths).toEqual([]);
+    expect(collectReplyReferences('版本是 v1.2，见 config.json 和 notes.txt').paths).toEqual([]);
+  });
+
+  it('names only deliverable formats, whatever form the path is written in', () => {
+    const text = [
+      '改了 config/production.yml 和 src/keys/service-account.json，还有 src/app.ts、deploy/.env、certs/server.pem、docs/notes.txt',
+      '[配置](config/settings.toml) [密钥](xdt-file:///work/keys/id_rsa.key.json) ![图](assets/logo.png)',
+      '交付：out/report.docx out/data.csv out/deck.pptx out/voice.mp3 out/demo.mp4 out/readme.md out/bundle.zip',
+    ].join('\n');
+    expect(collectReplyReferences(text).paths).toEqual(['assets/logo.png', 'out/report.docx', 'out/data.csv', 'out/deck.pptx', 'out/voice.mp3', 'out/demo.mp4', 'out/readme.md', 'out/bundle.zip']);
   });
 });
 
@@ -49,6 +58,20 @@ describe('replyArtifactAttachments', () => {
     const files = await replyArtifactAttachments({ id: 'm1' }, `做好了 documents/report.docx，也见 ${path.join(root, 'documents', 'report.docx')} 和 documents/missing.docx`, 's1', deps());
     expect(files).toHaveLength(1);
     expect(files[0]).toMatchObject({ name: 'report.docx', category: 'file', path: path.join(root, 'documents', 'report.docx'), url: null, size: 10 });
+  });
+
+  it('sends a deliverable from the work folder but never code or configuration, even when the reply names it', async () => {
+    await fs.mkdir(path.join(root, 'config'));
+    await fs.mkdir(path.join(root, 'src', 'keys'), { recursive: true });
+    await fs.writeFile(path.join(root, 'config', 'production.yml'), 'secret: 1');
+    await fs.writeFile(path.join(root, 'src', 'keys', 'service-account.json'), '{}');
+    await fs.writeFile(path.join(root, 'src', 'index.ts'), 'export {}');
+    await fs.writeFile(path.join(root, 'documents', 'chart.png'), 'png');
+    // A link to a configuration file by an allowed name does not make it a delivery either.
+    await fs.symlink(path.join(root, 'config', 'production.yml'), path.join(root, 'documents', 'looks-fine.pdf'));
+    const text = '见 config/production.yml、src/keys/service-account.json、src/index.ts、documents/report.docx、[图](documents/chart.png)、documents/looks-fine.pdf';
+    const files = await replyArtifactAttachments({ id: 'm1' }, text, 's1', deps());
+    expect(files.map(file => file.name).sort()).toEqual(['chart.png', 'report.docx']);
   });
 
   it('never reads outside the work folder, through a link out of it, a hidden file, or an oversized one', async () => {
