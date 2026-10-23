@@ -447,7 +447,8 @@ export function useUnifiedRowActions(options: UnifiedRowActionsOptions): Unified
           modelId: entry.modelId,
           agent: config.engine,
           ...(config.effort ? { effort: config.effort } : {}),
-          ...(config.fast ? { fast: true as const } : {}),
+          // 三态：`'ultrafast'` 必须原样存，写成 `true` 会让「最近」里再应用变成普通 Fast。
+          ...(config.fast ? { fast: config.fast } : {}),
         });
       }
       return applied;
