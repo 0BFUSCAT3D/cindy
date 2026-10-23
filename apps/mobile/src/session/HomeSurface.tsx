@@ -2987,7 +2987,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
               />;
               if (row.item.automationGroup || !conversationSearchAllowsLocalWrites(row.item)) return content;
               return <SwipeableSessionRow key={row.key} session={row.item.session as RemoteSession}
-                registry={swipeRegistry} onArchive={archiveSession} onShowOptions={showSessionOptions} onTogglePin={toggleSessionPinned}
+                onMarkRead={sessionSwipeControls.onMarkRead} registry={swipeRegistry} onArchive={archiveSession} onShowOptions={showSessionOptions} onTogglePin={toggleSessionPinned}
                 testID="home.sharedSessionRow.swipe">{content}</SwipeableSessionRow>;
             }
             return <Pressable
@@ -4110,6 +4110,7 @@ function ProjectRow({
                   onArchive={swipe.onArchive}
                   onShowOptions={swipe.onShowOptions}
                   onTogglePin={swipe.onTogglePin}
+                  onMarkRead={swipe.onMarkRead}
                   registry={swipe.registry}
                   session={item.session as RemoteSession}
                   testID={`${childTestID}.swipe`}
@@ -4284,6 +4285,7 @@ function HomeListRowInner({
       onArchive={onArchive}
       onShowOptions={onShowOptions}
       onTogglePin={onTogglePin}
+      onMarkRead={swipe.onMarkRead}
       registry={registry}
       session={item.item.session as RemoteSession}
       testID={`${item.source === 'search' ? 'home.searchSessionRow' : homeSessionRowTestId(item.source)}.swipe`}
@@ -4761,6 +4763,7 @@ function AutomationGroupChildren({
             onArchive={swipe.onArchive}
             onShowOptions={swipe.onShowOptions}
             onTogglePin={swipe.onTogglePin}
+            onMarkRead={swipe.onMarkRead}
             registry={swipe.registry}
             session={child.session as RemoteSession}
             testID={`${testID}.automationChild.swipe`}
