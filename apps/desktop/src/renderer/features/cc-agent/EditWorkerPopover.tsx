@@ -198,7 +198,7 @@ export function EditWorkerPopover({
               <input
                 ref={roleInputRef}
                 type="text"
-                className="mt-2 w-full rounded-full border border-[var(--border-default)] bg-transparent px-3 py-1.5 text-13 leading-none text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none focus:border-[var(--text-secondary)]"
+                className="mt-2 w-full rounded-full border border-[var(--border-default)] bg-transparent px-3 py-1.5 text-13 leading-none text-[var(--text-primary)] placeholder:text-[var(--text-placeholder)] outline-none focus:border-[var(--text-secondary)]"
                 placeholder={t('orca.createWorker.customRolePlaceholder')}
                 value={customRole}
                 maxLength={32}
@@ -238,7 +238,7 @@ export function EditWorkerPopover({
               </div>
               <input
                 type="text"
-                className="w-full rounded-full border border-[var(--border-default)] bg-transparent px-3 py-1.5 text-13 leading-none text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none focus:border-[var(--text-secondary)]"
+                className="w-full rounded-full border border-[var(--border-default)] bg-transparent px-3 py-1.5 text-13 leading-none text-[var(--text-primary)] placeholder:text-[var(--text-placeholder)] outline-none focus:border-[var(--text-secondary)]"
                 placeholder={t('orca.editWorker.labelPlaceholder')}
                 value={label}
                 maxLength={32}
