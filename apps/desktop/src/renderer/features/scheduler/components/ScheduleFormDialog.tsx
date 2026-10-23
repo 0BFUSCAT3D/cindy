@@ -165,8 +165,12 @@ export function ScheduleFormDialog({
   const showSubmitError = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     const code = parseAgentErrorCode(message)?.code;
-    if (code && i18n.exists(`chat.remoteError.${code}`)) setSubmitError(message);
-    else toast.error(message);
+    if (code && i18n.exists(`chat.remoteError.${code}`)) {
+      setSubmitError(message);
+      // Save may be below the notice in a scrolled form. The shared alert toast
+      // stays visible above the dialog and announces the localized failure.
+      toast.error(t(`chat.remoteError.${code}`));
+    } else toast.error(message);
   };
   const [mode, setMode] = useState<'gallery' | 'form'>('form');
   // 前置检查「测试运行」状态:结果只在弹窗内展示,不落任何记录。
