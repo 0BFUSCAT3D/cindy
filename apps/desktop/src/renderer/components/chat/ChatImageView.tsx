@@ -257,6 +257,7 @@ export function ChatImageView({
         {longImage && (
           <span
             id={longImageHintId}
+            data-share-exclude
             className="pointer-events-none absolute bottom-2 left-2 right-2 w-fit max-w-[calc(100%_-_16px)] rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-12 leading-[1.33] text-[var(--text-primary)]"
           >
             {t('chat.media.longImagePreview')}

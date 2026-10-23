@@ -30,6 +30,7 @@ vi.mock('../components/chat/ImageMissingPlaceholder', () => ({
 }));
 
 import { ChatImageView } from '../components/chat/ChatImageView';
+import { prepareShareMessageClone } from '../lib/shareConversationImage';
 
 afterEach(() => {
   cleanup();
@@ -38,6 +39,22 @@ afterEach(() => {
 });
 
 describe('ChatImageView', () => {
+  // PR #6943 review: exporting a loaded long attachment must keep its image,
+  // but omit the live-only click promise. Existing clone tests use synthetic DOM.
+  it('omits the interactive long-image hint from the static share clone', () => {
+    const { container } = render(React.createElement(ChatImageView, {
+      src: 'data:image/png;base64,test', filename: 'long.png', variant: 'user-attached',
+    }));
+    const image = screen.getByAltText('long.png');
+    Object.defineProperties(image, { naturalWidth: { value: 100 }, naturalHeight: { value: 301 } });
+    fireEvent.load(image);
+    expect(screen.getByText('chat.media.longImagePreview')).toBeTruthy();
+    const clone = prepareShareMessageClone(container);
+    expect(clone?.querySelector('img')?.getAttribute('src')).toBe(image.getAttribute('src'));
+    expect(clone?.textContent).not.toContain('chat.media.longImagePreview');
+    expect(screen.getByText('chat.media.longImagePreview')).toBeTruthy();
+  });
+
   // #6796, unit: existing coverage only exercised loading/errors and click routing.
   // A 100x301 user attachment must expose the crop warning; 100x300 must not.
   // Source replacement must not inherit the previous image's crop decision.
