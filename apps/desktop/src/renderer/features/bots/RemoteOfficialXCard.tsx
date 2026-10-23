@@ -60,8 +60,9 @@ export function RemoteOfficialXCard({ bot, api, deviceName }: { bot: Pick<BotPro
       </div>
     );
   }
-  // An older computer, or one without the official X service, simply has nothing to show.
-  if (!state || !state.available) return null;
+  // Listed whenever the teammate's own settings list it (also set up there but not usable yet); an
+  // older computer does not say, and then it is listed only once usable.
+  if (!state || !(state.available || state.visible)) return null;
   const ready = state.enabled && state.connected;
   return (
     <section

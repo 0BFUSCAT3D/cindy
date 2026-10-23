@@ -69,7 +69,7 @@ export interface BotSettingsTarget {
     wechat: WechatApi | null;
     /** The official X account of the teammate's computer (remote only). */
     x: {
-      get(): Promise<{ available: boolean; enabled: boolean; connected: boolean; companionBotId: string | null }>;
+      get(): Promise<{ available: boolean; /** Absent on older computers. */ visible?: boolean; enabled: boolean; connected: boolean; companionBotId: string | null }>;
       setCompanion(assign: boolean, expectedBotId: string | null): Promise<{ companionBotId: string | null }>;
     } | null;
   };

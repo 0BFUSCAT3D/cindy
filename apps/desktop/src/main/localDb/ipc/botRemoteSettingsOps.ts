@@ -77,7 +77,7 @@ export interface BotSettingsOpsDeps {
       cancelAuthorization(): void;
     } | null>;
     x: {
-      summary(): Promise<{ available: boolean; enabled: boolean; connected: boolean; companionBotId: string | null }>;
+      summary(): Promise<{ available: boolean; visible?: boolean; enabled: boolean; connected: boolean; companionBotId: string | null }>;
       setCompanion(botId: string | null, expectedBotId: string | null): Promise<unknown>;
     };
   };

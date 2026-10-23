@@ -790,11 +790,12 @@ export async function changeXCompanionBinding(botId: string | null, expectedBotI
 }
 
 /** What a teammate's settings page may show of the official X account: no URLs, accounts or tokens. */
-export function readXCompanionSummary(): { available: boolean; enabled: boolean; connected: boolean; companionBotId: string | null } {
-  if (!hookControlAvailable()) return { available: false, enabled: false, connected: false, companionBotId: null };
-  const x = ensureInstances().manager.snapshot().x;
+export function readXCompanionSummary(): { available: boolean; visible: boolean; enabled: boolean; connected: boolean; companionBotId: string | null } {
+  const x = hookControlAvailable() ? ensureInstances().manager.snapshot().x : disabledHookView().x;
   return {
     available: x.available,
+    // The same rule that decides whether this computer's own settings list the X card.
+    visible: x.url.length > 0 || x.capabilityPending || x.available || x.enabled,
     enabled: x.enabled,
     connected: x.binding?.state === 'confirmed',
     companionBotId: x.companionBotId ?? null,
