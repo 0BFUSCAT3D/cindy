@@ -579,12 +579,6 @@ describe('useFileTree showIgnoredDirs option', () => {
         expect.objectContaining({ relPath: '', showIgnoredDirs: true }),
       ),
     );
-    // eslint-disable-next-line no-console
-    console.log('PROBE listDir calls:', JSON.stringify(mocks.listDir.mock.calls.map((c) => [c[0].relPath, c[0].showIgnoredDirs])));
-    // eslint-disable-next-line no-console
-    console.log('PROBE expanded:', JSON.stringify([...view.result.current.expanded]));
-    // eslint-disable-next-line no-console
-    console.log('PROBE packages list:', JSON.stringify(view.result.current.entries.get('packages')));
     expect(view.result.current.expanded.has('packages/node_modules')).toBe(true);
     const revealWrites = mocks.saveExpandedSet.mock.calls
       .filter(

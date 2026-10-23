@@ -215,11 +215,11 @@ interface FileTreeStore {
   /** 本 store 的 entries 是否还是从兄弟 scope **借来**的 seed 数据（切换开关的
    *  过渡窗口）。借来的树一旦根请求失败就不代表当前视图，留着会让失败看起来像
    *  加载成功（评审 P2）。 */
+  seeded: boolean;
   /** seed 窗口里仍属「借来的」条目路径：这些列表不能当剪枝证据 —— 借来的列表
    *  缺路径 ≠ 本 scope 的展开位过期（评审 P2：第二次 root 刷新借种子子列表剪掉
    *  并覆盖持久记录）。真实列表每次落地时逐路径移除，清空后恢复精确剪枝。 */
   borrowedDirs: Set<string>;
-  seeded: boolean;
   /** 本 scope **自己持久化过**的展开位（创建时从 localStorage 读出的那份）。
    *  seed 窗口收尾的 root 剪枝要继续豁免它们：那时子目录列表可能还是兄弟 scope
    *  借来的，列表缺路径 ≠ 本 scope 的展开位过期（评审：切开关丢失展开记录）。 */
