@@ -185,6 +185,15 @@ export class TerminalDeviceService {
   notifyNetworkChanged(): void { if (this.current()) this.client.notifyNetworkChanged({ urgent: true }); }
   refreshPresence(): void { this.guard()(); this.client.sendPresence(this.options.getHello()); }
 
+  async sourceDevice(deviceId:string):Promise<import('@cindy/maker-shared/message-source').MessageSourceDevice|undefined> {
+    const check=this.guard();check();
+    if(!this.presence.has(deviceId))await this.listDevices().catch(()=>undefined);
+    check();const device=this.presence.get(deviceId);if(!device)return;
+    const platform=['ios','android','mobile'].includes(device.platform.toLowerCase())?'mobile':['darwin','macos','windows','win32','linux','desktop'].includes(device.platform.toLowerCase())?'desktop':undefined;
+    if(!platform)return;
+    return {deviceId,platform,...(device.deviceName?{name:device.deviceName}:{})};
+  }
+
   async listDevices(): Promise<DeviceView[]> {
     const check = this.guard(); check();
     if (this.options.authorizationScheme === 'ProviderShareGuest') {

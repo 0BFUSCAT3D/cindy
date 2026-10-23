@@ -1649,6 +1649,24 @@ importers:
       '@cindy/device-link':
         specifier: workspace:*
         version: link:../device-link
+      '@cindy/maker-scheduler':
+        specifier: workspace:*
+        version: link:../maker-scheduler
+      '@cindy/maker-shared':
+        specifier: workspace:*
+        version: link:../maker-shared
+      '@cindy/plugin-protocol':
+        specifier: workspace:*
+        version: link:../plugin-protocol
+      '@cindy/remote-agent':
+        specifier: workspace:*
+        version: link:../remote-agent
+      gray-matter:
+        specifier: ^4.0.3
+        version: 4.0.3
+      jszip:
+        specifier: ^3.10.1
+        version: 3.10.1
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

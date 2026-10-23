@@ -155,7 +155,7 @@ export class TerminalModelConfig {
     let selection = input ? parseSelection(input) : this.state.defaultSelection;
     if (!selection) {
       for (const kind of ENGINES) {
-        const provider = views.find(p => p.connected && !p.suspended && p.models[kind]?.some(m => !m.disabled && m.defaultEnabled !== false));
+        const provider = views.find(p => p.connected && !p.suspended && (p.source === 'user' || kind === 'claude-code' && p.id === 'anthropic' || kind === 'codex' && p.id === 'openai') && p.models[kind]?.some(m => !m.disabled && m.defaultEnabled !== false));
         const model = provider?.models[kind]?.find(m => !m.disabled && m.defaultEnabled !== false);
         if (provider && model) { selection = { agentKind: kind, providerId: provider.id, model: model.id }; break; }
       }

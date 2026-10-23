@@ -12,7 +12,12 @@ import os from 'node:os';
 import net from 'node:net';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
-import { buildLegacyAttachmentOssRef } from '@cindy/device-link';
+import { buildLegacyAttachmentOssRef, RemoteResourceRegistry } from '@cindy/device-link';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { TerminalKnowledge } from './knowledge.js';
+import { registerKnowledgeResources } from './knowledge-resources.js';
+import type { Logger } from '@cindy/maker-core';
 import { TerminalMediaTransfer } from './media-transfer.js';
 import { TerminalSecretStore } from './secrets.js';
 import { TerminalTransportServer, connectTerminal } from './transport.js';
@@ -132,4 +137,49 @@ describe('terminal private host', () => {
     } finally { await first.close(); await second.close(); }
     if (process.platform !== 'win32') await fs.rm(path.dirname(socketPath(dir)), { recursive: true, force: true });
   });
+});
+
+
+// Tier: integration. The same account records must be visible through resource
+// forms and real MCP entry tools; disabled/stale runtimes must not disclose them.
+it('shares memory and contacts between real resources and MCP without cross-task disposal', async () => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'cindy-knowledge-'));
+  const logger:Logger={trace(){},debug(){},info(){},warn(){},error(){},fatal(){},child:()=>logger};
+  let active=true;
+  const knowledge=new TerminalKnowledge({root,logger,assertCurrent(){if(!active)throw new Error('OWNER_CHANGED');},changed(){},workingDirs:async()=>[root]});
+  const clients:Client[]=[];
+  try {
+    await knowledge.ready;
+    const registry=new RemoteResourceRegistry();registerKnowledgeResources(registry,knowledge);
+    const host={controllerDeviceId:'local',assertCurrent(){if(!active)throw new Error('OWNER_CHANGED');}};
+    const client={protocolVersion:1,primitives:['text','form'],locale:'zh-CN'};
+    await registry.invoke(host,{client,collectionId:'memory',actionId:'create',input:{workingDir:root,type:'project',name:'fixture',title:'验收记录',description:'private fixture',body:'one task must not close another'}});
+    const first=await knowledge.createRuntime({sessionId:'one',workingDir:root,agentKind:'codex'});
+    const second=await knowledge.createRuntime({sessionId:'two',workingDir:root,agentKind:'codex'});
+    await first.close();
+    expect((await (await second.memory.getStore(second.scopeKey)).list())[0].frontmatter.title).toBe('验收记录');
+    const connect=async(server:ReturnType<typeof second.factories.cindy_contacts>)=>{
+      const connection=new Client({name:'acceptance',version:'1'});clients.push(connection);
+      const [controller,target]=InMemoryTransport.createLinkedPair();await server.connect(target);await connection.connect(controller);return connection;
+    };
+    const contacts=await connect(second.factories.cindy_contacts());
+    await registry.invoke(host,{client,collectionId:'contacts',actionId:'create',input:{displayName:'Acceptance Person',kind:'person',status:'confirmed',summary:'Private fixture'}});
+    const listed=await registry.list(host,{client,collectionId:'contacts'});expect(listed.items).toHaveLength(1);
+    const ref=listed.items[0].ref;
+    await registry.invoke(host,{client,collectionId:'contacts',resourceRef:ref,actionId:'identity',input:{platform:'email',value:'fixture@example.invalid'}});
+    const resolve=()=>contacts.callTool({name:'call_tool',arguments:{name:'contacts_resolve',args:{value:'fixture@example.invalid'}}});
+    expect(JSON.stringify(await resolve())).toContain('CONTACTS_NOT_READY');
+    await registry.invoke(host,{client,collectionId:'contacts',actionId:'settings',input:{enabled:true}});
+    expect(JSON.stringify(await resolve())).toContain('Acceptance Person');
+    const memories=await registry.list(host,{client,collectionId:'memory'});expect(memories.items).toHaveLength(1);
+    const memory=await connect(second.factories.cindy_memory());
+    expect(JSON.stringify(await memory.callTool({name:'call_tool',arguments:{name:'memory_list',args:{}}}))).toContain('验收记录');
+    await knowledge.configure({memory:false});
+    expect(JSON.stringify(await memory.callTool({name:'call_tool',arguments:{name:'memory_list',args:{}}}))).toContain('MAKER_MEMORY_NOT_READY');
+    expect((await registry.list(host,{client,collectionId:'memory'})).items).toHaveLength(1);
+    active=false;
+    expect(JSON.stringify(await resolve())).not.toContain('Acceptance Person');
+    await expect(registry.list(host,{client,collectionId:'memory'})).rejects.toThrow('OWNER_CHANGED');
+    await second.close();
+  } finally {for(const client of clients)await client.close();await knowledge.close();await fs.rm(root,{recursive:true,force:true});}
 });

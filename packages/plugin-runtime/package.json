@@ -14,7 +14,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@cindy/device-link": "workspace:*"
+    "@cindy/device-link": "workspace:*",
+    "@cindy/plugin-protocol": "workspace:*",
+    "@cindy/maker-shared": "workspace:*",
+    "@cindy/maker-scheduler": "workspace:*",
+    "@cindy/remote-agent": "workspace:*",
+    "gray-matter": "^4.0.3",
+    "jszip": "^3.10.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -10,11 +10,11 @@ import type { InteractionRequest } from '@cindy/maker-core';
 import { InteractionView } from './interaction.js';
 import { Authentication } from './authentication.js';
 import { Resources } from './resources.js';
-import { getMessages, getControlMessages, getModelMessages, type Locale } from './i18n.js';
+import { getMessages, getControlMessages, getModelMessages, getServiceMessages, type Locale } from './i18n.js';
 import { Input, terminalText } from './input.js';
 import { useInputState } from './state.js';
 
-export type TuiExternalAction={type:'native-auth';kind:'pi'|'codex'|'claude-code';operation:'login'|'logout'} | {type:'service-uninstall'};
+export type TuiExternalAction={type:'native-auth';kind:'pi'|'codex'|'claude-code';operation:'login'|'logout'} | {type:'service-uninstall'} | {type:'service-activate'} | {type:'service-boot'};
 type Row = { id: string; title: string; detail?: string; run: () => void | Promise<void> };
 type Field = { key: string; label: string; secret?: boolean; value?: string; optional?: boolean; choices?: string[] };
 type Form = { id: number; title: string; fields: Field[]; submit: (values: Record<string, string>) => Promise<void> };
@@ -301,9 +301,10 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
           for (const [agentKind, models] of Object.entries(record(provider.models))) for (const model of array(models)) {
             if(model.disabled)continue;
             const current=preference.providerId===provider.id&&preference.agentKind===agentKind&&preference.model===model.id;
-            nextItems.push({ id:`${provider.id}:${agentKind}:${model.id}`, title:label(model.name,label(model.id)), detail:`${label(provider.name,label(provider.id))} · ${agentKind}${current?` · ${t.defaultModel}`:''}`,run:async () => {
+            const entry:Row={ id:`${provider.id}:${agentKind}:${model.id}`, title:label(model.name,label(model.id)), detail:`${label(provider.name,label(provider.id))} · ${agentKind}${current?` · ${t.defaultModel}`:''}`,run:async () => {
               await setDefaultModel(client,{providerId:label(provider.id),agentKind,model:label(model.id)},device); await load();
-            } });
+            } };
+            if(current)nextItems.splice(device?0:3,0,entry);else nextItems.push(entry);
           }
         }
       } else if(at.page==='providers'){
@@ -327,6 +328,8 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         } }))];
         if (!nextAuth?.session) nextItems.push({id:'login',title:t.login,run:() => navigate('login')});
       } else if (at.page === 'service') {
+        const serviceText=getServiceMessages(locale);
+        const serviceState=record(await call('terminal:service:inspect',[],false));
         const vault = record(nextStatus.vault);
         if (!vault.initialized) nextItems.push({id:'machine',title:t.machineKey,detail:t.vaultExplanation,run:() => vaultForm('machine')}, {id:'passphrase',title:t.passphraseKey,run:() => vaultForm('passphrase')});
         else if (vault.locked) nextItems.push({id:'unlock',title:t.unlock,run:() => edit(t.unlock,[{key:'passphrase',label:t.passphrase,secret:true}],async values => {await call('terminal:vault:unlock',[values.passphrase],false);setForm(null);await load();})});
@@ -340,6 +343,8 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
             const result=record(await call(nextStatus.installation?'terminal:service:uninstall':'terminal:service:install',[],false));
             if(result.requiresLocalCompletion){onExternalAction({type:'service-uninstall'});exit();}else await load();
           }});
+        if(nextStatus.installation)nextItems.push({id:'activate',title:serviceState.running?serviceText.running:serviceText.activate,detail:serviceState.running?String(serviceState.pid??''):undefined,run:()=>{if(!serviceState.running){onExternalAction({type:'service-activate'});exit();}}});
+        if(serviceState.starts!=='boot')nextItems.push({id:'boot',title:serviceText.boot,run:()=>{onExternalAction({type:'service-boot'});exit();}});
       }
       if (at.page === current.current.page && at.device === current.current.device) { setItems(nextItems); setSelected(index => Math.min(index,Math.max(0,nextItems.length-1)));if(at.device&&['tasks','models'].includes(at.page))setTargetOnline(true); }
     } finally {

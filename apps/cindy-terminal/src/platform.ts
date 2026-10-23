@@ -55,11 +55,13 @@ export async function privateDirectory(directory: string): Promise<void> {
   const script = [
     '$ErrorActionPreference = "Stop"',
     '$owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
-    '$acl = New-Object System.Security.AccessControl.DirectorySecurity',
+    '$acl = [System.Security.AccessControl.DirectorySecurity]::new()',
     '$acl.SetAccessRuleProtection($true, $false)',
     '$acl.SetOwner($owner)',
-    'foreach ($sid in @($owner, (New-Object System.Security.Principal.SecurityIdentifier("S-1-5-18")))) { $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"); $acl.AddAccessRule($rule) }',
-    'Set-Acl -LiteralPath $env:CINDY_PRIVATE_DIRECTORY -AclObject $acl',
+    'foreach ($sid in @($owner, [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18"))) { $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"); $acl.AddAccessRule($rule) }',
+    // Windows PowerShell 5 provides the .NET Framework ACL API directly. Avoid
+    // module auto-loading under a fresh service HOME, which can stall Set-Acl.
+    '[System.IO.Directory]::SetAccessControl($env:CINDY_PRIVATE_DIRECTORY, $acl)',
   ].join('; ');
   await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
     windowsHide: true, timeout: 15_000, env: { ...windowsPowerShellEnv(), CINDY_PRIVATE_DIRECTORY: directory },

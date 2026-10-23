@@ -12,6 +12,7 @@ import type { TerminalClient } from '../contracts.js';
 import type { Locale } from './i18n.js';
 import { Authentication } from './authentication.js';
 import { InteractionView } from './interaction.js';
+import { Resources } from './resources.js';
 import type { InteractionRequest } from '@cindy/maker-core';
 import { Input, terminalText } from './input.js';
 
@@ -235,4 +236,37 @@ describe('terminal authentication surface',()=>{
     expect(host.client.invoke).toHaveBeenCalledWith('terminal:auth:logout',[]);
     expect(vi.mocked(host.client.invoke).mock.calls.every(call=>call[2] === undefined)).toBe(true);
   });
+});
+
+
+// The production resource controller must retain server form defaults and its
+// revision token. Deletion must leave the stale detail screen (unit tier).
+it('edits resource defaults and returns to the collection after deletion',async()=>{
+  const host=fakeClient();let removed=false;let submitted:unknown;
+  const ref={collectionId:'fixture',kind:'fixture',id:'one'};
+  const collection={id:'fixture',resourceKind:'fixture',title:'Records'};
+  const item={ref,revision:'1',links:[],display:{title:'Saved record'}};
+  host.handle((channel,args)=>{
+    if(channel==='maker:remote-resources:manifest')return {collections:[collection]};
+    if(channel==='maker:remote-resources:list')return {collectionId:'fixture',items:removed?[]:[item]};
+    if(channel==='maker:remote-resources:get')return {...item,actions:[
+      {id:'edit',label:'Edit',fields:[{id:'title',label:'Title',kind:'text',required:true},{id:'mode',label:'Mode',kind:'select',options:[{value:'a',label:'A'},{value:'b',label:'B'}]},{id:'enabled',label:'Enabled',kind:'toggle'}]},
+      {id:'delete',label:'Delete',confirmation:{title:'Delete record?',confirmLabel:'Delete'}},
+    ],blocks:[{id:'edit',primitive:'form',fallbackMarkdown:'',data:{actionId:'edit',values:{title:'Existing title',mode:'b',enabled:true,__revision:'rev-1'}}}]};
+    if(channel==='maker:remote-resources:invoke'){
+      const request=args[0] as {actionId:string;input:unknown};
+      if(request.actionId==='edit')submitted=request.input;else removed=true;
+      return {effects:[{kind:'refresh-collection',collectionId:'fixture'}]};
+    }
+  });
+  const screen=await mount(host.client,{node:<Resources client={host.client} locale="en" initialCollection="fixture" onTask={()=>{}}/>});
+  await screen.press('\r');await screen.press('\r');
+  expect(screen.latest()).toContain('Existing title');
+  await screen.press('\r');await screen.press('\r');await screen.press('\r');
+  expect(submitted).toEqual({title:'Existing title',mode:'b',enabled:true,__revision:'rev-1'});
+  expect(screen.latest()).toContain('Records');
+  await screen.press('\r');await screen.burst(['\x1b[B','\r']);
+  await screen.press('\r');expect(removed).toBe(false);
+  await screen.burst(['\x1b[B','\r']);await screen.burst(['\x1b[B','\r']);
+  expect(removed).toBe(true);expect(screen.latest()).toContain('Records');expect(screen.latest()).not.toContain('Saved record');
 });

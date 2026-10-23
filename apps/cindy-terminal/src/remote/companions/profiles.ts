@@ -52,7 +52,7 @@ export class TerminalCompanionProfiles {
   }
   private async checkedPath(id:string,...parts:string[]) {
     if(!await this.get(id))throw new Error('COMPANION_NOT_FOUND');
-    const home=this.home(id);const root=await realpath(this.root);const homeReal=await realpath(home);
+    const home=this.home(id);for(const directory of [path.join(this.root,'homes'),home]){if((await lstat(directory)).isSymbolicLink())throw new Error('UNSAFE_COMPANION_PATH');}const root=await realpath(this.root);const homeReal=await realpath(home);
     if(path.relative(root,homeReal).startsWith('..')||path.isAbsolute(path.relative(root,homeReal)))throw new Error('UNSAFE_COMPANION_PATH');
     let directory=home;
     for(const part of parts.slice(0,-1)){directory=path.join(directory,part);await privateDirectory(directory);const info=await lstat(directory);if(info.isSymbolicLink())throw new Error('UNSAFE_COMPANION_PATH');}
@@ -66,6 +66,8 @@ export class TerminalCompanionProfiles {
   async removeMemory(id:string,name:string){const file=await this.checkedPath(id,'memories',fileOf(name));await rm(file,{force:true});this.guard();}
   async readSkill(id:string,slug:string){const file=await this.checkedPath(id,'skills',idOf(slug),'SKILL.md');const raw=await readPrivateFile(file);this.guard();return raw?.toString()??null;}
   async writeSkill(id:string,slug:string,text:string){const file=await this.checkedPath(id,'skills',idOf(slug),'SKILL.md');if(Buffer.byteLength(text)>1024*1024)throw new Error('COMPANION_FILE_TOO_LARGE');await atomicPrivateWrite(file,text);this.guard();}
+  async skillEnabled(id:string,slug:string){const file=await this.checkedPath(id,'skills',idOf(slug),'.disabled');return !await readPrivateFile(file);}
+  async setSkillEnabled(id:string,slug:string,enabled:boolean){const file=await this.checkedPath(id,'skills',idOf(slug),'.disabled');if(enabled)await rm(file,{force:true});else await atomicPrivateWrite(file,'disabled');this.guard();}
   async removeSkill(id:string,slug:string){const file=await this.checkedPath(id,'skills',idOf(slug),'SKILL.md');await rm(path.dirname(file),{recursive:true,force:true});this.guard();}
   async remove(id:string){await this.update(async next=>{const index=next.findIndex(row=>row.id===id);if(index>=0)next.splice(index,1);});/* Home retained until explicit data removal; deleting a Profile never recreates it. */}
   async close(){await this.writes;}

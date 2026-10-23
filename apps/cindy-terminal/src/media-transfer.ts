@@ -1,9 +1,7 @@
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
 import { mkdir, open, rm, type FileHandle } from 'node:fs/promises';
 import { Readable, Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import { buildLegacyAttachmentOssRef, parseAttachmentOssRef, parsePeerAttachmentRef, type AttachmentIntegrity } from '@cindy/device-link';
 import { createPeerAttachmentStore } from '@cindy/remote-agent/peerAttachmentStore';
 import type { InvocationContext } from './contracts.js';
@@ -100,18 +98,29 @@ export class TerminalMediaTransfer {
     try { check(); if (!response.ok || !response.body) throw new Error('MEDIA_DOWNLOAD_FAILED'); }
     catch(error) { await response.body?.cancel(); throw error; }
     const hash = createHash('sha256'); let bytes = 0;
-    const counter = new Transform({ transform(chunk: Buffer, _encoding, done) {
-      try {
-        check(); bytes += chunk.length;
-        if (bytes > MAX_BYTES || expected && bytes > expected.size) throw new Error('ATTACHMENT_INTEGRITY_FAILED');
-        hash.update(chunk); done(null, chunk);
-      } catch (error) { done(error as Error); }
-    } });
+    // Acquire exclusively before marking this path as ours; EEXIST must never
+    // remove a user's pre-existing destination during failure cleanup.
+    let handle: FileHandle | undefined;
+    const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
     try {
-      await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), counter, createWriteStream(destination, { flags: 'wx', mode: 0o600 }));
+      handle = await open(destination, 'wx', 0o600); check();
+      for await (const chunk of source) {
+        check(); const buffer = Buffer.from(chunk); bytes += buffer.length;
+        if (bytes > MAX_BYTES || expected && bytes > expected.size) throw new Error('ATTACHMENT_INTEGRITY_FAILED');
+        hash.update(buffer);
+        let offset = 0;
+        while (offset < buffer.length) {
+          check(); const written = await handle.write(buffer, offset, buffer.length - offset);
+          if (!written.bytesWritten) throw new Error('FILE_WRITE_FAILED'); offset += written.bytesWritten;
+        }
+      }
       check(); const sha256 = hash.digest('hex');
       if (expected && (bytes !== expected.size || sha256 !== expected.sha256)) throw new Error('ATTACHMENT_INTEGRITY_FAILED');
-    } catch (error) { await rm(destination, { force: true }); throw error; }
+      await handle.sync(); check();
+    } catch (error) {
+      if (handle) { await handle.close().catch(() => {}); await rm(destination, { force: true }); }
+      throw error;
+    } finally { source.destroy(); await handle?.close().catch(() => {}); }
   }
   async upload(handle: FileHandle, mimeType: string, name: string, context?: InvocationContext): Promise<{ key: string; size: number; sha256: string; contentType: string; reference: string }> {
     const check = this.check(context); check();

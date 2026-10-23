@@ -18,7 +18,11 @@ import { terminalSettingsSchema } from './settings.js';
 const derive = promisify(scrypt);
 const MAGIC = Buffer.from('CINDY-BACKUP-1\n');
 const EXCLUDED = ['sign-in tokens', 'provider credentials', 'device identity', 'remote grants', 'installed engines', 'files outside the profile'];
-const OWNER_PATHS = new Set(['models.json', 'tasks', 'schedules.json', 'workspaces', 'scheduled-workspaces', 'cindy-media']);
+const OWNER_PATHS = new Set(['models.json', 'projects.json', 'tasks', 'schedules.json', 'workspaces', 'scheduled-workspaces', 'cindy-media', 'knowledge-settings.json', 'maker-memory', 'maker-contacts', 'companions']);
+const COMPANION_PATHS = new Set(['profiles.json', 'homes', 'history', 'memory', 'backups', 'cloud']);
+// Cloud installation / homes snapshots bind this machine to server identities.
+// Keep only sync cursors and demotion history; fresh sign-in must resolve homes.
+const portableCloudFile = (name: string) => name === 'shadows.json' || /^[a-f0-9]{64}\.json$/.test(name);
 export interface DoctorCheck { id: string; status: 'ok' | 'warning' | 'error'; code: string; detail?: string }
 
 export async function doctor(profileDir: string): Promise<DoctorCheck[]> {
@@ -122,7 +126,24 @@ export async function backupProfile(profileDir: string, destination: string, pas
       for (const owner of await fs.readdir(owners, { withFileTypes: true }).catch(() => [])) {
         if (!owner.isDirectory() || !/^[a-f0-9]{32}$/.test(owner.name)) continue;
         const output = path.join(staging, 'owners', owner.name); await fs.mkdir(output, { recursive: true, mode: 0o700 });
-        for (const entry of await fs.readdir(path.join(owners, owner.name))) if (OWNER_PATHS.has(entry)) await copyTree(path.join(owners, owner.name, entry), path.join(output, entry), counters, await fs.realpath(profileDir));
+        for (const entry of await fs.readdir(path.join(owners, owner.name))) if (OWNER_PATHS.has(entry)) {
+          const source = path.join(owners, owner.name, entry), destination = path.join(output, entry);
+          if (entry !== 'companions') await copyTree(source, destination, counters, await fs.realpath(profileDir));
+          else {
+            const companions = await fs.lstat(source);
+            if (!companions.isDirectory() || companions.isSymbolicLink()) { counters.externalLinks++; continue; }
+            await fs.mkdir(destination, { mode: 0o700 });
+            for (const child of await fs.readdir(source)) if (COMPANION_PATHS.has(child)) {
+              if (child !== 'cloud') await copyTree(path.join(source, child), path.join(destination, child), counters, await fs.realpath(profileDir));
+              else {
+                const cloud = path.join(source, child), cloudStat = await fs.lstat(cloud);
+                if (!cloudStat.isDirectory() || cloudStat.isSymbolicLink()) { counters.externalLinks++; continue; }
+                await fs.mkdir(path.join(destination, child), { mode: 0o700 });
+                for (const file of await fs.readdir(cloud)) if (portableCloudFile(file)) await copyTree(path.join(cloud, file), path.join(destination, child, file), counters, await fs.realpath(profileDir));
+              }
+            }
+          }
+        }
       }
       const cipher = createCipheriv('aes-256-gcm', key, iv); cipher.setAAD(header);
       const handle = await fs.open(temporary, 'wx', 0o600); await handle.writeFile(header); await handle.close();
@@ -179,6 +200,11 @@ async function decodeBackup(backup: string, passphrase: string, staging: string)
     for (const owner of await fs.readdir(owners, { withFileTypes: true }).catch(() => [])) {
       if (!owner.isDirectory() || !/^[a-f0-9]{32}$/.test(owner.name)) throw new Error('BACKUP_CONTENT_INVALID');
       if ((await fs.readdir(path.join(owners, owner.name))).some(entry => !OWNER_PATHS.has(entry))) throw new Error('BACKUP_CONTENT_INVALID');
+      const companions = path.join(owners, owner.name, 'companions');
+      for (const name of await fs.readdir(companions).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; })) {
+        if (!COMPANION_PATHS.has(name)) throw new Error('BACKUP_CONTENT_INVALID');
+        if (name === 'cloud' && (await fs.readdir(path.join(companions, name))).some(file => !portableCloudFile(file))) throw new Error('BACKUP_CONTENT_INVALID');
+      }
     }
     await fs.rm(archive);
     return metadata;

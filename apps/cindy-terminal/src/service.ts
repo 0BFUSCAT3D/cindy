@@ -1,3 +1,6 @@
+import { TerminalCompanionCloud } from './remote/companions/cloud.js';
+import { TerminalCompanionHost } from './remote/companions/host.js';
+import { registerCompanionResources } from './remote/companions/resources.js';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
@@ -14,7 +17,11 @@ import { TerminalDeviceService, TerminalFilePeerService } from './remote/index.j
 import { TerminalFileBrowser } from './file-browser.js';
 import { TerminalMediaTransfer } from './media-transfer.js';
 import { fetchMedia } from './media-fetch.js';
+import { downloadRemoteFile } from './file-transfers.js';
 import { TerminalResources } from './resources.js';
+import { TerminalKnowledge } from './knowledge.js';
+import { TerminalProjects } from './projects.js';
+import { registerKnowledgeResources } from './knowledge-resources.js';
 import { SettingsStore } from './settings.js';
 import { TerminalServiceManager } from './service-manager.js';
 import { VERSION } from './platform.js';
@@ -63,6 +70,8 @@ export class TerminalService {
   private browser!: TerminalFileBrowser;
   private media!: TerminalMediaTransfer;
   private resources!: TerminalResources;
+  private knowledge?: TerminalKnowledge;
+  private projects?: TerminalProjects;
   private tasks!: TerminalTaskHost;
   private scheduler!: TerminalSchedulerHost;
   private agents!: TerminalRemoteAgentService;
@@ -75,6 +84,8 @@ export class TerminalService {
   private crossShares!: TerminalCrossRegionShares;
   private reshares!: TerminalReshares;
   private groupReshare?:ProviderGroupReshare;
+  private companions?: TerminalCompanionHost;
+  private companionCloud?: TerminalCompanionCloud;
   private ssh!: TerminalSshService;
   private readonly engines: EngineManager;
   private readonly terminals = new RemoteTerminalHost({ getScope:()=>this.ownerSuspended?null:`${this.ownerKey}:${this.ownerGeneration}`, logger });
@@ -133,8 +144,10 @@ export class TerminalService {
         await this.sharedTasks?.logout().catch(()=>logger.warn('SHARED_TASK_CLOSE_PENDING'));
         this.files?.stop();this.browser?.stop();this.resources?.close();this.membership?.close();await this.sharedTasks?.close();this.crossShares?.close();this.groupReshare?.stop();await this.reshares?.close();this.guestRoutes?.close();await this.modelGrants?.close();await this.agents?.stop();await this.groups?.close();await this.ssh?.close();
         // close() preserves history and native resume ids; no record is deleted.
+        await this.companionCloud?.close();await this.companions?.close();
         await this.scheduler?.close();
         if(this.tasks)await this.tasks.close();
+        await this.knowledge?.close();await this.projects?.close();
       },
       onChange:snapshot=>{
         if(snapshot.flow?.step!=='browser-redirect')this.authorization=null;
@@ -145,7 +158,7 @@ export class TerminalService {
     });
     this.remote = new TerminalDeviceService({
       getToken:async()=>this.auth.getAccessToken(),
-      getHello:()=>({deviceName:this.settings.snapshot().effective.deviceName,platform:process.platform,appVersion:VERSION,remoteControlEnabled:this.settings.snapshot().effective.remoteEnabled,busy:this.tasks?.isBusy() ?? false,capabilities:[PROVIDER_SHARE_RELAY_CAPABILITY,SHARED_TASK_RELAY_CAPABILITY]}),
+      getHello:()=>({deviceName:this.settings.snapshot().effective.deviceName,platform:process.platform,appVersion:VERSION,remoteControlEnabled:this.settings.snapshot().effective.remoteEnabled,busy:(this.tasks?.isBusy() ?? false)||(this.companions?.hasRunningWork()??false),capabilities:[PROVIDER_SHARE_RELAY_CAPABILITY,SHARED_TASK_RELAY_CAPABILITY]}),
       controllerCapabilities:[PROVIDER_SHARE_RELAY_CAPABILITY,SHARED_TASK_RELAY_CAPABILITY],hostCapabilities:[PROVIDER_SHARE_RELAY_CAPABILITY,SHARED_TASK_RELAY_CAPABILITY],
       getWsUrl:()=>{
         const endpoints=(this.auth.snapshot().session?.realm ?? this.region)==='cn'?chinaEndpoints:globalEndpoints;
@@ -172,7 +185,8 @@ export class TerminalService {
           if(!kinds.includes(args[0] as never))throw new Error('REMOTE_AGENT_UNAVAILABLE');
         }
         const ownerId=this.ownerKey;
-        return this.invoke(channel,args,{source:'remote',deviceId:context.sourceDeviceId,ownerId,sharedTask:this.membership.taskContext(context.source),signal:context.signal,assertCurrent:()=>{
+        const sourceDevice=context.source.kind==='owner'&&['maker:send','maker:input:enqueue','maker:bot:send'].includes(channel)?await this.remote.sourceDevice(context.sourceDeviceId):undefined;
+        return this.invoke(channel,args,{source:'remote',deviceId:context.sourceDeviceId,sourceDevice,ownerId,sharedTask:this.membership.taskContext(context.source),signal:context.signal,assertCurrent:()=>{
           context.assertCurrent();
           if(this.ownerKey!==ownerId || this.ownerSuspended)throw new Error('OWNER_CHANGED');
         }});
@@ -205,8 +219,9 @@ export class TerminalService {
     const next=snapshot.session?.key ?? 'guest';
     if(next!==this.ownerKey || this.ownerSuspended){
       this.terminals.close();
-      await this.scheduler?.close();
-      this.remote.stop();this.files.stop();this.browser.stop();this.resources.close();this.membership.close();await this.sharedTasks.close();this.crossShares.close();this.groupReshare?.stop();await this.reshares.close();this.guestRoutes.close();await this.modelGrants.close();await this.agents.stop();await this.groups.close();await this.ssh.close();await this.tasks.close();
+      await this.companionCloud?.close();await this.companions?.close();
+        await this.scheduler?.close();
+      this.remote.stop();this.files.stop();this.browser.stop();this.resources.close();this.membership.close();await this.sharedTasks.close();this.crossShares.close();this.groupReshare?.stop();await this.reshares.close();this.guestRoutes.close();await this.modelGrants.close();await this.agents.stop();await this.groups.close();await this.ssh.close();await this.tasks.close();await this.knowledge?.close();await this.projects?.close();
       for(const dispose of this.subscriptions.values())dispose();
       this.subscriptions.clear();
       await this.createTasks(next);this.ownerSuspended=false;
@@ -285,7 +300,25 @@ export class TerminalService {
       listReceivedShares:()=>this.membership.receivedShares(),isMobilePlatform:platform=>platform==='ios'||platform==='android',listBindings:()=>this.tasks.listBindings(),isTurnRunning:id=>this.tasks.isTurnRunning(id),sessionGroup:id=>this.tasks.sessionGroup(id),onChanged:()=>this.groupReshare?.kick('groups')});
     this.groupReshare=createProviderGroupReshare({listGroups:()=>this.groups.snapshot(),ownedShares:()=>this.membership.ownedShares(),pendingCleanups:()=>this.groups.pendingCleanups(),completeCleanup:(id,token)=>this.groups.completeCleanup(id,token),readCaps:id=>RemoteAgentRunClient.caps(connectAgent(id).invoke),invoke:(id,request)=>connectAgent(id).invoke([request]),now:Date.now,log:logger});
     readyRoutes();
+    const guardKnowledge=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
+    this.knowledge=new TerminalKnowledge({root:ownerDir,logger,assertCurrent:guardKnowledge,
+      workingDirs:async()=>[this.settings.snapshot().effective.workingDir,...(await this.tasks.storage.list()).map(task=>task.workDir)],
+      changed:collectionId=>{guardKnowledge();this.transport.publish('maker:remote-resources:changed',[{collectionId}]);void this.remote.publish('maker:remote-resources:changed',{collectionId}).catch(()=>{});},
+      searchSessions:async(query,options)=>{
+        guardKnowledge();
+        if(options?.callerMemoryScopeKey?.startsWith('bot:'))throw new Error('TASK_SCOPE_MISMATCH');
+        if(options?.role==='system')return [];
+        const result=await this.tasks.historyDeps().searchChatHistory({query,sessionIds:options?.sessionId?[options.sessionId]:null,workdir:null,fromMs:null,toMs:null,agentKind:null,roles:options?.role?[options.role]:null,contextRadius:0,limit:options?.limit??10,offset:0});
+        guardKnowledge();if(!result.ok)throw new Error('HISTORY_SEARCH_FAILED');
+        return result.result.hits.map(hit=>({sessionId:hit.sessionId,sessionUrl:`cindy://session/${encodeURIComponent(hit.sessionId)}?device=${encodeURIComponent(this.settings.deviceId)}`,messageId:hit.messageId,role:hit.role,snippet:hit.snippet??'',ts:hit.createdAt,score:-hit.score}));
+      }});
+    await this.knowledge.ready;
+    this.tasks.configureKnowledge(this.knowledge);
     this.resources=new TerminalResources(this.tasks);
+    registerKnowledgeResources(this.resources.registry,this.knowledge);
+    this.tasks.registerCapabilityResources(this.resources.registry);
+    this.projects=new TerminalProjects(ownerDir,{guard:guardKnowledge,createSession:async(workingDir,title)=>{const created=await this.tasks.invoke('maker:create-session',[{workingDir,title}],{source:'local',assertCurrent:guardKnowledge}) as {sessionId?:string;id?:string};const id=created.sessionId??created.id;if(!id)throw new Error('SESSION_CREATE_FAILED');return id;}});
+    await this.projects.ready;this.projects.register(this.resources.registry);
     registerRemoteManagementResources(this.resources.registry,{agent:this.agents,groups:this.groups,membership:this.membership,modelGrants:this.modelGrants,account:this.account,deviceId:this.settings.deviceId,apiBaseUrl:()=>endpoints().deviceLinkApiBaseUrl,remoteEnabled:()=>this.settings.snapshot().effective.remoteEnabled});
     registerShareResources(this.resources.registry,{account:this.account,membership:this.membership,cross:this.crossShares,agent:this.agents,grants:this.modelGrants,reshares:this.reshares,sharedTasks:this.sharedTasks,deviceId:this.settings.deviceId,apiBaseUrl:()=>endpoints().deviceLinkApiBaseUrl,listTasks:()=>this.tasks.storage.list()});
     this.ssh=new TerminalSshService(this.profileDir,(channel,payload)=>{if(scope()===`${owner}:${generation}`&&!this.ownerSuspended)this.transport.publish(channel,[payload]);});
@@ -297,6 +330,21 @@ export class TerminalService {
       canDispatch:()=>this.ownerKey===owner&&this.ownerGeneration===generation&&!this.ownerSuspended&&!this.closing,
       emit:(channel,args)=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.ownerSuspended||this.closing)return;this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
     this.scheduler.registerResources(this.resources.registry);
+    const guardCompanion=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
+    this.companions=new TerminalCompanionHost({root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,attachments:this.tasks.attachmentHost(),
+      binary:async kind=>(await this.engines.allStatus()).find(status=>status.kind===kind)?.binary??null,
+      helper:input=>this.tasks.helperDeps(input),
+      emit:(channel,args)=>{guardCompanion();this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
+    await this.companions.ready;
+    if(this.auth.snapshot().session){
+      const cloud=new TerminalCompanionCloud({host:this.companions,endpoint:endpoints().chatApiBaseUrl,getToken:async()=>this.auth.getAccessToken(),guard:guardCompanion,logger,deviceId:this.settings.deviceId,
+        listDevices:async()=>(await this.remote.listDevices()).map(device=>({...device,controlEnabled:true})),remoteInvoke:(device,channel,args)=>this.remote.invoke(device,channel,args),
+        emit:(channel,args)=>{guardCompanion();this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
+      this.companionCloud=cloud;this.companions.setExecutionGuard(id=>cloud.assertMayRun(id));
+      void cloud.open().catch(()=>logger.warn('COMPANION_CLOUD_UNAVAILABLE'));
+    }else {this.companionCloud=undefined;await this.companions.resumePending();}
+    registerCompanionResources(this.resources.registry,this.companions,this.companionCloud);
+
 
   }
 
@@ -324,7 +372,7 @@ export class TerminalService {
     }
     if(channel.startsWith('terminal:')&&!local)throw new Error('LOCAL_ONLY_COMMAND');
     if(channel==='terminal:status')return {
-      version:VERSION,startedAt:this.startedAt,deviceId:this.settings.deviceId,deviceName:this.settings.snapshot().effective.deviceName,
+      version:VERSION,platform:process.platform,busy:this.tasks.isBusy()||(this.companions?.hasRunningWork()??false),startedAt:this.startedAt,deviceId:this.settings.deviceId,deviceName:this.settings.snapshot().effective.deviceName,
       settings:this.settings.snapshot().effective,vault:this.secrets.status(),auth:this.auth.snapshot(),connection:this.remote.getStatus(),installation:await this.manager.status(),
     };
     if(channel==='terminal:engines:list')return this.engines.allStatus();
@@ -363,7 +411,7 @@ export class TerminalService {
     if(channel==='terminal:auth:cancel'){this.authorization=null;return this.auth.cancel();}
     if(channel==='terminal:auth:refresh')return this.auth.refresh();
     if(channel==='terminal:auth:logout' || channel==='terminal:auth:switch') {
-      if(this.tasks.isBusy())throw new Error('STOP_RUNNING_TASKS_BEFORE_ACCOUNT_CHANGE');
+      if(this.tasks.isBusy()||this.companions?.hasRunningWork())throw new Error('STOP_RUNNING_TASKS_BEFORE_ACCOUNT_CHANGE');
       return channel==='terminal:auth:logout'?this.auth.logout({all:args[0]===true}):this.auth.switchAccount(valueString(args[0]));
     }
     if(channel==='terminal:auth:authorize'){
@@ -398,12 +446,24 @@ export class TerminalService {
       const selection=object(args[1]);
       await this.settings.update({targetModels:{...targets,[peer]:selection}});return selection;
     }
-    if(channel==='terminal:service:stop'){setImmediate(()=>void this.close());return {stopping:true};}
+    if(channel==='terminal:service:stop'){if((this.tasks.isBusy()||this.companions?.hasRunningWork())&&(!args[0]||object(args[0]).stopTasks!==true))throw new Error('STOP_RUNNING_TASKS_BEFORE_SERVICE_STOP');setImmediate(()=>void this.close());return {stopping:true};}
+    if(channel==='terminal:service:inspect')return this.manager.inspect();
     if(channel==='terminal:service:install')return this.manager.install();
     if(channel==='terminal:service:uninstall')return this.manager.uninstall();
     await this.ownerChange;
     if(this.ownerSuspended)throw new Error('ACCOUNT_CHANGE_IN_PROGRESS');
     context.assertCurrent?.();
+    if(channel==='terminal:files:download'){
+      const owner=this.ownerKey,generation=this.ownerGeneration;
+      return downloadRemoteFile({files:this.files,media:this.media,invokeRemote:(peer,channel,args)=>this.remote.invoke(peer,channel,args)},args,{...context,assertCurrent:()=>{
+        context.assertCurrent?.();if(this.ownerSuspended||this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');
+      }});
+    }
+    if(channel.startsWith('maker:companion-cloud:')){if(!this.companionCloud)throw new Error('COMPANION_CLOUD_NOT_ENABLED');return this.companionCloud.invoke(channel,args);}
+    if(channel==='maker:resolve-interaction'&&typeof args[0]==='string'&&this.companions?.hasInteraction(args[0]))return this.companions.resolveInteraction(args[0],args[1],context);
+    const companionSession=channel==='local-db:history:messages'&&args[0]&&typeof args[0]==='object'?(args[0] as {sessionId?:unknown}).sessionId:args[0];
+    const companionHost=this.companions;
+    if(companionHost&&typeof companionSession==='string'&&await companionHost.owns(companionSession))return companionHost.invoke(channel,args,context);
     const result=channel==='device-link:media:fetch'?await fetchMedia(this.browser,this.media,args[0],context,async(url,file,sessionId)=>{
       if(url.startsWith('cindy-media:')){await this.tasks.resolveManaged(url,sessionId);return;}
       const task=await this.tasks.storage.get(sessionId);if(!task)throw new Error('TASK_NOT_FOUND');
@@ -426,7 +486,8 @@ export class TerminalService {
       this.files?.stop();this.browser?.stop();this.resources?.close();this.membership?.close();await this.sharedTasks?.close();this.crossShares?.close();this.groupReshare?.stop();await this.reshares?.close();this.guestRoutes?.close();await this.modelGrants?.close();await this.agents?.stop();await this.groups?.close();await this.ssh?.close();
       await this.auth?.cancel();await this.ownerChange;
       for(const dispose of this.subscriptions.values())dispose();this.subscriptions.clear();
-      await this.scheduler?.close();await this.tasks?.close();await this.secrets.flush();this.secrets.lock();await this.transport.close();this.stopWait();
+      await this.companionCloud?.close();await this.companions?.close();
+        await this.scheduler?.close();await this.tasks?.close();await this.knowledge?.close();await this.projects?.close();await this.secrets.flush();this.secrets.lock();await this.transport.close();this.stopWait();
     })();
     return this.closing;
   }

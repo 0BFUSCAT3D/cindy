@@ -14,6 +14,7 @@ export function InteractionView({ request, locale, resolve, back, busy }: {
   const { rows,columns } = useWindowSize();
   const [selected, setSelected, selectedNow] = useInputState(0);
   const [offset, setOffset] = useState(0);
+  const [details,setDetails]=useState(false);
   const [questionIndex, setQuestionIndex, questionNow] = useInputState(0);
   const [answers, setAnswers, answersNow] = useInputState<Record<string, string>>({});
   const [chosen, setChosen, chosenNow] = useInputState<string[]>([]);
@@ -34,6 +35,7 @@ export function InteractionView({ request, locale, resolve, back, busy }: {
     const question=request.kind==='ask_user_question'?request.questions[questionNow.current]:undefined;
     const options=question?[...(question.options??[]).map(option=>option.label),t.message]:[t.deny,t.approve];
     if (key.escape) { back(); return; }
+    if(request.kind==='permission'&&input.toLowerCase()==='d'){setDetails(value=>!value);setOffset(0);return;}
     if (key.pageUp) setOffset(value => Math.max(0, value - 8));
     if (key.pageDown) setOffset(value => value + 8);
     if (key.upArrow) setSelected(value => Math.max(0, value - 1));
@@ -48,7 +50,7 @@ export function InteractionView({ request, locale, resolve, back, busy }: {
     } else if (request.kind !== 'ask_user_question') resolve({ kind: request.kind, behavior: selectedNow.current === 1 ? 'allow' : 'deny' });
   });
   const description = request.kind === 'permission'
-    ? [request.title ?? request.displayName ?? request.toolName, request.description ?? '', JSON.stringify(request.input, null, 2)].join('\n')
+    ? permissionDescription(request,locale,details)
     : request.kind === 'plan_review' ? request.plan : question?.question ?? '';
   const lines = wrapAnsi(terminalText(description),Math.max(8,columns-2),{hard:true,trim:false}).split('\n');
   const count = Math.max(3, rows - options.length - 14);
@@ -62,6 +64,20 @@ export function InteractionView({ request, locale, resolve, back, busy }: {
       : options.map((option,index) => <Text key={index} bold={selected === index}>
         {selected === index ? '› ' : '  '}{question?.multiSelect && index < options.length - 1 ? chosen.includes(option) ? '[x] ' : '[ ] ' : ''}{terminalText(option)}
       </Text>)}
+    {request.kind==='permission'&&<Text dimColor>D · {permissionCopy[locale].details}{lines.length>count?'   PgUp / PgDn':''}</Text>}
     {busy && <Text dimColor>{t.working}</Text>}
   </Box>;
+}
+
+
+const permissionCopy:Record<Locale,{tool:string;details:string}>={
+  en:{tool:'Allow tool call?',details:'Details'},'zh-CN':{tool:'允许调用工具？',details:'详情'},
+  'zh-TW':{tool:'允許呼叫工具？',details:'詳細資料'},ja:{tool:'ツールの呼び出しを許可しますか？',details:'詳細'},ko:{tool:'도구 호출을 허용할까요?',details:'세부 정보'},
+};
+function permissionDescription(request:Extract<InteractionRequest,{kind:'permission'}>,locale:Locale,details:boolean) {
+  const input=request.input&&typeof request.input==='object'&&!Array.isArray(request.input)?request.input as Record<string,unknown>:undefined;
+  if(!details&&typeof input?.serverName==='string'&&typeof input.toolName==='string'&&input.toolParams&&typeof input.toolParams==='object'){
+    return [permissionCopy[locale].tool,`${input.serverName} · ${input.toolName}`,'',JSON.stringify(input.toolParams,null,2)].join('\n');
+  }
+  return [request.title??request.displayName??request.toolName,request.description??'',JSON.stringify(request.input,null,2)].join('\n');
 }

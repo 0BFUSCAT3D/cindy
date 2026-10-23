@@ -46,3 +46,50 @@ it('clears the pending registration when launchctl explicitly reports no loaded 
   });
   expect(await manager.completeUninstall()).toEqual({ removed: true });
 });
+
+it('keeps Linux registration distinct from running and verifies the explicit boot opt-in', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'cindy-service-command-test-')); directories.push(directory);
+  let linger = false;
+  let running = false;
+  const execute = vi.fn(async (file: string, args: string[]) => {
+    if (file === 'loginctl') {
+      if (args[0] === 'enable-linger') linger = true;
+      return { stdout: linger ? 'yes\n' : 'no\n', stderr: '' };
+    }
+    if (args[1] === 'start') running = true;
+    return { stdout: `LoadState=loaded\nActiveState=${running ? 'active' : 'inactive'}\nMainPID=${running ? 2345 : 0}\n`, stderr: '' };
+  });
+  const manager = new TerminalServiceManager(path.join(directory, 'profile'), path.join(directory, 'cli.js'), process.execPath, { platform: 'linux', home: directory, uid: 12345, env: {}, execute });
+  expect(await manager.install()).toMatchObject({ starts: 'login', registrationOnly: true });
+  expect(await manager.inspect()).toMatchObject({ registered: true, running: false, starts: 'login', bootEnableCommand: ['loginctl', 'enable-linger', '12345'] });
+  expect(await manager.enableBoot()).toMatchObject({ running: false, starts: 'boot' });
+  expect(await manager.activate()).toMatchObject({ running: true, starts: 'boot', pid: 2345 });
+  expect((await manager.inspect()).bootEnableCommand).toBeUndefined();
+});
+
+it('does not call a receipt an active service when the user manager is unavailable', async () => {
+  const { manager, execute } = await fixture();
+  await manager.install();
+  execute.mockRejectedValue(new Error('no GUI login session'));
+  expect(await manager.inspect()).toMatchObject({ installation: { registrationOnly: true }, managerAvailable: false, registered: false, running: false });
+  await expect(manager.enableBoot()).rejects.toThrow();
+});
+
+it.each(['darwin', 'win32'] as const)('registers explicit %s boot operation through the native foreground prompt', async platform => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'cindy-service-command-test-')); directories.push(directory);
+  const execute = vi.fn(async (file: string, args: string[]) => ({ stdout: file === 'whoami.exe' ? args.length ? '"test-user","S-1-5-21-1234"' : 'machine\\test-user' : file === 'launchctl' && args[0] === 'print' ? 'state = running\npid = 3456\n' : '', stderr: '' }));
+  const interactive = vi.fn(async (_file: string, _args: string[], _env?: NodeJS.ProcessEnv) => {});
+  const manager = new TerminalServiceManager(path.join(directory, 'profile'), path.join(directory, 'cli.js'), process.execPath, { platform, home: directory, uid: 12345, userName: 'test-user', env: {}, execute, interactive });
+  await manager.install();
+  await manager.enableBoot();
+  expect(await manager.status()).toMatchObject({ scope: 'system', starts: 'boot' });
+  if (platform === 'darwin') expect(interactive.mock.calls.length).toBe(3);
+  else expect(interactive.mock.calls.length).toBe(1);
+  if (platform === 'win32') {
+    const [, args, env] = interactive.mock.calls[0];
+    const script = Buffer.from(args.at(-1)!, 'base64').toString('utf16le');
+    expect(script).toContain("Read-Host 'Windows account password' -AsSecureString");
+    expect(script).toContain('ZeroFreeBSTR');
+    expect(Object.keys(env ?? {})).not.toContain('PASSWORD');
+  }
+});

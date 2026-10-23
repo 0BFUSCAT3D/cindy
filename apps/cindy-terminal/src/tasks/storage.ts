@@ -7,7 +7,7 @@ import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platfo
 import type { ModelSelection } from '../models/config.js';
 
 export type TerminalTaskMeta = SessionMeta & { providerId?: string; archived?: boolean; deleted?: boolean; pinnedAt?: number | null; agentDeviceId?: string; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding; queuePaused?: boolean; queueExpanded?: boolean; clearedAt?: number; usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number } };
-export type Submission = { requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
+export type Submission = { requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
 export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string };
 function taskId(value: string): string {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(value)) throw new Error('INVALID_TASK_ID');
@@ -174,7 +174,7 @@ export class TerminalTaskStorage implements SessionStorage {
     taskId(id); await this.writes.get(id);
     return structuredClone(this.submissions.get(id)?.find(item => item.requestId === requestId) ?? null);
   }
-  claimSubmission(id: string, requestId: string, fingerprint: string, guard: () => void, payload?: Pick<Submission, 'message' | 'source' | 'deviceId' | 'ownerId' | 'sharedTask' | 'scheduler' | 'sendAtMs' | 'deliveryProof' | 'sender'>): Promise<{ receipt: Submission; created: boolean }> {
+  claimSubmission(id: string, requestId: string, fingerprint: string, guard: () => void, payload?: Pick<Submission, 'message' | 'source' | 'deviceId' | 'sourceDevice' | 'ownerId' | 'sharedTask' | 'scheduler' | 'sendAtMs' | 'deliveryProof' | 'sender'>): Promise<{ receipt: Submission; created: boolean }> {
     return this.enqueue(id, async () => {
       guard();
       if (!this.rows.has(id)) throw new Error('TASK_NOT_FOUND');

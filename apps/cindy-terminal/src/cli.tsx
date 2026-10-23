@@ -42,11 +42,48 @@ async function stdin(limit = 1024 * 1024) {
 }
 function required(value: string | undefined, code='ARGUMENT_REQUIRED'): string { if(!value)throw new Error(code);return value; }
 
+async function waitForStopped(directory:string) {
+  const deadline=Date.now()+45_000;
+  while(Date.now()<deadline){
+    try{await fs.access(path.join(directory,'service.json'));}
+    catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+    await pause(100);
+  }
+  throw new Error('SERVICE_STOP_TIMEOUT');
+}
+async function activateService(directory:string,client:TerminalClient,stopTasks=false) {
+  const manager=new TerminalServiceManager(directory,fileURLToPath(import.meta.url));
+  const before=await manager.inspect();
+  if(!before.installation)throw new Error('SERVICE_NOT_INSTALLED');
+  if(!before.running){
+    await client.invoke('terminal:service:stop',[{stopTasks}]);client.close();
+    await waitForStopped(directory);await manager.activate();
+  }
+  return startBackground(directory);
+}
+async function enableBootService(directory:string,stopTasks=false) {
+  // Elevation and OS password prompts belong to the foreground terminal.
+  let client:TerminalClient|undefined;
+  try{client=await connectTerminal(directory);}catch(error){if(!(error instanceof Error)||error.message!=='SERVICE_NOT_RUNNING')throw error;}
+  if(client){try{await client.invoke('terminal:service:stop',[{stopTasks}]);}finally{client.close();}await waitForStopped(directory);}
+  const manager=new TerminalServiceManager(directory,fileURLToPath(import.meta.url));
+  await manager.enableBoot();
+  return startBackground(directory);
+}
 async function startBackground(directory: string): Promise<TerminalClient> {
   try { return await connectTerminal(directory); } catch(error) {
     if(error instanceof Error&&!['SERVICE_NOT_RUNNING','SERVICE_CONNECT_TIMEOUT'].includes(error.message))throw error;
   }
   await privateDirectory(directory);
+  const manager=new TerminalServiceManager(directory,fileURLToPath(import.meta.url));
+  const installation=await manager.status();
+  if(installation){
+    if(installation.uninstalling)throw new Error('SERVICE_UNINSTALL_PENDING');
+    await manager.activate();
+    const deadline=Date.now()+30_000;
+    while(Date.now()<deadline){try{return await connectTerminal(directory);}catch(error){if(error instanceof Error&&!['SERVICE_NOT_RUNNING','SERVICE_CONNECT_TIMEOUT'].includes(error.message))throw error;}await pause(100);}
+    throw new Error('SERVICE_START_TIMEOUT');
+  }
   const log=await fs.open(path.join(directory,'service.log'),'a',0o600);
   const child=spawn(process.execPath,[...process.execArgv,fileURLToPath(import.meta.url),'serve','--state-dir',directory],{
     detached:true,stdio:['ignore',log.fd,log.fd],windowsHide:true,env:process.env,
@@ -72,7 +109,7 @@ async function main() {
     name:{type:'string'},url:{type:'string'},hostname:{type:'string'},user:{type:'string'},port:{type:'string'},'auth-method':{type:'string'},'key-file':{type:'string'},protocol:{type:'string'},'key-stdin':{type:'boolean'},
     'request-id':{type:'string'},allow:{type:'boolean'},deny:{type:'boolean'},'machine-key':{type:'boolean'},'passphrase-stdin':{type:'boolean'},
     file:{type:'string',multiple:true},'send-at':{type:'string'},sha256:{type:'string'},prefix:{type:'string'},effort:{type:'string'},mode:{type:'string'},shell:{type:'string'},
-    generate:{type:'boolean'},cursor:{type:'string'},limit:{type:'string'},output:{type:'string'},manifest:{type:'string'},follow:{type:'boolean'},
+    'stop-tasks':{type:'boolean'},query:{type:'string'},generate:{type:'boolean'},cursor:{type:'string'},limit:{type:'string'},output:{type:'string'},manifest:{type:'string'},follow:{type:'boolean'},
   }}); } catch { throw new Error('INVALID_COMMAND_ARGUMENTS'); }
   const values=parsed.values as Record<string,string|boolean|string[]|undefined>;
   const positionals=parsed.positionals;
@@ -93,7 +130,7 @@ async function main() {
   if(timeoutMs!==undefined&&(!Number.isFinite(timeoutMs)||timeoutMs<=0))throw new Error('INVALID_TIMEOUT');
   if(str('device')&&['service','status','auth','vault','login','logs'].includes(command))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
   if(values.help||command==='help'){
-    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy requests list|show|approve|deny|resolve\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|uninstall|logs\n  cindy logs [--follow]\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
+    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy files download <url> --device <id> --output <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy requests list|show|approve|deny|resolve\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|activate|boot|uninstall|logs\n  cindy logs [--follow]\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
   }
   if(values.version||command==='version'){print(VERSION);return;}
   if(command==='profiles'){
@@ -125,6 +162,10 @@ async function main() {
     if(command==='backup'&&!['create','verify','restore'].includes(subcommand))throw new Error('UNKNOWN_COMMAND');
     const file=path.resolve(required(command==='backup'?rest[0]:subcommand));
     print(command==='backup'&&subcommand==='create'?await backupProfile(directory,file,passphrase):command==='backup'&&subcommand==='verify'?await verifyProfileBackup(file,passphrase):await restoreProfile(directory,file,passphrase));return;
+  }
+  if(command==='service'&&subcommand==='boot'){
+    const bootClient=await enableBootService(directory,values['stop-tasks']===true);
+    try{print({status:await bootClient.invoke('terminal:status'),service:await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).inspect()});}finally{bootClient.close();}return;
   }
   if(command==='serve'){
     const service=new TerminalService(directory);
@@ -178,13 +219,13 @@ async function main() {
   try { client=passive?await connectTerminal(directory):await startBackground(directory); }
   catch(error){
     if(passive&&error instanceof Error&&error.message==='SERVICE_NOT_RUNNING'){
-      if(subcommand==='restart')client=await startBackground(directory);
+      if(subcommand==='restart'){client=await startBackground(directory);try{print(await client.invoke('terminal:status'));}finally{client.close();}return;}
       else if(subcommand==='uninstall'){
         const manager=new TerminalServiceManager(directory,fileURLToPath(import.meta.url));
         let result=await manager.uninstall();
         if(result.requiresLocalCompletion)result=await manager.completeUninstall();
         print(result);return;
-      }else{print({running:false});return;}
+      }else{print({running:false,...(command==='service'?{service:await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).inspect()}: {})});return;}
     }else throw error;
   }
   const device=str('device');
@@ -209,24 +250,44 @@ async function main() {
       const effective=object(settings.effective);
       if(typeof effective.language==='string'){locale=resolveLocale(effective.language);t=getMessages(locale);}
     }
-    if(command==='status'||command==='service'&&subcommand==='status'){print(await call('terminal:status',[],false));return;}
+    if(command==='status'||command==='service'&&subcommand==='status'){const status=object(await call('terminal:status',[],false));print(command==='service'?{...status,service:await call('terminal:service:inspect',[],false)}:status);return;}
     if(command==='service'){
+      if(subcommand==='activate'){client=await activateService(directory,client,values['stop-tasks']===true);print({status:await call('terminal:status',[],false),service:await call('terminal:service:inspect',[],false)});return;}
       if(subcommand==='start'){print(await call('terminal:status',[],false));return;}
       if(['install','uninstall','stop'].includes(subcommand)){
-        const result=object(await call(`terminal:service:${subcommand}`,[],false));
+        const result=object(await call(`terminal:service:${subcommand}`,subcommand==='stop'?[{stopTasks:values['stop-tasks']===true}]:[],false));
         if(result.requiresLocalCompletion){client.close();print(await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).completeUninstall());}
         else print(result);
         return;
       }
       if(subcommand==='restart'){
-        await call('terminal:service:stop',[],false);client.close();
-        for(let n=0;n<100;n++){try{await fs.access(path.join(directory,'service.json'));await pause(100);}catch{break;}}
+        await call('terminal:service:stop',[{stopTasks:values['stop-tasks']===true}],false);client.close();
+        await waitForStopped(directory);
         client=await startBackground(directory);print(await call('terminal:status',[],false));return;
       }
       throw new Error('UNKNOWN_COMMAND');
     }
     if(command==='auth'){
       if(subcommand==='status'||subcommand==='accounts'){const state=object(await call('terminal:auth:status',[],false));print(subcommand==='accounts'?state.accounts:state);}
+      else if(['begin','cancel','refresh','memberships','authorization','sso-code'].includes(subcommand))print(await call(`terminal:auth:${subcommand}`,[],false));
+      else if(['email','organization','select','membership','binding-code'].includes(subcommand))print(await call(`terminal:auth:${subcommand}`,[required(rest[0])],false));
+      else if(subcommand==='realm'){
+        if(!['accept','cancel'].includes(rest[0]))throw new Error('ACCEPT_OR_CANCEL_REQUIRED');
+        print(await call('terminal:auth:realm',[rest[0]==='accept'],false));
+      }
+      else if(subcommand==='request-code'||subcommand==='captcha-start'){
+        if(!['email','phone'].includes(rest[0]))throw new Error('EMAIL_OR_PHONE_REQUIRED');
+        print(await call(`terminal:auth:${subcommand}`,[rest[0],required(rest[1])],false));
+      }
+      else if(['verify','binding-verify','sso-verify','captcha-complete'].includes(subcommand)){
+        if(!values.stdin)throw new Error('VERIFICATION_STDIN_REQUIRED');
+        const value=(await stdin(16*1024)).replace(/\r?\n$/,'');
+        print(await call(`terminal:auth:${subcommand}`,subcommand==='captcha-complete'?[required(rest[0]),value]:[value],false));
+      }
+      else if(subcommand==='authorize'){
+        if(!['sso','social'].includes(rest[0]))throw new Error('SSO_OR_SOCIAL_REQUIRED');
+        print(await call('terminal:auth:authorize',[rest[0],required(rest[1])],false));
+      }
       else if(subcommand==='logout')print(await call('terminal:auth:logout',[values.all===true],false));
       else if(subcommand==='switch')print(await call('terminal:auth:switch',[required(rest[0])],false));
       else throw new Error('UNKNOWN_COMMAND');
@@ -342,12 +403,19 @@ async function main() {
     }
     if(command==='requests'){
       if(subcommand==='list')print(await call('maker:get-pending-interactions',[required(rest[0],'TASK_ID_REQUIRED')]));
-      else if(['approve','deny','show'].includes(subcommand)){
+      else if(['approve','deny','show','answer'].includes(subcommand)){
         const pending=unwrap(await call('maker:get-pending-interactions',[required(rest[0],'TASK_ID_REQUIRED')]));
         if(!Array.isArray(pending))throw new Error('INVALID_RESPONSE');
         const request=pending.map(p=>p.request??p).find(p=>p.requestId===required(rest[1],'REQUEST_ID_REQUIRED'));
         if(!request)throw new Error('REQUEST_ALREADY_RESOLVED');
         if(subcommand==='show')print(request);
+        else if(subcommand==='answer'){
+          if(request.kind!=='ask_user_question')throw new Error('REQUEST_IS_NOT_A_QUESTION');
+          if(!values.stdin)throw new Error('ANSWER_STDIN_REQUIRED');
+          let answers:unknown;try{answers=JSON.parse(await stdin(64*1024));}catch{throw new Error('INVALID_ANSWERS');}
+          if(!answers||typeof answers!=='object'||Array.isArray(answers)||!request.questions.every((question:{question:string})=>typeof (answers as Record<string,unknown>)[question.question]==='string'))throw new Error('INVALID_ANSWERS');
+          print(await call('maker:resolve-interaction',[request.requestId,{kind:'ask_user_question',answers}]));
+        }
         else{if(request.kind==='ask_user_question')throw new Error('QUESTION_REQUIRES_ANSWER');print(await call('maker:resolve-interaction',[request.requestId,{kind:request.kind,behavior:subcommand==='approve'?'allow':'deny'}]));}
       }
       else if(subcommand==='resolve'){
@@ -381,6 +449,9 @@ async function main() {
       return;
     }
     if(command==='files'){
+      if(subcommand==='download'){
+        print(await client.invoke('terminal:files:download',[required(device,'REMOTE_DEVICE_REQUIRED'),required(rest[0],'REMOTE_FILE_URL_REQUIRED'),path.resolve(required(str('output')??rest[1],'OUTPUT_PATH_REQUIRED'))]));return;
+      }
       const workdir=required(str('cwd'),'WORKING_DIRECTORY_REQUIRED');
       const base={workdir:device?workdir:path.resolve(workdir),relPath:rest[0]??''};
       const fileCall=async(op:string,extra:Record<string,unknown>={})=>unwrap(await call('file-browser:remote-op',[{...base,...extra,op}]));
@@ -413,7 +484,7 @@ async function main() {
     }
     if(command&&resourceCollections[command]&&subcommand){
       let input:unknown={};if(values.stdin){try{input=JSON.parse(await stdin());}catch{throw new Error('INVALID_JSON_INPUT');}}
-      print(await runResourceCommand(client,{collection:str('collection')??resourceCollections[command],operation:str('action')??subcommand,id:rest[0],input,device,locale,cursor:str('cursor'),limit}));return;
+      print(await runResourceCommand(client,{collection:str('collection')??resourceCollections[command],operation:str('action')??subcommand,id:rest[0],input,device,locale,cursor:str('cursor'),limit,query:str('query')}));return;
     }
     const interactive=!json&&!values['no-input']&&!values.once&&process.stdin.isTTY&&process.stdout.isTTY;
     const uiCommand=!command||!!resourceCollections[command]||['login','models','providers','devices','config','attach','resources'].includes(command)||(command==='chat'&&!values.once);
@@ -428,6 +499,8 @@ async function main() {
         if(external.type==='service-uninstall'){
           print(await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).completeUninstall());return;
         }
+        if(external.type==='service-activate'){client=await activateService(directory,client);client=reconnectingClient(directory,client);nextPage='service';continue;}
+        if(external.type==='service-boot'){client.close();client=reconnectingClient(directory,await enableBootService(directory));nextPage='service';continue;}
         const manager=new EngineManager({profileDir:directory});const binary=await manager.resolve(external.kind);
         if(!binary)throw new Error('ENGINE_NOT_INSTALLED');
         await runNativeLogin(external.kind,binary.binary,external.operation,{onInstruction:value=>print(value==='pi-login'?'/login':'/logout')});

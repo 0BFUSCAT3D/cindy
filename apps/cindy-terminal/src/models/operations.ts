@@ -10,9 +10,20 @@ function endpoint(value:unknown):string{if(typeof value!=='string')throw new Err
 function headers(value:unknown):Record<string,string>{const result:Record<string,string>={};if(value===undefined)return result;for(const [name,entry]of Object.entries(object(value))){if(typeof entry!=='string'||/[\r\n]/.test(entry)||!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)||['host','connection','content-length','transfer-encoding','upgrade'].includes(name.toLowerCase()))throw new Error('INVALID_PROVIDER_HEADER');result[name.toLowerCase()]=entry;}return result;}
 async function json(response:Response):Promise<unknown>{if(!response.body)throw new Error('EMPTY_PROVIDER_RESPONSE');const reader=response.body.getReader();let size=0;const chunks:Uint8Array[]=[];try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>4*1024*1024)throw new Error('PROVIDER_RESPONSE_TOO_LARGE');chunks.push(value);}return JSON.parse(Buffer.concat(chunks).toString('utf8'));}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}}
 async function firstEvent(response:Response):Promise<unknown>{
-  const reader=response.body?.getReader();if(!reader)throw new Error('EMPTY_PROVIDER_RESPONSE');let text='';const decoder=new TextDecoder();
-  try{for(;;){const {done,value}=await reader.read();if(value)text+=decoder.decode(value,{stream:!done});if(text.length>65536)throw new Error('PROVIDER_RESPONSE_TOO_LARGE');for(const line of text.split('\n'))if(line.startsWith('data:')){try{return JSON.parse(line.slice(5).trim());}catch{}}if(done)throw new Error('EMPTY_PROVIDER_RESPONSE');}}
-  finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+  const reader=response.body?.getReader();if(!reader)throw new Error('EMPTY_PROVIDER_RESPONSE');
+  let pending='',size=0,last:unknown;const decoder=new TextDecoder();
+  try{for(;;){
+    const {done,value}=await reader.read();if(value){size+=value.byteLength;pending+=decoder.decode(value,{stream:!done});}
+    if(size>4*1024*1024)throw new Error('PROVIDER_RESPONSE_TOO_LARGE');
+    const lines=pending.split('\n');pending=done?'':lines.pop()??'';
+    for(const line of lines){if(!line.startsWith('data:'))continue;const data=line.slice(5).trim();if(data==='[DONE]'){if(last)return last;continue;}
+      let parsed:Record<string,unknown>;try{parsed=object(JSON.parse(data));}catch{continue;}
+      if(parsed.error||['error','response.failed','response.incomplete'].includes(String(parsed.type)))return {...parsed,error:parsed.error??true};
+      if(['response.completed','message_stop'].includes(String(parsed.type)))return parsed;
+      if(Array.isArray(parsed.choices)&&parsed.choices.length||Array.isArray(parsed.candidates)&&parsed.candidates.length||['content_block_delta','response.output_text.delta'].includes(String(parsed.type)))last=parsed;
+    }
+    if(done){if(last)return last;throw new Error('EMPTY_PROVIDER_RESPONSE');}
+  }}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 const failure=(error:unknown,status?:number)=>({ok:false as const,code:classifyProviderError({status,networkErrorCode:error instanceof Error?String((error as Error & {code?:string;cause?:{code?:string}}).cause?.code??(error as Error & {code?:string}).code??error.name):undefined}).code,...(status?{status}:{})});
 
@@ -40,9 +51,9 @@ export async function testConnection(models:TerminalModelConfig,input:unknown,gu
 
 export async function fetchModels(models:TerminalModelConfig,input:unknown,guard:()=>void,signal?:AbortSignal){
   const spec=object(input);const kind=agent(spec.agent);let base=endpoint(spec.baseUrl);let protocol=spec.wireProtocol as ProviderWireProtocol|undefined;let key=typeof spec.apiKey==='string'?spec.apiKey:null;let extra=headers(spec.headers);let modelsUrl=typeof spec.modelsUrl==='string'?endpoint(spec.modelsUrl):undefined;
-  if(spec.savedProviderId){const config=models.snapshot().providers.find(p=>p.id===spec.savedProviderId);const runtime=config?.runtimes[kind];if(!runtime)throw new Error('PROVIDER_RUNTIME_REQUIRED');base=runtime.baseUrl;modelsUrl=undefined;protocol=runtime.wireProtocol;key=await models.credential(config!.id,kind);extra={...await models.headers(config!.id,kind),...extra};}
+  if(spec.savedProviderId){const config=models.snapshot().providers.find(p=>p.id===spec.savedProviderId);const runtime=config?.runtimes[kind];if(!runtime)throw new Error('PROVIDER_RUNTIME_REQUIRED');base=runtime.baseUrl;modelsUrl=runtime.modelsUrl;protocol=runtime.wireProtocol;key=await models.credential(config!.id,kind);extra={...await models.headers(config!.id,kind),...extra};}
   if(spec.authMethod==='oauth')throw new Error('NATIVE_LOGIN_REQUIRED');
-  const url=modelsUrl&&new URL(modelsUrl).origin===new URL(base).origin?modelsUrl:appendProviderRequestPath(base,'/models');
+  const url=modelsUrl&&(spec.savedProviderId||new URL(modelsUrl).origin===new URL(base).origin)?modelsUrl:appendProviderRequestPath(base,'/models');
   const authorization={...extra,...(key?(protocol==='anthropic-messages'||!protocol&&kind==='claude-code'?{'x-api-key':key,authorization:`Bearer ${key}`}: {authorization:`Bearer ${key}`}):{}),...(protocol==='anthropic-messages'||!protocol&&kind==='claude-code'?{'anthropic-version':'2023-06-01'}:{})};
   let status:number|undefined;
   try {const fetchPage=async(target:string)=>{guard();const response=await fetch(target,{headers:authorization,redirect:'error',signal:AbortSignal.any([AbortSignal.timeout(10_000),...(signal?[signal]:[])])});status=response.status;if(!response.ok){await response.body?.cancel();throw new Error('Provider discovery failed');}const body=await json(response);guard();return body;};const first=await fetchPage(url);const found=await collectModelDiscoveryPages(first,url,fetchPage);guard();return found?{ok:true,models:found}:{ok:false,code:'UNKNOWN'};}

@@ -7,18 +7,23 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import JSZip from 'jszip';
 import { createNativeNodeWorkerProcess } from './nativeProcess.js';
 import type { NodeWorkerProcess } from './processTypes.js';
 import { GhostNodeRuntimeBroker } from './nodeRuntimeBroker.js';
 import type { NodeRuntimeInstallation } from './hostTypes.js';
+import { NativePluginHost } from './nativeHost.js';
+import { installedGhostStoragePart } from './shared/pluginIdentity.js';
 
 describe('native plugin worker', () => {
-  let directory: string, workerPath: string;
+  let directory: string, workerPath: string, snapshotWorkerPath: string;
   const children = new Set<NodeWorkerProcess>();
   beforeAll(async () => {
     directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-plugin-runtime-'));
     workerPath = path.join(directory, 'worker.cjs');
     await build({ entryPoints: [fileURLToPath(new URL('./nativeWorkerEntry.ts', import.meta.url))], outfile: workerPath, bundle: true, platform: 'node', format: 'cjs', target: 'node22', logLevel: 'silent' });
+    snapshotWorkerPath = path.join(directory, 'snapshot.cjs');
+    await build({ entryPoints: [fileURLToPath(new URL('./nativeSnapshotWorker.ts', import.meta.url))], outfile: snapshotWorkerPath, bundle: true, platform: 'node', format: 'cjs', target: 'node22', logLevel: 'silent' });
   });
   afterAll(async () => { for (const child of children) child.kill('SIGKILL'); await fs.rm(directory, { recursive: true, force: true }); });
   async function start(source: string, args?: string[]) {
@@ -85,5 +90,38 @@ describe('native plugin worker', () => {
       const next = await broker.handleRequest('fixture', { type: 'node-request', method: 'echo', params: 'new-owner' });
       expect(next.ok).toBe(false);
     } finally { await broker.stopAndWait('fixture'); }
+  });
+
+  it('loads an approved installed plugin and preserves receipts across native host restart', async () => {
+    const root = path.join(directory, 'approved-store');
+    const options = {
+      manager: { getRootDir: () => path.join(root, 'content'), getStateDir: () => path.join(root, 'state') },
+      node: { nodePath: process.execPath, workerPath, snapshotWorkerPath },
+      broker: {},
+    };
+    const archive = new JSZip();
+    archive.file('ghost.json', JSON.stringify({ schemaVersion: 2, id: 'fixture', name: 'Fixture', version: '1.0.0', kind: 'chip', entry: 'main.js', slots: ['tool', 'node', 'skill'], tools: [{ name: 'echo', description: 'Echo' }], node: { entry: 'worker.cjs', protocol: 'json-rpc-stdio', lifecycle: 'resident' }, skill: { items: [{ name: 'fixture-guide', description: 'Fixture guide', dir: 'skills/fixture-guide' }] } }));
+    archive.file('main.js', '/* Browser logic is not replaced by Node RPC. */');
+    archive.file('skills/fixture-guide/SKILL.md', '---\nname: fixture-guide\ndescription: Fixture guide\n---\n\nUse the fixture.\n');
+    archive.file('worker.cjs', `require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:r.params})+'\\n');});`);
+    const file = path.join(directory, 'fixture.cindy'); await fs.writeFile(file, await archive.generateAsync({ type: 'nodebuffer' }));
+    const first = new NativePluginHost(options);
+    await first.open();
+    try {
+      const result = await first.manager.install(file);
+      expect(result).not.toHaveProperty('rejection');
+      await first.refresh();
+      const ghost = first.list()[0];
+      expect(ghost).toMatchObject({ enabled: true, approval: { state: 'approved' } });
+      expect(await first.manager.verifyApprovedSkillSnapshot(ghost)).toBe(true);
+      const id = installedGhostStoragePart(ghost);
+      expect(first.node.stateOf(id)).toBe('running');
+      expect(await first.handleNodeRequest(id, { type: 'node-request', method: 'echo', params: 'native-store' })).toEqual({ ok: true, result: 'native-store' });
+      const revision = ghost.approval;
+      await first.close();
+      const second = new NativePluginHost(options);
+      try { await second.open(); expect(second.list()[0].approval).toEqual(revision); }
+      finally { await second.close(); }
+    } finally { await first.close(); }
   });
 });

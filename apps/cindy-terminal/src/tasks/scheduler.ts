@@ -8,6 +8,7 @@ import { privateDirectory } from '../platform.js';
 import { TerminalScheduleStorage } from './schedule-storage.js';
 import { preRun, runScript } from './schedule-process.js';
 import type { TerminalTaskHost } from './host.js';
+import { scheduleForm, scheduleFormInput, scheduleText } from './schedule-resources.js';
 
 export const TERMINAL_SCHEDULE_CHANNELS = ['list','get','create','update','delete','pause','resume','run-now','list-runs','delete-run','get-inflight-count','get-runtime-state','get-unread-count','mark-run-read','mark-all-runs-read','mark-schedule-runs-read','list-sidebar-index-runs','list-templates','create-from-template','script-capability-status'].map(action=>`maker:schedule:${action}`);
 export interface TerminalSchedulerOptions {
@@ -133,8 +134,45 @@ export class TerminalSchedulerHost {
     this.guard(context);return result;
   }
   registerResources(registry:RemoteResourceRegistry){
-    const item=(schedule:Schedule):RemoteCollectionItem=>({ref:{collectionId:'schedules',kind:'schedule',id:schedule.id},revision:String(schedule.updatedAt),display:{title:schedule.name,subtitle:schedule.intervalMs?`${schedule.intervalMs/1000}s`:schedule.cronExpr,status:{label:{fallback:schedule.status},tone:schedule.status==='active'?'positive':'neutral'}},links:schedule.targetSessionId?[{rel:'task',target:{kind:'session',sessionId:schedule.targetSessionId}}]:[],actions:[{id:'run-now',label:{fallback:'Run now'}},{id:schedule.status==='active'?'pause':'resume',label:{fallback:schedule.status==='active'?'Pause':'Resume'}}]});
-    registry.register({collection:{id:'schedules',resourceKind:'schedule',title:{fallback:'Schedules'},placement:'sidebar'},list:async(context,request)=>{await this.ready;context.assertCurrent?.();const rows=await this.engine.list();const offset=request.cursor?Number(request.cursor):0;if(!Number.isInteger(offset)||offset<0)throw new Error('INVALID_CURSOR');const limit=Math.min(request.limit??100,100);return {collectionId:'schedules',revision:rows.map(row=>row.updatedAt).join(','),items:rows.slice(offset,offset+limit).map(item),...(offset+limit<rows.length?{nextCursor:String(offset+limit)}:{})};},get:async(context,request)=>{await this.ready;context.assertCurrent?.();const row=await this.engine.get(request.ref.id);if(!row)throw new Error('SCHEDULE_NOT_FOUND');return {...item(row),blocks:[{id:'prompt',primitive:'text',fallbackMarkdown:row.prompt}]};},invoke:async(context,request)=>{context.assertCurrent?.();if(!request.resourceRef||!['run-now','pause','resume'].includes(request.actionId))throw new Error('INVALID_ACTION');await this.invoke(`maker:schedule:${request.actionId}`,[request.resourceRef.id],{source:'local',assertCurrent:context.assertCurrent});return {effects:[{kind:'refresh-collection',collectionId:'schedules'}]};}});
+    const item=(schedule:Schedule):RemoteCollectionItem=>({
+      ref:{collectionId:'schedules',kind:'schedule',id:schedule.id},revision:String(schedule.updatedAt),
+      display:{title:schedule.name,subtitle:schedule.intervalMs?`${schedule.intervalMs/1000}s`:schedule.cronExpr,
+        status:{label:schedule.status==='active'?scheduleText('active'):scheduleText('paused'),tone:schedule.status==='active'?'positive':'neutral'}},
+      links:schedule.targetSessionId?[{rel:'task',target:{kind:'session',sessionId:schedule.targetSessionId}}]:[],
+      actions:[{id:'run-now',label:scheduleText('run')},{id:schedule.status==='active'?'pause':'resume',label:scheduleText(schedule.status==='active'?'pause':'resume')},scheduleForm(schedule),
+        {id:'delete',label:scheduleText('delete'),tone:'destructive',confirmation:{title:scheduleText('deleteTitle'),confirmLabel:scheduleText('delete')}}],
+    });
+    registry.register({
+      collection:{id:'schedules',resourceKind:'schedule',title:scheduleText('schedules'),placement:'sidebar',actions:[scheduleForm()]},
+      list:async(context,request)=>{
+        await this.ready;this.guard();context.assertCurrent?.();const rows=await this.engine.list();
+        const offset=request.cursor?Number(request.cursor):0;if(!Number.isInteger(offset)||offset<0)throw new Error('INVALID_CURSOR');
+        const limit=Math.min(request.limit??100,100);return {collectionId:'schedules',revision:rows.map(row=>row.updatedAt).join(','),items:rows.slice(offset,offset+limit).map(item),...(offset+limit<rows.length?{nextCursor:String(offset+limit)}:{})};
+      },
+      get:async(context,request)=>{
+        await this.ready;this.guard();context.assertCurrent?.();const row=await this.engine.get(request.ref.id);if(!row)throw new Error('SCHEDULE_NOT_FOUND');
+        return {...item(row),blocks:[{id:'prompt',primitive:'text',fallbackMarkdown:row.prompt},{id:'configuration',primitive:'text',fallbackMarkdown:[row.workingDir,row.model,row.timezone].filter(Boolean).join(' · ')},
+          {id:'edit',primitive:'form',fallbackMarkdown:'',data:{actionId:'edit',values:{name:row.name,prompt:row.prompt,workingDir:row.workingDir,agentKind:row.agentKind,providerId:row.providerId??'',model:row.model??'',kind:row.intervalMs?'interval':'cron',cronExpr:row.cronExpr,intervalSeconds:row.intervalMs?String(row.intervalMs/1000):'',timezone:row.timezone,__revision:String(row.updatedAt)}}}]};
+      },
+      invoke:async(context,request)=>{
+        await this.ready;this.guard();context.assertCurrent?.();
+        const invocation:InvocationContext={source:'local',assertCurrent:context.assertCurrent};
+        if(request.actionId==='create'&&!request.resourceRef){
+          const input=scheduleFormInput(request.input??{});this.validateInput(input as Record<string,unknown>);
+          await this.invoke('maker:schedule:create',[input],invocation);
+        }else{
+          if(!request.resourceRef||request.resourceRef.kind!=='schedule'||request.resourceRef.collectionId!=='schedules')throw new Error('INVALID_ACTION');
+          const row=await this.engine.get(request.resourceRef.id);if(!row)throw new Error('SCHEDULE_NOT_FOUND');context.assertCurrent?.();
+          if(request.actionId==='edit'){
+            if(request.input?.__revision!==undefined&&request.input.__revision!==String(row.updatedAt))throw new Error('SCHEDULE_REVISION_CHANGED');
+            await this.invoke('maker:schedule:update',[row.id,scheduleFormInput(request.input??{},row)],invocation);
+          }
+          else if(['run-now','pause','resume','delete'].includes(request.actionId))await this.invoke(`maker:schedule:${request.actionId}`,[row.id],invocation);
+          else throw new Error('INVALID_ACTION');
+        }
+        return {effects:[{kind:'refresh-collection',collectionId:'schedules'}]};
+      },
+    });
   }
   async close(){this.closed=true;this.options.tasks.configureScheduler(undefined);await this.ready;await this.engine.stop();await this.storage.flush();}
 }

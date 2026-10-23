@@ -12,6 +12,14 @@ import type { TerminalSecrets } from '../contracts.js';
 import { TerminalTaskHost } from './host.js';
 import type { RuntimeInput } from '../models/runtime.js';
 import { TerminalTaskStorage } from './storage.js';
+import { downloadRemoteFile } from '../file-transfers.js';
+import { TerminalMediaTransfer } from '../media-transfer.js';
+import { RemoteResourceRegistry } from '@cindy/device-link';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { z } from 'zod';
 
 const logger: Logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child: () => logger };
 const roots: string[] = [];
@@ -244,12 +252,18 @@ describe('terminal task host', () => {
   });
 
   it('accepts the production queue client and preserves delayed file/media input across restart', async () => {
-    const {host,create,root,native}=await setup();
+    const {host,create,root,native,pushes}=await setup();
     const task=await host.invoke('maker:create-session',[{}]) as {id:string};
     const client={invoke:(channel:string,args:unknown[]=[])=>host.invoke(channel,args)} as TerminalClient;
     await enqueueMessage(client,task.id,'from CLI','cli_input');
     await host.invoke('terminal:tasks:wait',[task.id,'cli_input']);
     expect(await waitForTurn(client,task.id,'cli_input')).toMatchObject({status:'completed',finalText:'Echo: from CLI'});
+    // Mobile outbox settles through around-client-id and uses created events to
+    // separate turns. Missing either makes an executed send appear unsent.
+    expect(await host.invoke('local-db:messages:around-client-id',[task.id,'cli_input',{radius:1}])).toMatchObject([{role:'user',clientId:'cli_input'},{role:'assistant',content:'Echo: from CLI'}]);
+    expect(pushes.some(push=>push.channel==='local-db:messages:created'&&(push.payload as {message?:{clientId:string}}).message?.clientId==='cli_input')).toBe(true);
+    const view=await host.invoke('local-db:messages:view',[task.id,{lazyDetails:true}]);
+    expect(JSON.stringify(view)).toContain('Echo: from CLI');
     const encoded=Buffer.from('frozen attachment').toString('base64');
     const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ4sAAAAASUVORK5CYII=';
     await host.invoke('maker:input:enqueue',[task.id,{clientId:'delayed_input',text:'Read these',files:[{name:'note.txt',mimeType:'text/plain',base64:encoded},{name:'pixel.png',mimeType:'image/png',category:'image',base64:png}]},{sendAtMs:Date.now()+60_000}]);
@@ -296,6 +310,72 @@ describe('terminal task host', () => {
     await scheduler.close();
     const reopened=new TerminalSchedulerHost({profileDir:root,tasks:host,logger,emit(){}});schedulers.push(reopened);
     expect(await reopened.invoke('maker:schedule:get',[schedule.id])).toMatchObject({targetSessionId:row.targetSessionId});
+    const registry=new RemoteResourceRegistry();reopened.registerResources(registry);
+    const context={controllerDeviceId:'local'};const client={protocolVersion:1,primitives:['text','actions'],locale:'zh-CN'};
+    const resourceInput={name:'Resource schedule',prompt:'resource instruction',workingDir:root,agentKind:'claude-code',providerId:'fixture',model:'test-model',kind:'interval',intervalSeconds:'3600',timezone:'Asia/Shanghai',persistentSession:true};
+    await registry.invoke(context,{client,collectionId:'schedules',actionId:'create',input:resourceInput});
+    const page=await registry.list(context,{client,collectionId:'schedules'});
+    const created=page.items.find(item=>item.display.title==='Resource schedule')!;
+    expect(created).toBeTruthy();
+    await registry.invoke(context,{client,collectionId:'schedules',resourceRef:created.ref,actionId:'edit',input:{name:'Edited schedule'}});
+    expect(await reopened.invoke('maker:schedule:get',[created.ref.id])).toMatchObject({name:'Edited schedule',timezone:'Asia/Shanghai',intervalMs:3_600_000,persistentSession:true,model:'test-model'});
+    await expect(registry.invoke(context,{client,collectionId:'schedules',actionId:'create',input:{...resourceInput,intervalSeconds:'-1'}})).rejects.toThrow('INVALID_INTERVAL');
+    await registry.invoke(context,{client,collectionId:'schedules',resourceRef:created.ref,actionId:'delete'});
+    expect(await reopened.invoke('maker:schedule:get',[created.ref.id])).toBeNull();
+  });
+
+  it('exports peer and OSS files without overwriting an existing destination', async () => {
+    const root=await mkdtemp(path.join(os.tmpdir(),'cindy-download-test-'));roots.push(root);
+    const destination=path.join(root,'download.txt');
+    const files={receive:async <T>(_peer:string,_url:string,makeSink:Parameters<import('../remote/files.js').TerminalFilePeerService['receive']>[2]):Promise<T>=>{
+      const metadata={ticket:'fixture',size:5,mimeType:'text/plain'};
+      const sink=await makeSink(metadata);
+      try {await sink.write(0,Buffer.from('hello'));return await sink.finish(metadata) as T;}
+      catch(error){await sink.abort();throw error;}
+    }};
+    const media=new TerminalMediaTransfer({ownerDir:root,getOwnerScope:()=> 'owner',getToken:async()=> 'fixture-token',getApiBaseUrl:()=> 'https://fixture.invalid',fetch:(async(url)=>String(url).includes('presign-get')?Response.json({getUrl:'https://fixture.invalid/body'}):new Response('world')) as typeof fetch});
+    const options={files,media,invokeRemote:async()=>({inlineBase64:Buffer.from('world').toString('base64'),size:5,mimeType:'text/plain'})};
+    expect(await downloadRemoteFile(options,['device','xdt-file:///file',destination],{source:'local'})).toMatchObject({path:destination,size:5});
+    await expect(downloadRemoteFile(options,['device','xdt-file:///file',destination],{source:'local'})).rejects.toMatchObject({code:'EEXIST'});
+    expect(await readFile(destination,'utf8')).toBe('hello');
+    await expect(media.download('fixture-key',destination)).rejects.toMatchObject({code:'EEXIST'});
+    expect(await readFile(destination,'utf8')).toBe('hello');
+    const fallback=path.join(root,'fallback.txt');
+    expect(await downloadRemoteFile({...options,files:{receive:async()=>{throw new Error('FILE_PEER_UNAVAILABLE');}}},['device','xdt-file:///file',fallback],{source:'local'})).toMatchObject({size:5});
+    expect(await readFile(fallback,'utf8')).toBe('world');
+  });
+
+  it('mounts project MCP tools with vaulted credentials and managed skills in the actual task runtime', async () => {
+    const {host,root,native}=await setup();const peers:McpServer[]=[];let authenticated=false;
+    const upstream=createServer(async(req,res)=>{
+      authenticated=req.headers.authorization==='Bearer fixture-mcp-secret';
+      if(!authenticated){res.writeHead(401).end();return;}
+      const server=new McpServer({name:'fixture',version:'1'});peers.push(server);
+      server.registerTool('echo',{inputSchema:{text:z.string()}},async({text})=>({content:[{type:'text',text:`upstream:${text}`}]}));
+      const transport=new StreamableHTTPServerTransport({sessionIdGenerator:undefined});
+      await server.connect(transport);await transport.handleRequest(req,res);
+    });
+    await new Promise<void>(resolve=>upstream.listen(0,'127.0.0.1',resolve));
+    const client=new McpClient({name:'test',version:'1'});
+    try {
+      await host.invoke('maker:mcp:custom:create',[{id:'fixture_mcp',name:'Fixture MCP',url:`http://127.0.0.1:${(upstream.address() as import('node:net').AddressInfo).port}/mcp`,transport:'http',headers:{},scope:'project',workingDir:root},'fixture-mcp-secret']);
+      await host.invoke('terminal:skills:create',[{name:'fixture_skill',description:'A test skill',body:'Use the fixture skill.',scope:'project',workingDir:root}]);
+      const task=await host.invoke('maker:create-session',[{workingDir:root}]) as {id:string};
+      const runtime=native.inputs.at(-1)!;
+      expect((await runtime.capabilities!.getManagedSkills()).some(skill=>skill.name==='fixture_skill')).toBe(true);
+      const provider=runtime.tools!.providers.find(provider=>provider.name==='fixture_mcp')!;
+      const sdk=await provider.toClaudeSdkConfig!({sessionId:task.id,workingDir:root,agentKind:'claude-code'}) as {instance:McpServer};
+      const [left,right]=InMemoryTransport.createLinkedPair();await sdk.instance.connect(left);await client.connect(right);
+      expect((await client.listTools()).tools.map(tool=>tool.name)).toEqual(['echo']);
+      expect(await client.callTool({name:'echo',arguments:{text:'hello'}})).toMatchObject({content:[{type:'text',text:'upstream:hello'}]});
+      expect(authenticated).toBe(true);
+      expect(await readFile(path.join(root,'capabilities.json'),'utf8')).not.toContain('fixture-mcp-secret');
+      expect(JSON.stringify(await host.invoke('maker:mcp:custom:list',[]))).not.toContain('fixture-mcp-secret');
+      await host.invoke('terminal:mcp:set-enabled',['fixture_mcp',false]);
+      await expect(client.listTools()).rejects.toThrow();
+      const other=await host.capabilities.runtime({workingDir:path.dirname(root),agentKind:'claude-code'});
+      expect(other.factories).toEqual({});expect(await other.getManagedSkills()).toEqual([]);await other.close();
+    }finally{await client.close();upstream.closeAllConnections();await Promise.all(peers.map(peer=>peer.close()));await new Promise<void>(resolve=>upstream.close(()=>resolve()));}
   });
 
 });

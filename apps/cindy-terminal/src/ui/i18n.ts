@@ -122,3 +122,12 @@ const modelMessages={
   ko:{manage:'연결 관리',edit:'연결 편집',custom:'사용자 지정 API',source:'연결 소스',discover:'모델 목록 가져오기',test:'생성 테스트 (요금이 발생할 수 있음)',testPassed:'생성 테스트 성공',disable:'비활성화',enable:'활성화',reset:'기본값 복원',disconnect:'계정 연결 해제',remove:'연결 삭제',keepKey:'새 API 키 (비워 두면 유지)',addModel:'모델 추가',configure:'모델 설정',context:'컨텍스트 창 (토큰)',modelName:'모델 이름',headers:'요청 헤더 교체 (JSON, 비워 두면 유지)',auth:'인증 방식',none:'인증 없음',apiKey:'API 키',testResult:'테스트 결과'},
 };
 export function getModelMessages(locale:Locale){return modelMessages[locale];}
+
+const serviceMessages:Record<Locale,{activate:string;running:string;boot:string}>={
+ en:{activate:'Start managed service now',running:'Running under system service manager',boot:'Start at boot (OS authorization required)'},
+ 'zh-CN':{activate:'立即启用常驻服务',running:'正由系统服务管理器运行',boot:'开机启动（需要系统授权）'},
+ 'zh-TW':{activate:'立即啟用常駐服務',running:'正由系統服務管理員執行',boot:'開機啟動（需要系統授權）'},
+ ja:{activate:'常駐サービスを今すぐ開始',running:'システムサービスとして実行中',boot:'起動時に開始（システム認証が必要）'},
+ ko:{activate:'상주 서비스 지금 시작',running:'시스템 서비스로 실행 중',boot:'부팅 시 시작 (시스템 인증 필요)'},
+};
+export function getServiceMessages(locale:Locale){return serviceMessages[locale];}

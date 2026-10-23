@@ -9,7 +9,7 @@ export function buildTeammateGuide(
 ): string {
   const helperAvailable = options.helperAvailable !== false;
   // Use the same capability signal as runtime Skill mounting and learning.
-  const ownSkillsEnabled = helperAvailable && options.ownSkillsEnabled !== false;
+  const ownSkillsEnabled = options.ownSkillsEnabled ?? helperAvailable;
   // cindy / ghost_* live on the local builtin gateway. SSH Claude/Codex only
   // inject collab, memory and helper (REMOTE_ALLOWED_SERVER_NAMES); advertising
   // plugins there would tell the model to call tools it cannot reach. Remote Pi

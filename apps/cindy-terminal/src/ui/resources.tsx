@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput, useWindowSize } from 'ink';
+import wrapAnsi from 'wrap-ansi';
 import type {
   RemoteText, RemoteCollectionDescriptor, RemoteCollectionItem, RemoteResource,
-  RemoteResourceRef, RemoteActionDescriptor, RemoteActionInvokeResponse,
+  RemoteResourceRef, RemoteActionDescriptor, RemoteActionField, RemoteActionInvokeResponse,
 } from '@cindy/device-link';
 import type { TerminalClient } from '../contracts.js';
 import { getMessages, type Locale } from './i18n.js';
@@ -12,19 +13,20 @@ import { useInputState } from './state.js';
 /** Portable resource controller; business actions remain on the selected host. */
 export function Resources({ client, device, locale, initialCollection, onTask }: { client: TerminalClient; device?: string; locale: Locale;initialCollection?:string; onTask(id: string,device?:string): void }) {
   const t=getMessages(locale);
-  const { rows }=useWindowSize();
+  const { rows, columns }=useWindowSize();
   const [collections,setCollections]=useState<RemoteCollectionDescriptor[]>([]);
   const [collection,setCollection]=useState<RemoteCollectionDescriptor>();
   const [items,setItems]=useState<RemoteCollectionItem[]>([]);
   const [resource,setResource]=useState<RemoteResource>();
   const [selected,setSelected,selectedNow]=useInputState(0);
-  const [busy,setBusy]=useState(false);
+  const [busy,setBusy,busyNow]=useInputState(false);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
-  const [action,setAction]=useState<RemoteActionDescriptor>();
-  const [confirmed,setConfirmed]=useState(false);
-  const [field,setField]=useState(0);
-  const [values,setValues]=useState<Record<string,unknown>>({});
+  const [action,setAction,actionNow]=useInputState<RemoteActionDescriptor|undefined>(undefined);
+  const [confirmed,setConfirmed,confirmedNow]=useInputState(false);
+  const [field,setField,fieldNow]=useInputState(0);
+  const [values,setValues,valuesNow]=useInputState<Record<string,unknown>>({});
+  const [bodyOffset,setBodyOffset]=useState(0);
   const [input,setInput]=useState('');
   const [cursor,setCursor]=useState<string>();
   const epoch=useRef(0);
@@ -42,7 +44,7 @@ export function Resources({ client, device, locale, initialCollection, onTask }:
     const at=epoch.current;
     const result=await call<RemoteResource>('get',{ref});
     if(epoch.current!==at)return;
-    setResource(result);setSelected(0);
+    setResource(result);setSelected(0);setBodyOffset(0);
   }
   async function submit(chosen:RemoteActionDescriptor,inputValues:Record<string,unknown>){
     if(!collection)return;
@@ -54,13 +56,15 @@ export function Resources({ client, device, locale, initialCollection, onTask }:
       if(effect.kind==='toast')setNotice(txt(effect.message));
       else if(effect.kind==='navigate'){if(effect.target.kind==='session')onTask(effect.target.sessionId);else await open(effect.target.ref);}
       else if(effect.kind==='refresh-resource'&&resource)await open(effect.ref);
-      else if(effect.kind==='refresh-collection'&&!resource)await list(collection);
+      else if(effect.kind==='refresh-collection'&&effect.collectionId===collection.id)await list(collection);
     }
   }
   function begin(chosen:RemoteActionDescriptor){
     if(chosen.disabled)return;
-    if(chosen.fields?.some(item=>!['text','multiline','toggle','select'].includes(item.kind))){setError(t.notImplemented);return;}
-    setAction(chosen);setConfirmed(!chosen.confirmation);setField(0);setValues({});setInput('');setSelected(0);
+    if(chosen.fields?.some(item=>!['text','multiline','secret','toggle','select'].includes(item.kind))){setError(t.notImplemented);return;}
+    const block=resource?.blocks?.find(block=>block.primitive==='form'&&(block.data as {actionId?:string}|undefined)?.actionId===chosen.id);
+    const defaults=(block?.data as {values?:Record<string,unknown>}|undefined)?.values??{};
+    setAction(chosen);setConfirmed(!chosen.confirmation);setField(0);setValues(defaults);prepareField(chosen.fields?.[0],defaults);if(chosen.confirmation)setSelected(0);
     if(!chosen.confirmation&&!chosen.fields?.length)void run(()=>submit(chosen,{}));
   }
   useEffect(()=>{
@@ -82,36 +86,47 @@ export function Resources({ client, device, locale, initialCollection, onTask }:
     ...actions.map(item=>({id:item.id,title:`+ ${txt(item.label)}`,run:()=>begin(item)})),
     ...(cursor?[{id:'more',title:t.next,run:()=>void run(()=>list(collection,cursor))}]:[]),
   ]:collections.map(item=>({id:item.id,title:txt(item.title),run:()=>void run(()=>list(item))}));
-  function nextField(value:unknown){
-    if(!action||!fieldDescriptor)return;
-    if(fieldDescriptor.required&&(value===undefined||value===''))return;
-    const next={...values,[fieldDescriptor.id]:value};
-    if(field+1<(action.fields?.length??0)){setValues(next);setField(field+1);setInput('');setSelected(0);}
-    else void run(()=>submit(action,next));
+  function prepareField(next:RemoteActionField|undefined,defaults:Record<string,unknown>){
+    const value=next?defaults[next.id]:undefined;
+    setInput(typeof value==='string'?value:'');
+    setSelected(next?.kind==='toggle'?(value===true?1:0):next?.kind==='select'?Math.max(0,next.options?.findIndex(option=>option.value===value)??0):0);
   }
-  const isText=!!fieldDescriptor&&confirmed&&['text','multiline'].includes(fieldDescriptor.kind);
+  function nextField(value:unknown){
+    const current=actionNow.current, index=fieldNow.current, descriptor=current?.fields?.[index];
+    if(!current||!descriptor)return;
+    if(descriptor.required&&(value===undefined||value===''))return;
+    const next={...valuesNow.current,[descriptor.id]:value};
+    if(index+1<(current.fields?.length??0)){setValues(next);setField(index+1);prepareField(current.fields?.[index+1],next);}
+    else void run(()=>submit(current,next));
+  }
+  const isText=!!fieldDescriptor&&confirmed&&['text','multiline','secret'].includes(fieldDescriptor.kind);
   useInput((_input,key)=>{
     if(key.eventType==='release')return;
-    if(busy||isText)return;
+    const current=actionNow.current, currentField=current?.fields?.[fieldNow.current];
+    const textActive=currentField&&confirmedNow.current&&['text','multiline','secret'].includes(currentField.kind);
+    if(busyNow.current||textActive)return;
+    if(!action&&resource&&(key.pageUp||key.pageDown)){setBodyOffset(value=>Math.max(0,Math.min(Math.max(0,bodyLines.length-bodyRows),value+(key.pageDown?bodyRows:-bodyRows))));return;}
     if(key.escape){epoch.current++;if(action)setAction(undefined);else if(resource)setResource(undefined);else{setCollection(undefined);setItems([]);}setSelected(0);return;}
     const count=action?choices.length:lines.length;
     if(key.upArrow)setSelected(value=>Math.max(0,value-1));
     if(key.downArrow)setSelected(value=>Math.min(count-1,value+1));
     if(key.return){
-      if(action&&!confirmed){if(selectedNow.current===0)setAction(undefined);else if(action.fields?.length){setConfirmed(true);setSelected(0);}else void run(()=>submit(action,{}));}
-      else if(fieldDescriptor)nextField(fieldDescriptor.kind==='toggle'?selectedNow.current===1:fieldDescriptor.options?.[selectedNow.current]?.value);
+      if(current&&!confirmedNow.current){if(selectedNow.current===0)setAction(undefined);else if(current.fields?.length){setConfirmed(true);prepareField(current.fields[0],valuesNow.current);}else void run(()=>submit(current,{}));}
+      else if(currentField)nextField(currentField.kind==='toggle'?selectedNow.current===1:currentField.options?.[selectedNow.current]?.value);
       else lines[selectedNow.current]?.run();
     }
   });
+  const bodyRows=Math.max(3,Math.floor(rows/3));
+  const bodyLines=wrapAnsi((resource?.blocks??[]).filter(block=>block.primitive!=='form').map(block=>terminalText(block.fallbackMarkdown)).filter(Boolean).join('\n\n'),Math.max(10,columns-4),{hard:true,trim:false}).split('\n');
   const pageSize=Math.max(3,Math.floor((rows-12)/2));
   const start=Math.max(0,selected-pageSize+1);
   return <Box flexDirection="column" gap={1}>
     <Text bold>{resource?txt(resource.display.title):collection?txt(collection.title):t.resources}{busy?` · ${t.loading}`:''}</Text>
-    {resource&&!action&&<Box flexDirection="column" maxHeight={Math.max(3,Math.floor(rows/3))} overflow="hidden">{resource.blocks?.map(block=><Text key={block.id}>{terminalText(block.fallbackMarkdown)}</Text>)}</Box>}
+    {resource&&!action&&<Box flexDirection="column"><Text>{bodyLines.slice(bodyOffset,bodyOffset+bodyRows).join('\n')}</Text>{bodyLines.length>bodyRows&&<Text dimColor>{bodyOffset+1}–{Math.min(bodyOffset+bodyRows,bodyLines.length)} / {bodyLines.length} · PgUp / PgDn</Text>}</Box>}
     {action?<>
       <Text>{!confirmed?txt(action.confirmation?.title):fieldDescriptor?txt(fieldDescriptor.label):txt(action.label)}</Text>
       {!confirmed&&action.confirmation?.body&&<Text>{txt(action.confirmation.body)}</Text>}
-      {isText?<Input value={input} onChange={setInput} active={!busy} multiline={fieldDescriptor?.kind==='multiline'} onSubmit={nextField} onCancel={()=>setAction(undefined)} />
+      {isText?<Input value={input} onChange={setInput} active={!busy} secret={fieldDescriptor?.kind==='secret'} multiline={fieldDescriptor?.kind==='multiline'} onSubmit={nextField} onCancel={()=>setAction(undefined)} />
         :choices.map((choice,index)=><Text key={index} bold={index===selected}>{index===selected?'› ':'  '}{choice}</Text>)}
     </>:lines.slice(start,start+pageSize).map((line,index)=><Text key={line.id} bold={selected===index+start}>{selected===index+start?'› ':'  '}{line.title}</Text>)}
     {notice&&<Text>{notice}</Text>}{error&&<Text color="red">{error}</Text>}

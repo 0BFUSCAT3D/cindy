@@ -1,0 +1,29 @@
+import { afterEach, expect, it } from 'vitest';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { ClaudeCodeAgent, type AgentEvent, type AgentSessionHandle, type Logger, type StartSessionOptions } from '@cindy/maker-core';
+import { TerminalCompanionHost } from './host.js';
+import { TerminalModelConfig } from '../../models/config.js';
+import type { RuntimeInput } from '../../models/runtime.js';
+import { RemoteResourceRegistry } from '@cindy/device-link';
+import { registerCompanionResources } from './resources.js';
+const logger:Logger={trace(){},debug(){},info(){},warn(){},error(){},fatal(){},child:()=>logger};
+const roots:string[]=[];const hosts:TerminalCompanionHost[]=[];
+afterEach(async()=>{for(const host of hosts.splice(0))await host.close();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
+async function setup(){const root=await mkdtemp(path.join(os.tmpdir(),'cindy-companion-'));roots.push(root);let active=true;const starts:StartSessionOptions[]=[];const sent:string[]=[];const configs:RuntimeInput[]=[];const vault=new Map<string,string>();const models=new TerminalModelConfig(root,{get:async key=>vault.get(key)??null,set:async(key,value)=>{vault.set(key,value);},delete:async key=>{vault.delete(key);}},async()=>({authenticated:true}));await models.open();await models.saveProvider({id:'fixture',name:'Fixture',auth:{method:'none'},runtimes:{'claude-code':{baseUrl:'http://127.0.0.1:1',models:[{id:'test',name:'Test',contextWindow:200000}]}}},{},true);await models.setDefault({agentKind:'claude-code',providerId:'fixture',model:'test'});const create=async(input:RuntimeInput)=>{configs.push(input);const agent=new ClaudeCodeAgent({auth:{getState:async()=>({authenticated:true}),getAuthEnv:async()=>({}),triggerLogin:async()=>({authenticated:true}),logout:async()=>{}},runtimeConfig:{},logger,binaryPath:process.execPath});agent.startSession=async options=>{starts.push(options);const events:AgentEvent[]=[];let ended=false;let awaken:()=>void=()=>{};const handle:AgentSessionHandle={id:'native-'+options.sessionId,agentKind:'claude-code',model:options.model,async send(message){const text=typeof message.content==='string'?message.content:'';sent.push(text);events.push({type:'text',data:{text:'Reply: '+text,isFinal:true}},{type:'done',data:{}});awaken();},async steer(){},async abort(){},async close(){ended=true;awaken();},async *events(){while(!ended||events.length){const event=events.shift();if(event)yield event;else await new Promise<void>(resolve=>{awaken=resolve;});}},getUsageSnapshot:()=>({tokenUsage:0,contextTokens:0,contextWindow:200000,costUsd:0}),isTurnRunning:()=>false,setInteractionResolver() {}};return handle;};return agent;};const host=new TerminalCompanionHost({root:path.join(root,'companions'),profileDir:root,models,logger,guard:()=>{if(!active)throw new Error('OWNER_CHANGED');},emit(){},binary:async()=>process.execPath,createAgent:create});hosts.push(host);return {root,host,starts,sent,configs,revoke:()=>{active=false;}};}
+
+/** Tier: integration. A companion must keep Profile identity/history and real
+ * Bot-runtime/memory/MCP isolation while replacing only its native handle. */
+it('keeps one independent Profile and journal, mounts memory and personal skills, and does not replay duplicate delivery',async()=>{
+ const f=await setup();const profile=await f.host.create({name:'Cindy',templateId:'cindy'});const first=await f.host.send(profile.id,'hello','once');expect(await first.completion).toContain('hello');expect(f.starts[0].botRuntimeProfile?.botId).toBe(profile.id);expect(f.configs[0].tools?.providers.map(item=>item.name)).toContain('cindy_memory');expect(f.starts[0].botProfilePrompt).toContain('Cindy');
+ const duplicate=await f.host.send(profile.id,'hello','once');expect(await duplicate.completion).toContain('hello');expect(f.sent).toHaveLength(1);
+ await f.host.stop(profile.id);expect((await f.host.messages(profile.sessionId)).map(row=>row.role)).toEqual(['user','assistant']);const second=await f.host.send(profile.id,'again','twice');await second.completion;expect(f.starts[1].resumeSessionId).toBe('native-'+profile.sessionId);expect(f.starts[1].botRuntimeProfile?.botId).toBe(profile.id);
+ const another=await f.host.create({name:'Other'});await f.host.profiles.writeMemory(profile.id,'fact.md','first profile only');expect(await f.host.profiles.readMemory(another.id,'fact.md')).toBeNull();await expect(f.host.profiles.change(profile.id,{models:[{agentKind:'invalid',model:'x',providerId:'x'} as never]})).rejects.toThrow('INVALID_MODEL_SELECTION');expect((await f.host.profiles.get(profile.id))?.models).toEqual([]);
+ const registry=new RemoteResourceRegistry();registerCompanionResources(registry,f.host);const listed=await registry.list({controllerDeviceId:'owner'}, {client:{protocolVersion:1,primitives:[],locale:'ja'},collectionId:'teammates'});expect(listed.items[0].ref.kind).toBe('bot');expect(listed.items[0].display.status?.label).toMatchObject({translations:{ja:'準備完了',ko:'준비됨','zh-TW':'就緒'}});
+ f.revoke();await expect(f.host.send(profile.id,'stale')).rejects.toThrow('OWNER_CHANGED');await f.host.close();
+});
+
+/** Tier: security. Model-authored files cannot traverse a Profile boundary through
+ * a local symlink; deleting a Profile must not resurrect it at daemon restart. */
+it('rejects a linked private shelf and preserves deletion across restart',async()=>{const f=await setup();const profile=await f.host.create({id:'x'.repeat(100),name:'A'});expect(profile.sessionId.length).toBeLessThan(100);const home=f.host.profiles.home(profile.id);await rm(path.join(home,'skills'),{recursive:true});await symlink(f.root,path.join(home,'skills'));await expect(f.host.profiles.writeSkill(profile.id,'escape','body')).rejects.toThrow('UNSAFE_PROFILE_DIRECTORY');await f.host.remove(profile.id);expect(await f.host.profiles.list()).toEqual([]);});

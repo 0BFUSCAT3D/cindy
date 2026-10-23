@@ -16,6 +16,8 @@ export interface InvocationContext {
   /** Verified from the relay's scoped source and an authoritative membership snapshot. */
   sharedTask?: { sharedTaskId: string; sessionId: string; memberId: string; accountId: string; name?: string };
   deviceId?: string;
+  /** Host-stamped display metadata from the authenticated device directory. */
+  sourceDevice?: import('@cindy/maker-shared/message-source').MessageSourceDevice;
   /** Assigned by the authenticated host, never accepted from command arguments. */
   ownerId?: string;
   signal?: AbortSignal;

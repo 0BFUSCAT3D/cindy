@@ -4,12 +4,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { privateDirectory } from '../platform.js';
-import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentKind, type AuthAdapter, type AuthState, type BaseAgent, type Logger, type CodexExtraSpawnConfig, type PiNativeProvidersResult } from '@cindy/maker-core';
+import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentKind, type AuthAdapter, type AuthState, type BaseAgent, type Logger, type CodexExtraSpawnConfig, type PiNativeProvidersResult, type MakerMemoryManager } from '@cindy/maker-core';
 import { BUNDLED_CATALOG, findModelRegistryRoute, resolvePiModelRoute, type ResolvedRoute } from '@cindy/model-providers';
 import type { createTaskTools } from '../tasks/mcp.js';
 import type { TerminalModelConfig, ModelSelection } from './config.js';
 
 import { createProviderProxy } from './proxy.js';
+import type { TerminalCapabilities } from '../tasks/capabilities.js';
 
 const execute = promisify(execFile);
 const names = { 'claude-code': 'claude', codex: 'codex', pi: 'pi' } as const;
@@ -56,6 +57,10 @@ export interface RuntimeInput {
   guestHome?: string;
   authorizeRequest?: (model: string) => Promise<boolean>;
   tools?: Awaited<ReturnType<typeof createTaskTools>>;
+  memory?: MakerMemoryManager;
+  capabilities?: Awaited<ReturnType<TerminalCapabilities['runtime']>>;
+  contactsEnabled?: boolean;
+  getContactsPromptState?: () => 'enabled' | 'disabled';
 }
 
 /** Construct the real maker-core adapters. A task owns a route snapshot so
@@ -93,8 +98,13 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
   const catalogModels = route.provider.models[selection.agentKind] ?? [];
   const deps = {
     auth, binaryPath, logger,
+    makerMemory: input.memory,
+    getManagedSkills: input.capabilities?.getManagedSkills,
+    getDisabledSkillPaths: input.capabilities?.getDisabledSkillPaths,
+    prepareCodexSkills: input.capabilities?.prepareCodexSkills,
+    getContactsPromptState: input.getContactsPromptState ?? (() => input.contactsEnabled ? 'enabled' : 'disabled'),
     mcpProviders: input.tools?.providers,
-    runtimeConfig: { userDataPath: input.guestHome ?? profileDir, ...(custom && selection.agentKind === 'claude-code' ? { endpoint } : {}) },
+    runtimeConfig: { userDataPath: input.guestHome ?? profileDir, ...(input.memory ? { makerMemoryEnabled: input.memory.isEnabled() } : {}), ...(custom && selection.agentKind === 'claude-code' ? { endpoint } : {}) },
     capabilityAdditions: { availableModels: catalogModels.map(model => ({
       id: model.id, displayName: model.name, contextWindow: model.contextWindow,
       efforts: model.efforts ?? [], defaultEffort: model.defaultEffort ?? null,

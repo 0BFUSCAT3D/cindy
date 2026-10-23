@@ -14,3 +14,4 @@ await build({
 
 // The native plugin worker keeps the same published bootstrap ABI as Desktop.
 await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/nativeWorkerEntry.ts')], outfile:path.join(appDir,'dist/plugin-node-worker.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
+await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/nativeSnapshotWorker.ts')], outfile:path.join(appDir,'dist/plugin-snapshot-worker.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
