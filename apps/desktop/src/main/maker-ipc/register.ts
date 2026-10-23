@@ -12,7 +12,7 @@ import { assertBotTaskCoordination, classifySessionMessagePurpose, coordinationI
 import type { BotTaskCoordination, SessionMessagePurpose } from '../../shared/botTaskCoordination.js';
 import { openSession, setSessionOpeningModelAdmission } from '../localDb/sessionOpening.js';
 import { createPluginTaskReviewResolver } from './pluginTaskReviewContext.js';
-import { isPluginTaskPermissionAllowed, assertPluginTaskResult, createPluginTaskService, readPluginTaskPlanReceipt, PluginTaskError, type PluginTaskService } from './pluginTaskService.js';
+import { isPluginTaskPermissionAllowed, assertPluginTaskResult, createPluginTaskService, isTeamPlanLabelLockedByReceipt, readPluginTaskPlanReceipt, PluginTaskError, type PluginTaskService } from './pluginTaskService.js';
 import { assertPluginWorkerDirectoryScope, resolvePluginWorkerDirectory } from './pluginWorkerDirectory.js';
 import { PluginWriteAccessGate } from './pluginWriteAccessGate.js';
 import { pluginWorkerCompletedAt } from './pluginWorkerCompletion.js';
@@ -24,7 +24,21 @@ import { notifyAgentIslandBotGroupChanged } from '../localDb/agentIslandSessionP
 import { ghostDeclaresHiddenTasks } from '../../shared/ghost.js';
 import { hasAcceptedUserTaskInput } from './pluginTaskInput.js';
 import { controlOwnedSessionExecution, isSameSessionExecution, withdrawOwnedSessionInputs } from './sessionExecutionOwnership.js';
-import { showMobilePluginTaskPermission, setPluginTaskHandler, setPluginTargetAdapter, assertPluginTargetQueuedDelivery, getPluginTaskSourceSessionId, setPluginTaskUninstaller, setPluginTaskRelocator, pluginTargetAuthorizationRevision, isPluginTaskAuthorized, getPluginTaskInstallRevision, pluginTaskAuthorizationRevision } from '../cindy-brain/index.js';
+import {
+  showMobilePluginTaskPermission,
+  setPluginTaskHandler,
+  setPluginTargetAdapter,
+  assertPluginTargetQueuedDelivery,
+  getPluginTaskSourceSessionId,
+  setPluginTaskUninstaller,
+  setPluginTaskRelocator,
+  pluginTargetAuthorizationRevision,
+  isPluginTaskAuthorized,
+  // #5529：PR 侧的授权候选解析仍要这个可空查询。
+  findAvailableGhostForAuthorization,
+  getPluginTaskInstallRevision,
+  pluginTaskAuthorizationRevision,
+} from '../cindy-brain/index.js';
 import { listPluginTargetCandidates, resolvePluginTargetSession } from './pluginTargetCandidates.js';
 import { createPluginTargetStore } from './pluginTargetStore.js';
 import { collectPluginAttachmentPayloadTexts, withPluginMessageAttachments } from '../cindy-media/pluginMessageAttachments.js';
@@ -188,6 +202,7 @@ import {
 import { createId } from '@paralleldrive/cuid2';
 import { fastModeToStorage } from '@cindy/maker-shared';
 import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
+import { normalizeOrcaWorkerLabel } from '@cindy/maker-shared/orca-team';
 import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
 import {
   isProductTurnCompletionTailEvent,
@@ -530,6 +545,7 @@ import {
   setRemoteWorkerStatusProvider,
   setSessionOrcaRole,
   setWorkerFocus,
+  updateWorkerIdentity,
   updateWorkerStatus,
 } from '../localDb/orcaTeamStore.js';
 import {
@@ -990,7 +1006,6 @@ import {
 import {
   agentDeviceCatalogFailure,
   createOrcaWorkerCreationService,
-  normalizeOrcaWorkerLabel,
   pickWorkerAgentDeviceId,
 } from './orcaWorkerCreationService.js';
 import {
@@ -2887,6 +2902,15 @@ interface OrcaCollabService {
     workerId: string;
   }) => Promise<
     { ok: true; workerId?: string } | { ok: false; errorCode: string; message: string }
+  >;
+  updateWorker: (params: {
+    callerLeadSessionId: string;
+    workerId: string;
+    role?: string;
+    label?: string;
+  }) => Promise<
+    | { ok: true; workerId: string; role: string; label: string | null }
+    | { ok: false; errorCode: string; message: string }
   >;
   listAvailableModels: (params: {
     agent?: AgentKind;
@@ -6955,6 +6979,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 新控制端只有看到此位才允许给被控端 Orca Team 选择 Worker Full access。
       // 旧 desktop 缺省为 false，避免显式 bypassPermissions 被旧 handler 静默忽略。
       supportsOrcaWorkerPermissionMode: true,
+      // 新控制端只有看到此位才允许对远程 Worker 显示「编辑」入口(maker:worker:update);
+      // 旧 desktop 缺省为 false,因为其 allowlist 不认识该 channel。
+      supportsOrcaWorkerUpdate: true,
       // 新控制端只有看到此位，才会让被控端延后 UI initial_task 并在 Lead 首条
       // 输入 accepted 且历史可查询后走 WORKER_DISPATCH_UI_ASSIGNMENT；旧端继续即时派发。
       supportsDeferredOrcaUiAssignment: true,
@@ -15026,6 +15053,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   registerOrcaWorkerControlHandlers(createElectronIpcHandlerRegistry(), {
     idleWorker: (params) => orcaTeamService.idleWorker(params),
     archiveWorker: (params) => orcaTeamService.archiveWorker(params),
+    updateWorker: (params) => orcaTeamService.updateWorker(params),
     logInfo: (message, fields) => log.info(message, fields),
   });
 
@@ -15093,6 +15121,24 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 归档 / 显式 idle 会释放 runtime；先取消未落地的后台预热，避免释放后被重新拉起。
     cancelWorkerResume: (sessionId) => orcaWorkerResumeScheduler.cancel(sessionId),
     updateWorkerStatus,
+    updateWorkerIdentity,
+    isWorkerLabelLockedByPlan: async ({ leadSessionId, labels }) => {
+      const epoch = getCurrentDbClientSnapshot();
+      if (!epoch) throw new Error('plugin task storage unavailable');
+      const receipt = await createPluginTaskStore(epoch.client).get(leadSessionId);
+      if (epoch !== getCurrentDbClientSnapshot()) throw new Error('account changed');
+      // 仅"插件已卸载（任务归属确实撤销）"解除计划锁；停用 / 未批准可恢复，重新启用后
+      // 计划仍会继续，保持锁定（fail closed）。
+      //
+      // 收据里存的是**存储 part**（带命名空间时形如 `_ns__acme__helper`），只按
+      // manifest.id 查会把它当成「不在册」，于是仍被计划引用的 Worker 被人改名，
+      // 收据续期也随之失效。先按实例标识解一次，再退回 manifest.id。
+      const pluginInstalled =
+        receipt !== undefined &&
+        (findAvailableGhostForAuthorization(receipt.pluginId) !== null ||
+          findGhostForInstanceId(receipt.pluginId) !== null);
+      return isTeamPlanLabelLockedByReceipt(receipt, pluginInstalled, labels);
+    },
     markWorkerIdle: async (workerId) => {
       const now = Date.now();
       const db = getDbClient().drizzle;
@@ -17159,6 +17205,19 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       try {
         const { assertCurrent } = await captureOrcaPluginAuthority(callerLeadSessionId);
         return await orcaTeamService.archiveWorker({ callerLeadSessionId, workerId, beforeArchive: assertCurrent });
+      } catch (err) {
+        return {
+          ok: false,
+          errorCode: 'INTERNAL',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+    updateWorker: async ({ callerLeadSessionId, workerId, role, label }) => {
+      try {
+        const { assertCurrent } = await captureOrcaPluginAuthority(callerLeadSessionId);
+        await assertCurrent();
+        return await orcaTeamService.updateWorker({ callerLeadSessionId, workerId, role, label });
       } catch (err) {
         return {
           ok: false,
