@@ -2,8 +2,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
 
-import { gitExec, GitExecError } from './gitExec';
+import { gitExec, GitExecError, type GitExecOpts } from './gitExec';
 import type { WorktreeRecycleRecord } from './recycleJournal';
 
 async function indexHash(worktreePath: string): Promise<string> {
@@ -273,10 +274,11 @@ export const SNAPSHOT_REF_PREFIX = 'refs/cindy/worktree-recovery/';
 export async function releaseSnapshotRef(
   baseRepo: string,
   snapshot: Pick<NonNullable<WorktreeRecycleRecord['snapshot']>, 'ref' | 'commit'>,
+  options?: Pick<GitExecOpts, 'timeoutMs' | 'deadlineAtMs'>,
 ): Promise<boolean> {
   if (!snapshot.ref.startsWith(SNAPSHOT_REF_PREFIX)) return false;
   try {
-    await gitExec(['update-ref', '-d', snapshot.ref, snapshot.commit], baseRepo);
+    await gitExec(['update-ref', '-d', snapshot.ref, snapshot.commit], baseRepo, options);
     return true;
   } catch {
     return false;
@@ -284,12 +286,17 @@ export async function releaseSnapshotRef(
 }
 
 /** Existing snapshot refs and the commits they point to, read with a single Git process. */
-export async function listSnapshotRefs(baseRepo: string): Promise<Map<string, string>> {
+export async function listSnapshotRefs(
+  baseRepo: string,
+  options?: Pick<GitExecOpts, 'timeoutMs' | 'deadlineAtMs'>,
+): Promise<Map<string, string>> {
   const { stdout } = await gitExec(
-    ['for-each-ref', '--format=%(refname)%00%(objectname)', SNAPSHOT_REF_PREFIX], baseRepo,
+    ['for-each-ref', '--format=%(refname)%00%(objectname)', SNAPSHOT_REF_PREFIX], baseRepo, options,
   );
   const refs = new Map<string, string>();
+  let scanned = 0;
   for (const line of stdout.split('\n')) {
+    if (++scanned % 128 === 0) await setImmediate();
     const [ref, commit] = line.trim().split('\0');
     if (ref && commit) refs.set(ref, commit);
   }

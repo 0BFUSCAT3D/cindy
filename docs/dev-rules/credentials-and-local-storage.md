@@ -234,6 +234,15 @@ refresh 与 relay 自救节流。在途 refresh 尚未返回时收到的恢复�
 | Windows 锁屏控制的系统服务程序 | `%ProgramFiles%\Cindy Remote Desktop\<安装目录哈希>\`,由「授权开启」的管理员提权步骤写入:两个原生 helper 与记录所属安装目录的 `install.txt`。目录与文件的所有者是 Administrators,只有 Administrators 与 SYSTEM 可写——SYSTEM 服务不能从用户可写的安装目录启动,否则本机任何普通进程都能换掉它。不含凭证、账号或对话。源码运行的开发版另将构建缓存放在 `userData/remote-desktop/development/<安装身份哈希>/`，只含本机编译产物与源码摘要；它仍复制到上述受保护目录后才注册服务。只有设置页的「移除服务」(同样需要管理员确认)会删除它;按安装目录分子目录,多份安装互不影响。见 `native/remote-desktop/windows-host/src/staging.rs`、`apps/desktop/src/main/remote-desktop/windowsHost.ts` 与 [`../remote-desktop.md`](../remote-desktop.md) |
 | 用户明确导出的文件                  | 用户选择或任务明确指定的目标路径                                                                                                                                                                                                                                                                                                                                                                                |
 
+- worktree 启动维护（回收重试、旧归档清理、快照引用清理、审计与池恢复）在主窗口首帧、
+  数据库及运行服务就绪后延迟 30 秒启动，不加入启动等待链；重复就绪通知与回收事件不能
+  提前这次延迟。退出取消未开始的维护，窗口或数据库未就绪时不执行，维护错误按原有退避处理。
+  快照与任务元数据按索引查找，每 128 项让出主线程；完整读取恢复记录后才允许清理，不能
+  用不完整扫描推断引用无人使用。快照 Git 清理阶段最多安排 5 秒的工作，单次 Git 超时 1 秒，
+  超时后的进程树收尾仍沿用 Git helper 的有界宽限期；剩余引用保留到下次启动再处理。
+  该预算不包括异步元数据读取，也不强行中断正在执行的 worktree 删除。实现见
+  `bootstrap-electron.ts`、`worktree/recycleMaintenance.ts`；回归见 `worktreeRecycleMaintenance.test.ts`。
+
 - 内置 Skill 的官方身份只授予当前 manifest 已提交且指纹匹配的 bundle：`.active` 必须是
   指向该版本的合法链接，版本目录与 Skill 内容不能经替换的符号链接越界。物化失败或目录
   存在本身不构成官方身份；扫描、命令标记与 Learn 发现共用经验证的描述符。异常占位内容

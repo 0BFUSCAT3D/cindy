@@ -1,6 +1,7 @@
 import { MAX_RECYCLE_FAILURES, recyclePolicy } from './recyclePolicy';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { app } from 'electron';
 
 import { getDbClient } from '../localDb/client/current';
@@ -22,10 +23,14 @@ const log = createLogger('worktreeRecycleMaintenance');
 let maintenance: WorktreeRecycleMaintenance | null = null;
 const MAX_ATTEMPTS = 8;
 const EVENT_COALESCE_MS = 100;
+const STARTUP_DELAY_MS = 30_000;
+const SNAPSHOT_CLEANUP_BUDGET_MS = 5_000;
+const SNAPSHOT_GIT_TIMEOUT_MS = 1_000;
 const retryDelay = (attempt: number): number => Math.min(30 * 60_000, 5_000 * 2 ** Math.min(attempt, 9));
 
 export interface WorktreeMaintenanceOptions {
   isReady(): boolean;
+  onReady?(): Promise<void>;
   recycleCurrentSession(sessionId: string, status: string): Promise<void>;
   onAttemptComplete?(): Promise<void>;
 }
@@ -59,13 +64,15 @@ export class WorktreeRecycleMaintenance {
   private watchRetryAt = 0;
   private scanFailures = 0;
   private initialPass = true;
+  private startAt: number | null = null;
   private readonly wakeIds = new Set<string>();
   private readonly attempts = new Map<string, { count: number; checks: number; notBefore: number }>();
 
   constructor(public options: WorktreeMaintenanceOptions) {}
 
-  start(): Promise<void> {
+  start(delayMs = 0): Promise<void> {
     if (this.stopped) return Promise.resolve();
+    this.startAt ??= Date.now() + delayMs;
     this.unsubscribe ??= subscribeWorktreeRecycleEvents((event) => {
       if (event.opportunity) this.wakeIds.add(event.resourceId);
       this.changed();
@@ -104,6 +111,10 @@ export class WorktreeRecycleMaintenance {
 
   run(): Promise<void> {
     if (this.stopped) return Promise.resolve();
+    if (this.startAt !== null && Date.now() < this.startAt) {
+      this.schedule(this.startAt);
+      return Promise.resolve();
+    }
     if (this.running) { this.dirty = true; return this.running; }
     this.clearTimer();
     this.dirty = false;
@@ -199,7 +210,8 @@ export class WorktreeRecycleMaintenance {
       const db = getDbClient();
       const readRows = db.readLocalWorktreeReferences?.bind(db);
       if (!readRows) return;
-      const released = await releaseObsoleteRecoverySnapshots(readRows);
+      const released = await releaseObsoleteRecoverySnapshots(readRows,
+        () => !this.stopped && this.options.isReady() && getDbClient() === db);
       if (released > 0) log.info('released obsolete worktree recovery snapshots', { count: released });
     } catch (error) {
       log.warn('worktree recovery snapshot release postponed', { code: (error as NodeJS.ErrnoException).code ?? 'unavailable' });
@@ -208,6 +220,8 @@ export class WorktreeRecycleMaintenance {
 
   private async runPass(): Promise<void> {
     if (!this.options.isReady()) return;
+    await this.options.onReady?.();
+    if (this.stopped || !this.options.isReady()) return;
     await this.ensureWatcher();
     if (this.stopped) return;
     let pendingLeaseReleases = 0;
@@ -255,6 +269,14 @@ export class WorktreeRecycleMaintenance {
     let attempted = false;
     try {
       const rows = await db.readLocalWorktreeReferences();
+      const rowsByOwner = new Map<string, LocalWorktreeReference[]>();
+      let scanned = 0;
+      for (const row of rows) {
+        let owned = rowsByOwner.get(row.id);
+        if (!owned) { owned = []; rowsByOwner.set(row.id, owned); }
+        owned.push(row);
+        if (++scanned % 128 === 0) await setImmediate();
+      }
       for (const record of records) {
         if (this.stopped || !this.options.isReady() || getDbClient() !== db) return;
         let charged = false;
@@ -265,7 +287,7 @@ export class WorktreeRecycleMaintenance {
             || latest.phase === 'restored' || latest.phase === 'restoring'
             || (latest.phase === 'removed' && !store.get(latest.meta.sessionId))
             || (!wakeIds.has(record.id) && latest.nextAttemptAt > Date.now())) continue;
-          const ownerRows = rows.filter((row) => row.id === record.meta.sessionId);
+          const ownerRows = rowsByOwner.get(record.meta.sessionId) ?? [];
           // Unknown is not an orphan, including after switching the selected account.
           if (!ownerRows.length || ownerRows.some((row) => row.source === 'bot'
             || (row.status !== 'archived' && row.status !== 'deleted'))) continue;
@@ -307,41 +329,85 @@ export class WorktreeRecycleMaintenance {
  * recovery evidence. Archived tasks keep their snapshots because they can be unarchived; a
  * task missing from the databases is unknown, not deleted. Task databases are read only when a
  * removed record needs its owner checked. Costs one Git process per repository with
- * candidates, plus one per ref actually deleted.
+ * candidates, plus one per ref actually deleted. Metadata is indexed in bounded batches;
+ * the Git phase has a time budget, leaving unfinished refs for the next startup.
  */
 export async function releaseObsoleteRecoverySnapshots(
   readRows: () => Promise<readonly LocalWorktreeReference[]>,
+  canContinue: () => boolean = () => true,
 ): Promise<number> {
   const records = await listRecycleRecordsWithHistory();
-  if (!records) return 0;
+  if (!records || !canContinue()) return 0;
   // History keeps an older copy of the same record, so decide per ref across all copies.
-  const copies = new Map<string, WorktreeRecycleRecord[]>();
+  const copies = new Map<string, {
+    baseRepo: string; commit: string; restored: boolean; removed: boolean; owners: Set<string>;
+  }>();
+  let scanned = 0;
   for (const record of records) {
+    if (++scanned % 128 === 0) {
+      await setImmediate();
+      if (!canContinue()) return 0;
+    }
     if (!record.snapshot?.ref.startsWith(SNAPSHOT_REF_PREFIX)) continue;
-    copies.set(record.snapshot.ref, [...(copies.get(record.snapshot.ref) ?? []), record]);
+    let copy = copies.get(record.snapshot.ref);
+    if (!copy) {
+      copy = { baseRepo: record.meta.baseRepo, commit: record.snapshot.commit,
+        restored: false, removed: true, owners: new Set() };
+      copies.set(record.snapshot.ref, copy);
+    }
+    copy.restored ||= record.phase === 'restored';
+    copy.removed &&= record.phase === 'removed';
+    copy.owners.add(record.meta.sessionId);
   }
-  const restored = (versions: readonly WorktreeRecycleRecord[]) => versions.some((record) => record.phase === 'restored');
-  const removed = (versions: readonly WorktreeRecycleRecord[]) => versions.every((record) => record.phase === 'removed');
-  const values = [...copies.values()];
-  const rows = values.some((versions) => !restored(versions) && removed(versions)) ? await readRows() : [];
-  const ownerDeleted = (sessionId: string): boolean => {
-    const owned = rows.filter((row) => row.id === sessionId);
-    return owned.length > 0 && owned.every((row) => row.source !== 'bot' && row.status === 'deleted');
-  };
+  let needsOwners = false;
+  for (const copy of copies.values()) {
+    if (++scanned % 128 === 0) await setImmediate();
+    if (!copy.restored && copy.removed) { needsOwners = true; break; }
+  }
+  if (!canContinue()) return 0;
+  const rows = needsOwners ? await readRows() : [];
+  // All databases must agree. A missing owner remains unknown, never deleted.
+  const deletedOwners = new Map<string, boolean>();
+  for (const row of rows) {
+    const id = row.id;
+    deletedOwners.set(id, (deletedOwners.get(id) ?? true) && row.source !== 'bot' && row.status === 'deleted');
+    if (++scanned % 128 === 0) {
+      await setImmediate();
+      if (!canContinue()) return 0;
+    }
+  }
   const byRepo = new Map<string, Array<{ ref: string; commit: string }>>();
-  for (const [ref, versions] of copies) {
-    const obsolete = restored(versions)
-      || (removed(versions) && versions.every((record) => ownerDeleted(record.meta.sessionId)));
+  for (const [ref, copy] of copies) {
+    if (++scanned % 128 === 0) {
+      await setImmediate();
+      if (!canContinue()) return 0;
+    }
+    let obsolete = copy.restored;
+    if (!obsolete && copy.removed) {
+      obsolete = true;
+      for (const owner of copy.owners) {
+        if (++scanned % 128 === 0) await setImmediate();
+        if (deletedOwners.get(owner) !== true) { obsolete = false; break; }
+      }
+    }
     if (!obsolete) continue;
-    const { baseRepo } = versions[0].meta;
-    byRepo.set(baseRepo, [...(byRepo.get(baseRepo) ?? []), { ref, commit: versions[0].snapshot!.commit }]);
+    let candidates = byRepo.get(copy.baseRepo);
+    if (!candidates) { candidates = []; byRepo.set(copy.baseRepo, candidates); }
+    candidates.push({ ref, commit: copy.commit });
   }
+  // Do not budget the evidence scan: a partial journal must never authorize deletion.
+  // The existing Git helper may spend its bounded process-tree cleanup grace after timeout.
+  const deadlineAtMs = performance.now() + SNAPSHOT_CLEANUP_BUDGET_MS;
+  const gitOptions = { timeoutMs: SNAPSHOT_GIT_TIMEOUT_MS, deadlineAtMs };
   let released = 0;
   for (const [baseRepo, candidates] of byRepo) {
+    if (!canContinue() || performance.now() >= deadlineAtMs) break;
     let existing: Map<string, string>;
-    try { existing = await listSnapshotRefs(baseRepo); } catch { continue; }
+    try { existing = await listSnapshotRefs(baseRepo, gitOptions); } catch { continue; }
     for (const candidate of candidates) {
-      if (existing.get(candidate.ref) === candidate.commit && await releaseSnapshotRef(baseRepo, candidate)) released++;
+      if (++scanned % 128 === 0) await setImmediate();
+      if (!canContinue() || performance.now() >= deadlineAtMs) return released;
+      if (existing.get(candidate.ref) === candidate.commit && await releaseSnapshotRef(baseRepo, candidate, gitOptions)) released++;
     }
   }
   return released;
@@ -351,7 +417,7 @@ export async function releaseObsoleteRecoverySnapshots(
 export function startWorktreeRecycleMaintenance(options: WorktreeMaintenanceOptions): void {
   maintenance ??= new WorktreeRecycleMaintenance(options);
   maintenance.options = options;
-  void maintenance.start();
+  void maintenance.start(STARTUP_DELAY_MS);
 }
 
 export function stopWorktreeRecycleMaintenance(): void {
