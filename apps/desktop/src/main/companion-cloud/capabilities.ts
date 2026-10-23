@@ -111,7 +111,10 @@ export function parseCompanionCapabilities(raw: unknown): CompanionCapabilitiesV
 /** What the new home could not keep of the old setup; shown once as a line after the move. */
 export type CompanionArrivalNotice = 'permissions' | 'model';
 
-/** The settings patch for `updateBotProfile` from a cloud value and the routes usable here. */
+/**
+ * The settings patch for `updateBotProfile` from a cloud value and the routes usable here. Only called
+ * for a present `companion.capabilities.v1` value; without the key (an older main computer) nothing is touched.
+ */
 export function companionCapabilitiesPatch(value: CompanionCapabilitiesValue, models: {
   chain: BotModelRoute[]; task: BotModelRoute | null;
 }): Record<string, unknown> {
@@ -119,12 +122,12 @@ export function companionCapabilitiesPatch(value: CompanionCapabilitiesValue, mo
   for (const field of ['skills', 'skillMode', 'skillsExcluded', 'toolsets', 'toolsetMode', 'mcpServers', 'mcpMode', 'mcpServerNames', 'memory', 'inputHandoff', 'allowSchedulerFollow'] as const) {
     if (value[field] !== undefined) patch[field] = value[field];
   }
-  if (value.modelChain) {
-    const [primary] = models.chain;
-    if (primary) Object.assign(patch, primary, { modelChain: models.chain, modelChainOverride: models.chain });
-    // None of the saved routes exists here: follow this computer's default.
-    else Object.assign(patch, { modelOverride: null, modelChainOverride: null });
-  }
-  if (value.taskModel) patch.taskModelOverride = models.task;
+  // The value exists, so the main computer's setup is known: a model it does not name is one it
+  // follows its default for, and a copy kept here from an earlier stay must not keep its old choice.
+  const [primary] = models.chain;
+  if (value.modelChain && primary) Object.assign(patch, primary, { modelChain: models.chain, modelChainOverride: models.chain });
+  // No chain saved, or none of the saved routes exists here: follow this computer's default.
+  else Object.assign(patch, { modelOverride: null, modelChainOverride: null });
+  patch.taskModelOverride = value.taskModel ? models.task : null;
   return patch;
 }

@@ -23,7 +23,7 @@ describe('portable companion capabilities', () => {
     // Read back from the cloud defensively, and handed to the profile for display.
     expect(parseCompanionCapabilities({ mcpServers: ['a'], mcpServerNames: { a: ' Wiki ', b: 'unreferenced', c: 3 } })?.mcpServerNames).toEqual({ a: 'Wiki' });
     expect(parseCompanionCapabilities({ mcpServers: ['a'] })).toEqual({ mcpServers: ['a'] });
-    expect(companionCapabilitiesPatch({ mcpServers: ['a'], mcpServerNames: { a: 'Wiki' } }, { chain: [], task: null })).toEqual({ mcpServers: ['a'], mcpServerNames: { a: 'Wiki' } });
+    expect(companionCapabilitiesPatch({ mcpServers: ['a'], mcpServerNames: { a: 'Wiki' } }, { chain: [], task: null })).toMatchObject({ mcpServers: ['a'], mcpServerNames: { a: 'Wiki' } });
   });
 
   it('carries only the model chain the owner chose, without routes that run on another computer', () => {
@@ -54,10 +54,18 @@ describe('companionCapabilitiesPatch', () => {
     expect(patch).not.toHaveProperty('permissions');
   });
 
-  it('follows this computer\'s default model when none of the saved routes is usable, and leaves the model alone when none was chosen', () => {
+  it('follows this computer\'s default model when none of the saved routes is usable', () => {
     expect(companionCapabilitiesPatch({ modelChain: [route('m1')] }, { chain: [], task: null }))
-      .toEqual({ modelOverride: null, modelChainOverride: null });
-    expect(companionCapabilitiesPatch({ memory: true }, { chain: [], task: null })).toEqual({ memory: true });
-    expect(companionCapabilitiesPatch({ taskModel: route('t1') }, { chain: [], task: null })).toEqual({ taskModelOverride: null });
+      .toEqual({ modelOverride: null, modelChainOverride: null, taskModelOverride: null });
+    expect(companionCapabilitiesPatch({ taskModel: route('t1') }, { chain: [], task: null })).toMatchObject({ taskModelOverride: null });
+    expect(companionCapabilitiesPatch({ taskModel: route('t1') }, { chain: [], task: route('t1') })).toMatchObject({ taskModelOverride: route('t1') });
+  });
+
+  it('clears the model and task-model choices a copy kept from an earlier stay when the cloud value names none', () => {
+    // The main computer follows its default (or cleared its task model): a stale local override must not survive.
+    expect(companionCapabilitiesPatch({ memory: true }, { chain: [], task: null }))
+      .toEqual({ memory: true, modelOverride: null, modelChainOverride: null, taskModelOverride: null });
+    expect(companionCapabilitiesPatch({ modelChain: [route('m1')] }, { chain: [route('m1')], task: null }))
+      .toMatchObject({ modelChainOverride: [route('m1')], taskModelOverride: null });
   });
 });
