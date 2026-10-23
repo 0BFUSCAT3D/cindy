@@ -147,6 +147,26 @@ describe('task image delivery', () => {
     expect(images.text).not.toContain(source);
   });
 
+  it.each(['inline', 'reference'])('reconciles accepted in-task symlink image/file targets (%s)', async mode => {
+    const aliases: string[] = [];
+    for (let i = 0; i < 11; i++) {
+      const source = path.join(work, `source-${i}.png`), alias = path.join(work, `latest-${i}.png`);
+      await fs.writeFile(source, Buffer.concat([PNG, Buffer.from([i])]));
+      await fs.symlink(source, alias);
+      aliases.push(alias);
+    }
+    const body = mode === 'inline'
+      ? aliases.map(alias => `![preview](<${alias}>) [download](<${alias}>)`).join(' ')
+      : aliases.map((alias, i) => `[download][a${i}] ![preview][a${i}]\n\n[a${i}]: <${alias}>\n`).join('\n');
+    const files = await prepareChatReplyFiles(body, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
+    const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
+    expect(attachments).toHaveLength(11);
+    expect(attachments.every(a => a.category === 'image')).toBe(true);
+    expect(images.text).not.toContain('![');
+    expect(images.text).not.toContain(work);
+  });
+
   it.each(['image-first', 'file-first'])('uploads eleven real images once through both reply passes, in source order (%s)', async order => {
     const pdf = path.join(work, 'report.pdf');
     await fs.writeFile(pdf, '%PDF-1.4');
@@ -192,13 +212,29 @@ describe('task image delivery', () => {
     })()).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
   });
 
-  it('retains file read safeguards when a rendered image also has a hard-linked download target', async () => {
+  it.each(['direct', 'symlink'])('retains file read safeguards for hard-linked image/download targets (%s)', async mode => {
     const source = path.join(work, 'linked.png');
     await fs.writeFile(source, PNG);
     await fs.link(source, path.join(state.root, 'outside.png'));
-    const files = await prepareChatReplyFiles(`![preview](<${source}>) [download](<${source}>)`, 's', () => {});
+    const alias = mode === 'symlink' ? path.join(work, 'latest.png') : source;
+    if (mode === 'symlink') await fs.symlink(source, alias);
+    const files = await prepareChatReplyFiles(`![preview](<${alias}>) [download](<${alias}>)`, 's', () => {});
     const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
     const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
+    expect(attachments.map(a => a.category)).toEqual(['image', 'file']);
+    await expect(attachments[1]!.readBytes!()).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+  });
+
+  it('retains file containment when an image symlink points into the image-only scratchpad root', async () => {
+    const scratch = claudeScratchpadPath({ workingDir: work, sdkSessionId: sdk, agentKind: 'cc' })!;
+    await fs.mkdir(scratch, { recursive: true });
+    const source = path.join(scratch, 'scratch.png'), alias = path.join(work, 'latest.png');
+    await fs.writeFile(source, PNG);
+    await fs.symlink(source, alias);
+    const files = await prepareChatReplyFiles(`![preview](<${alias}>) [download](<${alias}>)`, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
+    const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
+    // Image policy already permits this scratchpad; explicit files remain workdir-only.
     expect(attachments.map(a => a.category)).toEqual(['image', 'file']);
     await expect(attachments[1]!.readBytes!()).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
   });
