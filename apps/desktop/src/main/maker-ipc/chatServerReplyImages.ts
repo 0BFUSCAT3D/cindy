@@ -8,6 +8,7 @@ import { sniffMediaMime } from '../cindy-media/sniffMediaMime.js';
 import { hasLocalTaskImages, localTaskImagePath, taskImageReferences, rewriteTaskImageReferences } from '../cindy-media/taskImageMarkdown.js';
 import type { ChatUploadAttachment } from './chatServerMedia.js';
 import { getDbClient } from '../localDb/client/current.js';
+import { isNetworkOrDevicePath } from './chatServerReplyAttachments.js';
 
 const imageLabel = (image: { alt: string }) => image.alt.replace(/[\\`*_{}[\]<>#!|]/g, '\\$&');
 
@@ -19,12 +20,13 @@ export async function prepareChatReplyImages(text: string, sessionId: string, as
   const localSources = new Map<string, string>();
   for (const ref of originalImages) {
     const local = localTaskImagePath(ref.url);
-    if (!local || localSources.has(ref.url)) continue;
+    if (!local || isNetworkOrDevicePath(local) || localSources.has(ref.url)) continue;
     const real = await fs.realpath(local).catch(() => undefined);
     assertCurrent();
     if (real) localSources.set(ref.url, real);
   }
   const fileOnly = new Map<string, string>();
+  const fileOnlyAttachments = new Set<ChatUploadAttachment>();
   const inspected = new Set<string>();
   for (const ref of originalImages) {
     if (!ref.identifier || inspected.has(ref.url)) continue;
@@ -36,11 +38,15 @@ export async function prepareChatReplyImages(text: string, sessionId: string, as
     // A shared PDF definition must not enter image import, while real images
     // (including extensionless ones) retain the existing materialization path.
     // The caller verifies live file authority before these bounded descriptor reads.
-    if (!localTaskImagePath(ref.url)) { fileOnly.set(ref.url, ref.url); continue; }
-    if (!file.readBytes) throw new Error('ATTACHMENT_UNAVAILABLE');
-    const bytes = await file.readBytes();
-    assertCurrent();
-    if (!sniffMediaMime(bytes)?.startsWith('image/')) fileOnly.set(ref.url, ref.url);
+    if (localTaskImagePath(ref.url)) {
+      if (!file.readBytes) throw new Error('ATTACHMENT_UNAVAILABLE');
+      const bytes = await file.readBytes();
+      assertCurrent();
+      if (sniffMediaMime(bytes)?.startsWith('image/')) continue;
+    }
+    fileOnly.set(ref.url, ref.url);
+    fileOnlyAttachments.add(file);
+    if (fileOnlyAttachments.size > BOT_GROUP_ATTACHMENTS_MAX) throw new Error('ATTACHMENT_UNAVAILABLE');
   }
   text = rewriteTaskImageReferences(text, fileOnly, imageLabel);
   let replacements = new Map<string, string>();

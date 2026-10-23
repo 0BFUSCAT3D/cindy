@@ -13,7 +13,8 @@ import { messages, sessions } from '../localDb/schema.js';
 import { getCurrentDbClientSnapshot } from '../localDb/client/current.js';
 import { visibleMessageText } from '../localDb/conversationSearch.pure.js';
 import { safeDecodeHrefForLookup } from '../pathResolver.js';
-import { isPathWithin } from '../cindy-media/taskImageMarkdown.js';
+import { isPathWithin, localTaskImagePath, taskImageReferences } from '../cindy-media/taskImageMarkdown.js';
+import { isNetworkOrDevicePath } from './chatServerReplyAttachments.js';
 import { BOT_GROUP_ATTACHMENTS_MAX } from '../../shared/botGroupChat.js';
 import type { ChatUploadAttachment } from './chatServerMedia.js';
 
@@ -144,7 +145,7 @@ function localPath(url: string, workDir: string): string {
     }
   } catch { throw unavailable(); }
   // Never resolve a network/device path, including on another host platform.
-  if (/^[\\/]{2}|^[\\/]\?\?[\\/]/.test(value) || value.includes('\0')) throw unavailable();
+  if (isNetworkOrDevicePath(value) || value.includes('\0')) throw unavailable();
   if (/^[A-Za-z]:/.test(value) && process.platform !== 'win32') throw unavailable();
   return path.resolve(workDir, value);
 }
@@ -214,6 +215,19 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
   assertCurrent();
   const attachments: ChatUploadAttachment[] = [];
   const seen = new Set<string>();
+  const imageSources = new Set<string>();
+  if (parsed.links.length > BOT_GROUP_ATTACHMENTS_MAX) {
+    const inspected = new Set<string>();
+    for (const ref of taskImageReferences(parsed.text)) {
+      const local = localTaskImagePath(ref.url);
+      if (!local || isNetworkOrDevicePath(local) || inspected.has(ref.url)) continue;
+      inspected.add(ref.url);
+      const real = await fs.realpath(local).catch(() => undefined);
+      assertCurrent();
+      if (real && isPathWithin(root, real)) imageSources.add(real);
+    }
+  }
+  let fileCount = 0;
   for (const link of parsed.links) {
     const source = localPath(link.url, scope.workingDir!);
     // /tmp can alias /private/tmp; normalize the trusted workdir prefix without following the file.
@@ -243,11 +257,16 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
     }
     assertCurrent();
     if (seen.has(identity)) continue;
-    if (attachments.length >= BOT_GROUP_ATTACHMENTS_MAX) throw unavailable();
-    seen.add(identity);
     // Metadata only: bytes still require the live authority and descriptor checks below.
     const realSource = singleFile ? await fs.realpath(canonicalSource).catch(() => undefined) : undefined;
     assertCurrent();
+    // Only potential rendered-image aliases defer counting to the validated
+    // image merger. Independent files still fail at the existing limit here.
+    if (!realSource || !imageSources.has(realSource)) {
+      if (fileCount >= BOT_GROUP_ATTACHMENTS_MAX) throw unavailable();
+      fileCount++;
+    }
+    seen.add(identity);
     let digest: string | undefined;
     attachments.push({ id: canonicalSource, sourceOffset: link.outputStart, name: path.basename(source), category: 'file',
       sourceUrl: link.url,

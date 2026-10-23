@@ -52,6 +52,13 @@ describe('generated reply image attachments', () => {
     expect((await prepareChatReplyImages(images.slice(0, 20).join(' '), 'lane', vi.fn())).attachments).toHaveLength(20);
     await expect(prepareChatReplyImages(images.join(' '), 'lane', vi.fn())).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
   });
+  it.each(['//attacker/share/image.png', 'xdt-file:///%2Fattacker/share/image.png'])('rejects network image sources before metadata lookup: %s', async source => {
+    const text = `![image](<${source}>)`;
+    f.materialize.mockResolvedValue({ text, replacements: new Map(), failures: [source] });
+    await expect(prepareChatReplyImages(text, 'lane', vi.fn())).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+    expect(f.realpath).not.toHaveBeenCalled();
+  });
+
   it('stops after an execution changes during authorization', async () => {
     let current = true; f.canRead.mockImplementation(async () => { current = false; return true; });
     await expect(prepareChatReplyImages(`![image](${url})`, 'lane', () => { if (!current) throw new Error('STALE_EXECUTOR'); })).rejects.toThrow('STALE_EXECUTOR');

@@ -167,16 +167,29 @@ describe('task image delivery', () => {
     expect((await attachments[1]!.readBytes!()).toString()).toBe('%PDF-1.4');
   });
 
-  it('reconciles different local paths imported as the same image at the first file occurrence', async () => {
-    const first = path.join(work, 'first.png'), second = path.join(work, 'second.png');
-    await fs.writeFile(first, PNG);
-    await fs.writeFile(second, PNG);
-    const files = await prepareChatReplyFiles(`[download](<${second}>) ![a](<${first}>) ![b](<${second}>)`, 's', () => {});
+  it.each([2, 21])('reconciles %s local image paths before the combined attachment limit', async count => {
+    const sources = Array.from({ length: count }, (_, i) => path.join(work, `same-${i}.png`));
+    for (const source of sources) await fs.writeFile(source, PNG);
+    const files = await prepareChatReplyFiles(sources.map(source => `[download](<${source}>) ![preview](<${source}>)`).join(' '), 's', () => {});
     const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
     const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({ category: 'image', sourceOffset: 0 });
-    expect(attachments[0]!.sourcePaths).toEqual(expect.arrayContaining([await fs.realpath(first), await fs.realpath(second)]));
+    expect(attachments[0]!.sourcePaths).toEqual(await Promise.all(sources.map(source => fs.realpath(source))));
+  });
+
+  it.each([false, true])('rejects 21 non-image files even with rendered images (shared references: %s)', async shared => {
+    const image = path.join(work, 'preview.png');
+    await fs.writeFile(image, PNG);
+    const sources = Array.from({ length: 21 }, (_, i) => path.join(work, `report-${i}.pdf`));
+    for (const source of sources) await fs.writeFile(source, '%PDF-1.4');
+    const body = shared
+      ? sources.map((source, i) => `[file][r${i}] ![preview][r${i}]\n\n[r${i}]: <${source}>\n`).join('\n')
+      : `![preview](<${image}>) ` + sources.map(source => `[file](<${source}>)`).join(' ');
+    await expect((async () => {
+      const files = await prepareChatReplyFiles(body, 's', () => {});
+      return prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
+    })()).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
   });
 
   it('retains file read safeguards when a rendered image also has a hard-linked download target', async () => {
