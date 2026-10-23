@@ -140,7 +140,6 @@ export function runFileService(
       const matcher = p?.includeIgnored === true ? null : await loadIgnoreMatcher(workdir, {
         hideMetaFiles: p?.hideMetaFiles ?? true,
         honorVcsIgnore: false,
-        showIgnoredDirs: p?.showIgnoredDirs === true,
       });
       const entries = await listDir(workdir, p?.relPath ?? '', matcher, {
         docMode: p?.includeIgnored === true ? false : p?.docMode,
@@ -206,21 +205,13 @@ export function runFileService(
       return { ok: true as const };
     },
     watchStart: async (p) => {
-      await watchManager.start(
-        requireString(p?.workdir, 'workdir'),
-        {
-          hideMetaFiles: p?.hideMetaFiles ?? true,
-          showIgnoredDirs: p?.showIgnoredDirs === true,
-        },
-        typeof p?.consumerId === 'string' ? p.consumerId : undefined,
-      );
+      await watchManager.start(requireString(p?.workdir, 'workdir'), {
+        hideMetaFiles: p?.hideMetaFiles ?? true,
+      });
       return { ok: true as const };
     },
     watchStop: (p) => {
-      watchManager.stop(
-        requireString(p?.workdir, 'workdir'),
-        typeof p?.consumerId === 'string' ? p.consumerId : undefined,
-      );
+      watchManager.stop(requireString(p?.workdir, 'workdir'));
       return { ok: true as const };
     },
   };

@@ -8,8 +8,7 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./textFileExts": "./src/textFileExts.ts",
-    "./ignoreNames": "./src/ignoreNames.ts"
+    "./textFileExts": "./src/textFileExts.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

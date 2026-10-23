@@ -71,7 +71,6 @@ function makeTree(opts: {
     loadingPaths: new Set(),
     initialLoading: false,
     loadError: null,
-    showIgnoredDirsSupported: true,
     storeKey,
     treeIdentityKey: storeKey.split('::')[0],
     toggleFolder: vi.fn(),

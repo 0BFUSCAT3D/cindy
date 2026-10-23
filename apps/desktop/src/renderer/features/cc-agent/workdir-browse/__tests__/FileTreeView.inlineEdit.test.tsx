@@ -74,7 +74,6 @@ function makeTree(): UseFileTreeReturn {
     loadingPaths: new Set(),
     initialLoading: false,
     loadError: null,
-    showIgnoredDirsSupported: true,
     storeKey: '/repo::hidden',
     treeIdentityKey: '/repo',
     toggleFolder: vi.fn(),
