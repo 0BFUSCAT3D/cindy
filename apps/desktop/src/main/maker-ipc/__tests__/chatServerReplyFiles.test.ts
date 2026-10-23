@@ -52,6 +52,31 @@ describe('group reply file delivery', () => {
     expect((await escaped.attachments[0]!.readBytes!()).toString()).toBe('%PDF-1.4\nreport');
   });
 
+  // #6773 review: the outer link delivers a file even when its visible label is
+  // an image. Keep that image markup for the existing image-delivery pass.
+  it.each(['inline', 'reference', 'shared-reference'])('delivers a file with an image label (%s)', async mode => {
+    const image = mode === 'inline' ? '![preview](./preview.png)' : '![preview][image]';
+    const target = mode === 'shared-reference' ? 'image' : 'report';
+    const body = mode === 'inline' ? `[${image}](<${pdf}>)`
+      : `[${image}][${target}]\n\n[report]: <${pdf}>\n[image]: <${mode === 'shared-reference' ? pdf : './preview.png'}>`;
+    const result = await prepareChatReplyFiles(body, 'lane', () => {});
+    expect(result.attachments).toHaveLength(1);
+    expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
+    expect(result.text).toContain(image);
+    expect(result.text).not.toContain(`[${image}]`);
+    if (mode === 'shared-reference') expect(result.text).toContain(`[image]: <${pdf}>`);
+  });
+
+  it.each(['100% done.pdf', 'encoded%20.pdf'])('preserves legacy literal or once-encoded percent paths: %s', async name => {
+    const file = path.join(work, name);
+    await fs.writeFile(file, 'percent report');
+    // A direct legacy URL is a URI with forward slashes on every platform.
+    const direct = `xdt-file://${file.startsWith('/') ? '' : '/'}${file.replaceAll('\\', '/')}`;
+    const encoded = pathToFileURL(file).href.replace(/^file:/, 'xdt-file:');
+    const result = await prepareChatReplyFiles(`[file](<${name.startsWith('100') ? direct : encoded}>)`, 'lane', () => {});
+    expect((await result.attachments[0]!.readBytes!()).toString()).toBe('percent report');
+  });
+
   it('preserves persisted Markdown for an empty SDK result without changing ordinary text replies', async () => {
     scope.reply = { content: JSON.stringify({ text: `[报告][r]\n\n[r]: <${pdf}>` }) };
     const result = await prepareChatReplyFiles(`[报告][r] [r]: <${pdf}>`, 'lane', () => {}, 'reply-client');

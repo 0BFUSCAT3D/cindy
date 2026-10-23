@@ -64,8 +64,8 @@ export function replyFileLinks(text: string) {
     if (!target || !isFileTarget(target.url)) return;
     const start = node.position?.start.offset, end = node.position?.end.offset;
     const first = node.children[0]?.position?.start.offset, last = node.children.at(-1)?.position?.end.offset;
-    // A linked image belongs to image delivery, not this file path.
-    if (node.children.some(child => child.type === 'image' || child.type === 'imageReference')) return;
+    // Keep nested image markup as the label for the later image-delivery pass;
+    // the outer explicit file target still needs its own attachment.
     if (start === undefined || end === undefined || first === undefined || last === undefined) return;
     links.push({ url: target.url, start, end, label: text.slice(first, last) });
     if (node.type === 'linkReference') usedDefinitions.add(node.identifier);
@@ -98,7 +98,17 @@ function localPath(url: string, workDir: string): string {
         if (!['', 'local', 'open'].includes(parsed.hostname)) throw unavailable();
         value = parsed.searchParams.get('path')!;
         if (!path.isAbsolute(value) && !/^[A-Za-z]:[\\/]/.test(value)) throw unavailable();
-      } else value = fileURLToPath(url.replace(/^xdt-file:/i, 'file:'));
+      } else {
+        try { value = fileURLToPath(url.replace(/^xdt-file:/i, 'file:')); }
+        catch (error) {
+          // Legacy hostless direct paths may contain an unencoded percent sign.
+          // Match the existing decode-once-or-literal contract, without turning
+          // a rejected host/network URL into a local path.
+          if (!(error instanceof URIError) || !/^xdt-file:\/\/\//i.test(url)) throw error;
+          value = url.slice('xdt-file://'.length).split(/[?#]/, 1)[0]!;
+          if (process.platform === 'win32' && /^\/[A-Za-z]:[\\/]/.test(value)) value = value.slice(1);
+        }
+      }
     } else if (/^file:/i.test(url)) value = fileURLToPath(url);
   } catch { throw unavailable(); }
   // Never resolve a network/device path, including on another host platform.

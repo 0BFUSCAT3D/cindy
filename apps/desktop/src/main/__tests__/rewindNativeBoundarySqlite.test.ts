@@ -15,6 +15,13 @@ import type { DbClient } from '../localDb/client/DbClient';
 import { clearCurrentDbClient, setCurrentDbClient } from '../localDb/client/current';
 import { messages, sessions } from '../localDb/schema';
 
+// Rewind imports fork's local history helpers, which also import the unrelated
+// device-link host. Keep that host out of this real-SQL fixture; a remote call
+// here is a test error, not a mocked successful rewind.
+vi.mock('../device-link/index.js', () => ({
+  remoteBackgroundInvoke: () => { throw new Error('unexpected remote invocation in local rewind'); },
+}));
+
 const commitRewindFilesMock = vi.fn();
 const isTurnRunningMock = vi.fn(() => false);
 const recomputePrRefsForSessionMock = vi.fn();
