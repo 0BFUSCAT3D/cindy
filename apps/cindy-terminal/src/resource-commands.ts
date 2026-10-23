@@ -3,7 +3,7 @@ import type { TerminalClient } from './contracts.js';
 import type { Locale } from './ui/i18n.js';
 
 export const resourceCollections:Record<string,string>={
-  teammates:'teammates',routines:'routines',schedules:'schedules',projects:'projects',plugins:'plugins','plugin-market':'plugin-market',skills:'skills',
+  teammates:'teammates',routines:'routines',schedules:'schedules',projects:'projects',plugins:'plugins','plugin-market':'plugin-market',libraries:'plugin-libraries',skills:'skills',
   mcp:'mcp',channels:'channels',memory:'memory',contacts:'contacts',shares:'provider-shares','provider-groups':'provider-groups',
 };
 
@@ -32,7 +32,8 @@ export async function runResourceCommand(client:TerminalClient,options:{collecti
     if(!resource)throw new Error('RESOURCE_ID_REQUIRED');return resource;
   }
   const actions:RemoteActionDescriptor[]=resource?.actions??collection.actions??[];
-  const action=actions.find(item=>item.id===options.operation);
+  const versioned=actions.filter(item=>item.id.startsWith(options.operation+':'));
+  const action=actions.find(item=>item.id===options.operation)??(versioned.length===1?versioned[0]:undefined);
   if(!action)throw new Error('ACTION_NOT_AVAILABLE_ON_TARGET');
   if(action.disabled)throw new Error('RESOURCE_ACTION_DISABLED');
   const forms=resource?.blocks?.filter(block=>block.primitive==='form').map(block=>block.data).filter((data):data is Record<string,unknown>=>!!data&&typeof data==='object'&&!Array.isArray(data));

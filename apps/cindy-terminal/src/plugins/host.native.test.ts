@@ -14,7 +14,7 @@ import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostS
  * vault, installed receipt and browser→Node route. Source-byte/owner changes
  * must revoke a pending approval; keys must never appear in resource responses. */
 import {beforeAll,afterAll,expect,it} from 'vitest';
-import {mkdtemp,writeFile,readFile,copyFile,rm,readdir} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,copyFile,rm,readdir,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
@@ -24,6 +24,7 @@ import {installedGhostStoragePart} from '@cindy/plugin-runtime/shared/pluginIden
 import {RemoteResourceRegistry} from '@cindy/device-link';
 import {TerminalPlugins} from './host.js';
 import {registerPluginResources} from './resources.js';
+import {registerLibraryResources} from './library-resources.js';
 import {TerminalSecretStore} from '../secrets.js';
 import {TerminalTaskMedia} from '../tasks/media.js';
 import {scaffoldGhostDir,packGhostDir} from '@cindy/plugin-runtime/forge';
@@ -53,16 +54,17 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   const archive=new JSZip();
   archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-fixture',name:'Terminal fixture',version:'1.0.0',kind:'chip',entry:'main.js',settingsHtml:'settings.html',slots:['tool','node','card'],fs:true,tools:[{name:'check',description:'Verify fixture'}],node:{entry:'worker.cjs',protocol:'json-rpc-stdio',secretBindings:[{key:'key',label:'Fixture key',methods:['check']}]}}));
   const withNetwork=JSON.parse(await archive.file('ghost.json')!.async('string'));
-  withNetwork.slots.push('network');
+  withNetwork.slots.push('network','library');
   withNetwork.setup={requires:[{anyOf:['secret:key']}]};
   withNetwork.network={hosts:['accounts.example.com','api.example.com'],secrets:[{key:'oauth',label:'Fixture account',source:'oauth',inject:{header:'Authorization',format:'Bearer {value}',hosts:['api.example.com']},oauth:{authorizeUrl:'https://accounts.example.com/authorize',tokenUrl:'https://accounts.example.com/token',clientId:'fixture-client',scopes:['read']}}],connections:[{key:'instances',label:'Fixture instance',inject:{header:'Authorization',format:'Bearer {value}'}}]};
   archive.file('ghost.json',JSON.stringify(withNetwork));
   archive.file('main.js',`cindy.onHostMessage(async request=>{
     const reply=await cindy.node.request({method:'check',callId:request.callId,cancelWithCall:true});
     const saved=await cindy.send({type:'fs-request',op:'write',root:'workdir',path:'plugin-result.txt',content:'terminal-plugin-files',callId:request.callId});
+    const library=await cindy.send({type:'library-request',op:'write',path:'works/browser.txt',content:'terminal-plugin-library',encoding:'utf8'});
     await cindy.send({type:'card-update',callId:request.callId,html:'<p>Plugin result</p><script>bad()</script>'});
     await fetch('/kv',{method:'PUT',body:JSON.stringify({visited:true})});
-    await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:{reply,saved,callId:request.callId}});
+    await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:{reply,saved,library,callId:request.callId}});
   });`);
   archive.file('settings.html','<!doctype html><html><body>Fixture</body></html>');
   archive.file('worker.cjs',String.raw`require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{configured:r.cindy?.secrets?.key==='synthetic-acceptance-key'}})+'\n');});`);
@@ -152,7 +154,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
         expect(payload(await client.callTool({name:'ghost_info',arguments:{ghost_id:'terminal-fixture'}}))).toMatchObject({ok:false,errorCode:'GHOST_DISABLED_IN_WORKDIR'});
         await preferences.set(directory,instance,false);
         called=payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{}}}));
-        expect(called).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true}},saved:{ok:true}}});
+        expect(called).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true}},saved:{ok:true},library:{ok:true}}});
       }finally{await client.close();await server.close();pluginTask.close();setup.close();publisher.close();account.close();}
 
       expect(await readFile(path.join(directory,'plugin-result.txt'),'utf8')).toBe('terminal-plugin-files');
@@ -208,7 +210,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
 // package approval, the Node SQLite worker, source archival and uninstall, so
 // success cannot come from an in-process SQL fake or a second storage engine.
 it('persists plugin works through restart and uninstall while isolating a changed source',async()=>{
-  const root=path.join(directory,'library-owner'),values=new Map<string,string>();
+  const root=path.join(directory,'library-profile','owners','owner'),values=new Map<string,string>();
   const secrets={get:async(key:string)=>values.get(key)??null,set:async(key:string,value:string)=>{values.set(key,value);},delete:async(key:string)=>{values.delete(key);},getSync:(key:string)=>values.get(key)??null,setSync:(key:string,value:string)=>{values.set(key,value);},deleteSync:(key:string)=>{values.delete(key);},setManySync:(entries:Record<string,string|null>)=>{for(const [key,value]of Object.entries(entries))if(value===null)values.delete(key);else values.set(key,value);}};
   const options={root,runtimeDirectory:runtime,secrets,assertCurrent:()=>{},locale:()=> 'en',changed:()=>{},
     cards:{persist:async()=>{},broadcast:()=>{}},fs:{getSessionSnapshot:async()=>null,requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:'unused',receive:async()=>{throw new Error('Unexpected slot');}};
@@ -229,6 +231,20 @@ it('persists plugin works through restart and uninstall while isolating a change
     expect(await request(id,'read',{path:'works/note.txt',encoding:'utf8'})).toMatchObject({ok:true,content:'retained work'});
     expect(await request(id,'db.open',{dbPath:'works/index.sqlite'})).toMatchObject({ok:true});
     expect(await request(id,'db.exec',{dbPath:'works/index.sqlite',sql:'SELECT name FROM works'})).toMatchObject({ok:true,rows:[{name:'retained work'}]});
+    const registry=new RemoteResourceRegistry();registerLibraryResources(registry,host);
+    const context={controllerDeviceId:'controller'},client={protocolVersion:1 as const,primitives:['text','actions'],locale:'en'};
+    const ref={collectionId:'plugin-libraries',kind:'plugin-library',id};
+    const initial=await registry.get(context,{client,ref});
+    const destination=path.join(directory,'custom-libraries');await mkdir(destination);
+    const relocation={client,collectionId:ref.collectionId,resourceRef:ref,actionId:initial.actions!.find(action=>action.id.startsWith('relocate:'))!.id,input:{directory:destination}};
+    await registry.invoke(context,relocation);
+    expect(await request(id,'read',{path:'works/note.txt',encoding:'utf8'})).toMatchObject({ok:true,content:'retained work'});
+    expect(await request(id,'db.open',{dbPath:'works/index.sqlite'})).toMatchObject({ok:true});
+    expect(await request(id,'db.exec',{dbPath:'works/index.sqlite',sql:'SELECT name FROM works'})).toMatchObject({ok:true,rows:[{name:'retained work'}]});
+    await expect(registry.invoke(context,relocation)).rejects.toThrow('PLUGIN_LIBRARY_CHANGED');
+    const relocated=await registry.get(context,{client,ref});
+    await registry.invoke(context,{client,collectionId:ref.collectionId,resourceRef:ref,actionId:relocated.actions!.find(action=>action.id.startsWith('default:'))!.id});
+    expect(await request(id,'read',{path:'works/note.txt',encoding:'utf8'})).toMatchObject({ok:true,content:'retained work'});
     await host.uninstall(id);
     expect(await readFile(path.join(root,'libraries',id,'works/note.txt'),'utf8')).toBe('retained work');
     expect(JSON.parse(await readFile(path.join(root,'libraries',id,'.cindy-library/meta.json'),'utf8'))).toMatchObject({orphaned:{name:'Terminal library'}});
@@ -240,5 +256,11 @@ it('persists plugin works through restart and uninstall while isolating a change
     const archived=(await readdir(path.join(root,'libraries'))).find(name=>name.startsWith('arch_'))!;
     expect(await readFile(path.join(root,'libraries',archived,'works/note.txt'),'utf8')).toBe('retained work');
     expect(JSON.parse(await readFile(path.join(root,'libraries',archived,'.cindy-library/meta.json'),'utf8'))).toMatchObject({ghostId:archived});
+    const archivedRef={...ref,id:archived},archivedResource=await registry.get(context,{client,ref:archivedRef});
+    const trashAction=archivedResource.actions!.find(action=>action.id.startsWith('trash:'))!;
+    expect(trashAction.confirmation).toBeTruthy();
+    await registry.invoke(context,{client,collectionId:ref.collectionId,resourceRef:archivedRef,actionId:trashAction.id});
+    const trashed=(await readdir(path.join(root,'libraries-trash'))).find(name=>name.startsWith(archived))!;
+    expect(await readFile(path.join(root,'libraries-trash',trashed,'works/note.txt'),'utf8')).toBe('retained work');
   }finally{await host.close();}
 });

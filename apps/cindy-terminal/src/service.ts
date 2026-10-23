@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { TerminalBrowserRuntime } from './plugins/browser.js';
 import { TerminalPlugins } from './plugins/host.js';
 import { registerPluginResources } from './plugins/resources.js';
+import { registerLibraryResources } from './plugins/library-resources.js';
 import { DirDepositVault, SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
 import { fetchSingleHopWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';
 import { TerminalCompanionRoutines } from './remote/companions/routines.js';
@@ -388,6 +389,7 @@ export class TerminalService {
     });
     await this.pluginTasks.ready;
     registerPluginResources(this.resources.registry,this.plugins);
+    registerLibraryResources(this.resources.registry,this.plugins);
 
     this.projects=new TerminalProjects(ownerDir,{guard:guardKnowledge,createSession:async(workingDir,title)=>{const created=await this.tasks.invoke('maker:create-session',[{workingDir,title}],{source:'local',assertCurrent:guardKnowledge}) as {sessionId?:string;id?:string};const id=created.sessionId??created.id;if(!id)throw new Error('SESSION_CREATE_FAILED');return id;}});
     await this.projects.ready;this.projects.register(this.resources.registry);

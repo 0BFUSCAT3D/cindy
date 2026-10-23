@@ -280,6 +280,15 @@ export class TerminalPlugins {
     });
   }
   cancelInstall(id:string,controller:string){this.pendingInstall(id,controller);this.pending.delete(id);}
+  async changeLibrary(id:string,revision:string,operation:'relocate'|'default'|'trash',candidate?:string,assertCurrent:()=>void=()=>{}){
+    return this.mutate(async()=>{
+      const current=await this.library.overview(id);assertCurrent();
+      if(current.revision!==revision)throw new Error('PLUGIN_LIBRARY_CHANGED');
+      this.native.runtime?.stop(id);await this.native.node.stopAndWait(id);this.guard();assertCurrent();
+      try{await this.library.change(id,operation,candidate,()=>{this.guard();assertCurrent();});}
+      finally{await this.native.refresh();}
+    });
+  }
   async setEnabled(id:string,enabled:boolean) {
     return this.mutate(async()=>{const ghost=await this.get(id);const result=await this.native.manager.setEnabled(installedGhostPhysicalRelId(ghost),enabled,ghostInstallApprovalToken(ghost.approval),()=>this.guard());if('rejection' in result)throw new Error('PLUGIN_CHANGE_REJECTED');if(!enabled)await this.library.slot.invalidateGhost(id);await this.native.refresh();});
   }

@@ -495,6 +495,10 @@ export class LibraryBindingStore {
     return this.runSerialized(async () => (await this.readData(opts?.strict)).bindings[ghostId] ?? null);
   }
 
+  listBindingIds(): Promise<string[]> {
+    return this.runSerialized(async () => Object.keys((await this.readData(true)).bindings));
+  }
+
   async assertCanRelocateBinding(fromGhostId: string, toGhostId: string): Promise<void> {
     if (!isLibraryOwnerId(fromGhostId) || !isLibraryOwnerId(toGhostId)) {
       throw new Error('library relocate ids are invalid');
