@@ -117,9 +117,12 @@ export async function worktreeContentMatches(
   worktreePath: string,
   snapshot: NonNullable<WorktreeRecycleRecord['snapshot']>,
 ): Promise<boolean> {
+  // `git add --all` folds staged and unstaged states into one tree, so HEAD and staged content
+  // are checked on both sides of it: a stage or reset meanwhile cannot pass unnoticed.
   return snapshot.untracked === true
     && await worktreeStagedContentMatches(worktreePath, snapshot)
-    && await fullContentTree(worktreePath) === snapshot.tree;
+    && await fullContentTree(worktreePath) === snapshot.tree
+    && await worktreeStagedContentMatches(worktreePath, snapshot);
 }
 
 /**
@@ -242,11 +245,17 @@ export async function captureWorktreeContent(
       head, headRef, tree, indexTree, commit, ref, indexHash: originalIndexHash,
       ...(includeUntracked ? { untracked: true as const } : {}),
     };
-    // Recycling rechecks the full tree before deleting; here only HEAD and staged content matter.
-    const unchanged = stagedContentOnly || includeUntracked
-      ? await worktreeStagedContentMatches(worktreePath, snapshot)
-      : await worktreeContentBaselineMatches(worktreePath, snapshot);
-    if (!unchanged) throw new WorktreeChangedDuringSnapshotError();
+    try {
+      // Recycling rechecks the full tree before deleting; here only HEAD and staged content matter.
+      const unchanged = stagedContentOnly || includeUntracked
+        ? await worktreeStagedContentMatches(worktreePath, snapshot)
+        : await worktreeContentBaselineMatches(worktreePath, snapshot);
+      if (!unchanged) throw new WorktreeChangedDuringSnapshotError();
+    } catch (error) {
+      // No caller ever learns of this ref, so no journal or sweep could release it later.
+      await gitExec(['update-ref', '-d', ref, commit], worktreePath).catch(() => undefined);
+      throw error;
+    }
     return snapshot;
   } finally {
     await fs.rm(temp, { recursive: true, force: true });

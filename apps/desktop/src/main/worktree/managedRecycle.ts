@@ -15,7 +15,7 @@ import {
 } from './recycleJournal';
 import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import { isManagedWorktreePath } from './safety';
-import { assertManagedResourcePath, assertWorktreeGitIdentity } from './resourceSafety';
+import { assertManagedResourcePath, assertWorktreeGitIdentity, gitMetadataUsable } from './resourceSafety';
 import * as store from './worktreeStore';
 import type { WorktreeMeta } from './types';
 import { withLegacyWorktreeRuntimeGuard } from './legacyRuntimeGuard';
@@ -74,27 +74,6 @@ async function directoryIdentity(value: string): Promise<string | null> {
 async function hasGitLink(worktreePath: string): Promise<boolean> {
   try {
     await fs.lstat(path.join(worktreePath, '.git'));
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
-}
-
-/** A `.git` file whose metadata directory was already deleted cannot answer Git queries. */
-async function gitMetadataUsable(worktreePath: string): Promise<boolean> {
-  const link = path.join(worktreePath, '.git');
-  let stat;
-  try { stat = await fs.lstat(link); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
-  // Anything but a regular gitfile goes through the identity check, which rejects it.
-  if (!stat.isFile()) return true;
-  const match = /^gitdir:\s*(.+?)\s*$/m.exec(await fs.readFile(link, 'utf8'));
-  if (!match) return true;
-  try {
-    await fs.stat(path.resolve(worktreePath, match[1]));
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;

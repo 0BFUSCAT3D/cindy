@@ -46,7 +46,7 @@ import { checkpointWorktreeForReuse, recycleManagedWorktree } from '../worktree/
 import { restoreRecordedWorktree } from '../worktree/restoreRecovery';
 import { newRecycleRecord, readRecycleRecord, writeRecycleRecord } from '../worktree/recycleJournal';
 import { releaseObsoleteRecoverySnapshots } from '../worktree/recycleMaintenance';
-import { captureWorktreeContent } from '../worktree/contentSnapshot';
+import { captureWorktreeContent, worktreeContentMatches } from '../worktree/contentSnapshot';
 import { GitExecError, gitExec } from '../worktree/gitExec';
 import { acquireWorktree, releaseWorktree, parkAll } from '../worktree/WorktreePool';
 import { createRecoveryArchive } from '../worktree/recoveryArchive';
@@ -407,6 +407,61 @@ describe('worktree recovery with real Git', () => {
     await expect(restoreRecordedWorktree(meta.sessionId, meta.path)).rejects.toThrow();
     await expect(fs.stat(meta.path)).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await readRecycleRecord(meta.path))?.phase).toBe('removed');
+  }, 30_000);
+
+  it('repairs a partial removal whose .git file points at deleted worktree metadata', async () => {
+    const meta = await createFixture('dangling-link');
+    const record = await newRecycleRecord(meta);
+    record.snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/dangling`, { includeUntracked: true });
+    const directory = await fs.lstat(meta.path);
+    record.directoryIdentity = `${directory.dev}:${directory.ino}:${directory.birthtimeMs}`;
+    record.phase = 'removing';
+    record.removingSince = Date.now();
+    await writeRecycleRecord(record);
+    // Git deleted the metadata and one file, then stopped before the directory's own .git file.
+    await fs.rm(await git(meta.path, 'rev-parse', '--absolute-git-dir'), { recursive: true, force: true });
+    await fs.rm(path.join(meta.path, 'draft.txt'));
+    state.registry.delete(meta.sessionId);
+
+    expect(await restoreRecordedWorktree(meta.sessionId, meta.path)).toBe(true);
+    expect(await fs.readFile(path.join(meta.path, 'draft.txt'), 'utf8')).toBe('dangling-link contents\n');
+    expect(await git(meta.path, 'rev-parse', 'HEAD')).toBe(record.snapshot.head);
+  }, 30_000);
+
+  it('drops its own snapshot ref when HEAD or the index moves during capture', async () => {
+    const meta = await createFixture('moving-index');
+    const mocked = vi.mocked(gitExec);
+    const real = mocked.getMockImplementation()!;
+    mocked.mockImplementation(async (args, cwd, options) => {
+      const result = await real(args, cwd, options);
+      if (args[0] === 'update-ref' && args[1]?.startsWith('refs/cindy/')) await git(meta.path, 'add', 'draft.txt');
+      return result;
+    });
+    try {
+      await expect(captureWorktreeContent(meta.path, 'refs/cindy/worktree-recovery/moving/index', { includeUntracked: true }))
+        .rejects.toThrow('changed during snapshot');
+    } finally {
+      mocked.mockImplementation(real);
+    }
+    expect(await git(repo, 'for-each-ref', 'refs/cindy/worktree-recovery/moving/')).toBe('');
+  }, 30_000);
+
+  it('notices staging that happens while the full tree is compared', async () => {
+    const meta = await createFixture('staged-meanwhile');
+    const snapshot = await captureWorktreeContent(meta.path, 'refs/cindy/worktree-recovery/meanwhile/tree', { includeUntracked: true });
+    expect(await worktreeContentMatches(meta.path, snapshot)).toBe(true);
+    const mocked = vi.mocked(gitExec);
+    const real = mocked.getMockImplementation()!;
+    // Staging folds into the same full tree, so only a second staged check can see it.
+    mocked.mockImplementation(async (args, cwd, options) => {
+      if (args[0] === 'add' && args[1] === '--all') await git(meta.path, 'add', 'draft.txt');
+      return real(args, cwd, options);
+    });
+    try {
+      expect(await worktreeContentMatches(meta.path, snapshot)).toBe(false);
+    } finally {
+      mocked.mockImplementation(real);
+    }
   }, 30_000);
 
   it('keeps a partially removed directory when an older client\'s archive no longer verifies', async () => {

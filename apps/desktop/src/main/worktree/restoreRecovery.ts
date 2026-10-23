@@ -9,7 +9,9 @@ import { readRecycleRecord, writeRecycleRecord, worktreeGeneration } from './rec
 import { extractRecoveryArchive, inventoryWorktree, sameWorktreeFiles, verifyRecoveryArchive } from './recoveryArchive';
 import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import { hasLiveSessionReference, loadLiveSessionPathKeys } from './liveSessionRefs';
-import { assertManagedResourceLocation, assertManagedResourcePath, assertWorktreeGitIdentity } from './resourceSafety';
+import {
+  assertManagedResourceLocation, assertManagedResourcePath, assertWorktreeGitIdentity, gitMetadataUsable,
+} from './resourceSafety';
 import * as store from './worktreeStore';
 import { withLegacyWorktreeRuntimeGuard } from './legacyRuntimeGuard';
 import {
@@ -53,16 +55,6 @@ async function releaseRestoredSnapshot(record: RecycleRecord): Promise<void> {
 
 function restorableRecord(record: RecycleRecord | null): record is RecycleRecord {
   return hasRecordedRecovery(record) && record.phase !== 'restored' && record.phase !== 'pending';
-}
-
-async function pathExists(value: string): Promise<boolean> {
-  try {
-    await fs.lstat(value);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
 }
 
 /**
@@ -124,7 +116,7 @@ export async function restoreRecordedWorktree(sessionId: string, worktreePath: s
       await assertManagedResourcePath(record.meta, [worktreePath]);
       if (record.archive) {
         if (!sameWorktreeFiles(await inventoryWorktree(worktreePath), record.archive.files, true)) return false;
-      } else if (await pathExists(path.join(worktreePath, '.git'))
+      } else if (await gitMetadataUsable(worktreePath)
         && !(await presentFilesMatchSnapshotTree(worktreePath, record.snapshot.tree))) {
         return false;
       }
@@ -159,14 +151,8 @@ export async function restoreRecordedWorktree(sessionId: string, worktreePath: s
     record.restoredGeneration ??= randomUUID();
     await writeRecycleRecord(record);
     const gitLink = path.join(worktreePath, '.git');
-    let gitLinkExists = true;
-    try {
-      await fs.lstat(gitLink);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      gitLinkExists = false;
-    }
-    if (!gitLinkExists || record.restoreCheckoutPath) {
+    // A gitfile left pointing at deleted metadata is repaired like a missing one.
+    if (!(await gitMetadataUsable(worktreePath)) || record.restoreCheckoutPath) {
       // Repair a partially deleted worktree without deleting any remaining user file.
       // Persist the temporary checkout before creating it so a crash after `worktree add`
       // can resume the same checkout instead of leaving its branch permanently occupied.
@@ -197,6 +183,8 @@ export async function restoreRecordedWorktree(sessionId: string, worktreePath: s
         // Never delete or adopt an unexpected non-empty temporary directory.
         return false;
       }
+      // Only a link to removed metadata is replaced; it holds no user bytes.
+      if (!(await gitMetadataUsable(worktreePath))) await fs.rm(gitLink, { force: true });
       try {
         await fs.copyFile(path.join(checkout, '.git'), gitLink, constants.COPYFILE_EXCL);
       } catch (error) {
