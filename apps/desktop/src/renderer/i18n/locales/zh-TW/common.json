@@ -1022,8 +1022,8 @@
     "SSH_HOST_KEY_MISMATCH": "SSH 主機金鑰已變更"
   },
   "providerError": {
-    "AUTH_INVALID": "API 金鑰無效或已過期（401），請檢查金鑰後重試",
-    "AUTH_FORBIDDEN": "金鑰有效但無權訪問（403），請檢查套餐或模型權限",
+    "AUTH_INVALID": "目前介面驗證失敗，請檢查位址、金鑰和驗證方式",
+    "AUTH_FORBIDDEN": "目前介面拒絕存取，請檢查方案、模型或地區權限",
     "RATE_LIMITED": "請求被限流（429），請稍後重試",
     "QUOTA_EXCEEDED": "配額或餘額不足，請檢查供應商帳戶",
     "MODEL_NOT_FOUND": "模型不存在或無權使用，請檢查模型 ID",
@@ -3245,8 +3245,13 @@
           "placeholder": "選擇一個模板…"
         },
         "test": {
+          "inconclusive": "暫時無法確認連線。請檢查位址或網路後重試；上一個請求可能已執行。",
+          "exhausted": "已嘗試所有候選介面，暫未找到可用連線。",
+          "costHint": "測試會傳送簡短生成請求，可能產生少量費用。",
+          "details": "查看嘗試結果",
           "button": "測試連線",
           "testing": "測試中…",
+          "stop": "停止測試",
           "ok": "連線成功（{{ms}}ms）",
           "needFields": "請先填寫基礎 URL 和至少一個模型 ID",
           "unsupportedProtocol": "測試連線暫不支援此模型協定"
@@ -3837,6 +3842,10 @@
         "modelCount": "已設定 {{count}} 個模型",
         "modelsAutomatic": "模型資料自動取得。個別模型的設定請在模型清單調整。",
         "manualModel": "模型 ID（無法自動取得時填寫）",
+        "manualAdd": "手動新增模型",
+        "manualId": "模型 ID",
+        "saveProvider": "儲存供應商",
+        "removeModel": "移除模型",
         "modelTypeAutomatic": "自動辨識",
         "manualModelTypeHint": "相同 ID 可更新類型；自動辨識會恢復目錄中的類型。",
         "mediaOnlyTestHint": "此連線僅含非對話模型。可取得模型列表檢查目錄存取，此處不驗證模型呼叫。"
@@ -3849,6 +3858,17 @@
         "unavailable": "暫時無法使用"
       },
       "claudeAccountRetired": "Cindy 已不再支援透過這筆舊版 Claude 連線登入訂閱，不影響你的 Claude 帳號和訂閱。請改用「使用 Claude Code 登入」連線訂閱",
+      "detection": {
+        "keyRequired": "填寫 API 金鑰後繼續。",
+        "authRejected": "驗證未通過，請檢查位址和 API 金鑰，修改後會自動重試。",
+        "hint": "填寫網址和 API 金鑰後自動識別供應商。儲存後可在編輯連線中調整協定。",
+        "pending": "正在識別供應商…",
+        "matched": "已識別為 {{name}}",
+        "ambiguous": "符合多個設定，請繼續自訂或選擇供應商。",
+        "custom": "繼續自訂設定，可取得模型清單或手動新增。",
+        "configure": "前往設定",
+        "keepCustom": "繼續自訂"
+      },
       "speechSetup": {
         "title": "語音",
         "add": "新增語音模型",
