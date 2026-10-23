@@ -630,7 +630,10 @@ describe('sendToSession ordering', () => {
     // Protect the SET_MODEL wire argument order. Other preload APIs (including
     // voice preferences) also accept `selection` and are outside this contract.
     const preloadSetModel = extractBetween(preloadSource, '    setModel: (', '    switchSessionAgent: (');
-    expect(preloadSetModel).toContain("selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },");
+    // #5044 在 selection 上加了可选 thinking 载体；上游已把 fastMode 扩成 ultrafast。
+    expect(preloadSetModel).toContain(
+      "selection?: { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean },",
+    );
     expectOrder(
       preloadSetModel,
       'expectedAgentSwitchRevision,',
