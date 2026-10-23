@@ -25,7 +25,7 @@ export function createScheduledModelScope(deps: {
     };
     baseline: string | null;
   } | null>;
-  write: (sessionId: string, baseline: ScheduledModelBaseline | null) => Promise<void>;
+  write: (sessionId: string, baseline: ScheduledModelBaseline | null, expectedBaseline: string | null) => Promise<void | boolean>;
   isBusy: (sessionId: string) => boolean;
   apply: (sessionId: string, profile: ScheduledModelSelection) => Promise<void>;
   createId: () => string;
@@ -43,7 +43,9 @@ export function createScheduledModelScope(deps: {
       const existing = parseScheduledModelBaseline(row.baseline);
       if (existing) return existing.scopeId;
       const scopeId = deps.createId();
-      await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId });
+      const written = await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId }, row.baseline);
+      assertOwner(owner);
+      if (written === false) throw new ScheduledModelSelectionBusyError('Scheduled model selection changed before scope creation');
       return scopeId;
     },
     async restore(sessionId: string, expectedScopeId?: string): Promise<void> {
@@ -59,7 +61,9 @@ export function createScheduledModelScope(deps: {
       // Keep the saved choice on failure so the next input retries before dispatch.
       await deps.apply(sessionId, baseline);
       assertOwner(owner);
-      await deps.write(sessionId, null);
+      const written = await deps.write(sessionId, null, row!.baseline);
+      assertOwner(owner);
+      if (written === false) throw new ScheduledModelSelectionBusyError('Scheduled model selection changed before scope cleanup');
     },
   };
 }

@@ -107,12 +107,18 @@ describe('Bot named worker transactions', () => {
       },
       onSelectionAccepted: async () => { writeBaseline(null); },
     });
-    const scope = createScheduledModelScope({
+    const scopeDeps: Parameters<typeof createScheduledModelScope>[0] = {
       read: async () => ({ profile: current, baseline: readBaseline() }),
-      write: async (_id, baseline) => writeBaseline(baseline ? JSON.stringify(baseline) : null),
+      write: async (sessionId, baseline, expectedBaseline) => {
+        if (baseline) return tx(db, { name: 'sessions.createScheduledModelBaseline', args: {
+          sessionId, baseline: JSON.stringify(baseline), expectedBaseline,
+        } }) as boolean;
+        writeBaseline(null);
+      },
       apply: async (_id, route) => { current = route; }, isBusy: () => false, createId: () => 'unused',
-    });
-    return { original, readBaseline, pause, save, reconcile, scope, current: () => current,
+    };
+    const scope = createScheduledModelScope(scopeDeps);
+    return { original, readBaseline, pause, save, reconcile, scope, scopeDeps, writeBaseline, current: () => current,
       changeOwner: () => { owner = 'account-b'; }, failApply: (fail: boolean) => { failApply = fail; } };
   }
 
@@ -189,6 +195,48 @@ describe('Bot named worker transactions', () => {
     expect(h.readBaseline()).toBe(baseline);
     expect(db.prepare('SELECT current_version FROM bot_profiles').pluck().get()).toBe(1);
     expect(db.prepare('SELECT count(*) FROM bot_profile_versions').pluck().get()).toBe(1);
+  });
+
+  it('persists a permanent save even before the first automation scope exists', async () => {
+    const h = savedModelFixture();
+    h.writeBaseline(null);
+    h.save('permanent');
+    expect(JSON.parse(h.readBaseline()!)).toMatchObject({ pendingBotProfileVersion: 2 });
+    await h.reconcile()('saved-session');
+    await h.scope.restore('saved-session');
+    expect(h.current().model).toBe('permanent');
+  });
+
+  it.each(['save-before-begin', 'save-during-begin', 'save-after-begin'])('serializes the real scope writer and permanent save: %s', async order => {
+    const h = savedModelFixture();
+    h.writeBaseline(null);
+    const scope = createScheduledModelScope({ ...h.scopeDeps,
+      write: async (...args) => {
+        if (order === 'save-during-begin') h.save('permanent');
+        return h.scopeDeps.write(...args);
+      },
+    });
+    if (order === 'save-before-begin') h.save('permanent');
+    if (order === 'save-during-begin') await expect(scope.begin('saved-session')).rejects.toThrow('changed');
+    else await scope.begin('saved-session');
+    if (order === 'save-after-begin') h.save('permanent');
+    expect(JSON.parse(h.readBaseline()!)).toMatchObject({ pendingBotProfileVersion: 2 });
+    await h.reconcile()('saved-session');
+    await h.scope.restore('saved-session');
+    expect(h.current().model).toBe('permanent');
+    expect(h.readBaseline()).toBeNull();
+  });
+
+  it('keeps begin valid across an unrelated profile edit and across a rolled-back save', async () => {
+    const h = savedModelFixture();
+    h.writeBaseline(null);
+    const scope = createScheduledModelScope({ ...h.scopeDeps, write: async (...args) => {
+      expect(() => h.save('permanent', 1, { canonicalPermissionMode: 'invalid' })).toThrow('permission mode');
+      h.save('old', 1, { identitySource: 'new identity' });
+      return h.scopeDeps.write(...args);
+    } });
+    await expect(scope.begin('saved-session')).resolves.toBe('unused');
+    expect(JSON.parse(h.readBaseline()!).pendingBotProfileVersion).toBeUndefined();
   });
 
   it('atomically rejects duplicate names and a second Cindy without touching the first profile', () => {

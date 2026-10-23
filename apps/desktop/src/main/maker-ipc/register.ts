@@ -10993,23 +10993,34 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         effort: row.effort, fastMode: row.fastMode,
       } } : null;
     },
-    write: async (sessionId, baseline) => {
+    write: async (sessionId, baseline, expectedBaseline) => {
       const owner = captureSessionRuntimeControlOwnerEpoch();
-      const db = getDbClient().drizzle;
-      const [row] = baseline ? [] : await db.select({ baseline: sessions.scheduledModelBaseline })
-        .from(sessions).where(eq(sessions.id, sessionId)).limit(1);
-      const saved = parseScheduledModelBaseline(row?.baseline);
+      const client = getDbClient();
+      if (baseline) {
+        const written = await client.tx('sessions.createScheduledModelBaseline', {
+          sessionId, baseline: JSON.stringify(baseline), expectedBaseline,
+        });
+        if (!sessionRuntimeControlOwnerEpochMatches(owner)) throw new Error('Account changed during scheduled model selection');
+        if (written) await broadcastSessionRuntimeProjection(sessionId);
+        return written;
+      }
+      const db = client.drizzle;
+      const saved = parseScheduledModelBaseline(expectedBaseline);
       if (!sessionRuntimeControlOwnerEpochMatches(owner)) throw new Error('Account changed during scheduled model selection');
-      await db.update(sessions)
+      const updated = await db.update(sessions)
         .set({
-          scheduledModelBaseline: baseline ? JSON.stringify(baseline) : null,
+          scheduledModelBaseline: null,
           ...(saved ? {
             agentKind: makerToDbAgentKind(saved.agentKind), model: saved.model,
             providerId: saved.providerId, effort: saved.effort ?? undefined, fastMode: saved.fastMode,
           } : {}),
         })
-        .where(eq(sessions.id, sessionId));
+        .where(and(eq(sessions.id, sessionId), expectedBaseline === null
+          ? isNull(sessions.scheduledModelBaseline) : eq(sessions.scheduledModelBaseline, expectedBaseline)))
+        .returning({ id: sessions.id });
+      if (!updated.length) return false;
       await broadcastSessionRuntimeProjection(sessionId);
+      return true;
     },
     isBusy: (sessionId) => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning() ||
       isUserPendingAgentSwitchIntent(agentSwitchPending.get(sessionId)),

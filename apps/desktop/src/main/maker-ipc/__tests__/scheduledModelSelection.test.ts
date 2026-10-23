@@ -37,6 +37,19 @@ describe('one-run automation model preferences', () => {
       choose: () => { baseline = null; profile = { ...original, model: 'new-owner-model' }; },
     };
   }
+  it('stops scope creation when a permanent save wins the baseline compare-and-set', async () => {
+    const h = scopeFixture();
+    const scope = createScheduledModelScope({ ...h.deps, write: async () => false });
+    await expect(scope.begin('task')).rejects.toThrow('changed');
+    expect(h.deps.apply).not.toHaveBeenCalled();
+  });
+  it('stops restoration when a permanent save wins before cleanup', async () => {
+    const h = scopeFixture();
+    await h.scope.begin('task');
+    const scope = createScheduledModelScope({ ...h.deps, write: async () => false });
+    await expect(scope.restore('task')).rejects.toThrow('changed');
+    expect(h.state().baseline).not.toBeNull();
+  });
   it.each(['same-process', 'restart'])('restores all owner settings after %s', async (mode) => {
     const h = scopeFixture();
     await h.scope.begin('task');
