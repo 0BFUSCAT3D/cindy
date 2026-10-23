@@ -102,7 +102,12 @@ export type VoiceConversationPreference = {
   /** Absent on older local bridges; the current default is enabled. */
   sentencePlayback?: boolean;
 };
-export type SpeechStartResult = { sampleRate: number } | { deferred: true };
+/** Local-only synthesis result. PCM remains pull-driven; encoded segments are
+ * received during bounded prefetch and decoded by the sandboxed audio player. */
+export type EncodedSpeechAudio = { format: 'mp3'; data: ArrayBuffer };
+export type SpeechAudioResult = { sampleRate: number } | EncodedSpeechAudio;
+export const MAX_ENCODED_SPEECH_BYTES = 8 * 1024 * 1024;
+export type SpeechStartResult = SpeechAudioResult | { deferred: true };
 export function voiceModelKey(model: {
   providerId?: string;
   agent?: AgentKind;
@@ -125,7 +130,7 @@ export type VoiceConversationStart = VoiceConversationSelection & {
 export interface VoiceConversationApi {
   models(): Promise<VoiceConversationModel[]>;
   voices(selection: SpeechModelSelection): Promise<SpeechVoiceCatalog>;
-  preview(input: SpeechPreviewStart): Promise<{ sampleRate: number }>;
+  preview(input: SpeechPreviewStart): Promise<SpeechAudioResult>;
   readPreview(previewId: string): Promise<{ pcm: ArrayBuffer; done: boolean }>;
   stopPreview(previewId: string): Promise<void>;
   preference(botId: string): Promise<VoiceConversationPreference>;

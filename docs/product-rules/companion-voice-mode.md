@@ -64,17 +64,25 @@ OpenRouter 的普通 `/api/v1/models` 目录不包含完整语音列表。对未
 语音的按字符／时长报价不写入聊天的 token 单价字段。
 
 OpenRouter BYOK 的官方 `/api` 和 `/api/v1` 连接只在语音请求中统一到
-`https://openrouter.ai/api/v1/audio/speech`，使用对应连接的 Bearer key、OpenAI 兼容 PCM
+`https://openrouter.ai/api/v1/audio/speech`，使用对应连接的 Bearer key、OpenAI 兼容音频
 适配器及原模型 ID；聊天地址不变。每次进入型号、切换型号或点击音色刷新时，从语音模型
 目录读取该型号的 `supported_voices`，不套用 Gateway 或厂商直连的参考音色；缺少该字段时
 保留手动输入，查询失败沿用现有错误／重试行为，不覆盖已选音色。仍可手动输入并试听。
 音色目录仅在内存，不进入公共 Registry 或持久配置。
 
+OpenRouter 的 `minimax/speech-*` 型号实测拒绝 PCM，因此直接请求 MP3，不先发起会失败的
+付费 PCM 请求或自动换模型。仅匹配官方 API 地址；Gateway、自定义代理与 MiniMax 原生
+SSE 仍保持原合同。MP3 每个句段在现有预取阶段完整接收，最多 8 MiB，保留响应头 30 秒、
+读取停滞 15 秒及账号／连接／取消校验。通过本机 IPC 返回明确标记的内存音频，由浏览器
+原生解码器按实际采样率解码，再复用有界播放、暂停与插话取消；不落盘、不新增解码依赖。
+解码后最多 10 分钟，迟到解码结果不可在取消后重新播放。按句切分及一个预取段保持不变，
+但 MP3 需收齐当前句段才能解码，不承诺逐音频帧开播；其他模型仍边收 PCM 边播放。
+
 OpenRouter 没有统一的型号语速范围，部分上游会拒绝非默认值，因此本阶段使用供应商默认
 语速，不发送 `speed`；设置页复用“不支持调整语速”的现有状态。Main 投影的可选
 `speedRange` 为本机能力信息（`null` 表示不支持、缺省沿用原协议范围），不接受 Renderer
 自报能力、不写入偏好、不加入远程协议。旧偏好中的语速在运行时忽略，明确修改设置时才
-通过原保存流程移除。可发现和可选择不等于账户具有执行权限；PCM 听感仍需按实际上游验收。
+通过原保存流程移除。可发现和可选择不等于账户具有执行权限；音频听感仍需按实际上游验收。
 接口依据：[OpenRouter TTS](https://openrouter.ai/docs/guides/overview/multimodal/tts)。
 
 | 接口 | 请求与鉴权 | 响应 |
