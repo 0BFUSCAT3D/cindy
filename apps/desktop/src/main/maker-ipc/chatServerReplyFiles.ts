@@ -258,7 +258,7 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     assertCurrent();
-    if (seen.has(identity)) continue;
+    if (!symbolic && seen.has(identity)) continue;
     // Metadata only: bytes still require the live authority and descriptor checks below.
     const candidate = singleFile || symbolic ? await fs.realpath(canonicalSource).catch(() => undefined) : undefined;
     assertCurrent();
@@ -268,7 +268,9 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
       const target = await fs.lstat(candidate, { bigint: true }).catch(() => undefined);
       assertCurrent();
       singleFile = !!target?.isFile() && target.nlink === 1n && target.ino !== 0n;
+      if (singleFile) identity = `${target!.dev}:${target!.ino}`;
     }
+    if (seen.has(identity)) continue;
     const realSource = singleFile && candidate && isPathWithin(root, candidate) ? candidate : undefined;
     // Only potential rendered-image aliases defer counting to the validated
     // image merger. Independent files still fail at the existing limit here.

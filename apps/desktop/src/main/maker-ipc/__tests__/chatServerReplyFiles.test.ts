@@ -145,6 +145,22 @@ describe('group reply file delivery', () => {
     expect(await prepareChatReplyFiles(text, 'lane', () => {})).toEqual({ text, attachments: [] });
   });
 
+  it('deduplicates accepted symlink targets before the file limit, retaining the first link', async () => {
+    const aliases: string[] = [];
+    for (let i = 0; i < 24; i++) {
+      const alias = path.join(work, `same-report-${i}.pdf`);
+      await fs.symlink(pdf, alias);
+      aliases.push(alias);
+    }
+    try {
+      const body = [...aliases, pdf].map(source => `[report](<${source}>)`).join(' ');
+      const result = await prepareChatReplyFiles(body, 'lane', () => {});
+      expect(result.attachments).toHaveLength(1);
+      expect(result.attachments[0]!.name).toBe(path.basename(aliases[0]!));
+      expect((await result.attachments[0]!.readBytes!()).toString()).toBe('%PDF-1.4\nreport');
+    } finally { for (const alias of aliases) await fs.unlink(alias); }
+  });
+
   it('deduplicates real filesystem identities before applying the count limit', async () => {
     const source = path.join(work, 'CaseReport.pdf');
     await fs.writeFile(source, 'case report');
