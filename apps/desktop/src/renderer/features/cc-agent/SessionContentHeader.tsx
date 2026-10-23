@@ -485,7 +485,7 @@ export function SessionContentHeader({
           toast.warning(t('ccAgent.sidebar.archiveBlocked.attached'));
           return false;
         }
-        // 绑定了 active 自动化:归档后会暂停,需要确认。读本地缓存,排在 worktree 预检之前。
+        // 绑定了 active 自动化:后续运行会恢复原任务,需要确认。读本地缓存,排在 worktree 预检之前。
         const scheduleNames =
           (await loadActiveBoundScheduleNames([
             { id: session.id, deviceLinkDeviceId: session.deviceLinkDeviceId },

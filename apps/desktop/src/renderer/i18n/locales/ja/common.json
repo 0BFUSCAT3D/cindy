@@ -12845,10 +12845,10 @@
         "title": "セッションをアーカイブ",
         "description": "このセッションをアーカイブしますか？アーカイブ後はリストから消えます。",
         "dirtyWorktreeWarning": "このセッションのワークツリーには未コミットの変更があります。アーカイブ前に git スナップショットとして自動保存され、後でセッションから復元できます。",
-        "scheduleWarning_one": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
-        "scheduleWarning_other": "このセッションに紐づく自動化{{names}}は、アーカイブ後に一時停止されます。",
-        "scheduleWarningMany_one": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
-        "scheduleWarningMany_other": "そのうち {{count}} 件のセッションに自動化が紐づいており、アーカイブ後に一時停止されます。",
+        "scheduleWarning_one": "関連する自動化{{names}}は引き続き実行され、その際にこのセッションを復元します。",
+        "scheduleWarning_other": "関連する自動化{{names}}は引き続き実行され、その際にこのセッションを復元します。",
+        "scheduleWarningMany_one": "{{count}} 件のセッションに自動化が紐づいており、次回実行時にセッションが復元されます。",
+        "scheduleWarningMany_other": "{{count}} 件のセッションに自動化が紐づいており、次回実行時にセッションが復元されます。",
         "scheduleName": "「{{name}}」",
         "scheduleNameSeparator": "、",
         "confirm": "確認",
@@ -13691,7 +13691,7 @@
         "card": {
           "open": "セッションを開く",
           "unbind": "連携を解除",
-          "persistentNote": "セッションがアーカイブされると自動的に再作成して連携を継続します",
+          "persistentNote": "アーカイブ後も、次回実行時に元のセッションが復元されます",
           "deleted": "連携先セッションは削除されました",
           "deletedPersistentNote": "次回の実行時に新しいセッションを作成して再連携します",
           "fallbackTitle": "セッション {{id}}"
