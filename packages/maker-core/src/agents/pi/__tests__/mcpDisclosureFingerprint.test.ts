@@ -66,9 +66,8 @@ function loadGateway(options: {
   // 锁文件独立于披露文件，由外部（另一实例或崩溃残留）直接写入；null = 不存在。
   const lockFile: { value: string | null } = { value: null };
   if (options.lockOwner !== undefined) lockFile.value = String(options.lockOwner);
-  // stale 回收槽：rename(lock→stale) 时锁内容搬到这里；内容可为外部预置（模拟
-  // 「旧锁已被另一个实例换成活进程的新锁，但本实例的 rename 仍成功」）。
-  const staleFile: { value: string | null } = { value: options.staleContent ?? null };
+  // stale 回收槽：rename(lock→stale) 时锁内容搬到这里。
+  const staleFile: { value: string | null } = { value: null };
   const externalWrite = (value: DisclosedFile) => { disk.value = value; };
   const reclaimed: string[] = [];
 
@@ -126,7 +125,9 @@ function loadGateway(options: {
       if (from.endsWith('.lock') && to.includes('.stale-')) {
         // 回收挪动：锁内容搬进回收槽；外部可同时预置 reclaimReplacesWith，模拟
         // 「挪走的其实是另一个实例刚重建的活锁」（内容与读到的死 pid 不一致）。
-        staleFile.value = options.reclaimReplacesWith ?? lockFile.value;
+        staleFile.value = options.reclaimReplacesWith !== undefined
+          ? String(options.reclaimReplacesWith)
+          : lockFile.value;
         lockFile.value = null;
       } else if (from.endsWith('.stale-') && to.endsWith('.lock')) {
         // 放回：回收槽内容回到锁路径。
