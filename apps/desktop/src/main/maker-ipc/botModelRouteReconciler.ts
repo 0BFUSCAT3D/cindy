@@ -3,17 +3,19 @@ import type { AgentKind } from '@cindy/maker-core';
 import { normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
 
 interface RuntimeRoute {
+  agentDeviceId?: string | null;
   agentKind: AgentKind;
   model: string;
   providerId: string | null;
   effort: string | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 interface BotRouteState {
   chain: BotModelRoute[];
   current: RuntimeRoute;
   hasRuntimeOverride: boolean;
+  scheduledModelBaseline?: RuntimeRoute | null;
   followsCindyDefault?: boolean;
   next?: RuntimeRoute;
 }
@@ -25,12 +27,16 @@ function configuredRoute(
 ): RuntimeRoute | null {
   const key = JSON.stringify(chain);
   const isDraftChange = key !== JSON.stringify(state.chain);
+  // An automation owns its temporary route until ordinary input restores it.
+  // This also applies to companions following Cindy defaults and after restart.
+  if (!isDraftChange && state.scheduledModelBaseline && (previous === undefined || previous === key)) return null;
   if (!state.followsCindyDefault && !isDraftChange && state.hasRuntimeOverride && (previous === undefined || previous === key)) return null;
   const primary = chain[0];
   if (!primary) return null;
   return {
     agentKind: primary.harness === 'claude' ? 'claude-code' : primary.harness,
     model: primary.model,
+    ...(primary.agentDeviceId ? { agentDeviceId: primary.agentDeviceId } : {}),
     providerId: primary.providerId,
     effort: primary.effort || null,
     fastMode: primary.fastMode,
@@ -39,7 +45,7 @@ function configuredRoute(
 
 function sameRoute(a: RuntimeRoute, b: RuntimeRoute): boolean {
   return a.agentKind === b.agentKind && a.model === b.model && a.providerId === b.providerId
-    && a.effort === b.effort && a.fastMode === b.fastMode;
+    && a.effort === b.effort && a.fastMode === b.fastMode && (a.agentDeviceId ?? null) === (b.agentDeviceId ?? null);
 }
 
 /** Apply the permanent profile through ordinary Session model/switch controls.
@@ -91,7 +97,7 @@ export function createBotModelRouteReconciler(deps: {
           return;
         }
         const current = state.current;
-        if (!sameRoute(route, current) || (state.next && !sameRoute(route, state.next))) {
+        if (state.scheduledModelBaseline || !sameRoute(route, current) || (state.next && !sameRoute(route, state.next))) {
           try {
             await deps.apply(sessionId, route, state.current);
           } catch (error) {
@@ -120,13 +126,17 @@ export function createBotModelRouteReconciler(deps: {
       if (inFlight.get(sessionId) === operation) inFlight.delete(sessionId);
     }
   };
+  const invalidate = (sessionId: string): void => {
+    syncOwner();
+    revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
+    configured.set(sessionId, '');
+  };
   return Object.assign(reconcile, {
+    invalidate,
     /** Explicit saves invalidate fallback even before the first send. A newer
      * save during an in-flight switch is reread before this promise settles. */
     profileChanged(sessionId: string): Promise<void> {
-      syncOwner();
-      revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
-      configured.set(sessionId, '');
+      invalidate(sessionId);
       return reconcile(sessionId);
     },
     /** Read-only preview: sharing the send decision must not consume a profile change. */
@@ -143,6 +153,7 @@ export function createBotModelRouteReconciler(deps: {
           draftChain ? normalizeBotModelChain(draftChain) : undefined,
         ) ??
         state.next ??
+        state.scheduledModelBaseline ??
         state.current
       );
     },

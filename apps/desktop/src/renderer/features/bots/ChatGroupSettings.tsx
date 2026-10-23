@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Crown, Shield } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
@@ -15,20 +15,32 @@ import { useBotProfiles } from './botStore';
 import { BotAvatar } from './BotAvatar';
 import { chatErrorKey } from './ChatServerControls';
 import { refreshBotGroups } from './botGroupStore';
+import { chatGroupMembership } from '@cindy/maker-shared/botGroupPresentation';
+import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
 
 const key = (name: string) => `bots.groupChat.server.settings.${name}`;
+/** Labels shared with the local group settings, so both read the same. */
+const shared = (name: string) => `bots.groupChat.settings.${name}`;
+const REPLY_MODE_LABELS = { all: shared('replyModeAll'), mentioned: shared('replyModeMentioned') } as const;
+const SPEAKING_MODE_LABELS = { auto: shared('speakingModeAuto'), sequential: shared('speakingModeSequential') } as const;
 const api = () => window.electronAPI.maker.chatServer;
 
 /** Shared group identity and companion grants are server-authoritative. */
 export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { confirm } = useConfirmDialog();
   const profiles = useBotProfiles();
   const companions = group.members.filter(member => member.actorKind === 'bot');
-  const me = group.members.find(m => m.isSelf);
-  const owner = group.members.some(m => m.isOwned && m.role === 'owner');
-  const manager = owner || group.members.some(m => m.isOwned && m.role === 'admin');
+  const membership = chatGroupMembership(group);
+  const { self: me } = membership;
+  const owner = membership.owner && !group.dissolvedAt;
+  const manager = membership.manager && !group.dissolvedAt;
+  const canLeave = membership.canLeave && !group.dissolvedAt;
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const soleOwner = me?.role === 'owner' && group.members.length === 1;
   const [name, setName] = useState(group.name);
   const [topic, setTopic] = useState(group.topic ?? '');
   const [description, setDescription] = useState(group.description ?? '');
@@ -60,30 +72,33 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
     const owner = getDataOwnerGeneration();
     try {
       const result = await api().manage({ groupId: group.id, action });
-      if (!isDataOwnerGenerationCurrent(owner)) return false;
-      if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return false; }
+      if (!mounted.current || !isDataOwnerGenerationCurrent(owner)) return false;
+      if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); if (result.errorCode === 'REVISION_CONFLICT' && action.type !== 'hide') refreshBotGroups(); return false; }
       refreshBotGroups();
       if (exit) navigate('/bots');
       return true;
-    } catch { if (isDataOwnerGenerationCurrent(owner)) setError(t(chatErrorKey('REQUEST_FAILED'))); return false; }
-    finally { busyRef.current = false; setBusy(false); }
+    } catch { if (mounted.current && isDataOwnerGenerationCurrent(owner)) setError(t(chatErrorKey('REQUEST_FAILED'))); return false; }
+    finally { busyRef.current = false; if (mounted.current) setBusy(false); }
   }
-  async function confirmed(action: ChatGroupAction, title: string, note: string, exit = false) {
+  async function confirmed(action: ChatGroupAction, title: string, note: string, exit = false, confirmText = t(key('confirm'))) {
     const owner = getDataOwnerGeneration();
-    if (await confirm({ presentation: 'standard', title, description: note, confirmText: t(key('confirm')),
-      cancelText: t('bots.cancel'), confirmVariant: 'destructive' }) && isDataOwnerGenerationCurrent(owner)) await mutate(action, exit);
+    if (await confirm({ presentation: 'standard', title, description: note, confirmText,
+      cancelText: t('bots.cancel'), confirmVariant: 'destructive' }) && mounted.current && isDataOwnerGenerationCurrent(owner)) await mutate(action, exit);
   }
-  const profileOpenChange = useCallback((open: boolean) => {
-    setEditingProfile(open);
-    if (!open) {
-      const owner = getDataOwnerGeneration();
-      void api().refreshProfile().then(result => {
-        if (!isDataOwnerGenerationCurrent(owner)) return;
-        if (!result.ok) setError(t(chatErrorKey(result.errorCode)));
-        else refreshBotGroups();
-      }).catch(() => { if (isDataOwnerGenerationCurrent(owner)) setError(t(chatErrorKey('REQUEST_FAILED'))); });
-    }
-  }, [t]);
+  const profileOpenChange = useCallback((open: boolean) => setEditingProfile(open), []);
+  const avatarEditor = useMemo(() => ({
+    title: t(key('groupAvatar')),
+    hint: t(key('groupAvatarHint')),
+    getState: async () => ({ name: me?.name ?? '', avatarUrl: me?.groupAvatar ?? null, defaultAvatarUrl: me?.defaultAvatarUrl ?? null }),
+    save: async (avatar: Parameters<Window['electronAPI']['profileUpdate']>[0]['avatar']) => {
+      if (!me?.actorId) throw new Error('MEMBER_NOT_FOUND');
+      const generation = getDataOwnerGeneration();
+      const result = await api().manage({ groupId: group.id, action: { type: 'avatar', actorId: me.actorId, avatar } });
+      if (!mounted.current || !isDataOwnerGenerationCurrent(generation)) throw new Error('OWNER_CHANGED');
+      if (!result.ok) throw new Error(result.errorCode);
+      refreshBotGroups();
+    },
+  }), [group.id, me?.actorId, me?.name, me?.groupAvatar, me?.defaultAvatarUrl, t]);
   async function updateWorkSettings(input: { organizerBotId?: string; projectDir?: string | null }) {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setError('');
@@ -94,7 +109,7 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
       if (!result.ok) setError(t('bots.groupChat.settings.projectDirSaveFailed'));
       else refreshBotGroups();
     } catch { if (isDataOwnerGenerationCurrent(generation)) setError(t(chatErrorKey('REQUEST_FAILED'))); }
-    finally { busyRef.current = false; setBusy(false); }
+    finally { busyRef.current = false; if (mounted.current) setBusy(false); }
   }
   async function chooseProjectDir() {
     const generation = getDataOwnerGeneration();
@@ -117,15 +132,19 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
           onChange={event => { editGroup(); setTopic(event); }} />}</FormField>
         <FormField label={t(key('description'))}>{props => <Input {...props} value={description} maxLength={2000} disabled={!manager || busy}
           onChange={event => { editGroup(); setDescription(event); }} />}</FormField>
-        <FormField label={t(key('replyMode'))}>{props => <Select {...props} label={t(key('replyMode'))} value={replyMode}
-          disabled={!manager || busy} options={['all', 'mentioned'].map(value => ({ value, label: t(key(value)) }))}
+        {/* Whether unmentioned messages trigger replies is independent of the speaking order. */}
+        <FormField label={t(shared('replyMode'))}>{props => <Select {...props} label={t(shared('replyMode'))} value={replyMode}
+          disabled={!manager || busy} options={(['all', 'mentioned'] as const).map(value => ({ value, label: t(REPLY_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setReplyMode(value as typeof replyMode); }} />}</FormField>
-        <FormField label={t(key('speakingMode'))}>{props => <Select {...props} label={t(key('speakingMode'))} value={speakingMode}
-          disabled={!manager || busy} options={['auto', 'sequential'].map(value => ({ value, label: t(key(value)) }))}
+        {group.singleSpeaker ? null : <>
+        <FormField label={t(shared('speakingMode'))}>{props => <Select {...props} label={t(shared('speakingMode'))} value={speakingMode}
+          disabled={!manager || busy} options={(['auto', 'sequential'] as const).map(value => ({ value, label: t(SPEAKING_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setSpeakingMode(value as typeof speakingMode); }} />}</FormField>
+        </>}
         {manager && <Button type="submit" size="sm" variant="secondary" disabled={busy || !name.trim()}>{t(key('save'))}</Button>}
       </form>
-      <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
+      {/* Organizer and project folder only serve a division of work, which single-speaker groups do not have. */}
+      {group.singleSpeaker ? null : <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
         <FormField label={t('bots.groupChat.organizer')} hint={t('bots.groupChat.settings.organizerNote')}>{props =>
           <Select {...props} label={t('bots.groupChat.organizer')} value={group.organizerBotId ?? ''}
             disabled={!manager || busy} options={companions.filter(m => m.status === 'active').map(m => ({ value: m.botId, label: m.name }))}
@@ -136,19 +155,19 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
             {group.projectDir && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void updateWorkSettings({ projectDir: null })}>{t('bots.groupChat.settings.projectDirClear')}</Button>}
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => void chooseProjectDir()}>{t('bots.groupChat.settings.projectDirChoose')}</Button>
           </div>}</FormField>
-      </section>
+      </section>}
       <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-14 font-medium text-[var(--text-primary)]">{t(key('myProfile'))}</h3>
-          <Button size="sm" variant="secondary" onClick={() => setEditingProfile(true)}>{t(key('editProfile'))}</Button>
+          {group.supportsMemberAvatar && <Button size="sm" variant="secondary" disabled={busy || !me || !!group.dissolvedAt} onClick={() => setEditingProfile(true)}>{t(key('groupAvatar'))}</Button>}
         </div>
         <form className="flex items-end gap-2" onSubmit={event => {
           event.preventDefault();
           void mutate({ type: 'nickname', actorId: me!.actorId!, nickname: nickname.trim() || null }).then(ok => { if (ok) nicknameDirty.current = false; });
         }}>
           <FormField className="min-w-0 flex-1" label={t(key('nickname'))} hint={t(key('nicknameHint'))}>{props =>
-            <Input {...props} value={nickname} maxLength={40} placeholder={me?.displayName} disabled={busy} onChange={event => { nicknameDirty.current = true; setNickname(event); }} />}</FormField>
-          <Button className="mb-6" type="submit" size="sm" variant="secondary" disabled={busy || !me}>{t(key('save'))}</Button>
+            <Input {...props} value={nickname} maxLength={40} placeholder={me?.displayName} disabled={busy || !!group.dissolvedAt} onChange={event => { nicknameDirty.current = true; setNickname(event); }} />}</FormField>
+          <Button className="mb-6" type="submit" size="sm" variant="secondary" disabled={busy || !me || !!group.dissolvedAt}>{t(key('save'))}</Button>
         </form>
       </section>
       {companions.length > 0 && <section className="space-y-4 border-t border-[var(--border-default)] pt-5">
@@ -161,11 +180,20 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
               <p className="text-12 text-[var(--text-secondary)]">{t(key('companionOf'), { name: member.ownerName })}</p>
             </div>
           </div>
-          <ChatBotAccessField groupId={group.id} member={member} disabled={busy} />
-          {member.isOwned && profiles.some(bot => bot.id === member.botId) && <Button size="sm" variant="secondary"
-            onClick={() => navigate(`/bots/${encodeURIComponent(member.botId)}?settings=1&settingsPage=capabilities`)}>
-            {t(key('configureCapabilities'))}
-          </Button>}
+          <ChatBotAccessField groupId={group.id} member={member} disabled={busy || !!group.dissolvedAt} />
+          {member.isOwned && profiles.some(bot => bot.id === member.botId) && <div className="space-y-2">
+            <Button size="sm" variant="secondary" onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete(BOT_GROUP_SETTINGS_PARAM);
+              next.set('settings', '1');
+              next.set('settingsPage', 'capabilities');
+              next.set('settingsBot', member.botId);
+              setSearchParams(next);
+            }}>
+              {t(key('configureCapabilities'))}
+            </Button>
+            <p className="text-12 leading-5 text-[var(--text-secondary)]">{t(key('capabilityScope'), { name: member.name })}</p>
+          </div>}
         </div>)}
       </section>}
       <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
@@ -193,20 +221,29 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
               {manageable && <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="secondary" disabled={busy} onClick={() => void mutate({ type: 'member', actorId, action: 'role', role: member.role === 'admin' ? 'member' : 'admin' })}>
                   {t(key(member.role === 'admin' ? 'removeAdmin' : 'makeAdmin'))}</Button>
-                <Button size="sm" variant="secondary" disabled={busy} onClick={() => void confirmed({ type: 'member', actorId, action: 'remove' }, t(key('removeTitle'), { name: member.name }), t(key('removeHint')))}>{t(key('remove'))}</Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => void confirmed({ type: 'member', actorId, action: 'remove' }, t(key('removeTitle'), { name: member.name }), t(key('removeHint')))}>{t(shared('remove'))}</Button>
               </div>}
             </div>}
           </div>;
         })}
-        {addable.length > 0 && <Select label={t(key('addCompanion'))} value="" disabled={busy}
+        {!group.dissolvedAt && addable.length > 0 && <Select label={t(key('addCompanion'))} value="" disabled={busy}
           options={addable.map(bot => ({ value: bot.actorId, label: bot.name }))}
           onValueChange={actorId => void mutate({ type: 'member', actorId, action: 'invite' })} />}
       </section>
-      <div className="flex flex-wrap gap-2 border-t border-[var(--border-default)] pt-5">
-        <Button variant="secondary" size="sm" disabled={busy || !me} onClick={() => void confirmed({ type: 'member', actorId: me!.actorId!, action: 'leave' }, t(key('leave')), t(key('leaveHint')), true)}>{t(key('leave'))}</Button>
-        {manager && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'archive', archived: !group.archived, expectedRevision: group.revision! }, t(key(group.archived ? 'unarchive' : 'archive')), t(key(group.archived ? 'unarchiveHint' : 'archiveHint')))}>{t(key(group.archived ? 'unarchive' : 'archive'))}</Button>}
+      {group.dissolvedAt && <p className="text-13 text-[var(--text-secondary)]">{t('bots.groupChat.lifecycle.dissolved')}</p>}
+      <div className="space-y-3 border-t border-[var(--border-default)] pt-5">
+        {soleOwner && !group.archived && !group.dissolvedAt && <p className="text-13 text-[var(--text-secondary)]">{t(key('soleOwnerHint'))}</p>}
+        <div className="flex flex-wrap gap-2">
+          {canLeave && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'member', actorId: me!.actorId!, action: 'leave' }, t(key('leave')), t(key('leaveHint')), true)}>{t(key('leave'))}</Button>}
+          {manager && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'archive', archived: !group.archived, expectedRevision: group.revision! }, t(key(group.archived ? 'unarchive' : 'archive')), t(key(group.archived ? 'unarchiveHint' : 'archiveHint')), false, t(key(group.archived ? 'unarchive' : 'archive')))}>{t(key(group.archived ? 'unarchive' : 'archive'))}</Button>}
+          {owner && <Button variant="secondary" size="sm" disabled={busy || group.supportsDissolve !== true}
+            onClick={() => void confirmed({ type: 'dissolve', expectedRevision: group.revision! }, t('bots.groupChat.lifecycle.dissolve'), t('bots.groupChat.lifecycle.dissolveNote'))}>{t('bots.groupChat.lifecycle.dissolve')}</Button>}
+          <Button variant="secondary" size="sm" disabled={busy || group.supportsListRemoval !== true}
+            onClick={() => void confirmed({ type: 'hide' }, t('bots.groupChat.lifecycle.hide'), t('bots.groupChat.lifecycle.hideNote'), true)}>{t('bots.groupChat.lifecycle.hide')}</Button>
+          {((owner && !group.supportsDissolve) || !group.supportsListRemoval) && <p className="w-full text-12 text-[var(--text-secondary)]">{t('bots.groupChat.lifecycle.unavailable')}</p>}
+        </div>
       </div>
     </div>
-    <ProfileEditDialog open={editingProfile} onOpenChange={profileOpenChange} />
+    <ProfileEditDialog key={group.id} open={editingProfile} onOpenChange={profileOpenChange} avatarEditor={avatarEditor} />
   </div>;
 }

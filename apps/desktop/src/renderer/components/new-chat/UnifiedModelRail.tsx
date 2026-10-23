@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react';
+import { isProviderShareAgentDeviceId } from '../../../shared/providerShare';
+import { useProviderShareWeeklyQuota } from '@/features/provider-share/useProviderShareWeeklyQuota';
 import { LayoutGrid, Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -55,11 +57,13 @@ export function UnifiedModelRail({
   /** 供应商组那一格的用量读谁(provider-groups.md §10);缺省 = 都按格所在目录读。 */
   providerGroupUsage?: ProviderGroupUsageOf;
   /**
-   * 远程供应商格的数据(只有可选远程 Agent 的新任务草稿传)。传了它,本机供应商格的
-   * 图标 / 名字 / 用量一律按本机读 —— 面板此刻可能正列着某台电脑的目录。
+   * 可选远程 Agent 的供应商格。localProviders 属于任务所在电脑，远控时未必是控制端本机；
+   * 图标 / 名字 / 用量都跟随该电脑，不随面板正在浏览的目录切换。
    */
   remoteSources?: {
     localProviders: readonly ProviderView[];
+    /** localProviders 所在电脑；null / 缺省 = 控制端本机。 */
+    localUsageDeviceId?: string | null;
     localProviderLabel: (providerId: string) => string;
     providersOf: (deviceId: string) => readonly ProviderView[];
     labelOf: (deviceId: string, providerId: string) => string;
@@ -93,12 +97,12 @@ export function UnifiedModelRail({
           item.kind === 'provider' || item.kind === 'remote-provider'
             ? railProviders.find((entry) => entry.id === item.providerId)
             : undefined;
-        // 用量跟随该格目录的归属:远程格读那台电脑的镜像,本机格在远程 Agent 模式下恒读本机。
+        // 普通格读任务所在电脑，远程格读指定电脑；两者都不借用当前浏览目录的归属。
         const usageDeviceId =
           item.kind === 'remote-provider'
             ? item.deviceId
             : remoteSources
-              ? null
+              ? (remoteSources.localUsageDeviceId ?? null)
               : (providerUsage?.deviceId ?? null);
         // 供应商组那一格代表组里的几台电脑：任务正经组在某台运行时读那台的账号(与输入框下方的用量
         // 一致)，还没分到电脑时不显示某一台的配额；悬停多写一句说明是哪台。
@@ -147,6 +151,12 @@ export function UnifiedModelRail({
               />
             )}
             <RailButton
+              shareDeviceId={
+                (item.kind === 'provider' || item.kind === 'remote-provider') &&
+                isProviderShareAgentDeviceId(usageDeviceId)
+                  ? usageDeviceId
+                  : null
+              }
               label={label}
               accountIdentity={accountIdentity}
               {...(groupNote ? { groupNote } : {})}
@@ -197,17 +207,26 @@ interface RailButtonProps {
   disabled: boolean;
   provider?: ProviderView;
   usageDeviceId: string | null;
+  shareDeviceId?: string | null;
   children: ReactNode;
 }
 
 function RailButton(props: RailButtonProps) {
   // Quota follows the directory's owner: remote directories read that device's mirrors
   // and must never borrow this desktop's account quota.
+  if (props.shareDeviceId) {
+    return <SharedProviderQuotaButton {...props} shareDeviceId={props.shareDeviceId} />;
+  }
   return props.provider ? (
     <ProviderQuotaButton {...props} provider={props.provider} />
   ) : (
     <RailButtonView {...props} />
   );
+}
+
+function SharedProviderQuotaButton(props: RailButtonProps & { shareDeviceId: string }) {
+  const quota = useProviderShareWeeklyQuota(props.shareDeviceId);
+  return <RailButtonView {...props} quota={quota} />;
 }
 
 function ProviderQuotaButton(props: RailButtonProps & { provider: ProviderView }) {

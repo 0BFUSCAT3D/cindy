@@ -35,6 +35,8 @@ import {
   crossRegionWithdraw,
   getCrossRegionReceived,
   getConfirmedCrossRegionReceivedRegions,
+  isCrossRegionReceivedComplete,
+  isCrossRegionReceivedReady,
   ensureCrossRegionReceivedForFavorites,
   refreshProviderShareCrossRegion,
   startProviderShareCrossRegion,
@@ -55,6 +57,7 @@ const SHARE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/;
 type Region = 'cn' | 'global';
 
 export interface ProviderShareGuestEvents {
+  catalogChanged?(agentDeviceId: string): void;
   changed(received: readonly ProviderShareReceived[]): void;
   /** 发出的申请有了结果(同意、拒绝、过期、撤回)。 */
   settled(state: ProviderShareRequestState, preview: ProviderShareLinkPreview | null): void;
@@ -86,6 +89,10 @@ interface ResolvedLink {
 }
 
 let runtime: Runtime | null = null;
+let receivedRevision = 0;
+let receivedFingerprint = '';
+/** 用于只读分享投影的在途校验；暂停后恢复也不能复用旧回包。 */
+export function providerShareReceivedRevision(): number { return receivedRevision; }
 
 function current(rt: Runtime): boolean {
   return runtime === rt && !rt.stopped && getAuthState().isAuthenticated && !isAppSessionBoundaryPending()
@@ -102,6 +109,9 @@ function allReceived(rt: Runtime | null): ProviderShareReceived[] {
   return rt ? [...rt.received, ...getCrossRegionReceived()] : [];
 }
 
+/** 已收到的分享变化的旁听者(见 onProviderShareReceivedChanged)。 */
+const receivedListeners = new Set<() => void>();
+
 /** 已拿到权威名单的区域(本区域要拉到过一次；对方区域按跨区域运行时的已加载状态)。 */
 function confirmedRegions(rt: Runtime): Region[] {
   return [...(rt.fetchedAt > 0 ? [getActiveAuthRealm()] : []), ...getConfirmedCrossRegionReceivedRegions()];
@@ -110,13 +120,44 @@ function confirmedRegions(rt: Runtime): Region[] {
 function emitChanged(rt: Runtime): Promise<void> | void {
   if (!current(rt)) return;
   const received = allReceived(rt);
+  const fingerprint = JSON.stringify(received);
+  if (fingerprint !== receivedFingerprint) { receivedFingerprint = fingerprint; receivedRevision++; }
   // 分享被分享者删除后，它在这台电脑上的本机偏好一起清掉；还没加载的区域不动。
   const pruning = pruneProviderShareGuestPrefs(new Set(received.map((share) => share.shareId)), confirmedRegions(rt));
   const notify = () => {
-    if (current(rt)) rt.events.changed(received);
+    if (!current(rt)) return;
+    rt.events.changed(received);
+    for (const listener of receivedListeners) {
+      try {
+        listener();
+      } catch (error) {
+        log.warn('received shares listener failed', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
   };
   if (pruning) return pruning.then(notify);
   notify();
+}
+
+/**
+ * 已收到的分享变了：供应商组据此把已被删除或已退出的分享移出组(provider-groups.md §3)。只通知，不带内容；
+ * 读名单用 {@link getConfirmedReceivedShareIds}。
+ */
+export function onProviderShareReceivedChanged(listener: () => void): () => void {
+  receivedListeners.add(listener);
+  return () => {
+    receivedListeners.delete(listener);
+  };
+}
+
+/**
+ * 完整可信的已收到分享名单：本区域已拉到过，本账号可能有分享的对方区域也都已确认。只有这时才能据此认定某个分享
+ * 已被删除或已退出；说不准时为 null(还没拉到、拉取失败、换账号中)。
+ */
+export function getConfirmedReceivedShareIds(): ReadonlySet<string> | null {
+  const rt = runtime;
+  if (!rt || !current(rt) || rt.fetchedAt === 0 || !isCrossRegionReceivedComplete()) return null;
+  return new Set(allReceived(rt).map((share) => share.shareId));
 }
 
 // ─── 任务绑定 ────────────────────────────────────────────────────
@@ -190,10 +231,13 @@ export function startProviderShareGuest(events: ProviderShareGuestEvents, option
   };
   runtime = rt;
   void refreshReceivedShares('start');
-  if (options.userDataDir) startProviderShareCrossRegion({ changed: () => emitChanged(rt) }, { userDataDir: options.userDataDir });
+  if (options.userDataDir) startProviderShareCrossRegion({ changed: () => emitChanged(rt),
+    catalogChanged: device => { if (current(rt)) rt.events.catalogChanged?.(device); },
+  }, { userDataDir: options.userDataDir });
 }
 
 export function stopProviderShareGuest(): void {
+  receivedRevision++; receivedFingerprint = '';
   stopProviderShareCrossRegion();
   const rt = runtime;
   if (!rt) return;
@@ -254,6 +298,12 @@ export function noteProviderShareAccessFailure(): void {
 
 export function getReceivedShares(): readonly ProviderShareReceived[] {
   return allReceived(runtime);
+}
+
+/** 首次本区及已标记跨区收到分享的拉取已完成；空列表只有在此状态下才代表真实的空结果。 */
+export function isReceivedSharesReady(): boolean {
+  const rt = runtime;
+  return !!rt && current(rt) && rt.fetchedAt > 0 && isCrossRegionReceivedReady();
 }
 
 export function getReceivedSharesSnapshot(recovery?: ProviderShareFavoriteRecovery): ProviderShareReceivedSnapshot {

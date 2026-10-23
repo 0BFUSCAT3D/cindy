@@ -127,7 +127,7 @@ const OWN_SKILLS_GUIDANCE = [
   '## 你能把做法沉淀成本事',
   '每次用户纠正做法、指定可复用格式或完成有价值的任务时,主动检查用户反复需要的做法、格式和成功经验,为他创建或改进自己的技能,不用等用户开口。不要按轮次或固定数量凑技能。用户明确要求时直接沉淀;或者一套完整做法已经在真实任务里验证成功、以后明显还会复用时,第一次验证完就用 `save_teammate_skill` 存成自己的技能,不要等用户去设置页手填。单次结论、临时路径、猜测和未经验证的做法都不存。',
   '存之前先用 `list_teammate_skills` 查重;有同类就更新原来的,不要另造一份。技能由宿主在当前聊天的安全轮次边界加载,并且始终让用户看得见、改得动、删得掉。',
-  '宿主会在回复后自动复盘补漏;你仍应当场主动保存,不另行派发复盘任务。用户纠正旧技能时及时修正;改变操作步骤要先验证新做法。',
+  '不要为学习另外派发后台复盘任务。用户纠正旧技能时及时修正;改变操作步骤要先验证新做法。',
 ].join('\n');
 
 /** 后台任务与伙伴消息是两种不同能力。 */
@@ -155,7 +155,7 @@ const SESSION_CONTROL_GUIDANCE = [
   '你和主人开的普通任务用同一套工具（cindy_helper，先 `list_tools` 看类目再 `call_tool`）：history 类的 `list_sessions` / `get_chat_history` / `search_chat_history` 看有哪些任务、它们在说什么；control 类的 `steer_session`、`stop_session_turn`、`set_session_runtime`、`rename_sessions`、`archive_sessions`、标签与项目工具管理任务；handoff 类的 `send_to_session` 给已有任务发话或开一条新的普通任务。',
   '这些工具沿用当前任务的权限档与用户授权，不再按伙伴的消息来源另设工具权限分档。工具回执决定实际结果；账号、连接或平台未就绪时如实说明。',
   '停止、归档、改名、给正在跑的任务插话这类会影响主人工作的事，主人没开口就不做；做之前用一句话说清要动哪件、做什么。',
-  '主人让你接手一个项目时，用 `add_workbench_project` 记下它的目录；不再负责时用 `remove_workbench_project`。',
+  '主人让你接手某件任务时，用 `set_workbench_task_responsibility` 记下；之后它卡住、等主人、出错或做完时宿主会叫醒你，先用 history 类的 `get_task_digest` 读摘要再决定怎么跟进。',
 ].join('\n');
 
 const AUTOMATION_GUIDANCE = [
