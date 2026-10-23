@@ -1625,11 +1625,13 @@ describe('Chat Server result delivery and refresh', () => {
     it.each([
       ['waiting for 继续: a new request replaces it', 'waiting', `/conversations/${roomId}/messages`],
       ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
-    ] as const)('with an open queue %s', async (_label, status, route) => {
+      ['mention-only mid-turn: unmentioned words stay ordinary messages', 'running', `/conversations/${roomId}/messages`, 'mentioned'],
+    ] as const)('with an open queue %s', async (_label, status, route, responseMode: string = 'all') => {
       const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
         creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
         steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
-      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] } : undefined);
+      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] }
+        : route.endsWith('/snapshot') ? { body: { room: { ...room(roomId), response_mode: responseMode }, members: members(), messages: [], cursor: '1' } } : undefined);
       expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: `queue-${status}`, mentions: { all: false, botIds: [] } }))
         .toMatchObject({ ok: true });
       await vi.advanceTimersByTimeAsync(0);

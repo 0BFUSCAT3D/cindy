@@ -140,11 +140,12 @@ describe('plan follow-up and composer state', () => {
 
   // bot-group-chat.md §4.0: only words that will reach the speaking teammate are promised to it.
   it.each([
-    ['who may add to it', 'running', true, { kind: 'running', botName: 'A', talk: true }],
-    ['who cannot add to it', 'running', false, null],
-    ['waiting for 继续', 'waiting', true, null],
-  ] as const)('gives a queue %s the matching composer state', (_label, status, canAdd, expected) => {
-    expect(botGroupComposerPlanState(plan({ kind: 'talk', status, canAdd }))).toEqual(expected);
+    ['who may add to it', 'running', true, 'all', { kind: 'running', botName: 'A', talk: true }],
+    ['who cannot add to it', 'running', false, 'all', null],
+    ['waiting for 继续', 'waiting', true, 'all', null],
+    ['requiring an explicit mention', 'running', true, 'mentioned', null],
+  ] as const)('gives a queue %s the matching composer state', (_label, status, canAdd, replyMode, expected) => {
+    expect(botGroupComposerPlanState(plan({ kind: 'talk', status, canAdd }), replyMode)).toEqual(expected);
   });
 });
 
