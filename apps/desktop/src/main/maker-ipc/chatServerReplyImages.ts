@@ -4,7 +4,7 @@ import { BOT_GROUP_ATTACHMENTS_MAX } from '../../shared/botGroupChat.js';
 import { parseBlobUrl, resolveSafe } from '../cindy-media/blobStore.js';
 import { sessionCanRead } from '../cindy-media/ledger.js';
 import { materializeTaskImageTextResult } from '../cindy-media/taskImageDelivery.js';
-import { hasLocalTaskImages, taskImageReferences, rewriteTaskImageReferences } from '../cindy-media/taskImageMarkdown.js';
+import { hasLocalTaskImages, localTaskImagePath, taskImageReferences, rewriteTaskImageReferences } from '../cindy-media/taskImageMarkdown.js';
 import type { ChatUploadAttachment } from './chatServerMedia.js';
 import { getDbClient } from '../localDb/client/current.js';
 
@@ -12,6 +12,14 @@ import { getDbClient } from '../localDb/client/current.js';
 export async function prepareChatReplyImages(text: string, sessionId: string, assertCurrent: () => void) {
   assertCurrent();
   const originalImages = taskImageReferences(text);
+  const localSources = new Map<string, string>();
+  for (const ref of originalImages) {
+    const local = localTaskImagePath(ref.url);
+    if (!local || localSources.has(ref.url)) continue;
+    const real = await fs.realpath(local).catch(() => undefined);
+    assertCurrent();
+    if (real) localSources.set(ref.url, real);
+  }
   let replacements = new Map<string, string>();
   if (hasLocalTaskImages(text)) {
     const imported = await materializeTaskImageTextResult(sessionId, text);
@@ -21,9 +29,15 @@ export async function prepareChatReplyImages(text: string, sessionId: string, as
     replacements = imported.replacements;
   }
   const positions = new Map<string, number>();
+  const sources = new Map<string, Set<string>>();
   for (const ref of originalImages) {
     const url = replacements.get(ref.url) ?? ref.url;
     if (!positions.has(url)) positions.set(url, ref.start);
+    const source = localSources.get(ref.url);
+    if (source) {
+      if (!sources.has(url)) sources.set(url, new Set());
+      sources.get(url)!.add(source);
+    }
   }
   const attachments: ChatUploadAttachment[] = [];
   const delivered = new Map<string, string>();
@@ -39,6 +53,7 @@ export async function prepareChatReplyImages(text: string, sessionId: string, as
     assertCurrent();
     if (!stat.isFile() || stat.size <= 0 || stat.size > 100 * 1024 * 1024) throw new Error('ATTACHMENT_UNAVAILABLE');
     attachments.push({ id: ref.url, sourceOffset: positions.get(ref.url), name: path.basename(image.absPath), category: 'image',
+      sourcePaths: [...sources.get(ref.url) ?? []],
       mimeType: image.mimeType, size: stat.size, url: ref.url, path: null });
     delivered.set(ref.url, ref.url);
   }

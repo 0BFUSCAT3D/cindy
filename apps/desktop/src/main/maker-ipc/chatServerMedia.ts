@@ -17,6 +17,8 @@ import type { ChatApi, ChatContentBlock } from './chatServerMigration.js';
 export type ChatUploadAttachment = BotGroupAttachment & {
   /** Offset in the file-rewritten Markdown, before image materialization. Never sent over the wire. */
   sourceOffset?: number;
+  /** Canonical local image/file sources, used only to reconcile the two reply passes. */
+  sourcePaths?: string[];
   readBytes?: () => Promise<Buffer>;
   assertCurrent?: () => void;
 };

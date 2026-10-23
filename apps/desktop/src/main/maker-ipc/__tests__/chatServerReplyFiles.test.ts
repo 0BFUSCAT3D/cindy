@@ -67,13 +67,13 @@ describe('group reply file delivery', () => {
     if (mode === 'shared-reference') expect(result.text).not.toContain(`[image]: <${pdf}>`);
   });
 
-  it.each(['file', 'xdt-file'].flatMap(scheme => ['100% done.pdf', 'encoded%20.pdf'].map(name => [scheme, name])))('preserves literal or once-encoded percent paths: %s %s', async (scheme, name) => {
+  it.each(['file', 'xdt-file', 'xdt-query'].flatMap(scheme => ['100% done.pdf', 'encoded%20.pdf'].map(name => [scheme, name])))('preserves literal or once-encoded percent paths: %s %s', async (scheme, name) => {
     const file = path.join(work, name);
     await fs.writeFile(file, 'percent report');
     // A direct legacy URL is a URI with forward slashes on every platform.
     const direct = `${scheme}://${file.startsWith('/') ? '' : '/'}${file.replaceAll('\\', '/')}`;
     const encoded = pathToFileURL(file).href.replace(/^file:/, `${scheme}:`);
-    const result = await prepareChatReplyFiles(`[file](<${name.startsWith('100') ? direct : encoded}>)`, 'lane', () => {});
+    const result = await prepareChatReplyFiles(`[file](<${scheme === 'xdt-query' ? `xdt-file://local?path=${encodeURIComponent(file)}` : name.startsWith('100') ? direct : encoded}>)`, 'lane', () => {});
     expect((await result.attachments[0]!.readBytes!()).toString()).toBe('percent report');
   });
 
@@ -89,6 +89,38 @@ describe('group reply file delivery', () => {
 
   it.each(['reports%2Ffinal.pdf', 'reports%5Cfinal.pdf', 'reports/%2e%2e/report.pdf', '%68ttps%3A%2F%2Fexample.test/a.pdf', '%2F%2Fserver/a.pdf', 'reports/%00.pdf'])('refuses path syntax introduced by href decoding: %s', async href => {
     await expect(prepareChatReplyFiles(`[report](${href})`, 'lane', () => {})).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+  });
+
+  it.each(['final report 中文.pdf', 'encoded%20.pdf', '100% done.pdf'])('decodes sandbox paths once or preserves malformed percents: %s', async name => {
+    const file = path.join(work, name);
+    await fs.writeFile(file, 'sandbox report');
+    const href = `sandbox:/${work.replaceAll('\\', '/')}/${name.startsWith('100') ? name : encodeURIComponent(name)}`;
+    const result = await prepareChatReplyFiles(`[report](<${href}>)`, 'lane', () => {});
+    expect((await result.attachments[0]!.readBytes!()).toString()).toBe('sandbox report');
+  });
+
+  it.each(['reports%2Ffinal.pdf', 'reports%5Cfinal.pdf', '%2e%2e/private.pdf', '%00.pdf'])('refuses encoded sandbox path syntax: %s', async suffix => {
+    const href = `sandbox:/${work.replaceAll('\\', '/')}/${suffix}`;
+    await expect(prepareChatReplyFiles(`[report](${href})`, 'lane', () => {})).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+  });
+
+  it('checks directory case aliases against the real filesystem and task root', async () => {
+    const alias = path.join(root, 'TASK');
+    let sameDirectory = false;
+    try { sameDirectory = (await fs.stat(alias)).ino === (await fs.stat(work)).ino; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const target = path.join(alias, path.basename(pdf));
+    if (sameDirectory) {
+      const result = await prepareChatReplyFiles(`[report](<${target}>) [again](<${pdf}>)`, 'lane', () => {});
+      expect(result.attachments).toHaveLength(1);
+      expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
+    } else {
+      await fs.mkdir(alias);
+      try {
+        await fs.writeFile(target, 'outside');
+        await expect(prepareChatReplyFiles(`[report](<${target}>)`, 'lane', () => {})).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+      } finally { await fs.rm(alias, { recursive: true }); }
+    }
   });
 
   it('leaves ordinary relative navigation targets unchanged without file authority', async () => {

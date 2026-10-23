@@ -753,6 +753,27 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deps.dispatch).toHaveBeenCalledOnce();
   });
 
+  it('deduplicates eleven image/file aliases before counting and keeps the first source position on retry', async () => {
+    const images = Array.from({ length: 11 }, (_, i) => ({ ...replyImage, id: `image-${i}`, sourceOffset: 100 + i,
+      sourcePaths: [`/task/chart-${i}.png`] }));
+    const aliases = images.map((image, i) => ({ ...image, id: `file-${i}`, category: 'file', sourceOffset: i }));
+    const pdf = { id: 'pdf', name: 'report.pdf', category: 'file', sourceOffset: 50 };
+    replyFiles.prepare.mockResolvedValue({ text: 'Report charts', attachments: [...aliases, pdf] });
+    replyImages.mockResolvedValue({ text: 'Delivered', attachments: images });
+    fixture.upload.mockRejectedValueOnce(Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: 503 })).mockResolvedValue([]);
+    await startFileReply();
+    const before = fixture.upload.mock.calls.length;
+    await service.settleLaneTurn({ ...terminal, resultText: '[download](chart.png) ![preview](chart.png)' });
+    await vi.advanceTimersByTimeAsync(16000);
+    const uploads = fixture.upload.mock.calls.slice(before);
+    expect(uploads).toHaveLength(2);
+    for (const call of uploads) {
+      expect(call[2].map(a => a.id)).toEqual([...images.map(a => a.id), 'pdf']);
+      expect(call[2].map(a => a.sourceOffset)).toEqual([...aliases.map(a => a.sourceOffset), 50]);
+    }
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
   it('delivers ten images and a PDF in one completion across an upload retry', async () => {
     const images = Array.from({ length: 10 }, (_, i) => ({ ...replyImage, id: `image-${i}` }));
     const pdf = { id: 'pdf', name: 'report.pdf' };

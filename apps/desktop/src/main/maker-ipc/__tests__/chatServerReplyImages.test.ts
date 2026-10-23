@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
-const f = vi.hoisted(() => ({ stat: vi.fn(), canRead: vi.fn(), resolve: vi.fn(), materialize: vi.fn(), db: {} }));
-vi.mock('node:fs/promises', () => ({ default: { stat: f.stat } }));
+const f = vi.hoisted(() => ({ realpath: vi.fn(), stat: vi.fn(), canRead: vi.fn(), resolve: vi.fn(), materialize: vi.fn(), db: {} }));
+vi.mock('node:fs/promises', () => ({ default: { stat: f.stat, realpath: f.realpath } }));
 vi.mock('../../cindy-media/taskImageDelivery.js', () => ({ materializeTaskImageTextResult: f.materialize }));
 vi.mock('../../cindy-media/ledger.js', () => ({ sessionCanRead: f.canRead }));
 vi.mock('../../cindy-media/blobStore.js', async original => ({ ...await original<typeof import('../../cindy-media/blobStore.js')>(), resolveSafe: f.resolve }));
@@ -12,7 +12,7 @@ const url = `cindy-media://blobs/${'a'.repeat(64)}.png`;
 // Markdown collection from settlement. Actual task importer has its own tests.
 describe('generated reply image attachments', () => {
   beforeEach(() => {
-    vi.resetAllMocks(); f.canRead.mockResolvedValue(true);
+    vi.resetAllMocks(); f.realpath.mockImplementation(async (source: string) => source); f.canRead.mockResolvedValue(true);
     f.resolve.mockReturnValue({ absPath: path.resolve('fixture', 'image.png'), mimeType: 'image/png' });
     f.stat.mockResolvedValue({ isFile: () => true, size: 3 });
     f.materialize.mockImplementation(async (_session, text) => ({ text, replacements: new Map(), failures: [] }));

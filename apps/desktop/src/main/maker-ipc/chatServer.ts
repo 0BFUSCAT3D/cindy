@@ -19,6 +19,7 @@ import { request as httpsRequest } from 'node:https';
 import { migrateLocalGroups, type ChatContentBlock } from './chatServerMigration.js';
 import { chatErrorDiagnostic, chatGroupFailure, missingGroupCode } from './chatServerErrors.js';
 import { createChatMedia } from './chatServerMedia.js';
+import { mergeChatReplyAttachments } from './chatServerReplyAttachments.js';
 import { prepareChatReplyImages } from './chatServerReplyImages.js';
 import { chatServerWorkspaces } from './chatServerWorkspaces.js';
 import { buildPlanStepBrief } from './botGroupDivision.js';
@@ -1513,14 +1514,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
                 }, !terminal.resultText.trim() ? terminal.resultMessageClientId : undefined);
                 pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(pending.fileReply.text, run.sessionId, assertCurrent) };
                 contentText = pending.reply.text;
-                produced.push(...[...pending.reply.attachments, ...pending.fileReply.attachments]
-                  .sort((a, b) => {
-                    const position = (a.sourceOffset ?? Infinity) - (b.sourceOffset ?? Infinity);
-                    // An outer file link starts before its nested preview image;
-                    // removing its delimiters can project both to the same offset.
-                    return position || (a.sourceOffset !== undefined && b.sourceOffset !== undefined
-                      ? Number(a.category === 'image') - Number(b.category === 'image') : 0);
-                  }));
+                produced.push(...mergeChatReplyAttachments(pending.reply.attachments, pending.fileReply.attachments));
                 if (produced.length > BOT_GROUP_ATTACHMENTS_MAX) throw new Error('ATTACHMENT_UNAVAILABLE');
               }
               const validateUpload = async () => {

@@ -99,6 +99,10 @@ function localPath(url: string, workDir: string): string {
       const match = /^sandbox:\/*(?:([a-z]:[\\/][^\n]*)|(\/[^\n]*))$/i.exec(url);
       if (!match) throw unavailable();
       value = match[1] ?? match[2]!;
+      if (/%(?:2f|5c)/i.test(value)) throw unavailable();
+      const decoded = safeDecodeHrefForLookup(value);
+      if (decoded === null) throw unavailable();
+      value = decoded;
     } else if (/^xdt-file:/i.test(url)) {
       const parsed = new URL(url);
       // A remote reference must never be interpreted as a path on this machine.
@@ -210,15 +214,25 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
     const source = localPath(link.url, scope.workingDir!);
     // /tmp can alias /private/tmp; normalize the trusted workdir prefix without following the file.
     const lexicalRoot = path.resolve(scope.workingDir!);
-    if (!isPathWithin(lexicalRoot, source) && !isPathWithin(root, source)) throw unavailable();
-    const canonicalSource = isPathWithin(root, source) ? source : path.resolve(root, path.relative(lexicalRoot, source));
+    let canonicalSource: string;
+    if (!isPathWithin(lexicalRoot, source) && !isPathWithin(root, source)) {
+      // Case aliases depend on the actual volume. Only an existing canonical
+      // target within this task can override the lexical precheck.
+      if (!isPathWithin(lexicalRoot.toLowerCase(), source.toLowerCase())
+        && !isPathWithin(root.toLowerCase(), source.toLowerCase())) throw unavailable();
+      canonicalSource = await fs.realpath(source).catch(() => { throw unavailable(); });
+      assertCurrent();
+      if (!isPathWithin(root, canonicalSource)) throw unavailable();
+    } else canonicalSource = isPathWithin(root, source) ? source : path.resolve(root, path.relative(lexicalRoot, source));
     // Use the actual volume's inode identity (including case-insensitive APFS),
     // not a platform-wide casing assumption. Never follow the named symlink;
     // full realpath/descriptor containment is still enforced before reading.
     let identity = canonicalSource;
+    let singleFile = false;
     try {
       const stat = await fs.lstat(canonicalSource, { bigint: true });
       if (stat.isFile() && stat.ino !== 0n) identity = `${stat.dev}:${stat.ino}`;
+      singleFile = stat.isFile() && stat.nlink === 1n;
     } catch (error) {
       // Preserve deferred missing-file failure and the shared count limit.
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -227,8 +241,12 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
     if (seen.has(identity)) continue;
     if (attachments.length >= BOT_GROUP_ATTACHMENTS_MAX) throw unavailable();
     seen.add(identity);
+    // Metadata only: bytes still require the live authority and descriptor checks below.
+    const realSource = singleFile ? await fs.realpath(canonicalSource).catch(() => undefined) : undefined;
+    assertCurrent();
     let digest: string | undefined;
     attachments.push({ id: canonicalSource, sourceOffset: link.outputStart, name: path.basename(source), category: 'file',
+      sourcePaths: realSource && isPathWithin(root, realSource) ? [realSource] : [],
       mimeType: path.extname(source).toLowerCase() === '.pdf' ? 'application/pdf' : 'application/octet-stream',
       size: 0, path: null, url: null, assertCurrent,
       readBytes: async () => {

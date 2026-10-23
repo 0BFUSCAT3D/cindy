@@ -1,5 +1,6 @@
 import { createHookMediaStore } from '../hookOutbox';
 import { prepareChatReplyFiles } from '../../maker-ipc/chatServerReplyFiles';
+import { mergeChatReplyAttachments } from '../../maker-ipc/chatServerReplyAttachments';
 import { prepareChatReplyImages } from '../../maker-ipc/chatServerReplyImages';
 import { createHookRequestLedger, HOOK_TERMINAL_DELIVERY_TTL_MS } from '../../hook-control/requestLedger';
 import type { TurnEndPayload } from '@cindy/slack-hook-protocol';
@@ -126,6 +127,49 @@ describe('task image delivery', () => {
     const images = await prepareChatReplyImages(files.text, 's', () => {});
     expect(images.attachments).toEqual([]);
     expect(images.text).not.toContain(pdf);
+  });
+
+  it.each(['image-first', 'file-first'])('uploads eleven real images once through both reply passes, in source order (%s)', async order => {
+    const pdf = path.join(work, 'report.pdf');
+    await fs.writeFile(pdf, '%PDF-1.4');
+    const targets = Array.from({ length: 11 }, (_, i) => path.join(work, `chart-${i}.png`));
+    for (const [i, target] of targets.entries()) await fs.writeFile(target, Buffer.concat([PNG, Buffer.from([i])]));
+    const image = (i: number) => `![preview](<${targets[i]}>)`;
+    const file = (i: number) => `[download](<${targets[i]}>)`;
+    // The first alias must retain its position relative to a distinct PDF.
+    const body = `${order === 'image-first' ? image(0) : file(0)} [report](<${pdf}>) ${order === 'image-first' ? file(0) : image(0)} `
+      + targets.slice(1).map((_, index) => `${image(index + 1)} ${file(index + 1)}`).join(' ');
+    const files = await prepareChatReplyFiles(body, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {});
+    const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
+    expect(attachments).toHaveLength(12);
+    expect(attachments.map(a => a.category)).toEqual(['image', 'file', ...Array(10).fill('image')]);
+    expect(attachments[0]!.sourcePaths).toContain(await fs.realpath(targets[0]!));
+    expect(images.text).not.toContain(work);
+    expect((await attachments[1]!.readBytes!()).toString()).toBe('%PDF-1.4');
+  });
+
+  it('reconciles different local paths imported as the same image at the first file occurrence', async () => {
+    const first = path.join(work, 'first.png'), second = path.join(work, 'second.png');
+    await fs.writeFile(first, PNG);
+    await fs.writeFile(second, PNG);
+    const files = await prepareChatReplyFiles(`[download](<${second}>) ![a](<${first}>) ![b](<${second}>)`, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {});
+    const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({ category: 'image', sourceOffset: 0 });
+    expect(attachments[0]!.sourcePaths).toEqual(expect.arrayContaining([await fs.realpath(first), await fs.realpath(second)]));
+  });
+
+  it('retains file read safeguards when a rendered image also has a hard-linked download target', async () => {
+    const source = path.join(work, 'linked.png');
+    await fs.writeFile(source, PNG);
+    await fs.link(source, path.join(state.root, 'outside.png'));
+    const files = await prepareChatReplyFiles(`![preview](<${source}>) [download](<${source}>)`, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {});
+    const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
+    expect(attachments.map(a => a.category)).toEqual(['image', 'file']);
+    await expect(attachments[1]!.readBytes!()).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
   });
 
   it.each(['before', 'during'].flatMap((order) =>
