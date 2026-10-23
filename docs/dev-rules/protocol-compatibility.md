@@ -3294,3 +3294,15 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 可用；新终端也能从资源列表进入设置，不依赖新推送。插件市场与已安装插件使用现有
 Remote Resources 的列表、权限确认、隐藏输入和跨集合导航，不另加安装 IPC 或
 服务器协议版本。市场安装动作携带确切 Release ID，旧列表不能默许安装新 Release。
+
+终端配置凭证时，`credentials` 表单只发布已安装版本绑定与字段名称，普通资源 invoke
+不接收凭证值。TUI/CLI 改用本机专用 `terminal:plugin-secret`（不进远控 allowlist）；
+控制端通过签名输入桥 v3 和原 `/secrets` executor 提交到目标保险库。终端宿主新增
+`settings:form` 资源动作，为没有 HTML 页面的声明式表单签发相同的 owner/controller/
+installed revision 页面租约；请求只含 `expectedInstalledApproval`，不含秘密。真正的
+写入与关闭仍使用已存在的加密 `settings` 命令，未改信任模型或服务端。
+
+GUI/Mobile 的现有 `settings:open`、页面资源、授权和广播沿共享的 `MobilePluginPages`
+实现。旧宿主不支持新增表单动作时明确拒绝，不能降级把秘密送入通用 invoke；旧端已有
+插件设置行为保持不变。新终端表单与 HTML 设置共用原端点，插件更新、撤权、切账号与
+关闭页面后均不能继续写旧表单。声明式表单不是允许任意 IPC 或任意网络请求的通道。

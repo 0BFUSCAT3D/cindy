@@ -23,10 +23,7 @@ import { installedGhostStoragePart } from './shared/pluginIdentity.js';
 import { resolvePreferredSystemLocale } from './shared/locale.js';
 import { mobilePluginUsage } from './mobilePluginUsage.js';
 import { mobilePluginConfiguration } from './mobilePluginConfiguration.js';
-interface GhostConfirmShowParams {
-  ghostId: string; ghostName: string; iconDataUrl?: string; body: string;
-  confirmText: string | null; cancelText: string | null; danger: boolean; mobilePageId?: string;
-}
+import type { GhostConfirmShowParams } from './shared/ghostConfirmation.js';
 import {
   RemoteResourceRegistryError,
   type RemoteResourceProvider,

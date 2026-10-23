@@ -80,20 +80,22 @@ describe('terminal private host', () => {
   // owner stores. No sign-in/network fake is needed to exercise this teardown.
   it('revokes every owner service when one plugin cleanup fails during account change',async()=>{
     const root=path.join(directory,'owner-cleanup'),service=new TerminalService(root);
-    const listeners=()=>((process as unknown as {_getActiveHandles():Array<{address?:()=>unknown}>})._getActiveHandles()).flatMap(handle=>{const address=handle.address?.();return typeof address==='string'&&address.includes('cindy-ih-')?[address]:[];});
-    const before=new Set(listeners());
     await service.start();
     const internals=service as unknown as {
       auth:{options:{beforeAccountChange():Promise<void>}};
       pluginMarket:{close():Promise<void>};knowledge:{snapshot():unknown};
+      protectedInput:TerminalProtectedInput;
     };
     const close=internals.pluginMarket.close.bind(internals.pluginMarket);
     internals.pluginMarket.close=async()=>{await close();throw new Error('Synthetic plugin cleanup failure');};
     try{
-      expect(listeners().some(socket=>!before.has(socket))).toBe(true);
+      const input=internals.protectedInput,socket=input.askpass.socketPath;
+      expect(()=>input.envFor('fixture-task')).not.toThrow();
+      if(input.askpass.supported){expect(socket).not.toBeNull();expect((await fs.stat(socket!)).isSocket()).toBe(true);}
       await expect(internals.auth.options.beforeAccountChange()).rejects.toThrow();
       expect(()=>internals.knowledge.snapshot()).toThrow('KNOWLEDGE_CLOSED');
-      expect(listeners().filter(socket=>!before.has(socket))).toEqual([]);
+      expect(()=>input.envFor('fixture-task')).toThrow('INPUT_HANDOFF_CLOSED');
+      if(socket)await expect(fs.stat(socket)).rejects.toMatchObject({code:'ENOENT'});
     }finally{internals.pluginMarket.close=close;await service.close();}
   },process.platform==='win32'?30_000:5_000);
 

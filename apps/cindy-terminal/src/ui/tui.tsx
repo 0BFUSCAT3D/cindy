@@ -466,7 +466,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         : task && reviewRequest && pending[0] && pending[0].kind!=='input_handoff' && pending[0].kind!=='plugin_setup' ? <InteractionView key={pending[0].requestId} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)} resolve={decision=>void action(async()=>{ await call('maker:resolve-interaction',[pending[0].requestId,decision]); setReviewRequest(false); await load(); })} />
         : task ? <>
           <Text bold>{label(taskInfo.title,t.newTask)}</Text>
-          <Text dimColor>{label(taskInfo.model)} · {label(taskInfo.agentKind)} · {running ? t.working : t.ready}{pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}</Text>
+          <Text dimColor>{label(taskInfo.model)} · {({cc:'Claude Code','claude-code':'Claude Code',codex:'Codex',pi:'Pi'} as Record<string,string>)[label(taskInfo.agentKind)]??label(taskInfo.agentKind)} · {running ? t.working : t.ready}{pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}</Text>
           <Box flexGrow={1} flexDirection="column" overflow="hidden">{chatLines.slice(Math.max(0,chatLines.length-chatPageSize-scroll), Math.max(0,chatLines.length-scroll)).map((line,index)=><Text key={index}>{terminalText(line)||' '}</Text>)}</Box>
           <Text dimColor>{'─'.repeat(Math.max(1,columns-2))}</Text>
           {attachments.length>0&&<Text dimColor>{attachments.map(file=>file.name).join(' · ')}</Text>}

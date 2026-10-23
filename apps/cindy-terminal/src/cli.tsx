@@ -24,6 +24,7 @@ import { SettingsStore } from './settings.js';
 import { resourceCollections,runResourceCommand } from './resource-commands.js';
 import { resolveLocale, getMessages } from './ui/i18n.js';
 import type { TerminalClient } from './contracts.js';
+import { TerminalBrowserRuntime } from './plugins/browser.js';
 
 let json = false;
 let locale = resolveLocale();
@@ -139,9 +140,21 @@ async function main() {
   if(timeoutMs!==undefined&&(!Number.isFinite(timeoutMs)||timeoutMs<=0))throw new Error('INVALID_TIMEOUT');
   if(str('device')&&['service','status','auth','vault','login','logs'].includes(command))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
   if(values.help||command==='help'){
-    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch|refresh\n  cindy auth begin|cancel|memberships|authorization\n  cindy auth email|organization|select|membership|binding-code <id>\n  cindy auth realm accept|cancel\n  cindy auth request-code|captcha-start email|phone <identifier>\n  cindy auth verify|binding-verify|sso-verify --stdin\n  cindy auth captcha-complete <challengeId> --stdin\n  cindy auth authorize sso|social <provider>\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy files download <url> --device <id> --output <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy plugin-market|libraries\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy requests list|show|approve|deny|resolve|answer|fill\n  cindy requests answer <taskId> <requestId> --stdin\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|activate|boot|uninstall|logs\n  cindy logs [--follow]\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
+    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch|refresh\n  cindy auth begin|cancel|memberships|authorization\n  cindy auth email|organization|select|membership|binding-code <id>\n  cindy auth realm accept|cancel\n  cindy auth request-code|captcha-start email|phone <identifier>\n  cindy auth verify|binding-verify|sso-verify --stdin\n  cindy auth captcha-complete <challengeId> --stdin\n  cindy auth authorize sso|social <provider>\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy files download <url> --device <id> --output <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy plugin-market|libraries\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy requests list|show|approve|deny|resolve|answer|fill\n  cindy requests answer <taskId> <requestId> --stdin\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|activate|boot|uninstall|logs\n  cindy logs [--follow]\n  cindy browser status|install|check|sandbox-profile\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
   }
   if(values.version||command==='version'){print(VERSION);return;}
+  if(command==='browser'){
+    if(str('device'))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
+    const runtime=new TerminalBrowserRuntime({root:path.join(directory,'browser-runtime')});
+    try{
+      if(subcommand==='sandbox-profile'){print(await runtime.sandboxProfile());return;}
+      if(subcommand==='install')await runtime.resolve();
+      else if(subcommand&&subcommand!=='check'&&subcommand!=='status')throw new Error('UNKNOWN_COMMAND');
+      if(!subcommand||subcommand==='status'){print({executable:await runtime.installed()});return;}
+      const result=await runtime.check();print(result);if(!result.ok)process.exitCode=1;
+    }finally{await runtime.close();}
+    return;
+  }
   if(command==='profiles'){
     if(str('device'))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
     if(!subcommand||subcommand==='list'){print(await listTerminalProfiles());return;}
@@ -428,9 +441,10 @@ async function main() {
     if(command==='requests'){
       if(subcommand==='list')print(await call('maker:get-pending-interactions',[required(rest[0],'TASK_ID_REQUIRED')]));
       else if(['approve','deny','show','answer','fill'].includes(subcommand)){
-        const pending=unwrap(await call('maker:get-pending-interactions',[required(rest[0],'TASK_ID_REQUIRED')]));
+        const taskId=required(rest[0],'TASK_ID_REQUIRED'),requestId=required(rest[1],'REQUEST_ID_REQUIRED');
+        const pending=unwrap(await call('maker:get-pending-interactions',[taskId]));
         if(!Array.isArray(pending))throw new Error('INVALID_RESPONSE');
-        const request=pending.map(p=>p.request??p).find(p=>p.requestId===required(rest[1],'REQUEST_ID_REQUIRED'));
+        const request=pending.map(p=>p.request??p).find(p=>p.requestId===requestId);
         if(!request)throw new Error('REQUEST_ALREADY_RESOLVED');
         if(subcommand==='show')print(request);
         else if(subcommand==='fill'){

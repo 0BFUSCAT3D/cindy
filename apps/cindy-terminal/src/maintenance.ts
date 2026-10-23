@@ -14,6 +14,7 @@ import { EngineManager } from './engines/manager.js';
 import { extractEngineArchive } from './engines/archive.js';
 import { runNative } from './engines/native.js';
 import { terminalSettingsSchema } from './settings.js';
+import { TerminalBrowserRuntime } from './plugins/browser.js';
 
 const derive = promisify(scrypt);
 const MAGIC = Buffer.from('CINDY-BACKUP-1\n');
@@ -57,6 +58,12 @@ export async function doctor(profileDir: string): Promise<DoctorCheck[]> {
     const envelope = raw ? JSON.parse(raw.toString()) : null;
     checks.push({ id: 'vault', status: envelope?.version === 1 ? 'ok' : 'warning', code: envelope?.version === 1 ? envelope.mode === 'machine' ? 'VAULT_MACHINE_BOUND' : 'VAULT_PASSPHRASE' : 'VAULT_NOT_INITIALIZED' });
   } catch { checks.push({ id: 'vault', status: 'error', code: 'VAULT_UNREADABLE' }); }
+  const browser=new TerminalBrowserRuntime({root:path.join(profileDir,'browser-runtime')});
+  try{
+    const result=await browser.check();
+    checks.push({id:'browser',status:result.ok?'ok':result.code==='BROWSER_NOT_INSTALLED'?'warning':'error',code:result.code,...('executable' in result?{detail:result.executable}:{})});
+  }catch{checks.push({id:'browser',status:'error',code:'BROWSER_RUNTIME_UNAVAILABLE'});}
+  finally{await browser.close();}
   return checks;
 }
 
@@ -261,7 +268,7 @@ export async function restoreProfile(profileDir: string, backup: string, passphr
 }
 
 export function shellCompletion(shell: 'bash' | 'zsh' | 'fish' | 'powershell'): string {
-  const commands = 'login auth vault engines models providers devices chat attach tasks resources requests config service status doctor backup restore completion update storage profile terminal ssh files serve';
+  const commands = 'login auth vault engines models providers devices chat attach tasks resources requests config service status browser doctor backup restore completion update storage profile terminal ssh files serve';
   if (shell === 'powershell') return `Register-ArgumentCompleter -Native -CommandName cindy -ScriptBlock {\n  param($wordToComplete, $commandAst, $cursorPosition)\n  '${commands} --profile --state-dir --lang --json --help'.Split(' ') | Where-Object { $_.StartsWith($wordToComplete, [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }\n}\n`;
   if (shell === 'fish') return `complete -c cindy -f -a '${commands}'\ncomplete -c cindy -l profile -r\ncomplete -c cindy -l state-dir -r\ncomplete -c cindy -l lang -xa 'en zh-CN zh-TW ja ko'\n`;
   if (shell === 'zsh') return `#compdef cindy\n_arguments '1:command:(${commands})' '--profile[Profile name]:profile:' '--state-dir[Profile directory]:directory:_files -/' '--lang[Language]:locale:(en zh-CN zh-TW ja ko)' '*:argument:_files'\n`;
