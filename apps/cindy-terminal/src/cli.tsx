@@ -21,7 +21,7 @@ import { runShell } from './shell-client.js';
 import { REMOTE_TERMINAL_CHANNEL } from '@cindy/terminal-core';
 import { doctor,backupProfile,restoreProfile,verifyProfileBackup,recoverProfileRestore,shellCompletion,installTerminalPackage,checkTerminalUpdate,terminalInstallationStatus,rollbackTerminalPackage,profileStorage,listTerminalProfiles } from './maintenance.js';
 import { SettingsStore } from './settings.js';
-import { resourceCollections,runResourceCommand } from './resource-commands.js';
+import { resourceCollections,runResourceCommand,invokeResourceAction } from './resource-commands.js';
 import { resolveLocale, getMessages } from './ui/i18n.js';
 import type { TerminalClient } from './contracts.js';
 import { TerminalBrowserRuntime } from './plugins/browser.js';
@@ -523,7 +523,7 @@ async function main() {
       }else if(subcommand==='action'){
         let input:unknown={};if(values.stdin){try{input=JSON.parse(await stdin());}catch{throw new Error('INVALID_JSON_INPUT');}}
         const resourceRef=rest[1]?{collectionId:required(collectionId),kind:rest[1],id:required(rest[2])}:undefined;
-        print(await call('maker:remote-resources:invoke',[{client:descriptor,collectionId:required(collectionId),actionId:required(str('action')),input,...(resourceRef?{resourceRef}:{})}]));
+        print(await invokeResourceAction(client,{client:descriptor,collectionId:required(collectionId),actionId:required(str('action')),input,...(resourceRef?{resourceRef}:{})},device));
       }else throw new Error('UNKNOWN_COMMAND');
       return;
     }

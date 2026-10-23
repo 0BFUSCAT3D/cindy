@@ -173,7 +173,7 @@ export class TerminalTaskHost {
     };
   }
   resolveManaged(url: string, sessionId?: string) { return this.media.resolveManaged(url, sessionId); }
-  registerCapabilityResources(registry:import('@cindy/device-link').RemoteResourceRegistry) { registerCapabilityResources(registry,this.capabilities); }
+  registerCapabilityResources(registry:import('@cindy/device-link').RemoteResourceRegistry,configuration:import('../configuration.js').TerminalConfiguration) { registerCapabilityResources(registry,this.capabilities,configuration); }
   /** Reuse media adoption for independently persisted companion transcripts.
    * The caller supplies its own profileDir to normalizeTaskInput, owns acceptance
    * callbacks, and does not create a regular task in this host. */

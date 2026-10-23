@@ -12,6 +12,8 @@ import os from 'node:os';
 import net from 'node:net';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { buildLegacyAttachmentOssRef, RemoteResourceRegistry } from '@cindy/device-link';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -22,14 +24,32 @@ import { TerminalMediaTransfer } from './media-transfer.js';
 import { TerminalSecretStore } from './secrets.js';
 import { TerminalTransportServer, connectTerminal } from './transport.js';
 import { TerminalService } from './service.js';
-import { socketPath, privateDirectory } from './platform.js';
+import { socketPath, privateDirectory, windowsSystemCommand, windowsPowerShellEnv } from './platform.js';
 import { TerminalProtectedInput } from './protected-input.js';
+import { TerminalConfiguration } from './configuration.js';
+import { TerminalCapabilities } from './tasks/capabilities.js';
+import { registerCapabilityResources } from './tasks/capability-resources.js';
 import { inputHandoffPresentation, type InputHandoffSnapshot } from '@cindy/device-link';
 
 describe('terminal private host', () => {
   let directory: string;
   beforeAll(async () => { directory = await fs.mkdtemp(path.join(os.tmpdir(),'cindy-terminal-host-')); });
   afterAll(async () => { await fs.rm(directory,{recursive:true,force:true}); });
+
+  // Native Windows integration: interpreter reuse must not cache permissions.
+  // Reintroducing a broad explicit ACE is the minimum regression input; it must
+  // disappear on the next privateDirectory call, even for the same directory.
+  it.runIf(process.platform==='win32')('replaces modified Windows directory permissions on every write',async()=>{
+    const root=path.join(directory,'权限 directory');await privateDirectory(root);
+    const execute=promisify(execFile);
+    const shell=async(script:string)=>(await execute(windowsSystemCommand('powershell'),['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,env:{...windowsPowerShellEnv(),CINDY_ACL_TEST:root}})).stdout.trim();
+    await shell("$ErrorActionPreference='Stop'; $acl=[IO.Directory]::GetAccessControl($env:CINDY_ACL_TEST); $sid=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'); $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')); [IO.Directory]::SetAccessControl($env:CINDY_ACL_TEST,$acl)");
+    await privateDirectory(root);
+    const result=JSON.parse(await shell("$ErrorActionPreference='Stop'; $acl=[IO.Directory]::GetAccessControl($env:CINDY_ACL_TEST); $owner=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; @{protected=$acl.AreAccessRulesProtected; owner=$owner; rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object { @{sid=$_.IdentityReference.Value; inherited=$_.IsInherited; type=$_.AccessControlType.ToString()} })} | ConvertTo-Json -Compress"));
+    expect(result.protected).toBe(true);
+    expect(result.rules.map((rule:{sid:string})=>rule.sid).sort()).toEqual([result.owner,'S-1-5-18'].sort());
+    expect(result.rules.every((rule:{inherited:boolean;type:string})=>!rule.inherited&&rule.type==='Allow')).toBe(true);
+  });
 
   // Linux ARM64 native restart accepted IPC while listen() was still releasing
   // its lock, before initialize() had assigned tasks. Hold that exact boundary;
@@ -247,6 +267,51 @@ it('delivers protected input through the signed exchange without recording its v
     active=false;
     await expect(controller.submitRemote('host-device',inputHandoffPresentation(snapshot),submission)).rejects.toThrow('OWNER_CHANGED');
   } finally {active=true;await controller.close();await host.close();await fs.rm(root,{recursive:true,force:true});}
+});
+
+// Integration: MCP create/edit used to forward tokens and headers over generic
+// resource invoke. Existing protected-input coverage had no configuration
+// persistence or stale-form boundary. One secret-bearing form is the regression.
+it('saves MCP configuration through a controller-bound encrypted lease and rejects stale forms', async () => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'cindy-protected-configuration-'));
+  const secrets=new Map<string,string>(),wire:unknown[]=[],events:unknown[]=[];
+  const vault={get:async(key:string)=>secrets.get(key)??null,set:async(key:string,value:string)=>{secrets.set(key,value);},delete:async(key:string)=>{secrets.delete(key);}};
+  let active=true,changeBeforeHandshake=false,wrongPeer=false;
+  const guard=()=>{if(!active)throw new Error('OWNER_CHANGED');};
+  const capabilities=new TerminalCapabilities({root,secrets:vault,assertCurrent:guard,changed(){},workingDirs:async()=>[root]});
+  const configuration=new TerminalConfiguration(capabilities),registry=new RemoteResourceRegistry();
+  registerCapabilityResources(registry,capabilities,configuration);
+  const make=(deviceId:string):TerminalProtectedInput=>new TerminalProtectedInput({root:path.join(root,deviceId),secrets:vault,
+    scope:()=>({realm:'global',membershipId:'owner',deviceId}),assertCurrent:guard,remoteEnabled:()=>true,taskExists:async()=>true,
+    emit:(channel,payload)=>events.push({channel,payload}),
+    invoke:async(_device,channel,args)=>{
+      wire.push({channel,args});
+      if(channel==='maker:remote-resources:invoke'){
+        const result=await registry.invoke({controllerDeviceId:deviceId,assertCurrent:guard},args[0] as Parameters<typeof registry.invoke>[1]);
+        if(changeBeforeHandshake)await capabilities.invoke('maker:mcp:custom:refresh',[],{source:'local'});
+        return {ok:true,result};
+      }
+      return {ok:true,result:await host.request(wrongPeer?'different-controller':deviceId,args[0])};
+    },
+  });
+  const host=make('host'),controller=make('controller');host.configureSettings(configuration);
+  const input={id:'test-mcp',name:'Fixture',transport:'http',url:'https://example.test/mcp',scope:'user',token:'synthetic-mcp-token',headers:JSON.stringify({'X-Test':'synthetic-header-value'})};
+  try{
+    await capabilities.ready;
+    await expect(registry.invoke({controllerDeviceId:'controller'},{client:{protocolVersion:1,primitives:['text']},collectionId:'mcp',actionId:'create',input})).rejects.toThrow('PROTECTED_INPUT_REQUIRED');
+    await controller.saveRemoteConfiguration('host',{collectionId:'mcp',actionId:'create'},input);
+    expect(JSON.parse(secrets.get('terminal:mcp:test-mcp')!)).toEqual({token:input.token,headers:{'X-Test':'synthetic-header-value'}});
+    const publicState=await fs.readFile(path.join(root,'capabilities.json'),'utf8');
+    expect(publicState).toContain('test-mcp');
+    for(const value of [input.token,'synthetic-header-value'])expect(JSON.stringify({wire,events,publicState})).not.toContain(value);
+    changeBeforeHandshake=true;
+    await expect(controller.saveRemoteConfiguration('host',{collectionId:'mcp',actionId:'edit',resourceId:'test-mcp'},{...input,token:'replacement'})).rejects.toThrow();
+    changeBeforeHandshake=false;wrongPeer=true;
+    await expect(controller.saveRemoteConfiguration('host',{collectionId:'mcp',actionId:'edit',resourceId:'test-mcp'},{...input,token:'replacement'})).rejects.toThrow();
+    wrongPeer=false;active=false;
+    await expect(controller.saveRemoteConfiguration('host',{collectionId:'mcp',actionId:'edit',resourceId:'test-mcp'},input)).rejects.toThrow('OWNER_CHANGED');
+    expect(JSON.parse(secrets.get('terminal:mcp:test-mcp')!).token).toBe(input.token);
+  }finally{active=true;await controller.close();await host.close();await capabilities.close();await fs.rm(root,{recursive:true,force:true});}
 });
 
 

@@ -9,7 +9,7 @@ import type { TerminalClient } from '../contracts.js';
 import { getMessages, type Locale } from './i18n.js';
 import { Input, terminalText } from './input.js';
 import { useInputState } from './state.js';
-import { submitPluginSecret } from '../plugins/secret-form.js';
+import { invokeResourceAction } from '../resource-commands.js';
 
 /** Portable resource controller; business actions remain on the selected host. */
 export function Resources({ client, device, locale, initialCollection, initialRef, onTask }: { client: TerminalClient; device?: string; locale: Locale;initialCollection?:string;initialRef?:RemoteResourceRef; onTask(id: string,device?:string): void }) {
@@ -55,9 +55,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
   }
   async function submit(chosen:RemoteActionDescriptor,inputValues:Record<string,unknown>){
     if(!collection)return;
-    const result=resource?.ref.collectionId==='plugins'&&chosen.id==='credentials'
-      ?await submitPluginSecret(client,resource.ref.id,inputValues,device)
-      :await call<RemoteActionInvokeResponse>('invoke',{collectionId:resource?.ref.collectionId??collection.id,actionId:chosen.id,...(resource?{resourceRef:resource.ref}:{}),input:inputValues});
+    const result=await invokeResourceAction(client,{client:descriptor,collectionId:resource?.ref.collectionId??collection.id,actionId:chosen.id,...(resource?{resourceRef:resource.ref}:{}),input:inputValues},device);
     setAction(undefined);setInput('');setValues({});
     const target=result.result as {sessionId?:unknown;deviceId?:unknown}|undefined;
     if(target&&typeof target.sessionId==='string'&&typeof target.deviceId==='string'){onTask(target.sessionId,target.deviceId);return;}

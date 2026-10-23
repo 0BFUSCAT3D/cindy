@@ -11,6 +11,7 @@ import { DirDepositVault, SaveDepositVault } from '@cindy/plugin-runtime/store/d
 import { fetchSingleHopWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';
 import { TerminalCompanionRoutines } from './remote/companions/routines.js';
 import { TerminalProtectedInput } from './protected-input.js';
+import { TerminalConfiguration, configurationOperation } from './configuration.js';
 import { INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, PLUGIN_OAUTH_CHANNEL } from '@cindy/device-link';
 import { TerminalCompanionCloud } from './remote/companions/cloud.js';
 import { TerminalCompanionHost } from './remote/companions/host.js';
@@ -94,6 +95,7 @@ export class TerminalService {
   private projects?: TerminalProjects;
   private tasks!: TerminalTaskHost;
   private protectedInput?: TerminalProtectedInput;
+  private configuration?: TerminalConfiguration;
   private scheduler!: TerminalSchedulerHost;
   private agents!: TerminalRemoteAgentService;
   private account!: TerminalRemoteAccountService;
@@ -368,7 +370,9 @@ export class TerminalService {
     this.tasks.configureKnowledge(this.knowledge);
     this.resources=new TerminalResources(this.tasks);
     registerKnowledgeResources(this.resources.registry,this.knowledge);
-    this.tasks.registerCapabilityResources(this.resources.registry);
+    this.configuration=new TerminalConfiguration(this.tasks.capabilities);
+    this.protectedInput.configureSettings(this.configuration);
+    this.tasks.registerCapabilityResources(this.resources.registry,this.configuration);
     const guardPlugin=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
     this.pluginAccount=new TerminalPluginAccount({endpoints,membership:()=>this.auth.snapshot().session?.membership??null,token:()=>this.auth.getAccessToken(),refresh:()=>this.auth.refresh(),assertCurrent:guardPlugin,onOrganization:organization=>this.plugins?.identity.rememberOrganization(organization)});
     const pluginAbort=new AbortController();
@@ -457,6 +461,15 @@ export class TerminalService {
     const local=context.source==='local';
     if(this.closing)throw new Error('SERVICE_STOPPING');
     context.assertCurrent?.();
+    if(channel==='terminal:configuration'){
+      if(!local)throw new Error('LOCAL_ONLY_COMMAND');
+      const operation=configurationOperation(args[0]),value=args[0] as Record<string,unknown>;
+      if(value.deviceId!==undefined){
+        if(typeof value.deviceId!=='string'||!value.deviceId)throw new Error('INVALID_DEVICE');
+        await this.protectedInput!.saveRemoteConfiguration(value.deviceId,operation,value.input);
+      }else await this.configuration!.save(operation,value.input,context);
+      return {saved:true};
+    }
     if(channel==='terminal:plugin-secret'){
       if(!local)throw new Error('LOCAL_ONLY_COMMAND');
       const input=parsePluginSecretForm(args[0]);

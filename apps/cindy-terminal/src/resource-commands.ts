@@ -1,7 +1,17 @@
 import type { RemoteActionDescriptor, RemoteCollectionDescriptor, RemoteCollectionItem, RemoteResource } from '@cindy/device-link';
+import { parseRemoteActionInvokeRequest } from '@cindy/device-link';
 import type { TerminalClient } from './contracts.js';
 import type { Locale } from './ui/i18n.js';
 import { submitPluginSecret } from './plugins/secret-form.js';
+import { submitConfiguration } from './configuration.js';
+
+/** All terminal entry points share the protected handling of sensitive forms. */
+export async function invokeResourceAction(client:TerminalClient,raw:Omit<import('@cindy/device-link').RemoteActionInvokeRequest,'input'>&{input?:unknown},device?:string):Promise<import('@cindy/device-link').RemoteActionInvokeResponse>{
+  const request=parseRemoteActionInvokeRequest(raw);if(!request)throw new Error('INVALID_RESOURCE_ACTION');
+  if(request.collectionId==='plugins'&&request.resourceRef&&request.actionId==='credentials')return submitPluginSecret(client,request.resourceRef.id,request.input,device);
+  if(request.collectionId==='mcp'&&(request.actionId==='create'||request.actionId==='edit'))return submitConfiguration(client,{collectionId:'mcp',actionId:request.actionId,...(request.resourceRef?{resourceId:request.resourceRef.id}:{})},request.input,device);
+  return client.invoke('maker:remote-resources:invoke',[request],device);
+}
 
 export const resourceCollections:Record<string,string>={
   teammates:'teammates',routines:'routines',schedules:'schedules',projects:'projects',plugins:'plugins','plugin-market':'plugin-market',libraries:'plugin-libraries',skills:'skills',
@@ -40,6 +50,5 @@ export async function runResourceCommand(client:TerminalClient,options:{collecti
   const forms=resource?.blocks?.filter(block=>block.primitive==='form').map(block=>block.data).filter((data):data is Record<string,unknown>=>!!data&&typeof data==='object'&&!Array.isArray(data));
   const defaults=forms?.find(data=>data.actionId===action.id)?.values;
   const input=defaults&&typeof defaults==='object'&&!Array.isArray(defaults)&&(!options.input||typeof options.input==='object'&&!Array.isArray(options.input))?{...defaults,...options.input as object}:options.input??{};
-  if(collection.id==='plugins'&&resource&&action.id==='credentials')return submitPluginSecret(client,resource.ref.id,input,options.device);
-  return call('invoke',{collectionId:collection.id,actionId:action.id,...(resource?{resourceRef:resource.ref}:{}),input});
+  return invokeResourceAction(client,{client:descriptor,collectionId:collection.id,actionId:action.id,...(resource?{resourceRef:resource.ref}:{}),input},options.device);
 }

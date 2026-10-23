@@ -2,10 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs, openSync, writeFileSync, fsyncSync, closeSync, renameSync, rmSync } from 'node:fs';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
+import { restrictWindowsDirectory } from './windows-acl.js';
 export const VERSION = '0.1.0';
 
 /** Git Bash ships a different whoami.exe. OS management must not depend on
@@ -58,22 +55,7 @@ export async function privateDirectory(directory: string): Promise<void> {
     await fs.chmod(directory, 0o700);
     return;
   }
-  // Construct a new DACL: removing inheritance alone leaves old explicit grants.
-  // The path is data, never interpolated into PowerShell source.
-  const script = [
-    '$ErrorActionPreference = "Stop"',
-    '$owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
-    '$acl = [System.Security.AccessControl.DirectorySecurity]::new()',
-    '$acl.SetAccessRuleProtection($true, $false)',
-    '$acl.SetOwner($owner)',
-    'foreach ($sid in @($owner, [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18"))) { $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"); $acl.AddAccessRule($rule) }',
-    // Windows PowerShell 5 provides the .NET Framework ACL API directly. Avoid
-    // module auto-loading under a fresh service HOME, which can stall Set-Acl.
-    '[System.IO.Directory]::SetAccessControl($env:CINDY_PRIVATE_DIRECTORY, $acl)',
-  ].join('; ');
-  await execFileAsync(windowsSystemCommand('powershell'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-    windowsHide: true, timeout: 15_000, env: { ...windowsPowerShellEnv(), CINDY_PRIVATE_DIRECTORY: directory },
-  });
+  await restrictWindowsDirectory(path.resolve(directory), windowsSystemCommand('powershell'), windowsPowerShellEnv());
 }
 
 export async function readPrivateFile(file: string): Promise<Buffer | null> {

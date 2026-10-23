@@ -301,6 +301,24 @@ it('saves remote plugin credentials through the local protected controller witho
   expect(screen.all()).not.toContain('synthetic-protected-key');
 });
 
+// Unit: MCP credentials must leave Ink only through the local protected
+// controller. The plugin form above does not exercise collection-level create.
+it('submits MCP token fields through protected configuration without echo',async()=>{
+  const host=fakeClient(),calls:Array<{channel:string;args:unknown[];device?:string}>=[];
+  host.handle(channel=>{
+    if(channel==='maker:remote-resources:manifest')return {collections:[{id:'mcp',resourceKind:'mcp-server',title:'MCP',actions:[{id:'create',label:'Create',fields:[{id:'token',label:'Token',kind:'secret'}]}]}]};
+    if(channel==='maker:remote-resources:list')return {items:[]};
+    if(channel==='terminal:configuration')return {saved:true};
+  });
+  const client:TerminalClient={...host.client,invoke:(async(channel,args=[],device)=>{calls.push({channel,args,device});return host.client.invoke(channel,args);}) as TerminalClient['invoke']};
+  const screen=await mount(client,{node:<Resources client={client} device="target-device" locale="en" initialCollection="mcp" onTask={()=>{}}/>});
+  await screen.press('\r');await screen.press('synthetic-mcp-token');await screen.press('\r');
+  expect(calls.find(call=>call.channel==='terminal:configuration')).toEqual({channel:'terminal:configuration',args:[{collectionId:'mcp',actionId:'create',input:{token:'synthetic-mcp-token'},deviceId:'target-device'}],device:undefined});
+  expect(JSON.stringify(calls.filter(call=>call.device))).not.toContain('synthetic-mcp-token');
+  expect(calls.some(call=>call.channel==='maker:remote-resources:invoke')).toBe(false);
+  expect(screen.all()).not.toContain('synthetic-mcp-token');
+});
+
 // Unit: real Ink typing must use the dedicated setup submission, never a
 // generic permission answer or unmasked frame. Replaces the absent TUI route.
 it('submits a market installation confirmation to the destination plugin collection',async()=>{

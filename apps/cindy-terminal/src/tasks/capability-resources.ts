@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { RemoteResourceRegistry, RemoteCollectionItem, RemoteActionDescriptor, RemoteLocalizedText } from '@cindy/device-link';
 import type { TerminalCapabilities } from './capabilities.js';
+import type { TerminalConfiguration } from '../configuration.js';
 
 const labels={
   skills:['Skills','Skills','Skills','スキル','스킬'],mcp:['MCP servers','MCP 服务器','MCP 伺服器','MCP サーバー','MCP 서버'],
@@ -22,7 +23,7 @@ const form=(edit=false):RemoteActionDescriptor=>({id:edit?'edit':'create',label:
   {id:'transport',kind:'select',label:label('transport'),required:true,options:[{value:'http',label:'HTTP'},{value:'sse',label:'SSE'}]},
   {id:'url',kind:'text',label:label('url'),required:true},{id:'scope',kind:'select',label:label('scope'),required:true,options:[{value:'user',label:label('user')},{value:'project',label:label('project')}]},{id:'workingDir',kind:'text',label:label('directory')},{id:'token',kind:'secret',label:label('token')},{id:'headers',kind:'secret',label:label('headers')},
 ]});
-export function registerCapabilityResources(registry:RemoteResourceRegistry,capabilities:TerminalCapabilities){
+export function registerCapabilityResources(registry:RemoteResourceRegistry,capabilities:TerminalCapabilities,configuration:TerminalConfiguration){
   const invoke=(channel:string,args:unknown[],assertCurrent?:()=>void)=>capabilities.invoke(channel,args,{source:'local',assertCurrent});
   const mcpItems=async():Promise<RemoteCollectionItem[]>=>{
     const {servers}=await invoke('maker:mcp:custom:list',[]) as {servers:Array<{id:string;name:string;url:string;transport:string;scope:string;workingDir?:string;enabled:boolean}>};
@@ -32,10 +33,9 @@ export function registerCapabilityResources(registry:RemoteResourceRegistry,capa
     list:async()=>({collectionId:'mcp',revision:String(capabilities.revision()),items:await mcpItems()}),
     get:async(_context,request)=>{const row=(await mcpItems()).find(row=>row.ref.id===request.ref.id);if(!row)throw new Error('MCP_NOT_FOUND');return row;},
     invoke:async(context,request)=>{
+      if(request.actionId==='configuration:open')return {effects:[],result:configuration.open({...object(request.input),collectionId:'mcp',...(request.resourceRef?{resourceId:request.resourceRef.id}:{})},{source:'remote',deviceId:context.controllerDeviceId,assertCurrent:context.assertCurrent})};
       if(['create','edit'].includes(request.actionId)){
-        const input=object(request.input);const config={id:request.resourceRef?.id??input.id,name:input.name,transport:input.transport,url:input.url,scope:input.scope,workingDir:input.workingDir,...(input.headers?{headers:object(JSON.parse(String(input.headers)))}:{})};
-        if(!input.headers&&request.actionId==='create')Object.assign(config,{headers:{}});
-        await invoke(`maker:mcp:custom:${request.actionId==='edit'?'update':'create'}`,[config,...(input.token?[input.token]:[])],context.assertCurrent);
+        throw new Error('PROTECTED_INPUT_REQUIRED');
       }else if(request.resourceRef&&request.actionId==='remove')await invoke('maker:mcp:custom:delete',[request.resourceRef.id],context.assertCurrent);
       else if(request.resourceRef&&['enable','disable'].includes(request.actionId))await invoke('terminal:mcp:set-enabled',[request.resourceRef.id,request.actionId==='enable'],context.assertCurrent);
       else throw new Error('INVALID_ACTION');

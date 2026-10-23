@@ -85,6 +85,20 @@ export class TerminalCapabilities {
     if(channel==='terminal:skills:list')return this.listSkills();
     if(context.source!=='local')throw new Error('LOCAL_ONLY_COMMAND');
     if(channel==='maker:mcp:custom:create'||channel==='maker:mcp:custom:update'){
+      const input=object(args[0]);
+      return this.saveMcp(channel,[input,...args.slice(1)],context);
+    }
+    return this.invokeOther(channel,args,context);
+  }
+  /** Only the local controller or an authenticated configuration lease calls this. */
+  async configureMcp(action:'create'|'edit',raw:Record<string,unknown>,context:InvocationContext){
+    const {token,headers,...input}=raw;
+    if(headers!==undefined&&headers!=='')input.headers=typeof headers==='string'?object(JSON.parse(headers)):object(headers);
+    else if(action==='create')input.headers={};
+    return this.saveMcp(`maker:mcp:custom:${action==='edit'?'update':'create'}`,[input,...(token!==undefined&&token!==''?[token]:[])],context);
+  }
+  private async saveMcp(channel:string,args:unknown[],context:InvocationContext){
+      this.guard();if(context.sharedTask)throw new Error('OWNER_REQUIRED');context.assertCurrent?.();
       const input=object(args[0]);const validation=validateCustomMcpConfig(input,RESERVED);if(!validation.ok)throw new Error('INVALID_MCP_CONFIG');
       const config=input as unknown as CustomMcpConfig;const endpoint=new URL(config.url);if(endpoint.username||endpoint.password||endpoint.hash)throw new Error('INVALID_MCP_URL');
       const project=input.scope==='project'?await realpath(text(input.workingDir)):undefined;if(project&&!(await stat(project)).isDirectory())throw new Error('INVALID_WORKING_DIRECTORY');
@@ -95,7 +109,8 @@ export class TerminalCapabilities {
         if(input.scope!==undefined){if(!['user','project'].includes(String(input.scope)))throw new Error('INVALID_MCP_SCOPE');if(project)next.mcpScopes[config.id]=project;else delete next.mcpScopes[config.id];}
         const safe={id:config.id,name:config.name.trim(),transport:config.transport,url:endpoint.href,headers:{}};if(exists>=0)next.mcp[exists]=safe;else next.mcp.push(safe);
       },context);return {ok:true};
-    }
+  }
+  private async invokeOther(channel:string,args:unknown[],context:InvocationContext){
     if(channel==='maker:mcp:custom:delete'){const id=text(args[0]);await this.change(async (next,undo)=>{next.mcp=next.mcp.filter(item=>item.id!==id);delete next.mcpScopes[id];const previous=await this.options.secrets.get(this.key(id));undo.push(async()=>{if(previous!==null)await this.options.secrets.set(this.key(id),previous);});await this.options.secrets.delete(this.key(id));},context);return {ok:true};}
     if(channel==='maker:mcp:custom:refresh'){this.generation++;this.options.changed();return {ok:true};}
     if(channel==='terminal:mcp:set-enabled'){const id=text(args[0]);if(typeof args[1]!=='boolean')throw new Error('INVALID_ARGUMENT');await this.change(async next=>{if(!next.mcp.some(item=>item.id===id))throw new Error('MCP_NOT_FOUND');next.disabledMcp=args[1]?next.disabledMcp.filter(value=>value!==id):[...new Set([...next.disabledMcp,id])];},context);return {ok:true};}

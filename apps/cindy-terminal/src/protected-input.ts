@@ -17,6 +17,7 @@ import { PLUGIN_SETTINGS_ACTION, oauthId } from '@cindy/device-link';
 import { INPUT_HANDOFF_GHOST_ID, INPUT_HANDOFF_ACTION_ID, PLUGIN_OAUTH_CHANNEL, parseInputHandoffPresentation, parseInputHandoffSubmission, type InputHandoffPresentation, type InputHandoffSubmission, type InvokeResultPayload } from '@cindy/device-link';
 import type { TerminalSecrets } from './contracts.js';
 import { privateDirectory } from './platform.js';
+import { CONFIGURATION_ID, type TerminalConfiguration, configurationOperation } from './configuration.js';
 
 export interface ProtectedInputOptions {
   root: string;
@@ -44,6 +45,7 @@ export class TerminalProtectedInput {
   private closed = false;
   private readonly unsubscribeClosed:()=>void;
   private plugins?:Pick<OauthTransactionDeps,'bind'|'run'|'settingsRequest'>;
+  private configuration?:TerminalConfiguration;
 
   constructor(private readonly options: ProtectedInputOptions) {
     this.handoff = new InputHandoffService({
@@ -60,9 +62,9 @@ export class TerminalProtectedInput {
     const deps = {
       owner: () => this.closed ? null : options.scope() ? oauthIdentityScopeKey(options.scope()!) : `local:${options.root}`,
       available: (peer: string) => !this.closed && (peer==='terminal-local' || options.remoteEnabled() && Boolean(options.scope())),
-      bind: async (action: Parameters<typeof binding.find>[0]) => (await this.plugins?.bind(action)) ?? binding.find(action)?.binding ?? null,
+      bind: async (action: Parameters<typeof binding.find>[0]) => this.configuration?.bind(action) ?? (await this.plugins?.bind(action)) ?? binding.find(action)?.binding ?? null,
       run: async (action: Parameters<typeof binding.find>[0]) => await this.plugins?.bind(action) ? this.plugins!.run(action) : binding.run(action),
-      settingsRequest: (peer:string,request:import('@cindy/device-link').PluginSettingsRequest) => this.plugins?.settingsRequest?.(peer,request) ?? Promise.reject(new Error('PLUGIN_PAGE_UNAVAILABLE')),
+      settingsRequest: (peer:string,request:import('@cindy/device-link').PluginSettingsRequest) => this.configuration?.owns(request.id)?this.configuration.request(peer,request):this.plugins?.settingsRequest?.(peer,request) ?? Promise.reject(new Error('PLUGIN_PAGE_UNAVAILABLE')),
     };
     this.transactions = new OauthTransactions(deps);
     this.unsubscribeClosed=onOauthCardClosed(id=>this.transactions.cancelRequest(id));
@@ -84,6 +86,7 @@ export class TerminalProtectedInput {
   }
   private guard() { if (this.closed) throw new Error('INPUT_HANDOFF_CLOSED'); this.options.assertCurrent(); }
   configurePlugins(plugins:Pick<OauthTransactionDeps,'bind'|'run'|'settingsRequest'>){this.guard();this.plugins=plugins;}
+  configureSettings(configuration:TerminalConfiguration){this.guard();this.configuration=configuration;}
   async prepare() { this.guard(); await this.askpass.prepare(); this.guard(); }
   request(peer: string, raw: unknown) { this.guard(); return this.authenticated.request(peer, raw); }
   envFor(id: string) { this.guard(); return this.askpass.envFor(id); }
@@ -162,6 +165,34 @@ export class TerminalProtectedInput {
     }finally{await invoke({op:'settings',id,command:{kind:'close'}}).catch(()=>{});}
   }
 
+  async saveRemoteConfiguration(device:string,rawOperation:unknown,input:unknown){
+    this.guard();const operation=configurationOperation(rawOperation),scope=this.options.scope();if(!scope)throw new Error('AUTH_REQUIRED');
+    const owner=JSON.stringify(scope);
+    const assertCurrent=()=>{this.guard();if(JSON.stringify(this.options.scope())!==owner)throw new Error('OWNER_CHANGED');};
+    // Validate the size locally before opening a lease. Nothing from input goes
+    // into the capability request, diagnostics, or task history.
+    const body=JSON.stringify(input);
+    if(typeof body!=='string'||Buffer.byteLength(body)>65_536)throw new Error('INVALID_CONFIGURATION');
+    const target=await resolveOauthPeerIdentity({scope:this.options.scope,invoke:this.options.invoke},device,assertCurrent);
+    const opened=await this.options.invoke(device,'maker:remote-resources:invoke',[{
+      client:{protocolVersion:1,primitives:['text','actions']},collectionId:operation.collectionId,actionId:'configuration:open',
+      ...(operation.resourceId?{resourceRef:{collectionId:operation.collectionId,kind:'mcp-server',id:operation.resourceId}}:{}),
+      input:{actionId:operation.actionId},
+    }]);
+    assertCurrent();
+    const result=opened.ok?(opened.result as {result?:{id?:unknown;configurationId?:unknown}}|undefined)?.result:undefined;
+    if(!result||!oauthId(result.id)||result.configurationId!==CONFIGURATION_ID)throw new Error('PROTECTED_CONFIGURATION_UNAVAILABLE');
+    const id=result.id,store=await this.identityStore();
+    const invoke=await authenticateOauthController({target,peer:scope.deviceId,ghostId:CONFIGURATION_ID,action:{requestId:id,actionId:PLUGIN_SETTINGS_ACTION,expectedRevision:0},assertCurrent,
+      trustIdentity:(identity,check)=>store.trustPeer(scope,identity.deviceId,identity.publicKey,check),
+      invoke:async request=>{const response=await this.options.invoke(device,PLUGIN_OAUTH_CHANNEL,[request]);if(!response.ok)throw new Error('OAUTH_BRIDGE_UNAVAILABLE');return response.result;},
+    });
+    try{
+      const saved=await invoke({op:'settings',id,command:{kind:'fetch',path:'/configuration',method:'PUT',body}}) as {status?:number};
+      assertCurrent();if(saved?.status!==204)throw new Error('CONFIGURATION_SAVE_FAILED');
+    }finally{await invoke({op:'settings',id,command:{kind:'close'}}).catch(()=>{});}
+  }
+
   private identityStore(): Promise<OauthIdentityStore> {
     if (this.store) return Promise.resolve(this.store);
     this.preparing ??= (async () => {
@@ -182,7 +213,7 @@ export class TerminalProtectedInput {
   }
   async close() {
     this.unsubscribeClosed();
-    this.handoff.cleanupAll(); this.closed = true;this.plugins=undefined;
+    this.handoff.cleanupAll(); this.closed = true;this.plugins=undefined;this.configuration?.close();this.configuration=undefined;
     this.authenticated.invalidate(); this.transactions.cancelPeer();
     await this.askpass.close(); await this.preparing?.catch(() => {}); await this.identityFlight?.catch(() => {});
     this.key?.fill(0); this.identity = undefined; this.identityFlight=undefined; this.store = undefined;
