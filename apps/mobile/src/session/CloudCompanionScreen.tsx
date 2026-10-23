@@ -292,9 +292,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   timeline: { flexGrow: 1, justifyContent: 'flex-end', gap: spacing.lg, paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   olderSlot: { alignItems: 'center' },
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
-  userColumn: { maxWidth: '86%', alignItems: 'flex-end', gap: spacing.xs },
-  // The 1:1 user bubble: 86% wide, padding 12.
-  userBubble: { backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
+  // Full row width, so the bubble's 86% cap resolves against a definite width instead of its own content.
+  userColumn: { flex: 1, minWidth: 0, alignItems: 'flex-end', gap: spacing.xs },
+  // The 1:1 user bubble: up to 86% wide, padding 12.
+  userBubble: { maxWidth: '86%', backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.container, padding: spacing.md },
   replyRow: { flexDirection: 'row', alignItems: 'flex-start', gap: REPLY_AVATAR_GAP },
   replyRowContinued: { marginTop: -spacing.sm },

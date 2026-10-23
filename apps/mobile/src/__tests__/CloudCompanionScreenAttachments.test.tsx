@@ -10,7 +10,7 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock('react-native', async () => {
   const { createElement: el } = await import('react');
-  const view = ({ children, testID }: any) => el('div', { 'data-testid': testID }, children);
+  const view = ({ children, testID, style }: any) => el('div', { 'data-testid': testID, 'data-style': JSON.stringify(style ?? null) }, children);
   return { View: view, ScrollView: view, ActivityIndicator: view, StyleSheet: { create: (s: any) => s, hairlineWidth: 1 } };
 });
 vi.mock('expo-router', () => ({ Stack: { Screen: () => null }, useRouter: () => ({}) }));
@@ -91,4 +91,17 @@ it('shows the owner\'s and the companion\'s attachments under their messages, in
   expect(container.querySelectorAll('[data-testid="cloudCompanion.message.companion"]')).toHaveLength(3);
   // Captions are the attachments' names, not text repeated beside them; an attachment-only message has no empty bubble.
   expect([...container.querySelectorAll('p')].map(node => node.textContent)).toEqual(['please summarise', 'done', 'plain']);
+});
+
+// Tier: behavior. The owner's bubble sat in a content-sized column capped at 86%; the bubble itself had no cap,
+// so long text was laid out wider than the cap and clipped. The cap must live on the bubble, inside a full-width column.
+it('caps the owner\'s bubble at 86% of a full-width column so long text wraps', async () => {
+  h.room.messages = [message(2, id(9), [{ type: 'text', text: 'a long message '.repeat(20) }])];
+  await render();
+  const column = container.querySelector('[data-testid="cloudCompanion.message.user"] > div') as HTMLElement;
+  const bubble = column.firstElementChild as HTMLElement;
+  const style = (node: HTMLElement) => [JSON.parse(node.dataset.style!)].flat(2).reduce((all, part) => ({ ...all, ...(part || {}) }), {} as Record<string, unknown>);
+  expect(style(bubble).maxWidth).toBe('86%');
+  expect(style(column).maxWidth).toBeUndefined();
+  expect(style(column).alignItems).toBe('flex-end');
 });
