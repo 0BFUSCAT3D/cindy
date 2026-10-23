@@ -87,6 +87,11 @@ try {
   for (const kind of engineKinds) {
     const state = await run(['engines', 'install', kind], { timeout: 10 * 60_000 });
     assert.equal(state.source, 'managed'); assert.ok(state.version); record(`official ${kind} download + native --version`, 'PASS', state.version);
+    if(kind==='pi'){
+      const updated=await run(['engines','update',kind],{timeout:10*60_000});
+      assert.equal(updated.source,'managed');assert.ok(updated.version);
+      record('current official Pi update + native --version','PASS',updated.version);
+    }
   }
 
   // Native PTY integration also captures an actual TUI frame; no mock streams.

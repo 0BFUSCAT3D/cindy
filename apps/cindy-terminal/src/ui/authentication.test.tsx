@@ -437,3 +437,20 @@ it('submits an OAuth callback to the selected host without echoing it in the TUI
   expect(screen.latest()).toContain('Connected');
   expect(screen.all()).not.toContain('synthetic-private-callback');
 });
+
+// Handoff: replacing Ink with the native foreground terminal must retain the
+// protected lease, otherwise the CLI is killed by the component cleanup.
+it('hands the selected remote native login to the terminal without cancelling its lease', async () => {
+  const host = fakeClient(), calls: unknown[] = [], handoff = vi.fn();
+  host.handle((channel, args) => {
+    expect(channel).toBe('terminal:provider-login'); calls.push(args[0]);
+    return { id: 'native-remote-lease', state: { status: 'pending', terminal: true, expiresAt: Date.now() + 60_000 } };
+  });
+  function Flow() {
+    const [visible, setVisible] = React.useState(true);
+    return visible ? <ChannelRegistration client={host.client} device="selected-server" providerId="anthropic" locale="en" onDone={()=>{}} onTerminal={id=>{handoff(id);setVisible(false);}}/> : null;
+  }
+  await mount(host.client, { node: <Flow/> });
+  expect(handoff).toHaveBeenCalledExactlyOnceWith('native-remote-lease');
+  expect(calls).toEqual([{ command: 'begin', providerId: 'anthropic', deviceId: 'selected-server' }]);
+});

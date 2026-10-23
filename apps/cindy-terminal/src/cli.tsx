@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runProviderTerminal } from './provider-terminal.js';
 import { readModelConfiguration, saveModelProvider, invokeModelConfiguration } from './models/client.js';
 import { inputHandoffPresentation, INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, type InputHandoffSnapshot } from '@cindy/device-link';
 import { parseArgs } from 'node:util';
@@ -12,6 +13,7 @@ import { once } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 import { setDefaultModel, waitForTurn, unwrap, enqueueMessage, connectedModels } from './client-operations.js';
 import { EngineManager, runNativeLogin, nativeLoginStatus, type EngineKind } from './engines/index.js';
+import { listEngines, operateEngine } from './engines/client.js';
 import { profilePath, privateDirectory, VERSION } from './platform.js';
 import { connectTerminal, reconnectingClient } from './transport.js';
 import { TerminalService } from './service.js';
@@ -238,7 +240,9 @@ async function main() {
     }finally{process.off('SIGINT',stop);process.off('SIGTERM',stop);}
     return;
   }
-  if(command==='engines'||command==='providers'&&['login','logout','status'].includes(subcommand)&&(!str('provider')||Boolean(str('engine'))||rest.length>0)){
+  const nativeProviderAlias: Record<string,string> = { codex: 'openai', 'claude-code': 'anthropic' };
+  const providerLoginId = str('provider') ?? (command==='providers' ? nativeProviderAlias[str('engine')??rest[0]??''] : undefined);
+  if(command==='engines'&&!str('device')||command==='providers'&&['login','logout','status'].includes(subcommand)&&(!str('device')||!providerLoginId)&&(!str('provider')||Boolean(str('engine'))||rest.length>0)){
     if(str('device'))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
     const manager=new EngineManager({profileDir:directory});
     if(command==='engines'&&(!subcommand||subcommand==='list')){print(await manager.allStatus());return;}
@@ -246,7 +250,12 @@ async function main() {
     if(!['claude-code','codex','pi'].includes(kind))throw new Error('INVALID_ENGINE');
     if(command==='engines'){
       if(!['install','update','repair'].includes(subcommand))throw new Error('UNKNOWN_COMMAND');
-      print(subcommand==='update'?await manager.update(kind):subcommand==='repair'?await manager.repair(kind):await manager.install(kind));return;
+      const result=subcommand==='update'?await manager.update(kind):subcommand==='repair'?await manager.repair(kind):await manager.install(kind);
+      let running:TerminalClient|undefined;
+      try { running=await connectTerminal(directory);await running.invoke('terminal:engines:refresh'); }
+      catch(error){if(!(error instanceof Error)||error.message!=='SERVICE_NOT_RUNNING')throw error;}
+      finally { running?.close(); }
+      print(result);return;
     }
     const resolved=await manager.resolve(kind);if(!resolved)throw new Error('ENGINE_NOT_INSTALLED');
     if(kind==='claude-code') {
@@ -279,7 +288,7 @@ async function main() {
     if(json||values['no-input'])throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
     process.exitCode=await runNativeLogin(kind,resolved.binary,subcommand as 'login'|'logout',{onInstruction:instruction=>print(instruction==='pi-login'?'/login':'/logout')});return;
   }
-  if(command&&!resourceCollections[command]&&!['status','service','auth','vault','config','devices','models','providers','tasks','requests','resources','files','ssh','terminal','chat','attach','login'].includes(command))throw new Error('UNKNOWN_COMMAND');
+  if(command&&!resourceCollections[command]&&!['status','service','auth','vault','config','devices','models','providers','engines','tasks','requests','resources','files','ssh','terminal','chat','attach','login'].includes(command))throw new Error('UNKNOWN_COMMAND');
   const passive=command==='status'||command==='service'&&['status','stop','restart','uninstall'].includes(subcommand);
   let client:TerminalClient;
   try { client=passive?await connectTerminal(directory):await startBackground(directory); }
@@ -404,12 +413,24 @@ async function main() {
       }
       else throw new Error('UNKNOWN_COMMAND');return;
     }
-    if(command==='providers'&&str('provider')&&!str('engine')&&!rest.length&&['login','logout','status'].includes(subcommand)){
-      const id=str('provider')!;
+    if(command==='engines'){
+      if(!subcommand||subcommand==='list')print(await listEngines(client,locale,device));
+      else {
+        const kind=required(str('engine')??rest[0],'ENGINE_REQUIRED') as EngineKind;
+        if(!['claude-code','codex','pi'].includes(kind))throw new Error('INVALID_ENGINE');
+        if(subcommand!=='install'&&subcommand!=='update'&&subcommand!=='repair')throw new Error('UNKNOWN_COMMAND');
+        print(await operateEngine(client,kind,subcommand,locale,device));
+      }
+      return;
+    }
+    if(command==='providers'&&providerLoginId&&['login','logout','status'].includes(subcommand)){
+      const id=providerLoginId;
       if(subcommand==='logout'){print(await invokeModelConfiguration(client,'disconnect',{providerId:id},device));return;}
       if(subcommand==='status'){const raw=unwrap(await call('maker:provider:list'));const providers=(Array.isArray(raw)?raw:object(raw).providers??[]) as Array<Record<string,unknown>>;const provider=providers.find(p=>p.id===id);if(!provider)throw new Error('PROVIDER_NOT_FOUND');print({providerId:id,connected:provider.connected===true});return;}
       if(json||values['no-input']||!process.stdin.isTTY||!process.stdout.isTTY)throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
-      await runTui(reconnectingClient(directory,client),{locale,page:'models',device,providerLogin:id});return;
+      const external=await runTui(reconnectingClient(directory,client),{locale,page:'models',device,providerLogin:id});
+      if(external?.type==='provider-terminal'){client=await startBackground(directory);process.exitCode=await runProviderTerminal(client,external.loginId);}
+      return;
     }
     if(command==='providers'&&subcommand){
       if(subcommand==='list')print(await call('maker:provider:list'));
@@ -581,10 +602,12 @@ async function main() {
       if(!interactive)throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
       client=reconnectingClient(directory,client);
       const page=command==='login'?'login':command==='models'||command==='providers'?'models':command==='devices'?'connections':command==='config'?'service':command==='resources'||command&&resourceCollections[command]?'resources':'tasks';
-      let nextPage=page;
+      let nextPage=page, nextDevice=device;
       for(;;){
-        const external=await runTui(client,{locale,page:nextPage,task:command==='attach'?required(subcommand,'TASK_ID_REQUIRED'):undefined,device,sso:values.sso===true,collection:command?str('collection')??resourceCollections[command]:undefined});
+        const external=await runTui(client,{locale,page:nextPage,task:command==='attach'?required(subcommand,'TASK_ID_REQUIRED'):undefined,device:nextDevice,sso:values.sso===true,collection:command?str('collection')??resourceCollections[command]:undefined});
         if(!external)break;
+        client=await startBackground(directory);
+        if(external.type==='provider-terminal'){await runProviderTerminal(client,external.loginId);client=reconnectingClient(directory,client);nextPage='models';nextDevice=external.device;continue;}
         if(external.type==='service-uninstall'){
           print(await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).completeUninstall());return;
         }

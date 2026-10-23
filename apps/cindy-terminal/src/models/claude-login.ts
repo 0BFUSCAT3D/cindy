@@ -100,7 +100,7 @@ export class TerminalClaudeLogin {
     this.tickets.set(id, Date.now() + 20 * 60_000);
     return { id, needsLogin: !status.loggedIn };
   }
-  async finish(id: string) {
+  async finish(id: string, assertCurrent: () => void = () => {}) {
     this.current();
     const expires = this.tickets.get(id);
     this.tickets.delete(id);
@@ -111,6 +111,7 @@ export class TerminalClaudeLogin {
     this.current();
     if (generation !== this.generation) throw new Error("PROVIDER_LOGIN_STALE");
     if (!status.loggedIn) throw new Error("NATIVE_SUBSCRIPTION_LOGIN_REQUIRED");
+    assertCurrent();
     this.options.writeBinding(
       JSON.stringify({
         owner: this.options.owner,

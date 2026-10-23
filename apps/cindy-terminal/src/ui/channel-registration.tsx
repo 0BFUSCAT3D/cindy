@@ -17,8 +17,8 @@ const labels = {
 
 /** The local controller owns the encrypted remote exchange. Neither the
  * resource invocation nor a broadcast event carries an authorization code. */
-export function ChannelRegistration({ client, device, service, providerId, locale, onDone }: {
-  client: TerminalClient; device?: string; service?: string; providerId?: string; locale: Locale; onDone(): void;
+export function ChannelRegistration({ client, device, service, providerId, locale, onDone, onTerminal }: {
+  client: TerminalClient; device?: string; service?: string; providerId?: string; locale: Locale; onDone(): void; onTerminal?(id: string): void;
 }) {
   const t = authenticationText(locale), l = labels[locale];
   const { rows } = useWindowSize();
@@ -28,13 +28,16 @@ export function ChannelRegistration({ client, device, service, providerId, local
   const [callbackError, setCallbackError] = useState(false);
   const channel = providerId ? 'terminal:provider-login' : 'terminal:channel-registration';
   const id = useRef<string | undefined>(undefined);
+  const terminal = useRef(onTerminal); terminal.current = onTerminal;
+  const transferred = useRef(false);
   const done = useRef(onDone); done.current = onDone;
   const cancel = async (requestId: string) => { await client.invoke(channel, [{ command: 'cancel', id: requestId }]).catch(() => {}); };
   useEffect(() => {
     let disposed = false, timer: NodeJS.Timeout | undefined, expiresAt: number | undefined;
-    const apply = (next: ChannelRegistrationState) => {
+    const apply = (next: ChannelRegistrationState & ProviderLoginState) => {
       if (disposed) return;
       setState(next);
+      if (next.terminal && id.current && terminal.current) { transferred.current = true; terminal.current(id.current); return; }
       expiresAt = next.expiresAt;
       if (next.status === 'pending') timer = setTimeout(() => { void read(); }, 1500);
     };
@@ -49,7 +52,7 @@ export function ChannelRegistration({ client, device, service, providerId, local
       if (disposed) { void cancel(result.id); return; }
       id.current = result.id; apply(result.state);
     }).catch(() => { if (!disposed) setState({ status: 'error' }); });
-    return () => { disposed = true; clearTimeout(timer); if (id.current) void cancel(id.current); id.current = undefined; };
+    return () => { disposed = true; clearTimeout(timer); if (id.current && !transferred.current) void cancel(id.current); id.current = undefined; };
   }, [client, device, service, providerId]);
   useInput((_input, key) => {
     if (key.eventType === 'release') return;

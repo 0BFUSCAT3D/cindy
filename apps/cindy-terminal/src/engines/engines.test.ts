@@ -10,6 +10,12 @@ import { nativeCommand, nativeLoginCommand, nativeLoginStatus } from './native.j
 import { enginePlatform } from './releases.js';
 import { extractEngineArchive } from './archive.js';
 import type { EngineRelease } from './types.js';
+import { RemoteResourceRegistry, type RemoteResource } from '@cindy/device-link';
+import { TerminalEngineResources } from './resources.js';
+import { engineResourceState, listEngines, operateEngine } from './client.js';
+import { runResourceCommand } from '../resource-commands.js';
+import type { TerminalClient } from '../contracts.js';
+import type { EngineKind, EngineStatus } from './types.js';
 
 // Behavior tier: installer publication/rollback and hostile archive boundary;
 // native auth must select vendor flows without exposing credential output.
@@ -22,6 +28,57 @@ function release(data: Buffer, version = '1.2.3'): EngineRelease {
 const posix = process.platform !== 'win32';
 
 describe('engine installation', () => {
+  it('runs advertised installation on the selected host, survives a detached view, and fences owner changes', async () => {
+    // Behavior tier: a remote engine page previously invoked controller-local IPC.
+    // Use the real resource registry/client; substitute only the installer I/O.
+    const registry = new RemoteResourceRegistry();
+    const status = (kind: EngineKind): EngineStatus => ({ kind, version: '1.2.3', binary: '/remote/engine', source: 'managed', bundledVersion: '1.2.3' });
+    let release!: (value: EngineStatus) => void, completed!: () => void;
+    let installed = new Promise<EngineStatus>(resolve => { release = resolve; });
+    let completion = new Promise<void>(resolve => { completed = resolve; });
+    const install = vi.fn((_kind: EngineKind, options?: { signal?: AbortSignal }) => {
+      options?.signal?.addEventListener('abort', () => release(status('pi')), { once: true });
+      return installed;
+    });
+    const refresh = vi.fn(async () => {});
+    let current = true;
+    const host = new TerminalEngineResources(registry, {
+      engines: { allStatus: async () => [status('pi')], status: async kind => status(kind), install, update: async kind => status(kind), repair: async kind => status(kind) },
+      assertCurrent: () => { if (!current) throw new Error('OWNER_CHANGED'); }, refresh, changed: () => completed(),
+    });
+    const context = { controllerDeviceId: 'controller' };
+    const client: TerminalClient = {
+      invoke: (async (channel: string, args: unknown[] = [], device?: string) => {
+        expect(device).toBe('selected-server');
+        const request = args[0] as never;
+        const value = channel.endsWith(':manifest') ? registry.manifest(context, request) : channel.endsWith(':list') ? await registry.list(context, request) : channel.endsWith(':get') ? await registry.get(context, request) : await registry.invoke(context, request);
+        return { ok: true, data: value };
+      }) as TerminalClient['invoke'], subscribe: () => () => {}, close() {},
+    };
+    const command = (operation: string) => runResourceCommand(client, { collection: 'engines', operation, id: 'pi', locale: 'en', device: 'selected-server' });
+    try {
+      expect((await listEngines(client, 'en', 'selected-server'))[0].binary).toBe('/remote/engine');
+      await command('install');
+      expect(install).toHaveBeenCalledTimes(1);
+      expect(engineResourceState(await command('get') as RemoteResource).job?.state).toBe('running');
+      await expect(command('install')).rejects.toThrow('RESOURCE_ACTION_DISABLED');
+      await expect(registry.invoke(context, { client: { protocolVersion: 1, primitives: ['actions'] }, collectionId: 'engines', resourceRef: { collectionId: 'engines', kind: 'engine', id: 'pi' }, actionId: 'install' })).rejects.toThrow('ENGINE_OPERATION_IN_PROGRESS');
+      // Completion is host-owned: there is no live controller or waiting invoke.
+      release(status('pi')); await completion;
+      expect(refresh).toHaveBeenCalledWith(status('pi'));
+      expect(engineResourceState(await command('get') as RemoteResource).job?.state).toBe('completed');
+      expect((await operateEngine(client, 'pi', 'update', 'en', 'selected-server')).version).toBe('1.2.3');
+      installed = new Promise<EngineStatus>(resolve => { release = resolve; });
+      completion = new Promise<void>(resolve => { completed = resolve; });
+      await command('install');
+      current = false;
+      await host.close();
+      expect(install.mock.calls[1][1]?.signal?.aborted).toBe(true);
+      expect(refresh).toHaveBeenCalledTimes(2);
+      await expect(listEngines(client, 'en', 'selected-server')).rejects.toThrow('CAPABILITY_NOT_AVAILABLE_ON_TARGET');
+    } finally { await host.close(); }
+  });
+
   it.runIf(posix)('publishes a verified binary atomically and resolves it without PATH changes', async () => {
     const root = await temporary();
     const data = Buffer.from('#!/bin/sh\nprintf "1.2.3\\n"\n');
@@ -71,12 +128,12 @@ describe('engine installation', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.runIf(posix)('unpacks Pi when its enclosing directory has the same name as the binary', async () => {
+  it.runIf(posix)('unpacks the current Pi layout with a same-name enclosing directory and no development theme schema', async () => {
     const root = await temporary();
     const source = path.join(root, 'source');
     await mkdir(path.join(source, 'pi/theme'), { recursive: true });
     await writeFile(path.join(source, 'pi/pi'), '#!/bin/sh\nprintf "1.2.3\\n"\n');
-    for (const name of ['dark', 'light', 'theme-schema']) await writeFile(path.join(source, 'pi/theme', `${name}.json`), '{}');
+    for (const name of ['dark', 'light']) await writeFile(path.join(source, 'pi/theme', `${name}.json`), '{}');
     const archive = path.join(root, 'pi.tar.gz');
     await tar.c({ cwd: source, file: archive, gzip: true }, ['pi']);
     const data = await readFile(archive);

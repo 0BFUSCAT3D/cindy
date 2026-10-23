@@ -1,3 +1,4 @@
+import { TerminalClaudeAuthorization } from './models/claude-terminal.js';
 import { TerminalGrokLogin } from './models/grok-login.js';
 import { TerminalClaudeLogin } from './models/claude-login.js';
 import { TerminalNativeAccounts } from './models/native-accounts.js';
@@ -49,6 +50,7 @@ import { SettingsStore } from './settings.js';
 import { TerminalServiceManager } from './service-manager.js';
 import { VERSION } from './platform.js';
 import { EngineManager } from './engines/manager.js';
+import { TerminalEngineResources } from './engines/resources.js';
 import { RemoteTerminalHost, REMOTE_TERMINAL_CHANNEL } from '@cindy/terminal-core';
 import type { EngineKind } from './engines/types.js';
 import { TerminalSshService } from './ssh.js';
@@ -94,6 +96,7 @@ export class TerminalService {
   private browser!: TerminalFileBrowser;
   private media!: TerminalMediaTransfer;
   private resources!: TerminalResources;
+  private engineResources?: TerminalEngineResources;
   private knowledge?: TerminalKnowledge;
   private plugins?:TerminalPlugins;
   private pluginTasks?:TerminalPluginTasks;
@@ -269,6 +272,7 @@ export class TerminalService {
   private async closeOwnerServices(logout = false): Promise<void> {
     const errors: unknown[] = [];
     const close = async (operation: () => unknown) => { try { await operation(); } catch (error) { errors.push(error); } };
+    await close(() => this.engineResources?.close());
     await close(() => this.im?.close());
     await close(() => this.gateway?.close());
     await close(() => this.providerLogin?.close());
@@ -430,6 +434,7 @@ export class TerminalService {
       changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
     });
     this.providerLogin = new TerminalProviderLogin({ models: this.tasks.models, native: nativeAccounts, grok: nativeGrok,
+      claude: new TerminalClaudeAuthorization({ auth: this.tasks.models.nativeClaude!, binary: async () => (await this.engines.resolve('claude-code'))?.binary ?? null, assertCurrent: guardIm }),
       secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
       assertCurrent: guardIm, log: logger,
       changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
@@ -455,6 +460,12 @@ export class TerminalService {
     this.protectedInput.configureSettings(this.configuration);
     this.tasks.registerCapabilityResources(this.resources.registry,this.configuration);
     registerModelConfigurationResources(this.resources.registry,this.tasks.models,this.configuration,(channel,args,context)=>this.tasks.invoke(channel,args,context));
+    const engineTasks = this.tasks;
+    this.engineResources = new TerminalEngineResources(this.resources.registry, {
+      engines: this.engines, assertCurrent: guardIm,
+      refresh: status => { guardIm(); return engineTasks.refreshBinaries({ [status.kind]: status.binary ?? undefined }); },
+      changed: () => { guardIm(); const payload = { collectionId: 'engines' }; this.transport.publish('maker:remote-resources:changed', [payload]); void this.remote.publish('maker:remote-resources:changed', payload).catch(() => {}); },
+    });
     const guardPlugin=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
     this.pluginAccount=new TerminalPluginAccount({endpoints,membership:()=>this.auth.snapshot().session?.membership??null,token:()=>this.auth.getAccessToken(),refresh:()=>this.auth.refresh(),assertCurrent:guardPlugin,onOrganization:organization=>this.plugins?.identity.rememberOrganization(organization)});
     const pluginAbort=new AbortController();
@@ -605,7 +616,7 @@ export class TerminalService {
       const auth = this.tasks.models.nativeClaude!;
       if (args[0] === 'begin') return auth.begin();
       if (args[0] === 'finish' && typeof args[1] === 'string') return auth.finish(args[1]);
-      if (args[0] === 'disconnect') return auth.disconnect();
+      if (args[0] === 'disconnect') { this.providerLogin?.cancelProvider('anthropic'); return auth.disconnect(); }
       if (args[0] === 'status') return auth.state();
       throw new Error('INVALID_ARGUMENT');
     }

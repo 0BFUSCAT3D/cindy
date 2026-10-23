@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { PtyManager, type CreateResult, type ExitInfo, type PtyManagerDeps } from './ptyManager.js';
+import { PtyManager, type CreateResult, type ExitInfo, type PtyManagerDeps, type CreateOptions } from './ptyManager.js';
 import { probeAvailableShells, type ShellId } from './shellResolver.js';
 
 export const REMOTE_TERMINAL_CHANNEL = 'terminal:remote-op';
@@ -55,7 +55,7 @@ export class RemoteTerminalHost {
     if (scope !== this.revision) { this.close(); this.revision = scope; }
     return scope;
   }
-  async invoke(raw: unknown, authority: TerminalAuthority): Promise<unknown> {
+  async invoke(raw: unknown, authority: TerminalAuthority, program?: Pick<CreateOptions<Owner>, 'program' | 'env'>): Promise<unknown> {
     authority.assertCurrent();
     const scope = this.resetIfChanged(); if (!scope) throw new Error('AUTH_REQUIRED');
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('INVALID_TERMINAL_ARGUMENT');
@@ -81,7 +81,7 @@ export class RemoteTerminalHost {
       if (this.entries.size >= 64 || [...this.entries.values()].filter(item => item.owner.controller === controller).length >= 16) throw new Error('TERMINAL_LIMIT_REACHED');
       const created: Entry = { id, owner: { scope, controller, alive: true, closed: new Set() }, cwd, createdAt: Date.now(), exit: null, sequence: 0, bytes: 0, chunks: [], writes: new Map() };
       this.entries.set(id, created);
-      try { created.metadata = this.manager.create({ id, cwd, owner: created.owner, shellPref: shellPref as ShellId, cols: dimension(request.cols, 80), rows: dimension(request.rows, 24) }); }
+      try { created.metadata = this.manager.create({ ...program, id, cwd, owner: created.owner, shellPref: shellPref as ShellId, cols: dimension(request.cols, 80), rows: dimension(request.rows, 24) }); }
       catch { this.entries.delete(id); throw new Error('TERMINAL_SPAWN_FAILED'); }
       return { id, ...created.metadata, exit: created.exit };
     }

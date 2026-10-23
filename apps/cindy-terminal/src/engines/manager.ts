@@ -107,8 +107,10 @@ export class EngineManager {
       stage = 'version';
       const reported = await runNative(binary, ['--version'], { signal, timeout: 30_000 });
       if (reported.code !== 0 || !reported.stdout.includes(release.version)) throw new EngineError('engine_version_mismatch');
+      signal?.throwIfAborted();
       stage = 'publish';
       await rename(root, path.join(home, id));
+      signal?.throwIfAborted();
       stage = 'receipt';
       await atomicPrivateWrite(path.join(home, 'current.json'), JSON.stringify({ version: release.version, directory: id, entrypoint: asset.entrypoint, sha256: asset.sha256, asset } satisfies Receipt));
       this.options.onProgress?.({ kind, stage: 'ready' });
@@ -150,7 +152,8 @@ export class EngineManager {
       root = path.join(files, entries[0]!.name);
     }
     const required = [asset.entrypoint];
-    if (kind === 'pi') required.push('theme/dark.json', 'theme/light.json', 'theme/theme-schema.json');
+    // Pi 1.4 distributes the runtime themes without the development JSON schema.
+    if (kind === 'pi') required.push('theme/dark.json', 'theme/light.json');
     if (kind === 'codex') {
       required.push('codex-package.json', `bin/codex-code-mode-host${process.platform === 'win32' ? '.exe' : ''}`, `codex-path/rg${process.platform === 'win32' ? '.exe' : ''}`);
       const manifest = JSON.parse(await readFile(path.join(root, 'codex-package.json'), 'utf8'));

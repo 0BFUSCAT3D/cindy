@@ -17,6 +17,9 @@ import * as platform from '../platform.js';
 import { TerminalClaudeLogin } from './claude-login.js';
 import { TerminalNativeAccounts } from './native-accounts.js';
 import { runNative } from '../engines/native.js';
+import { TerminalClaudeAuthorization, type ProviderTerminalFrame } from './claude-terminal.js';
+import type { IPty } from 'node-pty';
+import type { PtySpawnFn } from '@cindy/terminal-core';
 import { TerminalGrokLogin } from './grok-login.js';
 import { createChatgptProxy, createGrokProxy } from './subscription-proxy.js';
 
@@ -29,7 +32,7 @@ afterEach(async () => {
 // Integration: headless provider login must survive another computer's browser
 // callback without putting the code/token on the generic remote wire. Use the
 // actual controller cryptography, PKCE, encrypted vault and request proxy.
-async function fixture(grokFetch?: typeof fetch) {
+async function fixture(grokFetch?: typeof fetch, claudeSetup?: { run: typeof runNative; spawn: PtySpawnFn }) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-provider-login-'));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const secrets = new TerminalSecretStore(root);
@@ -107,8 +110,15 @@ async function fixture(grokFetch?: typeof fetch) {
     true,
   );
   const grok = grokFetch ? new TerminalGrokLogin({ root, models, secrets, assertCurrent: guard, changed: () => models.gatewayChanged(), fetch: grokFetch }) : undefined;
+  const claudeAuth = claudeSetup ? new TerminalClaudeLogin({ owner: 'owner', binary: async () => process.execPath,
+    readBinding: () => secrets.getSync('terminal:native:anthropic-binding'),
+    writeBinding: value => value === null ? secrets.deleteSync('terminal:native:anthropic-binding') : secrets.setSync('terminal:native:anthropic-binding', value),
+    assertCurrent: guard, changed: () => models.gatewayChanged(), run: claudeSetup.run,
+  }) : undefined;
+  if (claudeAuth) models.nativeClaude = claudeAuth;
+  const claude = claudeAuth ? new TerminalClaudeAuthorization({ auth: claudeAuth, binary: async () => process.execPath, assertCurrent: guard, spawn: claudeSetup!.spawn }) : undefined;
   const login = new TerminalProviderLogin({
-    grok,
+    grok, claude,
     models,
     secrets,
     assertCurrent: guard,
@@ -208,6 +218,7 @@ async function fixture(grokFetch?: typeof fetch) {
     root,
     secrets,
     grok,
+    claudeAuth,
     login,
     models,
     controller,
@@ -574,4 +585,56 @@ it('authorizes SuperGrok through a protected remote controller and revokes every
   await f.models.disconnect('xai', () => {});
   expect(auth.canDispatch()).toBe(false); expect(f.grok!.connected()).toBe(false);
   const denied = await request(); expect(denied.status).toBe(403); await denied.text();
+});
+
+// Integration: a remote native CLI login must use the original credential home,
+// keep every PTY byte encrypted, and fence cancellation during its final status read.
+it('runs the original Claude login on the selected host over its protected controller', async () => {
+  let output!: (data: string) => void, exit!: (value: { exitCode: number; signal?: number }) => void;
+  let loggedIn = false, killed = 0;
+  const sent: string[] = [], commands: string[][] = [];
+  let gate: ReturnType<typeof deferred> | undefined, statusEntered: ReturnType<typeof deferred> | undefined;
+  const f = await fixture(undefined, {
+    run: async (_binary, args) => {
+      expect(args).toEqual(['auth', 'status', '--json']);
+      if (loggedIn && gate) { statusEntered?.resolve(undefined); await gate.promise; }
+      return { code: 0, stdout: JSON.stringify({ loggedIn, authMethod: loggedIn ? 'claude.ai' : undefined, email: 'fixture@example.invalid' }), stderr: '' };
+    },
+    spawn: (command, args, options) => {
+      expect(command).toBe(process.execPath); expect(args).toEqual(['auth', 'login', '--claudeai']); commands.push(args);
+      expect(Object.keys(options.env ?? {}).some(key => ['CLAUDE_CONFIG_DIR','CLAUDE_CODE_OAUTH_TOKEN','ANTHROPIC_API_KEY'].includes(key.toUpperCase()))).toBe(false);
+      return { pid: 1, write: (data: string) => sent.push(data), resize() {}, kill() { killed++; }, onData(callback: typeof output) { output = callback; return { dispose() {} }; }, onExit(callback: typeof exit) { exit = callback; return { dispose() {} }; } } as unknown as IPty;
+    },
+  });
+  const begin = async () => {
+    const { id } = await f.controller.channelRegistration({ command: 'begin', providerId: 'anthropic', deviceId: 'host' }, 'providers');
+    await vi.waitFor(async () => expect((await f.controller.channelRegistration({ command: 'read', id }, 'providers')).state).toMatchObject({ status: 'pending', terminal: true }), { interval: 5 });
+    return id;
+  };
+  const submit = async (id: string, callback: Record<string, unknown>) => (await f.controller.channelRegistration({ command: 'submit', id, callback }, 'providers')).state as unknown as ProviderTerminalFrame;
+  const id = await begin();
+  output('https://claude.ai/oauth/authorize?code=native-private-code');
+  const frame = await submit(id, { op: 'read', after: 0 }); expect(frame.chunks[0].data).toContain('native-private-code');
+  await submit(id, { op: 'write', data: 'native-private-input', requestId: 'write-one' });
+  await submit(id, { op: 'write', data: 'native-private-input', requestId: 'write-one' });
+  expect(sent).toEqual(['native-private-input']);
+  loggedIn = true; exit({ exitCode: 0 });
+  expect((await submit(id, { op: 'read', after: frame.cursor })).state.status).toBe('success');
+  expect((await f.claudeAuth!.state()).authenticated).toBe(true);
+  await f.controller.channelRegistration({ command: 'cancel', id }, 'providers');
+  f.claudeAuth!.disconnect(); loggedIn = false;
+  const late = await begin(); gate = deferred(); statusEntered = deferred();
+  loggedIn = true; exit({ exitCode: 0 });
+  const finishing = submit(late, { op: 'read', after: 0 });
+  const settled = finishing.catch(() => undefined);
+  await statusEntered.promise;
+  await f.controller.channelRegistration({ command: 'cancel', id: late }, 'providers');
+  gate.resolve(undefined); await settled;
+  expect(f.secrets.getSync('terminal:native:anthropic-binding')).toBeNull();
+  loggedIn = false; gate = undefined;
+  const pending = await begin();
+  await f.controller.channelRegistration({ command: 'cancel', id: pending }, 'providers');
+  expect(killed).toBe(1); expect(commands).toHaveLength(3);
+  const publicData = JSON.stringify({ wire: f.wire, events: f.events, files: await readFile(path.join(f.root, 'secrets.enc'), 'utf8') });
+  expect(publicData).not.toContain('native-private-code'); expect(publicData).not.toContain('native-private-input');
 });

@@ -38,6 +38,13 @@ Claude credentials stay exclusively in the CLI's default credential store.
 it does not log out the CLI. A different Cindy account must explicitly connect.
 The native Pi CLI's own `/login` remains available through the engine menu.
 
+Engine installation, updates and repairs can target another terminal host with
+`cindy engines list|install|update|repair [engine] --device <id>`. The Models
+page advertises the same engine controls when the selected host supports them.
+Installations continue on that host if the controller disconnects; a failed
+installation preserves the previous executable. Switching Cindy accounts aborts
+that account's pending installation. Reopening the engine page shows its result.
+
 ## Headless plugin browser
 
 The host, login and model configuration do not need a browser on the server.

@@ -103,6 +103,8 @@ export interface CreateOptions<Owner extends object> {
   owner: Owner;
   /** 额外 env 覆盖（不强制）。会跟 process.env 浅合并。 */
   env?: Record<string, string | undefined>;
+  /** Host-only native program. Remote request fields never supply this value. */
+  program?: Pick<ResolvedShell, 'command' | 'args' | 'displayName'>;
 }
 
 export interface CreateResult {
@@ -372,7 +374,7 @@ export class PtyManager<Owner extends object> {
   private spawnSession(opts: CreateOptions<Owner>): PtySession<Owner> {
     const cols = opts.cols && opts.cols > 0 ? opts.cols : DEFAULT_COLS;
     const rows = opts.rows && opts.rows > 0 ? opts.rows : DEFAULT_ROWS;
-    const resolved = resolveShellForCreate(opts.shellPref ?? null);
+    const resolved = { ...resolveShellForCreate(opts.shellPref ?? null), ...opts.program };
 
     // 合并 env:先复制父进程环境,做平台兜底,再应用调用方显式覆盖。
     // ENV_KEYS_TO_STRIP 与 TERM 仍在下方强制执行,不允许 opts.env 改写。

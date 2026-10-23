@@ -4,6 +4,7 @@ import type { TerminalClient } from './contracts.js';
 import type { Locale } from './ui/i18n.js';
 import { submitPluginSecret } from './plugins/secret-form.js';
 import { submitConfiguration } from './configuration.js';
+import { unwrap } from './client-operations.js';
 
 /** All terminal entry points share the protected handling of sensitive forms. */
 export async function invokeResourceAction(client:TerminalClient,raw:Omit<import('@cindy/device-link').RemoteActionInvokeRequest,'input'>&{input?:unknown},device?:string):Promise<import('@cindy/device-link').RemoteActionInvokeResponse>{
@@ -15,7 +16,7 @@ export async function invokeResourceAction(client:TerminalClient,raw:Omit<import
     const input=request.input as {service?:unknown}|undefined;
     return {effects:[],result:await client.invoke('terminal:channel-registration',[{command:'begin',service:input?.service,...(device?{deviceId:device}:{})}])};
   }
-  return client.invoke('maker:remote-resources:invoke',[request],device);
+  return unwrap(await client.invoke('maker:remote-resources:invoke',[request],device)) as import('@cindy/device-link').RemoteActionInvokeResponse;
 }
 
 export const resourceCollections:Record<string,string>={
@@ -28,7 +29,7 @@ export const resourceCollections:Record<string,string>={
  * kinds and operation IDs come from the target host, including older hosts. */
 export async function runResourceCommand(client:TerminalClient,options:{collection:string;operation:string;id?:string;input?:unknown;device?:string;locale:Locale;cursor?:string;limit?:number;query?:string}){
   const descriptor={protocolVersion:1,primitives:['text','actions','session-controls'],locale:options.locale};
-  const call=<T>(name:string,args:Record<string,unknown>)=>client.invoke<T>(`maker:remote-resources:${name}`,[{client:descriptor,...args}],options.device);
+  const call=async <T>(name:string,args:Record<string,unknown>)=>unwrap(await client.invoke(`maker:remote-resources:${name}`,[{client:descriptor,...args}],options.device)) as T;
   const manifest=await call<{collections:RemoteCollectionDescriptor[]}>('manifest',{});
   const collection=manifest.collections.find(item=>item.id===options.collection);
   if(!collection)throw new Error('CAPABILITY_NOT_AVAILABLE_ON_TARGET');

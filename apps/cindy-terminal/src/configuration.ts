@@ -166,7 +166,7 @@ export class TerminalConfiguration {
         if (command.method !== 'POST' || typeof command.body !== 'string') throw new Error('INVALID_CONFIGURATION');
         try {
           const input = JSON.parse(command.body) as { callback?: unknown };
-          const body = Object.hasOwn(input, 'callback') ? login.submit(request.id, input.callback) : login.begin(request.id, lease.operation.resourceId!, () => {
+          const body = Object.hasOwn(input, 'callback') ? await login.submit(request.id, input.callback) : login.begin(request.id, lease.operation.resourceId!, () => {
             if (!this.current(lease)) throw new Error('CONFIGURATION_STALE');
           }, lease.expiresAt);
           delete input.callback;

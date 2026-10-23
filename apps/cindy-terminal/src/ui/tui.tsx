@@ -1,6 +1,7 @@
 import { providerPresetOAuth, providerPresetOAuthRuntimes, type OAuthProviderDescriptor, type ProviderPreset } from '@cindy/model-providers';
 import { ChannelRegistration } from './channel-registration.js';
 import { readModelConfiguration, saveModelProvider, invokeModelConfiguration } from '../models/client.js';
+import { listEngines, operateEngine } from '../engines/client.js';
 import { PluginSetupView } from './plugin-setup.js';
 import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
 import { ProtectedInputView } from './protected-input.js';
@@ -23,7 +24,7 @@ import { getMessages, getControlMessages, getModelMessages, getServiceMessages, 
 import { Input, terminalText } from './input.js';
 import { useInputState } from './state.js';
 
-export type TuiExternalAction={type:'native-auth';kind:'pi'|'codex'|'claude-code';operation:'login'|'logout'} | {type:'service-uninstall'} | {type:'service-activate'} | {type:'service-boot'};
+export type TuiExternalAction={type:'provider-terminal';loginId:string;device?:string} | {type:'native-auth';kind:'pi'|'codex'|'claude-code';operation:'login'|'logout'} | {type:'service-uninstall'} | {type:'service-activate'} | {type:'service-boot'};
 type Row = { id: string; title: string; detail?: string; run: () => void | Promise<void> };
 type Field = { key: string; label: string; secret?: boolean; value?: string; optional?: boolean; choices?: string[] };
 type Form = { id: number; title: string; fields: Field[]; submit: (values: Record<string, string>) => Promise<void> };
@@ -226,13 +227,13 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     const id=label(provider.id);
     const custom=array((await readModelConfiguration(client,device)).providers).find(p=>p.id===id);
     const common=[provider.suspended?modelText.enable:modelText.disable,modelText.reset];
-    const options=custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[...(['openai','xai'].includes(id)?[t.login,modelText.disconnect]:[]),t.refresh,...common];
+    const options=custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[...(['openai','xai','anthropic'].includes(id)?[t.login,modelText.disconnect]:[]),t.refresh,...common];
     edit(label(provider.name,id),[{key:'action',label:t.commands,choices:options}],async values=>{
       const selected=values.action;
       if(selected===t.login){setForm(null);setProviderLogin(id);return;}
       if(common.includes(selected)){await invokeModelConfiguration(client,'disabled',{providerId:id,kind:selected===modelText.reset?'reset':'provider',disabled:selected===modelText.disable},device);setForm(null);await load();return;}
       if(selected===t.refresh){await invokeModelConfiguration(client,'refresh',{providerId:id},device);setForm(null);await load();return;}
-      if(!custom&&['openai','xai'].includes(id)&&selected===modelText.disconnect){await invokeModelConfiguration(client,'disconnect',{providerId:id},device);setForm(null);await load();return;}
+      if(!custom&&['openai','xai','anthropic'].includes(id)&&selected===modelText.disconnect){await invokeModelConfiguration(client,'disconnect',{providerId:id},device);setForm(null);await load();return;}
       if(!custom)throw new Error('PROVIDER_NOT_FOUND');
       if(selected===modelText.disconnect||selected===modelText.remove){
         edit(selected,[{key:'confirm',label:label(custom.name,id),choices:[t.cancel,t.yes]}],async value=>{if(value.confirm===t.yes)await invokeModelConfiguration(client,selected===modelText.remove?'remove':'disconnect',{providerId:id},device);setForm(null);await load();});return;
@@ -322,16 +323,18 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         nextItems = [];
         let canConfigureModels=!at.device;
         let canConfigureUtility=!at.device;
+        let canConfigureEngines=!at.device;
         if(at.device){
           try{
             const manifest=record(await call('maker:remote-resources:manifest',[{client:{protocolVersion:1,primitives:['text','actions']}}]));
             canConfigureModels=array(manifest.collections).some(item=>item.id==='providers');
             canConfigureUtility=array(manifest.collections).some(item=>item.id==='auxiliary-models');
+            canConfigureEngines=array(manifest.collections).some(item=>item.id==='engines');
           }catch(error){if(!(error instanceof Error)||!['CHANNEL_NOT_ALLOWED','UNSUPPORTED_CHANNEL'].includes(error.message))throw error;}
         }
         if(canConfigureModels)nextItems.push({id:'add',title:`+ ${t.addProvider}`,run:addProvider},{id:'manage',title:modelText.manage,run:()=>navigate('providers')});
         if(canConfigureUtility)nextItems.push({ id: 'auxiliary', title: resolveRemoteText(auxiliaryModelsTitle, locale), run: () => { setResourceTarget({ collectionId: 'auxiliary-models', kind: 'auxiliary-models', id: 'chain' }); setPage('resources'); } });
-        if(!at.device)nextItems.push({id:'engines',title:t.engines,run:()=>navigate('engines')});
+        if(canConfigureEngines)nextItems.push({id:'engines',title:t.engines,run:()=>navigate('engines')});
         const controlsCount=nextItems.length;
         for (const provider of array(record(raw).providers ?? raw)) {
           if (!provider.connected||provider.suspended) continue;
@@ -346,15 +349,14 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         }
       } else if(at.page==='providers'){
         const raw=await call('maker:provider:list');
-        nextItems=array(record(raw).providers??raw).filter(p=>p.source==='user'||p.connected||['openai','xai'].includes(String(p.id))).map(provider=>({id:label(provider.id),title:label(provider.name,label(provider.id)),detail:provider.suspended?modelText.disable:provider.connected?t.connected:t.signedOut,run:()=>manageProvider(provider)}));
+        nextItems=array(record(raw).providers??raw).filter(p=>p.source==='user'||p.connected||['openai','xai','anthropic'].includes(String(p.id))).map(provider=>({id:label(provider.id),title:label(provider.name,label(provider.id)),detail:provider.suspended?modelText.disable:provider.connected?t.connected:t.signedOut,run:()=>manageProvider(provider)}));
       } else if(at.page==='engines'){
-        const statuses=array(await call('terminal:engines:list',[],false));
-        nextItems=statuses.map(item=>({id:label(item.kind),title:label(item.kind),detail:label(item.version,t.notInstalled),run:()=>{setEngine(label(item.kind) as typeof engine);navigate('engine');}}));
+        const statuses=await listEngines(client,locale,at.device);
+        nextItems=statuses.map(item=>({id:item.kind,title:item.kind,detail:item.job?.state==='running'?t.working:item.job?.error?t.error:label(item.version,t.notInstalled),run:()=>{setEngine(item.kind);navigate('engine');}}));
       } else if(at.page==='engine'){
-        const operation=(name:'login'|'logout')=>{if(engine==='codex'){if(name==='login')setProviderLogin('openai');else void invokeModelConfiguration(client,'disconnect',{providerId:'openai'},device).then(()=>load()).catch(error=>setError(String(error)));return;}onExternalAction({type:'native-auth',kind:engine,operation:name});exit();};
+        const operation=(name:'login'|'logout')=>{if(engine==='codex'||engine==='claude-code'){const id=engine==='codex'?'openai':'anthropic';if(name==='login')setProviderLogin(id);else void invokeModelConfiguration(client,'disconnect',{providerId:id},device).then(()=>load()).catch(error=>setError(String(error)));return;}if(at.device){navigate('providers');return;}onExternalAction({type:'native-auth',kind:engine,operation:name});exit();};
         nextItems=[
-          {id:'install',title:t.install,run:async()=>{await call('terminal:engines:install',[engine],false);await load();}},
-          {id:'update',title:t.update,run:async()=>{await call('terminal:engines:update',[engine],false);await load();}},
+          ...(['install','update','repair'] as const).map(operation=>({id:operation,title:t[operation],run:async()=>{await operateEngine(client,engine,operation,locale,at.device);await load();}})),
           {id:'login',title:t.providerLogin,run:()=>operation('login')},
           {id:'logout',title:t.signOut,run:()=>operation('logout')},
         ];
@@ -501,7 +503,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     <Text dimColor>{'─'.repeat(Math.max(1,columns-2))}</Text>
     <Box flexGrow={1} flexDirection="column" overflow="hidden">
       {page === 'login' ? <Authentication client={client} locale={locale} sso={initialSso} onDone={()=>navigate('tasks')} onNeedsVault={()=>navigate('service')} />
-        : providerLogin ? <ChannelRegistration client={client} device={device} providerId={providerLogin} locale={locale} onDone={()=>{setProviderLogin(undefined);void load();}} />
+        : providerLogin ? <ChannelRegistration client={client} device={device} providerId={providerLogin} locale={locale} onTerminal={loginId=>{onExternalAction({type:'provider-terminal',loginId,device});exit();}} onDone={()=>{setProviderLogin(undefined);void load();}} />
         : form ? <FormView key={form.id} form={form} busy={busy} error={error} cancel={() => setForm(null)} submit={values => void action(() => form.submit(values))} />
         : page === 'resources' ? <Resources client={client} device={device} locale={locale} initialCollection={initialCollection} initialRef={resourceTarget} onTask={(id,target)=>{if(target)setDevice(target);setTask(id);setPage('tasks');}} />
         : task && reviewRequest && pending[0]?.kind==='input_handoff' ? <ProtectedInputView key={`${pending[0].requestId}:${pending[0].revision}`} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)}

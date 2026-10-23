@@ -2,6 +2,7 @@ import { createGenericOAuthRuntime } from '@cindy/model-providers/provider-auth/
 import { buildUserProvider } from '@cindy/model-providers';
 import type { GenericOAuthRuntimeHost } from '@cindy/model-providers/provider-auth/generic-oauth';
 import type { TerminalDurableSecrets } from '../contracts.js';
+import type { TerminalClaudeAuthorization } from './claude-terminal.js';
 import type { TerminalGrokLogin } from './grok-login.js';
 import type { TerminalNativeAccounts } from './native-accounts.js';
 import type { TerminalModelConfig, ModelOAuthConnection } from './config.js';
@@ -12,6 +13,7 @@ export type ProviderLoginState = {
   userCode?: string;
   expiresAt?: number;
   callbackRequired?: boolean;
+  terminal?: boolean;
 };
 type Login = {
   providerId: string;
@@ -26,7 +28,7 @@ type Login = {
 export class TerminalProviderLogin implements ModelOAuthConnection {
   private closed = false;
   private readonly abort = new AbortController();
-  private readonly nativeLogins = new Map<string, TerminalNativeAccounts | TerminalGrokLogin>();
+  private readonly nativeLogins = new Map<string, TerminalNativeAccounts | TerminalGrokLogin | TerminalClaudeAuthorization>();
   private readonly logins = new Map<string, Login>();
   private readonly runtime: ReturnType<typeof createGenericOAuthRuntime>;
   constructor(
@@ -34,6 +36,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
       models: TerminalModelConfig;
       native?: TerminalNativeAccounts;
       grok?: TerminalGrokLogin;
+      claude?: TerminalClaudeAuthorization;
       secrets: Pick<
         TerminalDurableSecrets,
         'getSync' | 'setSync' | 'deleteSync'
@@ -165,7 +168,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     deadline: number,
   ): ProviderLoginState {
     current();
-    const native = providerId === 'openai' ? this.options.native : providerId === 'xai' ? this.options.grok : undefined;
+    const native = providerId === 'openai' ? this.options.native : providerId === 'xai' ? this.options.grok : providerId === 'anthropic' ? this.options.claude : undefined;
     if (native) { this.nativeLogins.set(id, native); return native.begin(id, current, deadline); }
     const provider = this.provider(providerId);
     const old = this.logins.get(id);
@@ -253,7 +256,9 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
   }
   submit(id: string, value: unknown) {
     this.read(id);
-    if (this.nativeLogins.has(id)) throw new Error('PROVIDER_LOGIN_STALE');
+    const native = this.nativeLogins.get(id);
+    if (native && 'exchange' in native) return native.exchange(id, value);
+    if (native) throw new Error('PROVIDER_LOGIN_STALE');
     const entry = this.logins.get(id)!;
     if (
       entry.state.status !== 'pending' ||
@@ -275,6 +280,11 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     }
     if (status !== 'expired') this.logins.delete(id);
   }
+  cancelProvider(providerId: string) {
+    const native = providerId === 'anthropic' ? this.options.claude : providerId === 'openai' ? this.options.native : providerId === 'xai' ? this.options.grok : undefined;
+    for (const [id, connection] of this.nativeLogins) if (connection === native) this.cancel(id);
+    for (const [id, login] of this.logins) if (login.providerId === providerId) this.cancel(id);
+  }
   async close() {
     this.closed = true;
     this.abort.abort();
@@ -283,6 +293,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     this.runtime.close();
     await this.options.native?.close();
     await this.options.grok?.close();
+    await this.options.claude?.close();
     await this.options.models.nativeClaude?.close();
     await Promise.allSettled(work);
   }

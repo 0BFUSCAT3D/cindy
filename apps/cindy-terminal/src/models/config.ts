@@ -10,6 +10,7 @@ import { validateAuthSection } from '@cindy/model-providers/provider-auth/config
 
 export interface ModelOAuthConnection {
   connected(id: string): boolean;
+  cancelProvider?(id: string): void;
   credential(id: string): Promise<string | null>;
   disconnect(id: string): void;
   removeReversibly(id: string): () => void;
@@ -157,7 +158,7 @@ export class TerminalModelConfig {
       guard();await this.persist({...this.state,disabled});
     });
   }
-  disconnect(id:string,guard:()=>void) {return this.change(async()=>{guard();if(id==='xai'&&this.nativeGrok){this.nativeGrok.disconnect();return;}if(id==='openai'&&this.nativeAccounts){this.nativeAccounts.disconnect();return;}if(!this.state.providers.some(p=>p.id===id))throw new Error('PROVIDER_NOT_FOUND');if(this.activeCatalog().providers.find(p=>p.id===id)?.auth.oauth){if(!this.oauth)throw new Error('PROVIDER_CONNECTION_UNAVAILABLE');this.oauth.disconnect(id);}for(const kind of ENGINES){guard();await this.secrets.delete(this.key(id,kind));}});}
+  disconnect(id:string,guard:()=>void) {return this.change(async()=>{guard();this.oauth?.cancelProvider?.(id);if(id==='anthropic'&&this.nativeClaude){this.nativeClaude.disconnect();return;}if(id==='xai'&&this.nativeGrok){this.nativeGrok.disconnect();return;}if(id==='openai'&&this.nativeAccounts){this.nativeAccounts.disconnect();return;}if(!this.state.providers.some(p=>p.id===id))throw new Error('PROVIDER_NOT_FOUND');if(this.activeCatalog().providers.find(p=>p.id===id)?.auth.oauth){if(!this.oauth)throw new Error('PROVIDER_CONNECTION_UNAVAILABLE');this.oauth.disconnect(id);}for(const kind of ENGINES){guard();await this.secrets.delete(this.key(id,kind));}});}
   connectGateway(read: () => { apiKey: string; endpoint: string } | null, refresh?: () => Promise<void>, rejected?: (key: string | null | undefined) => void) { this.gateway = read; this.refreshGateway = refresh; this.rejectGateway = rejected; }
   gatewayCredentials() { return this.gateway?.() ?? null; }
   reportGatewayRejection(key: string | null | undefined) { this.rejectGateway?.(key); }
