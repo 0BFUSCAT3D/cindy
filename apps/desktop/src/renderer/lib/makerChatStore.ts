@@ -11919,12 +11919,13 @@ function createRemoteHistoryView(sessionId: string) {
     if (!snapshot.ready && view.isActive() && isHistoryViewUnavailable(snapshot.error)) {
       void reconcileRemoteMessages(sessionId, { force: true }).catch(() => undefined);
     }
-    if (snapshot.ready) {
-      const isLoadingMore = view.isLoadingOlder();
+    const historyUnavailable = isHistoryViewUnavailable(snapshot.error);
+    if (snapshot.ready || historyUnavailable) {
+      const isLoadingMore = historyUnavailable ? false : view.isLoadingOlder();
       setState(sessionId, (state) => state.isLoadingMore === isLoadingMore
         ? state : { ...state, isLoadingMore });
     }
-    if (isHistoryViewUnavailable(snapshot.error)) writeCache = undefined;
+    if (historyUnavailable) writeCache = undefined;
     else if (snapshot.ready && !snapshot.loading && !snapshot.error && writeCache) {
       const writer = writeCache;
       persistTimer = setTimeout(() => { if (isCurrent()) writer(snapshot); }, 1200);

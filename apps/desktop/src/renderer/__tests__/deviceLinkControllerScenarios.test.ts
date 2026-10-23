@@ -347,6 +347,35 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     }
   });
 
+  it('releases the raw pagination lock when the history view falls back', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    const rows = Array.from({ length: 30 }, (_, index) => dbMessage(s, String(index), 'visible',
+      new Date(1_750_000_000_000 + index * 1000).toISOString(), 'user'));
+    host.seedSession(s, {}, rows);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    const view = getRemoteHistoryView(s)!;
+    expect(view.getSnapshot().hasMore).toBe(true);
+    const invoke = host.invoke.getMockImplementation()!;
+    host.invoke.mockImplementation(async (device, channel, args) => {
+      if (channel === 'local-db:messages:view' && (args[1] as { before?: string })?.before) {
+        throw new Error('[UNSUPPORTED_CAPABILITY] History view scan budget exceeded');
+      }
+      return invoke(device, channel, args);
+    });
+    try {
+      await makerChatStore.loadOlderMessages(s).catch(() => false);
+      await flush();
+      expect(getRemoteHistoryView(s)).not.toBe(view);
+      expect(makerChatStore.getSnapshot(s).isLoadingMore).toBe(false);
+    } finally {
+      host.invoke.mockImplementation(invoke);
+      makerChatStore.purgeSession(s);
+    }
+  });
+
   // A durable push both invalidates the view (page read at +500 ms) and arms the
   // lost-push repair (+1.5 s). The repair must only read when nothing read the
   // latest page after the push: a running turn used to cost two page reads plus an
