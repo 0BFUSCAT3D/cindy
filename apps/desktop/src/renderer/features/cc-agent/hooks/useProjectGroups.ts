@@ -6,8 +6,12 @@
  * Row-only patches reuse membership and ordering, keeping unrelated nodes stable.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import { createProjectGroupsSelector } from '../lib/projectGroupsSelector';
+import {
+  getProvisionalDraftProjectTaskId,
+  subscribeProvisionalDraftTaskId,
+} from '../lib/provisionalDraftTaskId';
 
 import type { Session } from '@/lib/ccAgent.types';
 import { useRemoteSshHosts } from '@/hooks/useRemoteSshHosts';
@@ -34,6 +38,10 @@ export function useProjectGroups(
 ): ProjectGroupsResult {
   const sshHosts = useRemoteSshHosts();
   const selectGroups = useMemo(() => createProjectGroupsSelector(), []);
+  const provisionalDraftTaskId = useSyncExternalStore(
+    subscribeProvisionalDraftTaskId,
+    getProvisionalDraftProjectTaskId,
+  );
   /*
     伙伴归属表。会话行本身不带 botId,归属只有伙伴档案知道 —— 档案还没加载完的
     那一瞬间这张表是空的,伙伴任务就走原来的分组落到别处,**不会消失**。
@@ -49,6 +57,7 @@ export function useProjectGroups(
       botOwnerBySessionId,
       persistentLocalProjects,
       localPlatform,
+      provisionalDraftTaskId,
     });
   }, [
     equivalentResult,
@@ -59,6 +68,7 @@ export function useProjectGroups(
     persistentLocalProjects,
     localPlatform,
     botOwnerBySessionId,
+    provisionalDraftTaskId,
   ]);
   const ambiguousDeviceNames = useMemo(
     () => collectAmbiguousDeviceNames(groups.projects),
