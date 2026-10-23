@@ -6,7 +6,8 @@
 import { isMobilePlatform } from '@cindy/maker-shared/device-list';
 import type { RemoteResourceAvatar } from '@cindy/device-link';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
-import { chatCursor, chatMessageText, type ChatActor, type ChatMessage, type ChatSetHomeResult } from './chatServerClient';
+import type { BotGroupAttachment } from '@cindy/maker-shared/botGroupChat';
+import { chatCursor, chatMessageAttachments, chatMessageText, type ChatActor, type ChatMessage, type ChatSetHomeResult } from './chatServerClient';
 
 /** How long the phone waits for the new main computer to list the companion. */
 export const CLOUD_SWITCH_TIMEOUT_MS = 90_000;
@@ -72,9 +73,12 @@ export function cloudHomeTargets<T extends { deviceId: string; online: boolean }
   return targets.filter(target => target.online && target.deviceId !== home && target.deviceId !== self);
 }
 
-export interface CloudMessage { id: string; fromCompanion: boolean; text: string; createdAt: number }
+export interface CloudMessage { id: string; fromCompanion: boolean; text: string; attachments: BotGroupAttachment[]; createdAt: number }
 
-/** Oldest first, deduplicated; the companion's actor wrote its replies, everyone else is the owner. */
+/**
+ * Oldest first, deduplicated; the companion's actor wrote its replies, everyone else is the owner.
+ * A message with only attachments stays; one with neither text nor attachments is dropped.
+ */
 export function cloudCompanionMessages(messages: readonly ChatMessage[], actorId: string): CloudMessage[] {
   const unique = [...new Map(messages.map(message => [message.id, message])).values()]
     .filter(message => !message.deleted && !message.threadRootId && message.origin !== 'system');
@@ -87,7 +91,9 @@ export function cloudCompanionMessages(messages: readonly ChatMessage[], actorId
   });
   return unique.flatMap(message => {
     const text = chatMessageText(message).trim();
-    return text ? [{ id: message.id, fromCompanion: message.authorId === actorId, text, createdAt: Date.parse(message.createdAt) }] : [];
+    const attachments = chatMessageAttachments(message);
+    return text || attachments.length
+      ? [{ id: message.id, fromCompanion: message.authorId === actorId, text, attachments, createdAt: Date.parse(message.createdAt) }] : [];
   });
 }
 

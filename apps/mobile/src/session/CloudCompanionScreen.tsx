@@ -22,6 +22,7 @@ import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/toke
 import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
 import { goBackGuarded } from '@/utils/backGuard';
 import { BOT_GROUP_MESSAGE_AVATAR_SIZE } from './BotGroupAvatars';
+import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
 import { BotGroupMarkdownText, BotGroupUserText } from './BotGroupMessageText';
 import { hasRichAnswer } from '@cindy/maker-shared/rich-answer';
 import { MarkdownBody } from './MessageRenderer';
@@ -42,6 +43,8 @@ const REPLY_AVATAR_GAP = 10;
 const LOAD_OLDER_THRESHOLD_PX = 120;
 const STICK_TO_BOTTOM_PX = 48;
 const NO_MENTIONS: readonly string[] = [];
+/** Room attachments are signed server files; nothing in this room lives on a computer. */
+const noRemoteMedia = async (): Promise<never> => { throw new Error('REMOTE_MEDIA_UNAVAILABLE'); };
 
 type Notice = 'noTargets' | 'devicesFailed' | null;
 
@@ -208,17 +211,26 @@ export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, tit
       </View>
       {messages.length === 0 ? <Text style={styles.centerText} testID="cloudCompanion.empty">{t('devices.cloudCompanion.empty')}</Text> : null}
       {messages.map((message, index) => {
+        const attachments = message.attachments.length
+          ? <BotGroupMessageAttachments messageId={message.id} attachments={message.attachments} align={message.fromCompanion ? 'left' : 'right'}
+            onResolveRemoteMedia={noRemoteMedia} resolveServerMedia={room.media} /> : null;
         if (!message.fromCompanion) return <View key={message.id} style={styles.userRow} testID="cloudCompanion.message.user">
-          <View style={[styles.userBubble, userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border }]}>
-            <BotGroupUserText content={message.text} mentionLabels={NO_MENTIONS} />
+          <View style={styles.userColumn}>
+            {message.text ? <View style={[styles.userBubble, userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border }]}>
+              <BotGroupUserText content={message.text} mentionLabels={NO_MENTIONS} />
+            </View> : null}
+            {attachments}
           </View>
         </View>;
         const continued = index > 0 && messages[index - 1]!.fromCompanion;
         return <View key={message.id} style={[styles.replyRow, continued && styles.replyRowContinued]} testID="cloudCompanion.message.companion">
           {continued ? <View style={styles.avatarSpacer} /> : <View style={styles.avatarSlot}>{avatar(BOT_GROUP_MESSAGE_AVATAR_SIZE)}</View>}
-          <View style={styles.replyColumn}>{hasRichAnswer(message.text)
-            ? <MarkdownBody renderRichAnswers markdownImageCacheKey={`cloud:${actorId}:${message.id}`} layout={answerLayout} text={message.text} selectable />
-            : <BotGroupMarkdownText content={message.text} />}</View>
+          <View style={styles.replyColumn}>
+            {!message.text ? null : hasRichAnswer(message.text)
+              ? <MarkdownBody renderRichAnswers markdownImageCacheKey={`cloud:${actorId}:${message.id}`} layout={answerLayout} text={message.text} selectable />
+              : <BotGroupMarkdownText content={message.text} />}
+            {attachments}
+          </View>
         </View>;
       })}
     </ScrollView>;
@@ -280,14 +292,15 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   timeline: { flexGrow: 1, justifyContent: 'flex-end', gap: spacing.lg, paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   olderSlot: { alignItems: 'center' },
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
+  userColumn: { maxWidth: '86%', alignItems: 'flex-end', gap: spacing.xs },
   // The 1:1 user bubble: 86% wide, padding 12.
-  userBubble: { maxWidth: '86%', backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
+  userBubble: { backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.container, padding: spacing.md },
   replyRow: { flexDirection: 'row', alignItems: 'flex-start', gap: REPLY_AVATAR_GAP },
   replyRowContinued: { marginTop: -spacing.sm },
   avatarSlot: { marginTop: 2 },
   avatarSpacer: { width: BOT_GROUP_MESSAGE_AVATAR_SIZE },
-  replyColumn: { flex: 1, minWidth: 0 },
+  replyColumn: { flex: 1, minWidth: 0, gap: spacing.xs },
   // Where the composer would be: a quiet, disabled-looking strip with the explanation.
   footer: { marginHorizontal: spacing.lg, marginTop: spacing.xs, marginBottom: spacing.sm, minHeight: 44, justifyContent: 'center',
     paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill, backgroundColor: colors.surfaceChip },

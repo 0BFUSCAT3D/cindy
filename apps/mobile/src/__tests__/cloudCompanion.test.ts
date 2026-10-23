@@ -59,6 +59,20 @@ describe('cloud companion rows', () => {
     ], id(1));
     expect(view.map(item => [item.text, item.fromCompanion])).toEqual([['hello', false], ['reply', true]]);
   });
+  it('keeps attachments beside the text: attachment-only messages stay, captions are not repeated as text, unknown blocks stay out', () => {
+    const base = { authorId: id(1), author: { kind: 'bot', name: '' }, createdAt: '2026-10-13T00:00:00Z', deleted: false, threadRootId: null };
+    const view = cloudCompanionMessages([
+      { ...base, id: id(10), seq: '10', content: [{ type: 'media', mediaId: id(40), caption: 'report.docx' }] },
+      { ...base, id: id(11), seq: '11', authorId: id(9), content: [{ type: 'text', text: '〔来自飞书〕\nlook' }, { type: 'media', mediaId: id(41), caption: 'a.png' },
+        { type: 'media', mediaId: id(42) }, { type: 'media', caption: 'no-id.png' }, { type: 'widget' }] },
+      { ...base, id: id(12), seq: '12', content: [{ type: 'widget' }] },
+      { ...base, id: id(13), seq: '13', deleted: true, content: [{ type: 'media', mediaId: id(43), caption: 'gone.png' }] },
+    ], id(1));
+    expect(view.map(item => ({ id: item.id, text: item.text, names: item.attachments.map(attachment => [attachment.id, attachment.name]) }))).toEqual([
+      { id: id(10), text: '', names: [[id(40), 'report.docx']] },
+      { id: id(11), text: '〔来自飞书〕\nlook', names: [[id(41), 'a.png'], [id(42), expect.any(String)]] },
+    ]);
+  });
   it('orders by message time, so older history uploaded later still appears first', () => {
     const at = (n: number, time: string): ChatMessage => ({ id: id(n), seq: String(n), authorId: id(9), author: { kind: 'human', name: '' },
       createdAt: time, deleted: false, threadRootId: null, content: [{ type: 'text', text: `m${n}` }] });
