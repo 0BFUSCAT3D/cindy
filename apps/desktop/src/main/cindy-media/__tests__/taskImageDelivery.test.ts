@@ -1,4 +1,6 @@
 import { createHookMediaStore } from '../hookOutbox';
+import { prepareChatReplyFiles } from '../../maker-ipc/chatServerReplyFiles';
+import { prepareChatReplyImages } from '../../maker-ipc/chatServerReplyImages';
 import { createHookRequestLedger, HOOK_TERMINAL_DELIVERY_TTL_MS } from '../../hook-control/requestLedger';
 import type { TurnEndPayload } from '@cindy/slack-hook-protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -111,6 +113,21 @@ function insert(text: string) {
 }
 
 describe('task image delivery', () => {
+  // #6773: run both production preparation passes; a shared PDF definition
+  // must not be interpreted as an image after the file has been extracted.
+  it.each(['nested', 'sibling'])('delivers shared file/image references through both preparation passes (%s)', async mode => {
+    const pdf = path.join(work, 'report.pdf');
+    const bytes = Buffer.from('%PDF-1.4\nreport');
+    await fs.writeFile(pdf, bytes);
+    const label = mode === 'nested' ? '[![preview][report]][report]' : '[report][report] ![preview][report]';
+    const files = await prepareChatReplyFiles(`${label}\n\n[report]: <${pdf}>`, 's', () => {});
+    expect(files.attachments).toHaveLength(1);
+    expect(await files.attachments[0]!.readBytes!()).toEqual(bytes);
+    const images = await prepareChatReplyImages(files.text, 's', () => {});
+    expect(images.attachments).toEqual([]);
+    expect(images.text).not.toContain(pdf);
+  });
+
   it.each(['before', 'during'].flatMap((order) =>
     ['publish', 'rollback'].map((result) => [order, result]),
   ))('reconciles a reused reference when cleanup runs %s %s', async (order, result) => {

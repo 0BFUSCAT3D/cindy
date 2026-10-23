@@ -64,15 +64,15 @@ describe('group reply file delivery', () => {
     expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
     expect(result.text).toContain(image);
     expect(result.text).not.toContain(`[${image}]`);
-    if (mode === 'shared-reference') expect(result.text).toContain(`[image]: <${pdf}>`);
+    if (mode === 'shared-reference') expect(result.text).not.toContain(`[image]: <${pdf}>`);
   });
 
-  it.each(['100% done.pdf', 'encoded%20.pdf'])('preserves legacy literal or once-encoded percent paths: %s', async name => {
+  it.each(['file', 'xdt-file'].flatMap(scheme => ['100% done.pdf', 'encoded%20.pdf'].map(name => [scheme, name])))('preserves literal or once-encoded percent paths: %s %s', async (scheme, name) => {
     const file = path.join(work, name);
     await fs.writeFile(file, 'percent report');
     // A direct legacy URL is a URI with forward slashes on every platform.
-    const direct = `xdt-file://${file.startsWith('/') ? '' : '/'}${file.replaceAll('\\', '/')}`;
-    const encoded = pathToFileURL(file).href.replace(/^file:/, 'xdt-file:');
+    const direct = `${scheme}://${file.startsWith('/') ? '' : '/'}${file.replaceAll('\\', '/')}`;
+    const encoded = pathToFileURL(file).href.replace(/^file:/, `${scheme}:`);
     const result = await prepareChatReplyFiles(`[file](<${name.startsWith('100') ? direct : encoded}>)`, 'lane', () => {});
     expect((await result.attachments[0]!.readBytes!()).toString()).toBe('percent report');
   });
@@ -196,8 +196,8 @@ describe('group reply file delivery', () => {
     expect(await prepareChatReplyFiles(text, 'lane', () => { throw new Error('unexpected'); })).toEqual({ text, attachments: [] });
   });
 
-  it.each(['../private.pdf', 'file://server/private.pdf', '//server/private.pdf'])('refuses an out-of-scope or network file %s', async url => {
-    await expect(prepareChatReplyFiles(`[file](${url})`, 'lane', () => {})).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+  it.each(['../private.pdf', 'file://server/private.pdf', 'file://server/100% done.pdf', 'file://user:secret@localhost/100% done.pdf', '//server/private.pdf'])('refuses an out-of-scope or network file %s', async url => {
+    await expect(prepareChatReplyFiles(`[file](<${url}>)`, 'lane', () => {})).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
   });
 
   it('refuses a symlink escaping the task before reading its bytes', async () => {

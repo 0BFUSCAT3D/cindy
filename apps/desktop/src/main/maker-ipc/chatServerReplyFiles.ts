@@ -61,8 +61,6 @@ export function replyFileLinks(text: string) {
   });
   const links: Array<{ url: string; start: number; end: number; label: string }> = [];
   const usedDefinitions = new Set<string>();
-  const imageDefinitions = new Set<string>();
-  visit(tree, 'imageReference', node => { imageDefinitions.add(node.identifier); });
   visit(tree, node => {
     if (node.type !== 'link' && node.type !== 'linkReference') return;
     const target = node.type === 'link' ? node : definitions.get(node.identifier);
@@ -78,7 +76,8 @@ export function replyFileLinks(text: string) {
   const edits = links.map(link => ({ start: link.start, end: link.end, text: link.label }));
   for (const identifier of usedDefinitions) {
     const node = definitions.get(identifier)!;
-    if (!imageDefinitions.has(identifier) && node.position?.start.offset !== undefined && node.position.end.offset !== undefined)
+    // A shared image reference must not send this already-delivered file through image import.
+    if (node.position?.start.offset !== undefined && node.position.end.offset !== undefined)
       edits.push({ start: node.position.start.offset, end: node.position.end.offset, text: '' });
   }
   let deliveredText = text;
@@ -118,7 +117,17 @@ function localPath(url: string, workDir: string): string {
           if (process.platform === 'win32' && /^\/[A-Za-z]:[\\/]/.test(value)) value = value.slice(1);
         }
       }
-    } else if (/^file:/i.test(url)) value = fileURLToPath(url);
+    } else if (/^file:/i.test(url)) {
+      try { value = fileURLToPath(url); }
+      catch (error) {
+        if (!(error instanceof URIError) || !['', 'localhost'].includes(new URL(url).hostname)) throw error;
+        // Match the existing literal-percent compatibility without admitting remote hosts.
+        const literal = /^file:(?:\/\/(?:localhost)?)?(\/[^?#]*)/i.exec(url)?.[1];
+        if (!literal) throw error;
+        value = literal;
+        if (process.platform === 'win32' && /^\/[A-Za-z]:[\\/]/.test(value)) value = value.slice(1);
+      }
+    }
   } catch { throw unavailable(); }
   // Never resolve a network/device path, including on another host platform.
   if (/^[\\/]{2}|^[\\/]\?\?[\\/]/.test(value) || value.includes('\0')) throw unavailable();
