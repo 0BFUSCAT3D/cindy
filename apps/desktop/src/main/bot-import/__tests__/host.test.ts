@@ -217,6 +217,21 @@ it('restarts an older install that never saved its checkpoint, as the same reque
   expect(createBotProfile).toHaveBeenCalledTimes(1);
   expect(h.importDocument).toHaveBeenCalledTimes(1);
 });
+it('restarts an older install that never saved its checkpoint in the language it was first invited in', async () => {
+  h.native = true;
+  const entry = (await listNativeBotPackages())[0]!;
+  vi.spyOn(h.store, 'write').mockRejectedValueOnce(new Error('fixture failure before checkpoint'));
+  await inviteNativeBotPackage({ ...entry, locale: 'ja' }, 'renderer:1').catch(() => undefined);
+  const indexes = await fs.readdir(path.join(h.root, 'companion-imports'));
+  expect(indexes).toHaveLength(1);
+  const requestId = indexes[0]!.slice(0, -'.json'.length);
+  await olderInstall(requestId);
+  // The profile name is part of the stored selection identity, so a language switched since then must not change it.
+  const complete = await nativeFinished(await inviteNativeBotPackage({ ...entry, locale: 'en' }, 'renderer:2'));
+  expect(complete.status).toBe('complete'); expect(complete.requestId).toBe(requestId);
+  expect(createBotProfile).toHaveBeenCalledTimes(1);
+  expect(createBotProfile).toHaveBeenCalledWith(expect.objectContaining({ name: entry.locales!.ja!.name }));
+});
 it('saves the teammate, opening and routine names in the language the invite was made in', async () => {
   h.native = true;
   const entry = (await listNativeBotPackages()).find(entry => entry.packageId === 'engineer-bot')!;

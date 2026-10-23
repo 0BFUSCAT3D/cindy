@@ -120,10 +120,12 @@ export async function inviteNativeBotPackage(input: BotPackageIdentity & { local
       // The original checkpoint may not have committed. Reuse this request, not
       // a second package progress ledger or another companion.
     }
+    // A reused request keeps the language it was made in: the profile name is part of its selection identity.
+    const locale = existing ? existing.nativePackage?.locale : input.locale;
     const previewId = randomUUID();
-    pkg.snapshot.nativePackage!.locale = input.locale;
+    pkg.snapshot.nativePackage!.locale = locale;
     // Profile name and description, the opening and the routine names follow the language the invite was made in.
-    applyNativeLocale(pkg, input.locale);
+    applyNativeLocale(pkg, locale);
     await retainPreview(previewId, { owner: scope.scope, controller, value: pkg.snapshot, createdAt: Date.now() }, scope.assert);
     return startCompanionImport({ previewId, requestId: existing?.result.requestId ?? randomUUID(),
       name: pkg.snapshot.source.name, avatarImageBase64: pkg.snapshot.avatarImageBase64,
