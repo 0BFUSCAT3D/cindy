@@ -14532,11 +14532,11 @@ describe('usage-limit wait (ordinary tasks)', () => {
       session, didInjectOrcaInstructions: false, didInjectProjectContext: false,
     })).mockRejectedValueOnce(quota);
     const transaction = createMakerSendTransaction({
+      statDirectory: async () => ({ isDirectory: () => true }),
       getSession: () => rehydrate ? session : undefined,
       closeSession: async () => {}, preflightBotRuntimeResources: async () => {},
       getSessionMeta: async () => ({}), ensureRemoteReadyForSessionStart: async () => {},
       checkWorkDirExists: async () => true, isOrcaMcpHydrated: () => !rehydrate,
-      statDirectory: async () => ({ isDirectory: () => true }),
       buildCreateOptsWithStderr: x => x, synthesizeOrcaVendorOptionsFromDb: async () => rehydrate,
       readSessionExtraDirsFromDb: async () => [], readSessionWorkingDirFromDb: async () => '/repo',
       readWorkingDirectoryRecoveryCreateOpts: async () => ({ agentKind: 'claude-code', workingDir: '/repo', model: 'claude-opus-4-7' }),
