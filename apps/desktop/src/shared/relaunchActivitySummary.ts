@@ -19,7 +19,7 @@ export type RelaunchActivityCategory = (typeof RELAUNCH_ACTIVITY_CATEGORIES)[num
 const REASON_CATEGORY: Record<string, RelaunchActivityCategory> = {
   'background-bash': 'background-command',
   'scheduler-run-running': 'scheduled-task',
-  'ghost-background-activity': 'generation',
+  // 插件后台活动也覆盖发邮件、取消等非生成动作，分不清时不能写成生成任务。
   'cindy-slot-async-job': 'generation',
   'pi-subagent': 'subtask',
   'claude-background-activity': 'subtask',
@@ -41,6 +41,8 @@ export interface RelaunchActivitySummary {
 }
 
 const MAX_COMPANION_NAME_LENGTH = 40;
+/** 侧栏确认没有独立滚动区。再多就只说伙伴类别，避免姓名把按钮挤出窗口。 */
+const MAX_LISTED_COMPANION_NAMES = 3;
 const COMPANION_NAME_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ._'’-]{0,39}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -81,7 +83,8 @@ export function summarizeRelaunchActivity(
       }
       if (turns.companions.length > 0) found.add('companion');
       if (turns.conversation) found.add('conversation');
-      const unnamed = turns.companions.some((companion) => safeCompanionDisplayName(companion.name) == null);
+      const unnamed = turns.companions.length > MAX_LISTED_COMPANION_NAMES
+        || turns.companions.some((companion) => safeCompanionDisplayName(companion.name) == null);
       companionNames = unnamed
         ? []
         : turns.companions.flatMap((companion) => {
@@ -170,7 +173,9 @@ export function classifyRelaunchTurnRows(
     }
     conversation = true;
   }
-  if (unnamedCompanion) return { companions: [{ name: null }], conversation };
+  if (unnamedCompanion || named.length > MAX_LISTED_COMPANION_NAMES) {
+    return { companions: [{ name: null }], conversation };
+  }
   return { companions: named, conversation };
 }
 
@@ -203,7 +208,8 @@ export function formatRelaunchActivityHint(
 ): string | null {
   if (!summary || summary.categories.length === 0) return null;
   const parts = summary.categories.map((category) => {
-    if (category !== 'companion' || summary.companionNames.length === 0) {
+    if (category !== 'companion' || summary.companionNames.length === 0
+      || summary.companionNames.length > MAX_LISTED_COMPANION_NAMES) {
       return translate(CATEGORY_KEYS[category]);
     }
     const names = joinLocalized(summary.companionNames, (key) => translate(key), {
@@ -242,7 +248,7 @@ export function normalizeRelaunchActivitySummary(value: unknown): {
     if (!safe) return { busy: record.busy, categories, companionNames: [] };
     if (!companionNames.includes(safe)) companionNames.push(safe);
   }
-  if (!categories.includes('companion')) {
+  if (!categories.includes('companion') || companionNames.length > MAX_LISTED_COMPANION_NAMES) {
     return { busy: record.busy, categories, companionNames: [] };
   }
   return { busy: record.busy, categories, companionNames };

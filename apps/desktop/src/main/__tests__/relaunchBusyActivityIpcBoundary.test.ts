@@ -226,7 +226,7 @@ describe('relaunch blocking summary', () => {
       anyCindySlotJobRunning: () => true,
       anyPiSubagentRunning: () => true,
       listClaudeBackgroundSessions: () => ['claude-session'],
-      anyGhostSessionBusy: () => true,
+      anyGhostSessionBusy: () => false,
     }), {
       describeTurns: async () => {
         h.turnReads += 1;
@@ -252,6 +252,37 @@ describe('relaunch blocking summary', () => {
     expect(h.turnReads).toBe(1);
     expect(JSON.stringify(result)).not.toContain('claude-session');
     expect(JSON.stringify(h.log.info.mock.calls)).not.toContain('Cindy');
+  });
+
+
+  it('does not call an unspecified plugin action a generation', async () => {
+    registerRelaunchBusyActivityIpc(sources({
+      anyGhostSessionBusy: () => true,
+      anyBackgroundBashRunning: () => true,
+    }));
+    const handler = h.handlers.get(RELAUNCH_BLOCKING_SUMMARY_CHANNEL)!;
+    await expect(handler(fakeEvent)).resolves.toEqual({
+      busy: true,
+      categories: [],
+      companionNames: [],
+    });
+    const booleanHandler = h.handlers.get(RELAUNCH_BLOCKING_ACTIVITY_CHANNEL)!;
+    await expect(booleanHandler(fakeEvent)).resolves.toBe(true);
+  });
+
+  it('drops teammate names once listing them would hide the restart choice', async () => {
+    registerRelaunchBusyActivityIpc(sources({ anySessionInTurn: () => true }), {
+      describeTurns: async () => ({
+        companions: [{ name: 'Ada' }, { name: 'Bea' }, { name: 'Cleo' }, { name: 'Dora' }],
+        conversation: false,
+      }),
+    });
+    const handler = h.handlers.get(RELAUNCH_BLOCKING_SUMMARY_CHANNEL)!;
+    await expect(handler(fakeEvent)).resolves.toEqual({
+      busy: true,
+      categories: ['companion'],
+      companionNames: [],
+    });
   });
 
   it('reports a scheduled run when that is the activity', async () => {

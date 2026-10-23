@@ -569,6 +569,10 @@ describe('formatRelaunchActivityHint builds a complete sentence', () => {
       categories: ['companion', 'conversation', 'background-command'],
       companionNames: [],
     })).toBe("Restarting will interrupt a teammate's reply, a chat in progress, and a background command.");
+    expect(formatRelaunchActivityHint(t, {
+      categories: ['companion'],
+      companionNames: ['Ada', 'Bea', 'Cleo', 'Dora'],
+    })).toBe("Restarting will interrupt a teammate's reply.");
   });
 
   it('says in Japanese that the restart will interrupt the activity', () => {
