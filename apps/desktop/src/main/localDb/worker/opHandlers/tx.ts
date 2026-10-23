@@ -1264,7 +1264,8 @@ function botsPersistSessionPermission(
       return { updated: true };
     }
     const link = db.prepare(`SELECT bot_id AS botId FROM bot_session_links
-      WHERE session_id = ? AND role = 'canonical' AND archived_at IS NULL`).get(sessionId) as { botId: string } | undefined;
+      WHERE session_id = ? AND role IN ('canonical', 'channel', 'group', 'thread')
+        AND archived_at IS NULL`).get(sessionId) as { botId: string } | undefined;
     if (link) {
       const profile = db.prepare('SELECT current_version AS version FROM bot_profiles WHERE id = ?')
         .get(link.botId) as { version: number } | undefined;

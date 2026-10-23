@@ -992,6 +992,21 @@ describe('Bot canonical Session lifecycle', () => {
     expect((await invoke('local-db:bots:get', 'bot-1')).capabilities.permissions).toBe('trusted');
   });
 
+  // P1 review: settings remain available when the canonical task/link is absent.
+  // Persisted rows alone never updated an already loaded IM runtime in this case.
+  it('tightens a live channel from settings without a canonical link', async () => {
+    await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: 'trusted' } });
+    const lane = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:orphan', title: 'Orphan' });
+    if (!lane.ok) throw new Error(lane.message);
+    const live = { compactSession: vi.fn(), stablePermissionModeState: { mode: 'bypassPermissions' },
+      setPermissionMode: vi.fn(async (mode: string) => { live.stablePermissionModeState = { mode }; }) };
+    h.getSession.mockImplementation(id => id === lane.sessionId ? live : null);
+    await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: 'ask' } });
+    expect(live.stablePermissionModeState.mode).toBe('ask');
+    expect(live.setPermissionMode).toHaveBeenCalledWith('ask');
+    expect(h.sqlite!.prepare('SELECT permission_mode FROM sessions WHERE id = ?').pluck().get(lane.sessionId)).toBe('ask');
+  });
+
   // #6782, unit: an explicit idempotent edit is still a new permission intent.
   // The previous diff only protected changed=true profile saves.
   it('commits an explicit same-value permission after a concurrent composer choice', async () => {

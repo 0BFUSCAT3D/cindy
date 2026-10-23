@@ -629,6 +629,7 @@ import { restartBotRuntime } from './botRuntimeRestart.js';
 import { registerBotLifecycleHandlers } from './botLifecycleService.js';
 import { isSessionPermissionMode, persistPermissionModeWithoutRuntime } from './sessionPermissionPersistence.js';
 import { withSessionPermissionChange } from './sessionPermissionChange.js';
+import { withBotPermissionChange } from './botPermissionDispatch.js';
 import { updateBotRoutineLifecycle } from '../routines/service.js';
 import {
   createBotCompactRuntimeRefreshCoordinator,
@@ -13601,7 +13602,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           if (result.response !== 0) return { granted: false };
           // Reserve permission order before the lifecycle/restart fence. Ordinary
           // permission writers never hold that fence while awaiting this queue.
-          return await withSessionPermissionChange(task.taskId, () => service.completeOperation(() => withSessionRestartLock(task.taskId, async () => {
+          return await withBotPermissionChange(task.taskId, () => withSessionPermissionChange(task.taskId, () => service.completeOperation(() => withSessionRestartLock(task.taskId, async () => {
             assertRequestCurrent();
             if (snapshot !== getCurrentDbClientSnapshot() || before !== JSON.stringify(readPluginTaskConfig(pluginId))) throw new PluginTaskError('PERMISSION_DENIED', 'Account or permission settings changed');
             const fresh = await service.get(pluginId, task.taskId);
@@ -13636,7 +13637,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               if (persisted) await snapshot!.client.tx('bots.persistSessionPermission', {sessionId: task.taskId, mode: task.permissionMode});
               throw error;
             }
-          })));
+          }))));
           });
         } finally { pluginPermissionRequests.delete(pluginId); }
       }
@@ -23507,7 +23508,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           throwIpcError('PRECONDITION_FAILED', 'Account changed during permission update');
         }
       };
-      return withSessionPermissionChange(sessionId, async () => {
+      return withBotPermissionChange(sessionId, () => withSessionPermissionChange(sessionId, async () => {
         assertOwnerCurrent();
         await assertReviewSettingsUnlocked(sessionId);
         assertOwnerCurrent();
@@ -23546,7 +23547,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           return result;
         }
         return true;
-      });
+      }));
     },
   );
 

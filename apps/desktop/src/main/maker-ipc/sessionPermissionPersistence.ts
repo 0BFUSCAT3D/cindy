@@ -1,4 +1,5 @@
 import { syncBotLinkedLanePermissions } from './botPermissionSync.js';
+import { withBotPermissionChange } from './botPermissionDispatch.js';
 import { getCurrentDbClientSnapshot } from '../localDb/client/current.js';
 
 const SESSION_PERMISSION_MODES = new Set([
@@ -33,8 +34,10 @@ export async function persistPermissionModeWithoutRuntime(
   if (!isSessionPermissionMode(mode)) return false;
   const owner = getCurrentDbClientSnapshot();
   if (!owner) throw new Error('DbClient not ready');
-  const saved = await owner.client.tx('bots.persistSessionPermission', { sessionId, mode });
-  if (getCurrentDbClientSnapshot() !== owner) throw new Error('Account changed during permission update');
-  if (saved.updated) await syncBotLinkedLanePermissions(sessionId);
-  return saved.updated;
+  return withBotPermissionChange(sessionId, async () => {
+    const saved = await owner.client.tx('bots.persistSessionPermission', { sessionId, mode });
+    if (getCurrentDbClientSnapshot() !== owner) throw new Error('Account changed during permission update');
+    if (saved.updated) await syncBotLinkedLanePermissions(sessionId);
+    return saved.updated;
+  });
 }

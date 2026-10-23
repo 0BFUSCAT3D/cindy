@@ -98,8 +98,9 @@ import {
   isBotTemplatePresetId,
 } from '../../../shared/botTemplatePreset.js';
 import { createMessage } from './messages.js';
-import { syncBotLanePermission, syncBotLinkedLanePermissions } from '../../maker-ipc/botPermissionSync.js';
+import { syncBotLanePermission, syncBotLinkedLanePermissions, syncBotPermissionsByBotId } from '../../maker-ipc/botPermissionSync.js';
 import { withSessionPermissionChange } from '../../maker-ipc/sessionPermissionChange.js';
+import { withBotPermissionChangeForBot } from '../../maker-ipc/botPermissionDispatch.js';
 import { broadcastSessionPatched } from './sessions.js';
 import { BOT_DELEGATION_CLIENT_ID } from '../../../shared/botCollaboration.js';
 
@@ -2049,21 +2050,23 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
         .from(botSessionLinks).innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
         .where(and(eq(botSessionLinks.botId, id), eq(botSessionLinks.role, 'canonical'), isNull(botSessionLinks.archivedAt))).limit(1);
       owner.assertCurrent();
-      if (canonical) {
-        const maker = getMakerIfReady();
-        const live = maker?.getSession(canonical.sessionId);
-        try { await live?.setPermissionMode(canonical.mode as 'ask' | 'auto' | 'bypassPermissions'); }
-        catch (error) {
-          // A failed hot switch cannot leave the old, more permissive runtime alive.
+      try {
+        if (canonical) {
+          const maker = getMakerIfReady();
+          const live = maker?.getSession(canonical.sessionId);
+          try { await live?.setPermissionMode(canonical.mode as 'ask' | 'auto' | 'bypassPermissions'); }
+          catch (error) {
+            // A failed hot switch cannot leave the old, more permissive runtime alive.
+            owner.assertCurrent();
+            if (maker?.getSession(canonical.sessionId) === live) await maker?.closeSession(canonical.sessionId);
+            throw error;
+          }
           owner.assertCurrent();
-          if (maker?.getSession(canonical.sessionId) === live) await maker?.closeSession(canonical.sessionId);
-          throw error;
-        } finally {
-          owner.assertCurrent();
-          await syncBotLinkedLanePermissions(canonical.sessionId);
+          broadcastSessionPatched(canonical.sessionId, { permissionMode: canonical.mode });
         }
+      } finally {
         owner.assertCurrent();
-        broadcastSessionPatched(canonical.sessionId, { permissionMode: canonical.mode });
+        await syncBotPermissionsByBotId(id, canonical?.sessionId);
       }
     }
   };
@@ -2073,8 +2076,10 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     owner.assertCurrent();
     // Serialize the DB commit and runtime continuation together with the chat
     // permission chip; native Session serialization alone only orders transports.
-    if (canonical) await withSessionPermissionChange(canonical.sessionId, commitProfile);
-    else await commitProfile();
+    await withBotPermissionChangeForBot(id, async () => {
+      if (canonical) await withSessionPermissionChange(canonical.sessionId, commitProfile);
+      else await commitProfile();
+    });
   } else await commitProfile();
   // The files are the user's editing surface: rewrite only the file whose content this
   // save changed, so pinning, a model change or editing the other file cannot clobber

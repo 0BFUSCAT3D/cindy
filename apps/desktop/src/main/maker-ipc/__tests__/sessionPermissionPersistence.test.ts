@@ -23,6 +23,8 @@ vi.mock('../../localDb/client/current.js', () => ({
 
 import { syncBotLanePermission, syncBotLinkedLanePermissions } from '../botPermissionSync.js';
 import { persistPermissionModeWithoutRuntime, profilePermissionForSessionMode } from '../sessionPermissionPersistence.js';
+import { prepareBotPermissionDispatch, withBotPermissionChangeForBot } from '../botPermissionDispatch.js';
+import type { Session } from '@cindy/maker-core';
 
 function createDatabase(): Database.Database {
   const sqlite = new Database(':memory:');
@@ -87,6 +89,83 @@ describe('permission persistence without a live runtime', () => {
   it('does not report success when the session row is missing', async () => {
     await expect(persistPermissionModeWithoutRuntime('missing', 'ask')).resolves.toBe(false);
     expect(sqlite.prepare('SELECT permission_mode FROM sessions').pluck().get()).toBe('ask');
+  });
+
+  // P1 review: a topic's explicit Ask choice previously changed only that row,
+  // then pre-send reconciliation restored the canonical's wider authority.
+  it.each(['thread', 'channel', 'group'])('persists explicit %s permission for the whole Bot', async role => {
+    await persistPermissionModeWithoutRuntime('chat', 'bypassPermissions');
+    sqlite.prepare("INSERT INTO sessions (id,permission_mode,updated_at) VALUES ('lane','bypassPermissions',1)").run();
+    sqlite.prepare("INSERT INTO bot_session_links VALUES ('bot-1','lane',?,NULL)").run(role);
+    await persistPermissionModeWithoutRuntime('lane', 'ask');
+    await syncBotLanePermission('lane');
+    expect(sqlite.prepare('SELECT DISTINCT permission_mode FROM sessions').pluck().all()).toEqual(['ask']);
+    expect(JSON.parse(sqlite.prepare('SELECT capabilities_json FROM bot_profile_versions').pluck().get() as string).permissions).toBe('ask');
+  });
+
+  // P1 review, unit: pause at the real async-preparation/synchronous-dispatch
+  // boundary. A persisted tightening must invalidate a previously prepared turn,
+  // including the interval before the lane's hot switch starts.
+  it.each(['pending', 'completed'])('rejects stale dispatch after a %s Bot permission change', async phase => {
+    await persistPermissionModeWithoutRuntime('chat', 'bypassPermissions');
+    const state = { id: 'chat', stablePermissionModeState: { mode: 'bypassPermissions' } };
+    const runtime = state as unknown as Session;
+    const dispatch = await prepareBotPermissionDispatch(runtime);
+    expect(() => dispatch()).not.toThrow();
+    let release!: () => void;
+    let entered!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const change = withBotPermissionChangeForBot('bot-1', async () => {
+      runWorkerTx(sqlite, { name: 'bots.persistSessionPermission', args: { sessionId: 'chat', mode: 'ask' } });
+      entered();
+      await pending;
+    });
+    await started;
+    if (phase === 'completed') { release(); await change; }
+    try { expect(() => dispatch()).toThrow('Bot permissions changed before dispatch'); }
+    finally { release(); await change; }
+    state.stablePermissionModeState = { mode: 'ask' };
+    expect(() => dispatch()).toThrow('Bot permissions changed before dispatch');
+    const fresh = await prepareBotPermissionDispatch(runtime);
+    expect(() => fresh()).not.toThrow();
+  });
+
+  it('orders permission edits from main and topic without a cross-lane deadlock', async () => {
+    sqlite.exec(`INSERT INTO sessions (id,permission_mode,updated_at) VALUES ('topic','ask',1);
+      INSERT INTO bot_session_links VALUES ('bot-1','topic','thread',NULL);`);
+    let release!: () => void;
+    let entered!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const live = { stablePermissionModeState: { mode: 'ask' }, setPermissionMode: vi.fn(async (mode: string) => {
+      if (mode === 'bypassPermissions') { entered(); await pending; }
+      live.stablePermissionModeState = { mode };
+    }) };
+    h.live.set('topic', live);
+    const main = persistPermissionModeWithoutRuntime('chat', 'bypassPermissions');
+    await started;
+    const topic = persistPermissionModeWithoutRuntime('topic', 'ask');
+    release();
+    await Promise.all([main, topic]);
+    // This is the cold persistence entry; its initiating topic has no runtime.
+    // The next normal reuse consumes the newly saved shared Ask choice.
+    await syncBotLanePermission('topic');
+    expect(sqlite.prepare('SELECT DISTINCT permission_mode FROM sessions').pluck().all()).toEqual(['ask']);
+    expect(live.stablePermissionModeState.mode).toBe('ask');
+  });
+
+  it('checks shared authority rather than a stale lane row and allows ordinary sibling repairs', async () => {
+    sqlite.exec(`INSERT INTO sessions (id,permission_mode,updated_at) VALUES ('lane','bypassPermissions',1);
+      INSERT INTO bot_session_links VALUES ('bot-1','lane','channel',NULL);`);
+    const lane = { id: 'lane', stablePermissionModeState: { mode: 'bypassPermissions' } } as unknown as Session;
+    const stale = await prepareBotPermissionDispatch(lane);
+    expect(() => stale()).toThrow('Bot permissions changed before dispatch');
+    const main = { id: 'chat', stablePermissionModeState: { mode: 'ask' } } as unknown as Session;
+    const valid = await prepareBotPermissionDispatch(main);
+    await syncBotLanePermission('lane');
+    await withBotPermissionChangeForBot('another-bot', async () => {});
+    expect(() => valid()).not.toThrow();
   });
 
   it('does not replace a newer profile version with a stale capabilities snapshot', async () => {
