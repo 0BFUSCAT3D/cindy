@@ -8824,6 +8824,7 @@
         "task": "Task runtime",
         "service": "Accounts and models"
       },
+      "sessionDetail": "Task: {{title}}",
       "services": {
         "audio": "Audio Service",
         "network": "Network Service",

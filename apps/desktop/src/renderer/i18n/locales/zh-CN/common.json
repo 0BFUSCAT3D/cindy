@@ -8792,6 +8792,7 @@
         "task": "任务运行",
         "service": "账户与模型"
       },
+      "sessionDetail": "任务：{{title}}",
       "services": {
         "audio": "音频服务",
         "network": "网络服务",
