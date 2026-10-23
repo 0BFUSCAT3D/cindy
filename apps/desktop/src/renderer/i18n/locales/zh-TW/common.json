@@ -10243,7 +10243,6 @@
       "openSettings": "語音設定",
       "startConversation": "開始語音對話",
       "settingsHint": "選擇這位夥伴使用的朗讀模型和音色。設定完成後，從輸入框開始語音對話。",
-      "incompleteSettings": "選擇語音介面和音色後自動儲存。",
       "previewNeedsChat": "與夥伴開始對話後可試聽。",
       "voiceId": "音色 ID",
       "manualVoice": "手動輸入音色 ID",

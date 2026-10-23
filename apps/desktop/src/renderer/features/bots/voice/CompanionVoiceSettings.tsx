@@ -515,11 +515,6 @@ export function CompanionVoiceSettings(props: Props) {
           ) : null}
         </SpeechVoicePicker>
       ) : null}
-      {dirty.current && (!selection || !protocol) ? (
-        <p className="text-12 text-[var(--text-secondary)]">
-          {t('bots.voiceMode.incompleteSettings')}
-        </p>
-      ) : null}
       {!props.sessionId ? (
         <p className="text-12 text-[var(--text-secondary)]">
           {t('bots.voiceMode.previewNeedsChat')}
