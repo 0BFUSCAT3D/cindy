@@ -48,15 +48,23 @@ export async function checkpointWorktreeForReuse(meta: WorktreeMeta): Promise<vo
   }
   const gitLink = await fs.lstat(path.join(meta.path, '.git'));
   if (!gitLink.isFile() || gitLink.isSymbolicLink()) throw new Error('pooled worktree Git link is missing');
-  record.snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/${randomUUID()}`, { includeUntracked: true });
-  if (hasLiveSessionReference(meta, await loadLiveSessionPathKeys({ contextPath: meta.path }))
-    || !(await worktreeContentMatches(meta.path, record.snapshot))) {
-    throw new Error('pooled worktree changed before reuse');
+  const snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/${randomUUID()}`, { includeUntracked: true });
+  record.snapshot = snapshot;
+  try {
+    if (hasLiveSessionReference(meta, await loadLiveSessionPathKeys({ contextPath: meta.path }))
+      || !(await worktreeContentMatches(meta.path, snapshot))) {
+      throw new Error('pooled worktree changed before reuse');
+    }
+    await assertManagedResourcePath(meta, store.getAllPaths());
+    await assertWorktreeGitIdentity(meta);
+    if (await directoryIdentity(meta.path) !== record.directoryIdentity) throw new Error('pooled directory replaced');
+  } catch (error) {
+    // Reuse is abandoned with the checkout intact, and no record names this ref yet.
+    await releaseSnapshotRef(meta.baseRepo, snapshot);
+    throw error;
   }
-  await assertManagedResourcePath(meta, store.getAllPaths());
-  await assertWorktreeGitIdentity(meta);
-  if (await directoryIdentity(meta.path) !== record.directoryIdentity) throw new Error('pooled directory replaced');
   record.phase = 'removed';
+  // Keep the ref if this throws: history may already be durable before the current record fails.
   await writeRecycleRecord(record);
 }
 

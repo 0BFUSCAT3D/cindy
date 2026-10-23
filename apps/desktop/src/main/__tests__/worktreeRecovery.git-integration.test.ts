@@ -446,6 +446,30 @@ describe('worktree recovery with real Git', () => {
     expect(await git(repo, 'for-each-ref', 'refs/cindy/worktree-recovery/moving/')).toBe('');
   }, 30_000);
 
+  // PR #6898 r4357569426: previous capture-abort coverage stops before capture returns.
+  // Exercise checkpointWorktreeForReuse with an edit just after ref creation: rejecting reuse
+  // must leave the edit intact and no orphan ref. Real refs require the git-integration tier.
+  it('drops the pool checkpoint ref when the checkout changes before reuse', async () => {
+    const meta = await createFixture('pool-checkpoint');
+    const refsBefore = await git(repo, 'for-each-ref', 'refs/cindy/worktree-recovery/');
+    const mocked = vi.mocked(gitExec);
+    const real = mocked.getMockImplementation()!;
+    mocked.mockImplementation(async (args, cwd, options) => {
+      const result = await real(args, cwd, options);
+      if (args[0] === 'update-ref' && args[1]?.startsWith('refs/cindy/')) {
+        await fs.writeFile(path.join(meta.path, 'draft.txt'), 'edited after capture\n');
+      }
+      return result;
+    });
+    try {
+      await expect(checkpointWorktreeForReuse(meta)).rejects.toThrow('pooled worktree changed before reuse');
+    } finally {
+      mocked.mockImplementation(real);
+    }
+    expect(await git(repo, 'for-each-ref', 'refs/cindy/worktree-recovery/')).toBe(refsBefore);
+    expect(await fs.readFile(path.join(meta.path, 'draft.txt'), 'utf8')).toBe('edited after capture\n');
+  }, 30_000);
+
   it('notices staging that happens while the full tree is compared', async () => {
     const meta = await createFixture('staged-meanwhile');
     const snapshot = await captureWorktreeContent(meta.path, 'refs/cindy/worktree-recovery/meanwhile/tree', { includeUntracked: true });
