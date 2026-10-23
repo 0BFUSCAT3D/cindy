@@ -12,7 +12,7 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProviderView } from '@cindy/model-providers';
+import type { CustomProviderConfig, ProviderView } from '@cindy/model-providers';
 import { createIpcError } from '../../shared/ipc-errors';
 import { toast } from '@/lib/toast';
 
@@ -200,7 +200,7 @@ vi.mock('@/components/settings/AddProviderWizard', () => ({
 
 import { setModelVisibilities } from '@/state/modelVisibilityPrefs';
 import { readCustomProviderKey, updateCustomProvider } from '@/lib/customProviders';
-import { buildUserProvider, providerPresetOAuth } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildUserProvider, providerPresetOAuth } from '@cindy/model-providers';
 
 import { ProvidersSection } from '@/components/settings/ProvidersSection';
 
@@ -218,6 +218,7 @@ beforeEach(() => {
   providerSnapshotState.error = null;
   providerSnapshotState.order = ['anthropic', 'xd', 'custom'];
   scanResult = { detections: [] };
+  vi.mocked(updateCustomProvider).mockResolvedValue({ ok: true });
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     maker: {
       scanLocalCli: vi.fn(async () => scanResult),
@@ -235,6 +236,145 @@ afterEach(() => {
 });
 
 describe('ProvidersSection — 双栏管理', () => {
+  // Renderer unit: click the real provider refresh/menu, inspect the persisted
+  // config and visible dialog. Earlier refresh cases only used chat-only proxies;
+  // a MiniMax API connection with no speech is the minimal missing-default case.
+  const miniMaxConfig = () => ({
+    id: 'minimax-api', name: 'My MiniMax', runtimes: {
+      codex: { baseUrl: 'https://api.minimax.io/v1', wireProtocol: 'openai-chat' as const,
+        models: [{ id: 'MiniMax-M3', name: 'My chat', defaultEnabled: false }] },
+    },
+  });
+  function selectSpeechProvider(config: CustomProviderConfig = miniMaxConfig()) {
+    const provider = buildUserProvider(config, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+    providerSnapshotState.customOverride = { ...provider, connected: true,
+      availableMediaModelIds: provider.audioModels?.map(model => model.id) ?? [] };
+    providerSnapshotState.order = [provider.id, 'xd'];
+  }
+  it.each(['missing', 'discovered', 'hidden', 'explicit-other'] as const)(
+    'manual refresh handles %s speech without changing saved switches', async kind => {
+      const config = miniMaxConfig();
+      if (kind === 'hidden') config.runtimes.codex.models.push({
+        id: 'speech-2.8-hd', name: 'My hidden voice', defaultEnabled: false,
+      });
+      selectSpeechProvider(config);
+      const discovered = kind === 'discovered'
+        ? [{ id: 'new-voice', name: 'New voice', discoveredMetadata: { mode: 'audio_speech' as const } }]
+        : kind === 'explicit-other'
+          ? [{ id: 'speech-2.8-turbo', name: 'Not TTS', discoveredMetadata: { mode: 'other' as const } }]
+          : [];
+      window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: true, models: [
+        { id: 'MiniMax-M3', name: 'Upstream name' }, ...discovered,
+      ] }));
+      const view = render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+      // Opening Settings only schedules discovery, never writes reference models.
+      expect(updateCustomProvider).not.toHaveBeenCalled();
+      await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+      const saved = vi.mocked(updateCustomProvider).mock.lastCall![0];
+      expect(saved.name).toBe(config.name);
+      expect(saved.runtimes.codex!.models.find(model => model.id === 'MiniMax-M3')).toMatchObject(config.runtimes.codex.models[0]);
+      const speech = buildUserProvider(saved, { modelRegistry: BUNDLED_CATALOG.modelRegistry }).audioModels?.filter(model => model.mode === 'audio_speech') ?? [];
+      expect(speech.map(model => model.id)).toEqual(kind === 'missing' ? ['speech-2.8-turbo']
+        : kind === 'discovered' ? ['new-voice'] : kind === 'hidden' ? ['speech-2.8-hd'] : []);
+      if (kind === 'hidden') expect(speech[0].defaultEnabled).toBe(false);
+      expect(setModelVisibilities).not.toHaveBeenCalled();
+      if (kind === 'missing') {
+        expect(speech[0].defaultEnabled).toBe(true);
+        expect(toast.success).toHaveBeenLastCalledWith('settings.providers.models.refreshSpeechAdded');
+        // A second click sees the saved reference; it does not add HD/other defaults.
+        selectSpeechProvider(saved);
+        view.rerender(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+        expect(vi.mocked(updateCustomProvider).mock.lastCall![0].runtimes.codex!.models.map(model => model.id))
+          .toEqual(saved.runtimes.codex!.models.map(model => model.id));
+      }
+    },
+  );
+  it.each(['proxy', 'oauth', 'disabled-route'] as const)(
+    'does not offer or auto-add speech for an unconfirmed %s connection', async kind => {
+      const config = miniMaxConfig();
+      if (kind === 'proxy') config.runtimes.codex.baseUrl = 'https://proxy.example/v1';
+      selectSpeechProvider(config);
+      if (kind === 'oauth') providerSnapshotState.customOverride!.auth = { method: 'oauth' };
+      if (kind === 'disabled-route') providerSnapshotState.customOverride!.routing.codex!.disabled = true;
+      window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: true,
+        models: [{ id: 'MiniMax-M3', name: 'Chat' }] }));
+      render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+      expect(screen.queryByRole('button', { name: 'settings.providers.speechSetup.add' })).toBeNull();
+      fireEvent.keyDown(screen.getByRole('button', { name: 'settings.providers.models.manage.menu' }), { key: 'ArrowDown' });
+      expect(screen.queryByRole('menuitem', { name: 'settings.providers.speechSetup.add' })).toBeNull();
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+      const saved = vi.mocked(updateCustomProvider).mock.lastCall![0];
+      expect(buildUserProvider(saved).audioModels ?? []).toEqual([]);
+    },
+  );
+  it.each([0, 1])('moves manual speech additions into management with %s saved models', async count => {
+    const config = miniMaxConfig();
+    if (!count) config.runtimes.codex.models = [];
+    selectSpeechProvider(config);
+    window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: false }));
+    render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    expect(screen.queryByRole('button', { name: 'settings.providers.speechSetup.add' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'settings.providers.models.manage.menu' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'settings.providers.speechSetup.add' }));
+    expect(await screen.findByRole('dialog', { name: 'settings.providers.speechSetup.add' })).toBeTruthy();
+    expect(await screen.findByRole('checkbox', { name: /speech-2.8-turbo/ })).toBeTruthy();
+    expect(updateCustomProvider).not.toHaveBeenCalled();
+  });
+  it.each(['hidden-other-runtime', 'failed-target'] as const)(
+    'does not supplement a reference across runtimes: %s', async kind => {
+      const config: CustomProviderConfig = miniMaxConfig();
+      config.runtimes.pi = { baseUrl: 'https://proxy.example/v1', models: [
+        { id: 'my-speech', name: 'Saved name', mode: 'audio_speech',
+          nativeApi: 'openai-audio-speech', defaultEnabled: false },
+      ] };
+      if (kind === 'failed-target') config.runtimes.pi.models = [{ id: 'my-chat', name: 'My chat' }];
+      selectSpeechProvider(config);
+      window.electronAPI.maker.fetchProviderModels = vi.fn(async request => (
+        kind === 'failed-target' && request.agent === 'codex' ? { ok: false, status: 401 }
+          : { ok: true, models: [{ id: 'another-chat', name: 'Another chat' }] }
+      ));
+      render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+      await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+      const saved = vi.mocked(updateCustomProvider).mock.lastCall![0];
+      expect(saved.runtimes.codex!.models.some(model => model.id === 'speech-2.8-turbo')).toBe(false);
+      expect(saved.runtimes.pi!.models).toEqual(expect.arrayContaining(config.runtimes.pi.models));
+      expect(setModelVisibilities).not.toHaveBeenCalled();
+    },
+  );
+  it('keeps speech additions out of native subscription management', async () => {
+    selectSpeechProvider();
+    providerSnapshotState.customOverride = { ...providerSnapshotState.customOverride!,
+      id: 'openai', source: 'builtin', auth: { method: 'oauth', native: 'codex' }, routing: {} };
+    providerSnapshotState.order = ['openai', 'xd'];
+    render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    expect(screen.queryByRole('button', { name: 'settings.providers.speechSetup.add' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'settings.providers.models.manage.menu' }), { key: 'ArrowDown' });
+    await screen.findByRole('menu');
+    expect(screen.queryByRole('menuitem', { name: 'settings.providers.speechSetup.add' })).toBeNull();
+    expect(updateCustomProvider).not.toHaveBeenCalled();
+  });
+  it.each([401, 500])('does not add references when discovery fails with HTTP %s', async status => {
+    selectSpeechProvider();
+    window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: false, status }));
+    render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+    expect(updateCustomProvider).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith('settings.providers.models.refreshFailed');
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+  it('does not report refresh success when saving the added model is declined', async () => {
+    selectSpeechProvider();
+    window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: true,
+      models: [{ id: 'MiniMax-M3', name: 'Chat' }] }));
+    vi.mocked(updateCustomProvider).mockResolvedValue({ ok: false,
+      confirmationRequired: 'codex-image-generation-reload', busyCount: 1 });
+    render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+    expect(toast.error).toHaveBeenCalledWith('settings.providers.models.refreshFailed');
+    expect(toast.success).not.toHaveBeenCalled();
+  });
   it('keeps a recovery action accessible when the first complete catalog could not be published', async () => {
     providerSnapshotState.loading = true;
     providerSnapshotState.error = { reason: 'storage-quota' };

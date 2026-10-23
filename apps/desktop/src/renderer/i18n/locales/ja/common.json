@@ -3352,6 +3352,7 @@
         "refreshingAria": "モデル一覧を更新中…",
         "refreshDone": "モデル一覧を再読み込みしました",
         "refreshAdded": "新しいモデルを {{count}} 件検出しました",
+        "refreshSpeechAdded": "モデルを更新し、参考の音声モデルを 1 件追加しました",
         "refreshNoNew": "モデル一覧は最新です。新規はありません",
         "refreshFailed": "モデル一覧を更新できませんでした。しばらくしてから再試行してください",
         "refreshFetchDisabled": "モデルカタログのリモート取得が無効のため、更新をスキップしました",

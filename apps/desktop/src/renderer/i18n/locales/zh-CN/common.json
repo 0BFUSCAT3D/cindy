@@ -3352,6 +3352,7 @@
         "refreshingAria": "正在刷新模型列表…",
         "refreshDone": "模型列表已刷新",
         "refreshAdded": "已发现 {{count}} 个新模型",
+        "refreshSpeechAdded": "已更新模型，补充了 1 个语音参考型号",
         "refreshNoNew": "模型列表已是最新，无新增",
         "refreshFailed": "模型列表刷新失败，请稍后再试",
         "refreshFetchDisabled": "模型目录远程拉取未启用，已跳过刷新",

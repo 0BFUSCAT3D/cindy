@@ -174,35 +174,34 @@ export function withSpeechApiPresets(presets: ProviderPreset[]): ProviderPreset[
 
 export function providerSpeechSetup(
   provider: ProviderView,
-):
-  { agent: AgentKind; service: SpeechService; needsApiKey: boolean; presetId: string } | undefined {
-  if (provider.source === 'organization' || provider.suspended) return;
+): { agent: AgentKind; service: SpeechService } | undefined {
+  if (provider.source !== 'user' || provider.suspended || provider.auth.method !== 'apiKey') return;
   for (const agent of ['codex', 'pi', 'claude-code'] as const) {
-    const upstream = provider.routing[agent]?.upstream;
-    const service = upstream && speechServiceForUrl(upstream);
+    const route = provider.routing[agent];
+    if (!route || route.disabled) continue;
+    const service = speechServiceForUrl(route.upstream);
     if (!service) continue;
-    if (provider.auth.method === 'apiKey' && provider.source !== 'user') continue;
-    if (!['apiKey', 'oauth'].includes(provider.auth.method)) continue;
-    return {
-      agent,
-      service,
-      needsApiKey: provider.auth.method === 'oauth',
-      presetId:
-        service === 'minimax'
-          ? ['api.minimax.io', 'api-uw.minimax.io'].includes(new URL(upstream!).hostname)
-            ? 'minimax-global'
-            : 'minimax-cn'
-          : service === 'bailian'
-            ? new URL(upstream!).hostname === 'dashscope.aliyuncs.com' ||
-              new URL(upstream!).hostname.endsWith('.cn-beijing.maas.aliyuncs.com')
-              ? 'aliyun-bailian-api-cn'
-              : 'aliyun-bailian-api-global'
-            : `${service}-api`,
-    };
+    return { agent, service };
   }
-  // Native OpenAI subscription endpoints are deliberately different from its API.
-  if (provider.id === 'openai' || provider.auth.native === 'codex')
-    return { agent: 'codex', service: 'openai', needsApiKey: true, presetId: 'openai-api' };
+}
+
+/** Manual refresh only: suggest one reference after successful catalog discovery. */
+export function missingSpeechReference(
+  provider: ProviderView,
+  config: CustomProviderConfig,
+  refreshedAgents: ReadonlySet<AgentKind>,
+): { agent: AgentKind; model: ProviderRuntimeModelConfig } | undefined {
+  const target = providerSpeechSetup(provider);
+  if (!target || !refreshedAgents.has(target.agent)) return;
+  const models = Object.values(config.runtimes).flatMap(runtime => runtime?.models ?? []);
+  // Hidden speech is still a saved choice. Never fill a different runtime or
+  // override discovery/user classification of an existing reference ID.
+  if (models.some(isSpeechModel)) return;
+  const runtime = config.runtimes[target.agent];
+  if (!runtime) return;
+  const model = speechReferenceModels(runtime.baseUrl).find(reference => reference.defaultEnabled);
+  if (!model || models.some(existing => existing.id === model.id)) return;
+  return { agent: target.agent, model };
 }
 
 /** Merge under Main's mutation queue, preserving concurrent edits and all existing models. */
