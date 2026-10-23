@@ -1583,7 +1583,7 @@ interface ElectronAPI {
     resolveConfirm: (requestId: string, confirmed: boolean) => Promise<{ handled: boolean }>;
     /** taskView 槽:插件请求在指定任务的右侧栏打开 / 聚焦它的任务页页签(main 已资格审)。 */
     onTaskViewOpen: (
-      callback: (payload: { instanceId: string; sessionId: string }) => void,
+      callback: (payload: { instanceId: string; sessionId: string; focus?: true }) => void,
     ) => () => void;
     /** preview 槽:插件请求在右侧栏内置浏览器开预览标签(main 已白名单守门+限速)。 */
     onPreviewOpen: (
