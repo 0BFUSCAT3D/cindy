@@ -66,5 +66,5 @@ export class TerminalRemoteModelGrants {
     });
     this.writes = job.then(() => undefined, () => undefined); return job;
   }
-  async close() { this.closed = true; await this.writes; }
+  async close() { await this.writes; this.closed = true; }
 }

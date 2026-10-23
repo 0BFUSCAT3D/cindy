@@ -3266,3 +3266,21 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 本机新增 `local-db:bots:projects:list/set` 仅用于受信 renderer，不进入远程 IPC allowlist。
 旧 `workbench.json` 目录及设备归属沿用原格式；关联不进入任务负责范围或扩大文件权限。
 不改服务端、数据库 schema、Mobile 原生配置或指纹。
+
+## 无界面客户端的远程 Shell
+
+`terminal:remote-op` 是同账号设备控制中的独立聚合入口，`version: 1` 支持
+`capabilities / list / create / read / write / resize / close`。它复用 Desktop
+原有 PTY 与 Shell 选择实现；普通 GUI 的 `terminal:*` 窗口接口保持原行为。
+共享任务和供应商分享的访客 allowlist 不包含此入口。每个 PTY 绑定宿主账号代次、
+服务端验证的控制设备 ID 和终端 ID，另一个控制设备不能通过猜 ID 读取或写入。
+账号切换与宿主退出关闭该账号的 PTY；控制端退出只分离，显式 `close` 才停止 Shell。
+
+输出为内存中的有界游标流，单 PTY 最多保留 2 MiB，单次读取最多约 256 KiB。
+超过保留窗口返回 `gap`，控制端明示更早输出不再可读；不把 Shell 输入或输出写入
+任务消息、模型上下文或日志。写入携带请求 ID，最近 256 个写入去重，ID 对应内容
+不同时拒绝。传输中断不盲目重发键盘输入。旧宿主没有此入口时返回未知通道，
+控制端说明不支持；原任务、文件、模型远控仍沿原协议工作，不要求旧端升级才能使用。
+
+定向回归覆盖控制设备隔离、重复输入、账号替换及输出窗口；跨平台安装包仍需分别
+完成真实 PTY 验收，不能由类型检查或内存测试推断。

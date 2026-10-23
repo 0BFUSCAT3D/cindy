@@ -1,3 +1,5 @@
+import { enqueueMessage, waitForTurn } from '../client-operations.js';
+import type { TerminalClient } from '../contracts.js';
 import { TerminalSchedulerHost } from './scheduler.js';
 import { createServer } from 'node:http';
 import { createProviderProxy } from '../models/proxy.js';
@@ -22,6 +24,7 @@ function engine() {
   const starts: StartSessionOptions[] = [];
   const inputs: RuntimeInput[] = [];
   const decisions: InteractionDecision[] = [];
+  const sent: import('@cindy/maker-core').UserMessage[] = [];
   const create = async (input: RuntimeInput) => {
     inputs.push(input);
     const agent = new ClaudeCodeAgent({ binaryPath: process.execPath, auth: { getState: async () => ({ authenticated: true }), getAuthEnv: async () => ({}), triggerLogin: async () => ({ authenticated: true }), logout: async () => {} }, runtimeConfig: {}, logger });
@@ -37,6 +40,7 @@ function engine() {
         id: options.resumeSessionId ?? `native-${options.sessionId}`,
         agentKind: 'claude-code', model: options.model,
         async send(message) {
+          sent.push(message);
           running = true;
           emit({ type: 'status', data: { isRunning: true } });
           const text = typeof message.content === 'string' ? message.content : '';
@@ -66,7 +70,7 @@ function engine() {
     };
     return agent;
   };
-  return { create, starts, decisions, inputs };
+  return { create, starts, decisions, inputs, sent };
 }
 
 async function setup(native = engine()) {
@@ -200,6 +204,7 @@ describe('terminal task host', () => {
     const second = await host.invoke('local-db:history:messages', [{ ...historyArgs, cursor: first.nextCursor }], context) as { items: Array<{ role: string }> };
     expect(second.items.map(item => item.role)).toEqual(['assistant']);
     expect(await host.invoke('local-db:history:query', [{ tool: 'list_sessions', args: { limit: 10 } }], { source: 'remote', assertCurrent() {} })).toMatchObject({ ok: true });
+    expect(await host.invoke('local-db:history:query', [{tool:'search_chat_history',args:{query:'shared message',limit:10}}])).toMatchObject({ok:true});
   });
 
   it('keeps custom headers in the vault and injects upstream credentials only behind the task proxy', async () => {
@@ -229,7 +234,49 @@ describe('terminal task host', () => {
       expect(received.path).toBe('/chat/completions');
       expect(received.headers).toMatchObject({ authorization: 'Bearer secret-key-value', 'x-private': 'secret-header-value' });
       expect(received.body).toMatchObject({ messages: [{ role: 'user', content: 'hello' }] });
+      expect(await host.invoke('maker:provider:test-connection',[{kind:'saved',providerId:'chatfixture',agent:'codex'}])).toMatchObject({ok:true});
+      await host.invoke('maker:model-disable:set',[{kind:'model',providerId:'chatfixture',modelIds:['test-model'],disabled:true}]);
+      await expect(host.models.select({agentKind:'codex',providerId:'chatfixture',model:'test-model'})).rejects.toThrow('MODEL_ROUTE_UNAVAILABLE');
+      await host.invoke('maker:model-disable:set',[{kind:'reset',providerId:'chatfixture'}]);
+      expect((await host.models.select({agentKind:'codex',providerId:'chatfixture',model:'test-model'})).selection.model).toBe('test-model');
+
     } finally { await proxy?.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
+  it('accepts the production queue client and preserves delayed file/media input across restart', async () => {
+    const {host,create,root,native}=await setup();
+    const task=await host.invoke('maker:create-session',[{}]) as {id:string};
+    const client={invoke:(channel:string,args:unknown[]=[])=>host.invoke(channel,args)} as TerminalClient;
+    await enqueueMessage(client,task.id,'from CLI','cli_input');
+    await host.invoke('terminal:tasks:wait',[task.id,'cli_input']);
+    expect(await waitForTurn(client,task.id,'cli_input')).toMatchObject({status:'completed',finalText:'Echo: from CLI'});
+    const encoded=Buffer.from('frozen attachment').toString('base64');
+    const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ4sAAAAASUVORK5CYII=';
+    await host.invoke('maker:input:enqueue',[task.id,{clientId:'delayed_input',text:'Read these',files:[{name:'note.txt',mimeType:'text/plain',base64:encoded},{name:'pixel.png',mimeType:'image/png',category:'image',base64:png}]},{sendAtMs:Date.now()+60_000}]);
+    const receipt=await host.storage.submission(task.id,'delayed_input');
+    expect(receipt?.status).toBe('queued');
+    const blocks=receipt!.message!.content as import('@cindy/maker-core').UserContentBlock[];
+    const file=blocks.find(block=>block.type==='file')! as {path:string};
+    expect(await readFile(file.path,'utf8')).toBe('frozen attachment');
+    const image=blocks.find(block=>block.type==='image')! as {path:string;managedUrl:string};
+    expect((await host.resolveManaged(image.managedUrl,task.id)).path).toBe(image.path);
+    await expect(host.resolveManaged(image.managedUrl,'unrelated')).rejects.toThrow('MEDIA_SESSION_ACCESS_DENIED');
+    await host.close();const restored=create();
+    const projection=await restored.invoke('maker:input:get-projection',[task.id]) as {pendingQueue:Array<{clientId:string;sendAtMs:number}>};
+    expect(projection.pendingQueue).toMatchObject([{clientId:'delayed_input'}]);
+    expect(native.sent).toHaveLength(1);
+    expect((await readFile(path.join(root,'tasks',task.id,'requests.json'),'utf8'))).not.toContain(encoded);
+    expect(await restored.invoke('maker:input:get-projection',[task.id,{deliveryClientIds:['delayed_input','missing']}])).toMatchObject({terminalTurnReceiptsVersion:1,deliveryReceipts:[{clientId:'delayed_input',state:'pending',turnStatus:'queued'},{clientId:'missing',state:'unknown'}]});
+    await restored.invoke('maker:input:enqueue',[task.id,{clientId:'second_queued',text:'second'},{sendAtMs:Date.now()+60_000}]);
+    await restored.invoke('maker:input:move',[task.id,'second_queued',0]);
+    await restored.close();const ordered=create();
+    expect(await ordered.invoke('maker:input:get-projection',[task.id])).toMatchObject({pendingQueue:[{clientId:'second_queued'},{clientId:'delayed_input'}]});
+    await ordered.invoke('maker:input:remove',[task.id,'delayed_input']);
+    expect(await ordered.invoke('maker:input:get-projection',[task.id,{deliveryClientIds:['delayed_input']}])).toMatchObject({deliveryReceipts:[{state:'removed',turnStatus:'interrupted',errorCode:'INPUT_REMOVED'}]});
+    const latest=await ordered.invoke('local-db:messages:list',[task.id,{limit:1}]) as Array<{id:string;role:string}>;
+    const previous=await ordered.invoke('local-db:messages:list',[task.id,{limit:1,before:latest[0].id}]) as Array<{id:string;role:string}>;
+    expect(latest[0].role).toBe('assistant');expect(previous[0].role).toBe('user');
+
   });
 
   it('runs and resumes owner-scoped schedules through the real engine and persists script completion', async () => {

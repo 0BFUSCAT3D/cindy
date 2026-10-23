@@ -1,7 +1,7 @@
 export type Locale = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko';
 const en = {
-  protocol:'API protocol',engines:'Model engines',install:'Install',update:'Update',notInstalled:'Not installed',providerLogin:'Sign in to provider',you: 'You', tasks: 'Tasks', models: 'Models', connections: 'Connections', service: 'Service',
-  local: 'This computer', emptyTasks: 'No tasks yet', newTask: 'New task', send: 'Send',
+  protocol:'API protocol',engines:'Model engines',install:'Install',update:'Update',notInstalled:'Not installed',providerLogin:'Sign in to provider',you: 'You', tasks: 'Sessions', models: 'Models', connections: 'Connections', service: 'Service',
+  local: 'This computer', emptyTasks: 'No sessions yet', newTask: 'New session', send: 'Send',
   back: 'Back', cancel: 'Cancel', save: 'Save', next: 'Next', quit: 'Detach',
   loading: 'Loading…', working: 'Working…', ready: 'Ready', offline: 'Disconnected',
   reconnect: 'Reconnect', refresh: 'Refresh', error: 'The operation could not be completed',
@@ -95,3 +95,30 @@ export function resolveLocale(input = process.env.LC_ALL || process.env.LC_MESSA
   if (/^ko/i.test(input)) return 'ko';
   return 'en';
 }
+
+const controls = {
+  en:{attachment:'Attachment',effort:'Reasoning effort',permission:'Permissions',plan:'Plan mode',fast:'Fast mode',compact:'Compact context',attach:'Add attachment',on:'On',off:'Off',removeAttachments:'Remove attachments',filePath:'Local file path'},
+  'zh-CN':{attachment:'附件',effort:'思考强度',permission:'权限',plan:'计划模式',fast:'快速模式',compact:'压缩上下文',attach:'添加附件',on:'开启',off:'关闭',removeAttachments:'移除附件',filePath:'本地文件路径'},
+  'zh-TW':{attachment:'附件',effort:'思考強度',permission:'權限',plan:'計畫模式',fast:'快速模式',compact:'壓縮上下文',attach:'新增附件',on:'開啟',off:'關閉',removeAttachments:'移除附件',filePath:'本機檔案路徑'},
+  ja:{attachment:'添付ファイル',effort:'推論の強度',permission:'権限',plan:'計画モード',fast:'高速モード',compact:'コンテキストを圧縮',attach:'添付ファイルを追加',on:'オン',off:'オフ',removeAttachments:'添付ファイルを削除',filePath:'ローカルファイルのパス'},
+  ko:{attachment:'첨부 파일',effort:'추론 강도',permission:'권한',plan:'계획 모드',fast:'빠른 모드',compact:'컨텍스트 압축',attach:'첨부 파일 추가',on:'켜기',off:'끄기',removeAttachments:'첨부 파일 제거',filePath:'로컬 파일 경로'},
+};
+export function getControlMessages(locale:Locale){return controls[locale];}
+
+const shellMessages={
+  en:{connected:'Terminal',detach:'Ctrl+] detaches; the shell keeps running.',gap:'Earlier terminal output is no longer in the buffer.'},
+  'zh-CN':{connected:'终端',detach:'Ctrl+] 退出连接，Shell 继续运行。',gap:'更早的终端输出已超出缓冲区。'},
+  'zh-TW':{connected:'終端',detach:'Ctrl+] 退出連線，Shell 繼續執行。',gap:'更早的終端輸出已超出緩衝區。'},
+  ja:{connected:'ターミナル',detach:'Ctrl+] で切断します。シェルは実行を続けます。',gap:'以前のターミナル出力はバッファーに残っていません。'},
+  ko:{connected:'터미널',detach:'Ctrl+]로 연결을 종료합니다. 셸은 계속 실행됩니다.',gap:'이전 터미널 출력이 버퍼 범위를 벗어났습니다.'},
+};
+export function getShellMessages(locale:Locale){return shellMessages[locale];}
+
+const modelMessages={
+  en:{manage:'Manage connections',edit:'Edit connection',custom:'Custom API',source:'Connection source',discover:'Get model list',test:'Generation test (may incur a charge)',testPassed:'Generation test passed',disable:'Disable',enable:'Enable',reset:'Restore defaults',disconnect:'Disconnect account',remove:'Remove connection',keepKey:'New API key (leave blank to keep)',addModel:'Add model',configure:'Configure model',context:'Context window (tokens)',modelName:'Model name',headers:'Replace request headers (JSON, leave blank to keep)',auth:'Authentication',none:'No authentication',apiKey:'API key',testResult:'Test result'},
+  'zh-CN':{manage:'管理连接',edit:'编辑连接',custom:'自定义 API',source:'连接来源',discover:'获取模型列表',test:'生成测试（可能产生费用）',testPassed:'生成测试通过',disable:'停用',enable:'启用',reset:'恢复默认',disconnect:'断开账号',remove:'移除连接',keepKey:'新 API 密钥（留空保留）',addModel:'添加模型',configure:'配置模型',context:'上下文窗口（Token）',modelName:'模型名称',headers:'替换请求头（JSON，留空保留）',auth:'认证方式',none:'无需认证',apiKey:'API 密钥',testResult:'测试结果'},
+  'zh-TW':{manage:'管理連線',edit:'編輯連線',custom:'自訂 API',source:'連線來源',discover:'取得模型清單',test:'生成測試（可能產生費用）',testPassed:'生成測試通過',disable:'停用',enable:'啟用',reset:'恢復預設',disconnect:'中斷帳號',remove:'移除連線',keepKey:'新 API 金鑰（留空保留）',addModel:'新增模型',configure:'設定模型',context:'上下文視窗（Token）',modelName:'模型名稱',headers:'替換請求標頭（JSON，留空保留）',auth:'認證方式',none:'無需認證',apiKey:'API 金鑰',testResult:'測試結果'},
+  ja:{manage:'接続を管理',edit:'接続を編集',custom:'カスタム API',source:'接続元',discover:'モデル一覧を取得',test:'生成テスト（料金が発生する場合があります）',testPassed:'生成テストに成功しました',disable:'無効にする',enable:'有効にする',reset:'既定に戻す',disconnect:'アカウントを切断',remove:'接続を削除',keepKey:'新しい API キー（空欄で保持）',addModel:'モデルを追加',configure:'モデルを設定',context:'コンテキストウィンドウ（トークン）',modelName:'モデル名',headers:'リクエストヘッダーを置換（JSON、空欄で保持）',auth:'認証方法',none:'認証なし',apiKey:'API キー',testResult:'テスト結果'},
+  ko:{manage:'연결 관리',edit:'연결 편집',custom:'사용자 지정 API',source:'연결 소스',discover:'모델 목록 가져오기',test:'생성 테스트 (요금이 발생할 수 있음)',testPassed:'생성 테스트 성공',disable:'비활성화',enable:'활성화',reset:'기본값 복원',disconnect:'계정 연결 해제',remove:'연결 삭제',keepKey:'새 API 키 (비워 두면 유지)',addModel:'모델 추가',configure:'모델 설정',context:'컨텍스트 창 (토큰)',modelName:'모델 이름',headers:'요청 헤더 교체 (JSON, 비워 두면 유지)',auth:'인증 방식',none:'인증 없음',apiKey:'API 키',testResult:'테스트 결과'},
+};
+export function getModelMessages(locale:Locale){return modelMessages[locale];}

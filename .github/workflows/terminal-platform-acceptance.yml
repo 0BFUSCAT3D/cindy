@@ -46,7 +46,9 @@ jobs:
       - name: Install target-native dependencies
         run: pnpm install --frozen-lockfile
       - name: Targeted authentication, vault, transport and engine tests
-        run: pnpm --filter cindy-terminal exec vitest run src/host.integration.test.ts src/engines/engines.test.ts src/ui/authentication.test.tsx --maxWorkers=1 --minWorkers=1
+        run: pnpm --filter cindy-terminal exec vitest run src/host.integration.test.ts src/engines/engines.test.ts src/ui/authentication.test.tsx src/maintenance.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Native plugin worker and existing broker ABI
+        run: pnpm --filter @cindy/plugin-runtime exec vitest run src/nativeProcess.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal
         run: pnpm --filter cindy-terminal typecheck
       - name: Build terminal bundle
@@ -59,7 +61,7 @@ jobs:
         run: node apps/cindy-terminal/scripts/platform-acceptance.mjs "$CINDY_ACCEPTANCE_OUTPUT" "$CINDY_ACCEPTANCE_REPORT"
       - name: Diagnose isolated native startup failure
         if: failure() && runner.os == 'Windows'
-        run: pnpm --filter cindy-terminal exec tsx scripts/diagnose-platform-start.mjs
+        run: node apps/cindy-terminal/scripts/diagnose-platform-start.mjs
       - name: Upload platform evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

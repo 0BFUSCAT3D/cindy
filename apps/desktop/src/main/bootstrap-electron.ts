@@ -652,6 +652,7 @@ import { registerSidebarSettingsIpc, loadSidebarSettingsSnapshot, setLocalMainVi
 import { registerModelVisibilityOwnerClaimIpc } from './maker-host/model-visibility-owner-claim.js';
 import { registerRemotePrecreatedWorktreeLedgerIpc } from './remotePrecreatedWorktreeLedger';
 import { registerTerminalHandlers } from './maker-ipc/terminal-handlers';
+import { registerRemoteTerminal } from './terminal/remote.js';
 import { registerLocalThemesIpc } from './local-themes/register';
 import {
   registerRemoteSshIpc,
@@ -9787,6 +9788,7 @@ app.on('ready', async () => {
     getFallbackOwner: () =>
       mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef.webContents : null,
   });
+  registerRemoteTerminal();
   registerLocalThemesIpc();
   registerVoiceInputIpc();
   registerGlobalVoiceInputIpc({

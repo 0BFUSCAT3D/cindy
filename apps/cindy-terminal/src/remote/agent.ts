@@ -105,6 +105,9 @@ export class TerminalRemoteAgentService {
     this.allowed = new Set(input.allowedProviders);
   }
   enabled(providerId: string): boolean { return !this.closed && this.allowed.has(providerId); }
+  ownerController(controller:string):boolean{
+    try{this.assertCurrent();const context=this.controllers.get(controller);context?.assertCurrent();return context?.source.kind==='owner';}catch{return false;}
+  }
   async views(): Promise<ProviderView[]> {
     await this.ready; this.assertCurrent();
     const views = await this.options.readProviders(); this.assertCurrent();

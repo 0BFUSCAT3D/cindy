@@ -714,6 +714,8 @@ export const REMOTE_REVIEW_EXTERNAL_INPUT_CHANNELS: ReadonlySet<string> = new Se
 
 /** 远程可调用的 invoke channel 全集(被控端 dispatch 前的权威校验依据) */
 export const REMOTE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
+  // Bounded PTY cursor API. Same-account only; never allowed to task/share guests.
+  'terminal:remote-op',
   // Same-account owner controls only; guest task dispatch has its own deny-by-default gate.
   'maker:shared-task',
   // Dedicated Host-only OAuth transaction. Args/replies are never forwarded to Renderer.

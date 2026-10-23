@@ -12,10 +12,11 @@ const TASK_CHANNELS = new Set([
   'local-db:messages:estimatedSessionValue', 'maker:input:get-projection', 'maker:session-in-turn',
   'maker:session-background-activity', 'maker:session-background-tasks:list', 'maker:background-task:output-tail',
   'maker:get-context-usage', 'maker:get-pending-interactions', 'maker:send', 'maker:steer',
-  'maker:abort-session', 'maker:resolve-interaction',
+  'maker:abort-session', 'maker:resolve-interaction', 'maker:input:enqueue',
+  'maker:provider:list', 'maker:get-capabilities', 'device-link:media:fetch',
 ]);
 const TASK_PUSH_CHANNELS = new Set([
-  'maker:event', 'maker:event:batch', 'maker:status-changed', 'maker:interaction-request',
+  'maker:event', 'maker:event:batch', 'maker:status-changed', 'maker:interaction-request', 'maker:input:projection',
   'maker:interaction-dismissed', 'maker:session-sync', 'local-db:messages:created', 'local-db:messages:updated',
   'local-db:sessions:created', 'local-db:sessions:patched', 'local-db:sessions:activity',
   'local-db:session:error-persisted', 'usage:session-spend-changed', 'usage:session-tokens-changed',
@@ -36,7 +37,10 @@ export class TerminalMembershipService {
     account: TerminalRemoteAccountService;
     getOwnerScope(): string | null;
     getDeviceId(): string;
-    onRevoked?(source: { shareId: string; memberId: string }): void;
+    externalReceived?(): readonly ProviderShareReceived[];
+    onChanged?():void;
+    onRevoked?(source: { shareId: string; memberId: string; removed: boolean }): void;
+    isTaskBlocked?(sessionId:string):boolean;
   }) { this.owner = options.getOwnerScope(); }
   private assertCurrent() { if (this.closed || this.owner === null || this.options.getOwnerScope() !== this.owner) throw new Error('OWNER_CHANGED'); }
   async refresh(): Promise<void> {
@@ -47,11 +51,12 @@ export class TerminalMembershipService {
       this.assertCurrent();
       for (const previous of this.owned) for (const member of previous.members) {
         if (member.status === 'active' && !owned.some(share => share.shareId === previous.shareId && share.members.some(next => next.memberId === member.memberId && next.status === 'active'))) {
-          this.options.onRevoked?.({ shareId: previous.shareId, memberId: member.memberId });
+          this.options.onRevoked?.({ shareId: previous.shareId, memberId: member.memberId, removed: !owned.some(share => share.shareId === previous.shareId && share.hostDeviceId === this.options.getDeviceId() && share.members.some(next => next.memberId === member.memberId)) });
         }
       }
       this.owned = owned.filter(share => share.hostDeviceId === this.options.getDeviceId());
       this.received = received; this.refreshedAt = Date.now();
+      this.options.onChanged?.();
     })();
     this.refreshing = work;
     try { await work; } finally {
@@ -72,8 +77,9 @@ export class TerminalMembershipService {
     return share ? { providerId: share.providerId, memberId: source.memberId! } : null;
   }
   private sources = new Map<string, Exclude<TerminalPeerIdentity, { kind: 'owner' }>>();
-  receivedShares(): readonly ProviderShareReceived[] { return this.received; }
-  async list() { if (Date.now() - this.refreshedAt >= 5_000) await this.refresh(); return { owned: this.owned, received: this.received }; }
+  receivedShares(): readonly ProviderShareReceived[] { return [...this.received, ...this.options.externalReceived?.() ?? []]; }
+  ownedShares(): readonly ProviderShareOwned[] | null { return this.refreshedAt ? this.owned : null; }
+  async list() { if (Date.now() - this.refreshedAt >= 5_000) await this.refresh(); return { owned: this.owned, received: this.receivedShares() }; }
   async resolve(source: Exclude<TerminalPeerIdentity, { kind: 'owner' }>): Promise<TerminalScopedAuthority | null> {
     this.assertCurrent();
     if (source.kind === 'provider-share') {
@@ -91,14 +97,22 @@ export class TerminalMembershipService {
     const current = () => {
       this.assertCurrent();
       const row = this.tasks.get(source.sharedTaskId);
-      if (!row || row.value.hostDeviceId !== this.options.getDeviceId() || row.value.status !== 'active' || Date.now() - row.at > 120_000) throw new Error('MEMBERSHIP_REVOKED');
+      if (!row || row.value.hostDeviceId !== this.options.getDeviceId() || row.value.status !== 'active' || this.options.isTaskBlocked?.(row.value.sessionId) || Date.now() - row.at > 120_000) throw new Error('MEMBERSHIP_REVOKED');
       const member = row.value.guests.find(guest => guest.memberId === source.memberId && guest.deviceIds.includes(source.deviceId));
       if (!member) throw new Error('MEMBERSHIP_REVOKED');
       return { row: row.value, member };
     };
     try { current(); } catch { return null; }
     this.sources.set(source.peerId, source);
-    return { allowedChannels: TASK_CHANNELS, allowedTopics: new Set<Topic>([`session:${entry.value.sessionId}`]), allowedPushChannels: TASK_PUSH_CHANNELS, assertCurrent: () => { current(); } };
+    return { allowedChannels: TASK_CHANNELS, allowedTopics: new Set<Topic>([`session:${entry.value.sessionId}`]), allowedPushChannels: TASK_PUSH_CHANNELS, acceptsPush: (channel, payload) => {
+      current();
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+      const row = payload as Record<string, unknown>;
+      if (row.sessionId !== entry.value.sessionId) return false;
+      if (channel === 'maker:interaction-request' && (row.request as { kind?: unknown } | undefined)?.kind === 'input_handoff') return false;
+      if (channel === 'maker:event:batch' && (!Array.isArray(row.events) || row.events.some(event => !event || typeof event !== 'object' || (event as {sessionId?:unknown}).sessionId !== entry.value.sessionId))) return false;
+      return true;
+    }, assertCurrent: () => { current(); } };
   }
   taskContext(source: TerminalPeerIdentity): InvocationContext['sharedTask'] | undefined {
     if (source.kind !== 'shared-task') return undefined;
@@ -109,8 +123,27 @@ export class TerminalMembershipService {
     return { sharedTaskId: source.sharedTaskId, sessionId: entry.value.sessionId, memberId: member.memberId, accountId: member.accountId,
       name: entry.value.memberLabels.find(label => label.memberId === member.memberId)?.displayName };
   }
+  peersForTask(sessionId:string):string[] { return [...this.sources].filter(([,source])=>source.kind==='shared-task'&&this.tasks.get(source.sharedTaskId)?.value.sessionId===sessionId).map(([peer])=>peer); }
+  assertRequest(source: TerminalPeerIdentity, channel: string, args: unknown[]): void {
+    if (source.kind !== 'shared-task') return;
+    this.taskContext(source);
+    const deny = () => { throw new Error('SHARED_TASK_PERMISSION_DENIED'); };
+    if (channel === 'maker:get-capabilities') {
+      if (args.length !== 1 || !['claude-code', 'codex', 'pi'].includes(String(args[0]))) deny();
+    } else if (channel === 'maker:provider:list') {
+      if (args.length > 1) deny();
+      if (args[0] !== undefined) {
+        const value = args[0] as Record<string, unknown>;
+        if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => key !== 'capabilities') || !Array.isArray(value.capabilities) || value.capabilities.some(item => typeof item !== 'string')) deny();
+      }
+    } else if (channel === 'device-link:media:fetch') {
+      const value = args[0] as Record<string, unknown>;
+      if (args.length !== 1 || !value || typeof value !== 'object' || Array.isArray(value) || typeof value.url !== 'string' || Object.keys(value).some(key => !['url', 'skipCache', 'thumbnail', 'prepareOnly', 'metadataOnly'].includes(key)) || ['skipCache', 'thumbnail', 'prepareOnly', 'metadataOnly'].some(key => value[key] !== undefined && typeof value[key] !== 'boolean')) deny();
+    }
+  }
   projectProviders(source: TerminalPeerIdentity, providers: ProviderView[]): ProviderView[] {
     if (source.kind === 'owner') return providers;
+    if (source.kind === 'shared-task') { this.taskContext(source); return providers.map(scrubSharedProvider); }
     const access = this.guestAccess(source.peerId);
     if (!access) throw new Error('MEMBERSHIP_REVOKED');
     return providers.filter(provider => provider.id === access.providerId && provider.remoteInvocationEnabled === true).map(scrubSharedProvider);

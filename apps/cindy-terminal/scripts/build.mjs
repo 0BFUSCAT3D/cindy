@@ -11,3 +11,6 @@ await build({
   loader:{'.md':'text'},external:['ink','react','react/jsx-runtime','@roamhq/wrtc','better-sqlite3','sharp','node-pty','ssh2'],
   banner:{js:'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);'},
 });
+
+// The native plugin worker keeps the same published bootstrap ABI as Desktop.
+await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/nativeWorkerEntry.ts')], outfile:path.join(appDir,'dist/plugin-node-worker.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });

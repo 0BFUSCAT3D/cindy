@@ -22,7 +22,8 @@ const fileOperations:Record<string,string>={listDir:'list-dir',listAllFiles:'lis
 /** The same scanner/path checks as Desktop, with process-owned watches. */
 export class TerminalFileBrowser {
   private watches = new Map<string, FSWatcher>();
-  constructor(private profileDir: string, private emit: (channel: string, value: unknown) => void) {}
+  constructor(private profileDir: string, private emit: (channel: string, value: unknown) => void,
+    private resolveManaged?: (url: string) => Promise<{ path: string; mimeType: string }>) {}
   async invoke(channel: string, args: unknown[], context: InvocationContext) {
     let input = object(args[0]);
     context.assertCurrent?.();
@@ -105,24 +106,30 @@ export class TerminalFileBrowser {
     }
   }
   private blocklist(){return [...getSensitiveMediaBlocklist(),...['secrets.enc','machine.key','service.json'].map(name=>path.join(this.profileDir,name))];}
-  async openMedia(raw: string, context: TerminalRemoteContext) {
+  async openMedia(raw: string, context: Pick<TerminalRemoteContext, 'assertCurrent'>) {
     context.assertCurrent();
     const url=new URL(raw);
-    if(!['xdt-file:','xdt-audio:'].includes(url.protocol) || url.searchParams.has('remoteHostId'))throw new Error('MEDIA_REFERENCE_NOT_SUPPORTED');
-    const requested=string(url.searchParams.get('path'));
+    const managed=url.protocol==='cindy-media:'?await this.resolveManaged?.(raw):undefined;
+    if(!managed&&(!['xdt-file:','xdt-audio:'].includes(url.protocol) || url.searchParams.has('remoteHostId')))throw new Error('MEDIA_REFERENCE_NOT_SUPPORTED');
+    const requested=managed?.path??string(url.searchParams.get('path'));
     if(!path.isAbsolute(requested))throw new Error('MEDIA_PATH_MUST_BE_ABSOLUTE');
     const canonical=await realpath(requested);context.assertCurrent();
+    const baseDir=url.searchParams.get('baseDir');
+    if(baseDir){const base=await realpath(baseDir);if(canonical!==base&&!canonical.startsWith(base+path.sep))throw new Error('MEDIA_PATH_DENIED');context.assertCurrent();}
     const profile=await realpath(this.profileDir);context.assertCurrent();
     const protectedFiles=['secrets.enc','machine.key','service.json'].map(name=>path.join(profile,name));
     if(!isPathAllowedAgainst(canonical,[...getSensitiveMediaBlocklist(),...protectedFiles]))throw new Error('MEDIA_PATH_DENIED');
     const handle=await open(canonical,constants.O_RDONLY | (constants.O_NOFOLLOW??0));
     try {
       context.assertCurrent();
-      if(!(await handle.stat()).isFile())throw new Error('MEDIA_NOT_A_FILE');
+      const info=await handle.stat();
+      if(!info.isFile())throw new Error('MEDIA_NOT_A_FILE');
+      const limit=url.searchParams.get('maxBytes');
+      if(limit!==null&&(!Number.isSafeInteger(Number(limit))||Number(limit)<1||info.size>Number(limit)))throw new Error('MEDIA_FILE_TOO_LARGE');
       context.assertCurrent();
       const extension=path.extname(canonical).toLowerCase();
       const types:Record<string,string>={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.pdf':'application/pdf','.mp4':'video/mp4','.mp3':'audio/mpeg','.wav':'audio/wav','.txt':'text/plain','.md':'text/markdown'};
-      return {handle,mimeType:types[extension]??'application/octet-stream'};
+      return {handle,path:canonical,mimeType:managed?.mimeType??types[extension]??'application/octet-stream'};
     }catch(error){await handle.close();throw error;}
   }
   stop(peer?: string) {

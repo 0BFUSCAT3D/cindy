@@ -10,7 +10,7 @@ import { Input, terminalText } from './input.js';
 import { useInputState } from './state.js';
 
 /** Portable resource controller; business actions remain on the selected host. */
-export function Resources({ client, device, locale, onTask }: { client: TerminalClient; device?: string; locale: Locale; onTask(id: string): void }) {
+export function Resources({ client, device, locale, initialCollection, onTask }: { client: TerminalClient; device?: string; locale: Locale;initialCollection?:string; onTask(id: string,device?:string): void }) {
   const t=getMessages(locale);
   const { rows }=useWindowSize();
   const [collections,setCollections]=useState<RemoteCollectionDescriptor[]>([]);
@@ -48,6 +48,8 @@ export function Resources({ client, device, locale, onTask }: { client: Terminal
     if(!collection)return;
     const result=await call<RemoteActionInvokeResponse>('invoke',{collectionId:collection.id,actionId:chosen.id,...(resource?{resourceRef:resource.ref}:{}),input:inputValues});
     setAction(undefined);setInput('');setValues({});
+    const target=result.result as {sessionId?:unknown;deviceId?:unknown}|undefined;
+    if(target&&typeof target.sessionId==='string'&&typeof target.deviceId==='string'){onTask(target.sessionId,target.deviceId);return;}
     for(const effect of result.effects??[]){
       if(effect.kind==='toast')setNotice(txt(effect.message));
       else if(effect.kind==='navigate'){if(effect.target.kind==='session')onTask(effect.target.sessionId);else await open(effect.target.ref);}
@@ -63,7 +65,7 @@ export function Resources({ client, device, locale, onTask }: { client: Terminal
   }
   useEffect(()=>{
     epoch.current++;const at=epoch.current;setCollection(undefined);setResource(undefined);setAction(undefined);setSelected(0);
-    void run(async()=>{const result=await call<{collections:RemoteCollectionDescriptor[]}>('manifest',{});if(epoch.current===at)setCollections(result.collections);});
+    void run(async()=>{const result=await call<{collections:RemoteCollectionDescriptor[]}>('manifest',{});if(epoch.current!==at)return;setCollections(result.collections);if(initialCollection){const target=result.collections.find(item=>item.id===initialCollection);if(!target)throw new Error('CAPABILITY_NOT_AVAILABLE_ON_TARGET');await list(target);}});
     return()=>{epoch.current++;};
   },[device,client]);
   const fieldDescriptor=action?.fields?.[field];

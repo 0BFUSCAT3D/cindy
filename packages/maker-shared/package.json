@@ -63,6 +63,7 @@
     "./project-order-sync": "./src/projectOrderSync.ts",
     "./path-text": "./src/pathText.ts",
     "./permission-mode": "./src/permissionMode.ts",
+    "./provider-errors": "./src/providerErrors.ts",
     "./presentation-localization": "./src/presentationLocalization.ts",
     "./queue": "./src/queue.ts",
     "./schedule-delete": "./src/scheduleDelete.ts",

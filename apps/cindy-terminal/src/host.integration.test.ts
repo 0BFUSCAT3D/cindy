@@ -11,6 +11,9 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
+import { buildLegacyAttachmentOssRef } from '@cindy/device-link';
+import { TerminalMediaTransfer } from './media-transfer.js';
 import { TerminalSecretStore } from './secrets.js';
 import { TerminalTransportServer, connectTerminal } from './transport.js';
 import { socketPath, privateDirectory } from './platform.js';
@@ -19,6 +22,41 @@ describe('terminal private host', () => {
   let directory: string;
   beforeAll(async () => { directory = await fs.mkdtemp(path.join(os.tmpdir(),'cindy-terminal-host-')); });
   afterAll(async () => { await fs.rm(directory,{recursive:true,force:true}); });
+
+  // Existing GUI attachments use signed OSS URLs. A corrupt or cancelled
+  // transfer must never be adopted, and account tokens belong only on the API.
+  it('streams verified attachments without forwarding account credentials to storage', async () => {
+    const bytes=Buffer.from('attachment content');
+    const sha256=createHash('sha256').update(bytes).digest('hex');
+    let corrupt=false,deleted=0,uploaded:Buffer|undefined;
+    const transfer=new TerminalMediaTransfer({ownerDir:path.join(directory,'media'),getOwnerScope:()=> 'owner',getToken:async()=> 'test-only-token',getApiBaseUrl:()=> 'https://api.test',
+      fetch:async(input,init)=>{
+        const url=new URL(String(input));
+        if(url.host==='api.test'){
+          expect(new Headers(init?.headers).get('authorization')).toBe('Bearer test-only-token');
+          if(init?.method==='DELETE'){deleted++;return Response.json({deleted:true});}
+          return Response.json(url.pathname.endsWith('presign-put')?{putUrl:'https://storage.test/upload',key:'object-key'}:{getUrl:'https://storage.test/download'});
+        }
+        expect(new Headers(init?.headers).has('authorization')).toBe(false);
+        if(init?.method==='PUT'){
+          uploaded=Buffer.from(await new Response(init.body as BodyInit).arrayBuffer());
+          expect(new Headers(init.headers).get('x-oss-object-acl')).toBe('private');
+          return new Response(null,{status:200});
+        }
+        return new Response(corrupt?Buffer.from('corrupt'):bytes);
+      }});
+    const reference=buildLegacyAttachmentOssRef({ossKey:'object-key',mimeType:'text/plain',size:bytes.length,sha256});
+    const result=await transfer.resolve(reference,{source:'remote',deviceId:'sender'});
+    expect(await fs.readFile(result.path)).toEqual(bytes);
+    expect(deleted).toBe(0);
+    const handle=await fs.open(result.path,'r');
+    try{const sent=await transfer.upload(handle,'text/plain','note.txt');expect(sent.sha256).toBe(sha256);expect(uploaded).toEqual(bytes);}
+    finally{await handle.close();}
+    await result.afterAcceptance?.();expect(deleted).toBe(1);await result.cleanup();
+    corrupt=true;
+    await expect(transfer.resolve(reference,{source:'remote',deviceId:'sender'})).rejects.toThrow('ATTACHMENT_INTEGRITY_FAILED');
+    expect(await fs.readdir(path.join(directory,'media','attachment-staging'))).toEqual([]);
+  });
 
   it('persists encrypted credentials and rejects the wrong passphrase', async () => {
     const dir=path.join(directory,'passphrase');

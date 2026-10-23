@@ -36,8 +36,9 @@ export class TerminalSchedulerHost {
     for(const name of ['fired','completed','failed','skipped','deferred','session-bound','changed','runtime-state','silenced','notified'] as const) this.engine.on(name as 'changed', (event)=>{
       if(this.closed)return;
       options.emit('maker:schedule:event',[event]);
-      if(['completed','failed'].includes(event.type))void this.notify(event as unknown as {scheduleId:string;runId:string});
+      if(['completed','failed'].includes(event.type)&&!(event as {silenced?:boolean}).silenced)void this.notify(event as unknown as {scheduleId:string;runId:string});
     });
+    options.tasks.configureScheduler({getScheduler:()=>{this.guard();return this.engine;}});
     this.ready=this.initialize();
   }
   private async initialize(){await privateDirectory(this.options.profileDir);await this.storage.open();if(!this.closed){await this.engine.start();this.options.emit('maker:schedule:event',[{type:'ready'}]);}}
@@ -76,16 +77,15 @@ export class TerminalSchedulerHost {
     }
     const id=sessionId;await ctx.onSessionBound?.(id);this.guard();ctx.signal.throwIfAborted();
     const abort=()=>{void this.options.tasks.invoke('maker:abort-session',[id]).catch(()=>{});};ctx.signal.addEventListener('abort',abort,{once:true});
+    let active=false;const unobserve=this.options.tasks.observeTask(id,event=>{ctx.onProgress?.();if(!active&&event.type==='status'&&event.data&&typeof event.data==='object'&&(event.data as {isRunning?:boolean}).isRunning){active=true;ctx.onTurnActive?.(id);}});
     try {
-      await this.options.tasks.submitScheduled(id,schedule.prompt,{scheduleId:schedule.id,scheduleName:schedule.name,runId:ctx.runId,requestId:`schedule_${ctx.runId}`,assertCurrent:()=>{this.guard();ctx.signal.throwIfAborted();}});
-      ctx.onTurnActive?.(id);
+      await this.options.tasks.submitScheduled(id,schedule.prompt,{scheduleId:schedule.id,scheduleName:schedule.name,runId:ctx.runId,firedAt:ctx.firedAt,requestId:`schedule_${ctx.runId}`,assertCurrent:()=>{this.guard();ctx.signal.throwIfAborted();}});
       for(;;){
         const receipt=await this.options.tasks.invoke('terminal:tasks:wait',[id,`schedule_${ctx.runId}`,{timeoutMs:25_000}],{source:'local',signal:ctx.signal,assertCurrent:()=>this.guard()}) as {status:string;finalText?:string;error?:string};
         if(receipt.status==='completed')return {sessionId:id,resultText:receipt.finalText??''};
         if(receipt.status==='failed'||receipt.status==='interrupted')throw new Error(receipt.error??'SCHEDULE_TURN_FAILED');
-        ctx.onProgress?.();
       }
-    } finally {ctx.signal.removeEventListener('abort',abort);if(!schedule.targetSessionId&&!schedule.persistentSession)await this.options.tasks.invoke('maker:close-session',[id]).catch(()=>{});}
+    } finally {unobserve();ctx.signal.removeEventListener('abort',abort);if(!schedule.targetSessionId&&!schedule.persistentSession)await this.options.tasks.invoke('maker:close-session',[id]).catch(()=>{});}
   }
   private async scriptCall(schedule:Schedule,ctx:FireContext,method:string,params:Record<string,unknown>){
     this.guard();ctx.signal.throwIfAborted();
@@ -121,7 +121,13 @@ export class TerminalSchedulerHost {
       case 'maker:schedule:mark-run-read':case 'maker:schedule:mark-all-runs-read':case 'maker:schedule:mark-schedule-runs-read':{for(const run of await this.storage.allRuns())if(run.status!=='running'&&(channel.endsWith('mark-all-runs-read')||channel.endsWith('mark-run-read')&&run.id===id()||channel.endsWith('mark-schedule-runs-read')&&run.scheduleId===id()))await this.storage.updateRun(run.id,{readAt:Date.now()});result={success:true};break;}
       case 'maker:schedule:list-sidebar-index-runs':result=(await this.storage.allRuns()).filter(run=>run.sessionId);break;
       case 'maker:schedule:list-templates':result=BUILTIN_TEMPLATES;break;
-      case 'maker:schedule:script-capability-status':result=[{capability:'sessions.dispatch',available:true}];break;
+      case 'maker:schedule:create-from-template': {
+        const body=object(args[0]);const template=BUILTIN_TEMPLATES.find(item=>item.id===text(body.templateId));if(!template)throw new Error('TEMPLATE_NOT_FOUND');
+        const parameters=body.paramValues?object(body.paramValues):{};if(Object.values(parameters).some(value=>typeof value!=='string'))throw new Error('INVALID_TEMPLATE_PARAMETERS');
+        const overrides=body.overrides?object(body.overrides):{};const input={name:template.name,kind:'cron',cronExpr:template.cronExpr,timezone:template.timezone,recurring:template.recurring??true,agentKind:template.agentKind??'claude-code',model:template.model,providerId:template.providerId,effort:template.effort,fastMode:template.fastMode,useWorktree:template.useWorktree??false,persistentSession:template.persistentSession,silentWhenIdle:template.silentWhenIdle,notify:template.notify??{desktop:true,feishu:false},...overrides,prompt:overrides.prompt??applyTemplateParams(template.prompt??'',parameters as Record<string,string>,template.parameters)};
+        this.validateInput(input);result=await this.engine.create(input as CreateScheduleInput);break;
+      }
+      case 'maker:schedule:script-capability-status':result={statuses:[{capability:'sessions.dispatch',available:true}]};break;
       default:throw new Error(`UNSUPPORTED_CHANNEL:${channel}`);
     }
     this.guard(context);return result;
@@ -130,5 +136,5 @@ export class TerminalSchedulerHost {
     const item=(schedule:Schedule):RemoteCollectionItem=>({ref:{collectionId:'schedules',kind:'schedule',id:schedule.id},revision:String(schedule.updatedAt),display:{title:schedule.name,subtitle:schedule.intervalMs?`${schedule.intervalMs/1000}s`:schedule.cronExpr,status:{label:{fallback:schedule.status},tone:schedule.status==='active'?'positive':'neutral'}},links:schedule.targetSessionId?[{rel:'task',target:{kind:'session',sessionId:schedule.targetSessionId}}]:[],actions:[{id:'run-now',label:{fallback:'Run now'}},{id:schedule.status==='active'?'pause':'resume',label:{fallback:schedule.status==='active'?'Pause':'Resume'}}]});
     registry.register({collection:{id:'schedules',resourceKind:'schedule',title:{fallback:'Schedules'},placement:'sidebar'},list:async(context,request)=>{await this.ready;context.assertCurrent?.();const rows=await this.engine.list();const offset=request.cursor?Number(request.cursor):0;if(!Number.isInteger(offset)||offset<0)throw new Error('INVALID_CURSOR');const limit=Math.min(request.limit??100,100);return {collectionId:'schedules',revision:rows.map(row=>row.updatedAt).join(','),items:rows.slice(offset,offset+limit).map(item),...(offset+limit<rows.length?{nextCursor:String(offset+limit)}:{})};},get:async(context,request)=>{await this.ready;context.assertCurrent?.();const row=await this.engine.get(request.ref.id);if(!row)throw new Error('SCHEDULE_NOT_FOUND');return {...item(row),blocks:[{id:'prompt',primitive:'text',fallbackMarkdown:row.prompt}]};},invoke:async(context,request)=>{context.assertCurrent?.();if(!request.resourceRef||!['run-now','pause','resume'].includes(request.actionId))throw new Error('INVALID_ACTION');await this.invoke(`maker:schedule:${request.actionId}`,[request.resourceRef.id],{source:'local',assertCurrent:context.assertCurrent});return {effects:[{kind:'refresh-collection',collectionId:'schedules'}]};}});
   }
-  async close(){this.closed=true;await this.ready;await this.engine.stop();await this.storage.flush();}
+  async close(){this.closed=true;this.options.tasks.configureScheduler(undefined);await this.ready;await this.engine.stop();await this.storage.flush();}
 }

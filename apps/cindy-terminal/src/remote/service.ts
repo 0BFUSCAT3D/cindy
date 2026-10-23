@@ -36,6 +36,7 @@ const MAX_INBOUND = 128;
 const MAX_COMPLETED = 4096;
 const MAX_REPLY_BYTES = 32 * 1024 * 1024;
 const REPLY_TTL_MS = 15 * 60_000;
+const SHARED_TASK_METADATA = new Set(['local-db:sessions:created', 'local-db:sessions:patched', 'local-db:sessions:activity', 'local-db:session:error-persisted', 'usage:session-spend-changed', 'usage:session-tokens-changed']);
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
@@ -337,12 +338,15 @@ export class TerminalDeviceService {
   async publish(channel: string, payload: unknown, ownerStamp?: PushOwnerStamp): Promise<void> {
     const check = this.guard(); check();
     if (!PUSH_FORWARD_ALLOWLIST.has(channel) && !this.options.extraPushChannels?.has(channel)) return;
-    const topic = topicForPush(channel, payload);
+    const regularTopic = topicForPush(channel, payload);
     for (const [peer, entry] of this.inbound) {
+      const sessionId = record(payload) && typeof payload.sessionId === 'string' ? payload.sessionId : null;
+      const topic: Topic | null = entry.source.kind === 'shared-task' && SHARED_TASK_METADATA.has(channel) && sessionId
+        ? `session:${sessionId}` : regularTopic;
       if (!entry.active || (!entry.legacy && (!topic || !entry.topics.has(topic)))) continue;
       try {
         const authority = await this.authorize(entry.source, undefined, topic ?? undefined); check();
-        if (authority && !authority.allowedPushChannels?.has(channel)) continue;
+        if (authority && (!authority.allowedPushChannels?.has(channel) || authority.acceptsPush?.(channel, payload) === false)) continue;
         if (this.inbound.get(peer) !== entry || !entry.active
           || (!entry.legacy && (!topic || !entry.topics.has(topic)))) continue;
         this.client.sendPush(peer, channel, payload, ownerStamp);

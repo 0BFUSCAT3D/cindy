@@ -6,20 +6,28 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as pause } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
-import { setDefaultModel, waitForTurn, unwrap } from './client-operations.js';
+import { once } from 'node:events';
+import { StringDecoder } from 'node:string_decoder';
+import { setDefaultModel, waitForTurn, unwrap, enqueueMessage, connectedModels } from './client-operations.js';
 import { EngineManager, runNativeLogin, nativeLoginStatus, type EngineKind } from './engines/index.js';
 import { profilePath, privateDirectory, VERSION } from './platform.js';
 import { connectTerminal, reconnectingClient } from './transport.js';
 import { TerminalService } from './service.js';
 import { TerminalServiceManager } from './service-manager.js';
 import { runTui } from './ui/tui.js';
+import { terminalText } from './ui/input.js';
+import { runShell } from './shell-client.js';
+import { REMOTE_TERMINAL_CHANNEL } from '@cindy/terminal-core';
+import { doctor,backupProfile,restoreProfile,verifyProfileBackup,recoverProfileRestore,shellCompletion,installTerminalPackage,checkTerminalUpdate,terminalInstallationStatus,rollbackTerminalPackage,profileStorage,listTerminalProfiles } from './maintenance.js';
+import { SettingsStore } from './settings.js';
+import { resourceCollections,runResourceCommand } from './resource-commands.js';
 import { resolveLocale, getMessages } from './ui/i18n.js';
 import type { TerminalClient } from './contracts.js';
 
 let json = false;
 let locale = resolveLocale();
 function print(value: unknown) {
-  process.stdout.write((json ? JSON.stringify(value) : typeof value === 'string' ? value : JSON.stringify(value,null,2))+'\n');
+  process.stdout.write((json ? JSON.stringify(value) : typeof value === 'string' ? terminalText(value) : JSON.stringify(value,null,2))+'\n');
 }
 function object(value: unknown): Record<string,unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_RESPONSE');
@@ -63,21 +71,61 @@ async function main() {
     cwd:{type:'string'},timeout:{type:'string'},collection:{type:'string'},action:{type:'string'},'no-input':{type:'boolean'},sso:{type:'boolean'},all:{type:'boolean'},
     name:{type:'string'},url:{type:'string'},hostname:{type:'string'},user:{type:'string'},port:{type:'string'},'auth-method':{type:'string'},'key-file':{type:'string'},protocol:{type:'string'},'key-stdin':{type:'boolean'},
     'request-id':{type:'string'},allow:{type:'boolean'},deny:{type:'boolean'},'machine-key':{type:'boolean'},'passphrase-stdin':{type:'boolean'},
+    file:{type:'string',multiple:true},'send-at':{type:'string'},sha256:{type:'string'},prefix:{type:'string'},effort:{type:'string'},mode:{type:'string'},shell:{type:'string'},
+    generate:{type:'boolean'},cursor:{type:'string'},limit:{type:'string'},output:{type:'string'},manifest:{type:'string'},follow:{type:'boolean'},
   }}); } catch { throw new Error('INVALID_COMMAND_ARGUMENTS'); }
-  const values=parsed.values as Record<string,string|boolean|undefined>;
+  const values=parsed.values as Record<string,string|boolean|string[]|undefined>;
   const positionals=parsed.positionals;
   const str=(key:string)=>typeof values[key]==='string'?values[key] as string:undefined;
   json=values.json===true;locale=resolveLocale(str('lang'));
   let t=getMessages(locale);
-  const directory=str('state-dir')?path.resolve(str('state-dir')!):profilePath(str('profile'));
-  const [command,subcommand,...rest]=positionals;
+  const [requestedCommand,subcommand,...rest]=positionals;
+  let command=requestedCommand;
+  const directory=requestedCommand==='profiles'&&subcommand==='use'?profilePath(required(rest[0])):str('state-dir')?path.resolve(str('state-dir')!):profilePath(str('profile'));
+  if(command==='profiles'&&subcommand==='use')command='';
+  const limit=str('limit')===undefined?undefined:Number(str('limit'));
+  if(limit!==undefined&&(!Number.isSafeInteger(limit)||limit<1||limit>1000))throw new Error('INVALID_LIMIT');
+  const inputFiles=(Array.isArray(values.file)?values.file:typeof values.file==='string'?[values.file]:[]).map(file=>({path:path.resolve(file),name:path.basename(file)}));
+  const sendAtMs=str('send-at')?Date.parse(str('send-at')!):undefined;
+  if(sendAtMs!==undefined&&!Number.isFinite(sendAtMs))throw new Error('INVALID_SEND_TIME');
   if(values.wait&&values.detach)throw new Error('CONFLICTING_WAIT_OPTIONS');
   const timeoutMs=str('timeout')===undefined?undefined:Number(str('timeout'))*1000;
   if(timeoutMs!==undefined&&(!Number.isFinite(timeoutMs)||timeoutMs<=0))throw new Error('INVALID_TIMEOUT');
+  if(str('device')&&['service','status','auth','vault','login','logs'].includes(command))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
   if(values.help||command==='help'){
-    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch\n  cindy vault setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|use]        ${t.models}\n  cindy providers [list|add|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|history|stop|send|rename|archive|restore\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy files list|read|write|stat|mkdir|remove|rename --cwd <path>\n  cindy resources [list|get|action]\n  cindy requests list|resolve\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|uninstall|logs\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>`);return;
+    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy requests list|show|approve|deny|resolve\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|uninstall|logs\n  cindy logs [--follow]\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
   }
   if(values.version||command==='version'){print(VERSION);return;}
+  if(command==='profiles'){
+    if(str('device'))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
+    if(!subcommand||subcommand==='list'){print(await listTerminalProfiles());return;}
+    if(subcommand==='create'){
+      const target=profilePath(required(rest[0]));await privateDirectory(path.dirname(target));
+      await fs.mkdir(target,{mode:0o700});await privateDirectory(target);await new SettingsStore(target).open();
+      print({name:rest[0],path:target});return;
+    }
+    throw new Error('UNKNOWN_COMMAND');
+  }
+  if(['doctor','backup','restore','completion','update','storage'].includes(command)){
+    if(str('device'))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
+    if(command==='storage'){if(subcommand&&subcommand!=='status')throw new Error('UNKNOWN_COMMAND');print(await profileStorage(directory));return;}
+    if(command==='doctor'){const result=await doctor(directory);print(result);if(result.some(item=>item.status==='error'))process.exitCode=1;return;}
+    if(command==='completion'){print(shellCompletion(required(subcommand) as 'bash'|'zsh'|'fish'|'powershell'));return;}
+    if(command==='update'){
+      const prefix=path.resolve(required(str('prefix')));
+      if(subcommand==='apply')print(await installTerminalPackage(path.resolve(required(rest[0])),required(str('sha256')),prefix));
+      else if(subcommand==='status')print(await terminalInstallationStatus(prefix));
+      else if(subcommand==='check')print(await checkTerminalUpdate(prefix,required(str('manifest'))));
+      else if(subcommand==='rollback')print(await rollbackTerminalPackage(prefix,rest[0]));
+      else throw new Error('UNKNOWN_COMMAND');return;
+    }
+    if(command==='restore'&&subcommand==='recover'){print(await recoverProfileRestore(directory));return;}
+    if(!values['passphrase-stdin'])throw new Error('BACKUP_PASSPHRASE_STDIN_REQUIRED');
+    const passphrase=(await stdin(16*1024)).replace(/\r?\n$/,'');
+    if(command==='backup'&&!['create','verify','restore'].includes(subcommand))throw new Error('UNKNOWN_COMMAND');
+    const file=path.resolve(required(command==='backup'?rest[0]:subcommand));
+    print(command==='backup'&&subcommand==='create'?await backupProfile(directory,file,passphrase):command==='backup'&&subcommand==='verify'?await verifyProfileBackup(file,passphrase):await restoreProfile(directory,file,passphrase));return;
+  }
   if(command==='serve'){
     const service=new TerminalService(directory);
     try { await service.start(); } catch(error) { if(error instanceof Error&&error.message==='SERVICE_ALREADY_RUNNING')return;throw error; }
@@ -85,10 +133,29 @@ async function main() {
     process.once('SIGINT',stop);process.once('SIGTERM',stop);
     await service.stopped;return;
   }
-  if(command==='service'&&subcommand==='logs'){
+  if(command==='logs'||command==='service'&&subcommand==='logs'){
     const file=path.join(directory,'service.log');
-    const handle=await fs.open(file,'r');
-    try{const size=(await handle.stat()).size;const data=Buffer.alloc(Math.min(size,64*1024));await handle.read(data,0,data.length,Math.max(0,size-data.length));print(data.toString());}finally{await handle.close();}return;
+    const controller=new AbortController();const stop=()=>controller.abort();
+    process.once('SIGINT',stop);process.once('SIGTERM',stop);
+    let offset:number|undefined,identity:unknown;let decoder=new StringDecoder('utf8');
+    try{
+      do{
+        const handle=await fs.open(file,'r');
+        try{
+          const info=await handle.stat();
+          if(offset===undefined)offset=Math.max(0,info.size-64*1024);
+          else if(identity!==info.ino||info.size<offset){offset=0;decoder=new StringDecoder('utf8');}
+          identity=info.ino;
+          while(offset<info.size){
+            const data=Buffer.alloc(Math.min(info.size-offset,64*1024));const {bytesRead}=await handle.read(data,0,data.length,offset);if(!bytesRead)break;offset+=bytesRead;
+            const text=decoder.write(data.subarray(0,bytesRead));
+            if(json)print({text});else if(!process.stdout.write(terminalText(text)))await once(process.stdout,'drain');
+          }
+        }finally{await handle.close();}
+        if(values.follow)await pause(300,undefined,{signal:controller.signal}).catch(()=>{});
+      }while(values.follow&&!controller.signal.aborted);
+    }finally{process.off('SIGINT',stop);process.off('SIGTERM',stop);}
+    return;
   }
   if(command==='engines'||command==='providers'&&['login','logout','status'].includes(subcommand)){
     if(str('device'))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
@@ -105,7 +172,7 @@ async function main() {
     if(json||values['no-input'])throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
     process.exitCode=await runNativeLogin(kind,resolved.binary,subcommand as 'login'|'logout',{onInstruction:instruction=>print(instruction==='pi-login'?'/login':'/logout')});return;
   }
-  if(command&&!['status','service','auth','vault','config','devices','models','providers','tasks','requests','resources','files','ssh','chat','attach','login'].includes(command))throw new Error('UNKNOWN_COMMAND');
+  if(command&&!resourceCollections[command]&&!['status','service','auth','vault','config','devices','models','providers','tasks','requests','resources','files','ssh','terminal','chat','attach','login'].includes(command))throw new Error('UNKNOWN_COMMAND');
   const passive=command==='status'||command==='service'&&['status','stop','restart','uninstall'].includes(subcommand);
   let client:TerminalClient;
   try { client=passive?await connectTerminal(directory):await startBackground(directory); }
@@ -166,6 +233,7 @@ async function main() {
       return;
     }
     if(command==='vault'){
+      if(subcommand==='status'){print(object(await call('terminal:status',[],false)).vault);return;}
       if(subcommand==='setup'){
         if(values['machine-key'])print(await call('terminal:vault:initialize',['machine'],false));
         else if(values['passphrase-stdin'])print(await call('terminal:vault:initialize',['passphrase',(await stdin(16*1024)).replace(/\r?\n$/,'')],false));
@@ -192,40 +260,109 @@ async function main() {
     }
     if(command==='models'&&subcommand){
       if(subcommand==='list')print(await call('maker:provider:list'));
-      else if(subcommand==='use')print(await setDefaultModel(client,{model:required(rest[0]),providerId:required(str('provider')),agentKind:str('engine')??'pi'},device));
+      else if(subcommand==='use'||subcommand==='default')print(await setDefaultModel(client,{model:required(rest[0]),providerId:required(str('provider')),agentKind:str('engine')??'pi'},device));
+      else if(subcommand==='refresh')print(await call('maker:provider:models-refresh',[required(str('provider')??rest[0])]));
+      else if(subcommand==='show'){
+        const raw=unwrap(await call('maker:provider:list'));
+        const providers=Array.isArray(raw)?raw:object(raw).providers;
+        if(!Array.isArray(providers))throw new Error('INVALID_RESPONSE');
+        print(providers.filter(p=>!str('provider')||p.id===str('provider')).flatMap(p=>Object.entries(p.models??{}).flatMap(([engine,models])=>Array.isArray(models)?models.filter(m=>m.id===required(rest[0])&&(!str('engine')||engine===str('engine'))).map(model=>({providerId:p.id,engine,...model})):[])));
+      }else if(['enable','disable','reset'].includes(subcommand)){
+        if(device)throw new Error('LOCAL_CONFIGURATION_REQUIRED');
+        print(await call('maker:model-disable:set',[{providerId:required(str('provider')),kind:subcommand==='reset'?'reset':'model',modelIds:rest,disabled:subcommand==='disable'}],false));
+      }
       else throw new Error('UNKNOWN_COMMAND');return;
     }
     if(command==='providers'&&subcommand){
       if(subcommand==='list')print(await call('maker:provider:list'));
+      else if(subcommand==='presets')print(await call('maker:provider:presets'));
       else if(subcommand==='add'){
+        if(device&&values['key-stdin'])throw new Error('PROTECTED_SECRET_SUBMISSION_REQUIRED');
         const id=str('provider')??`custom-${randomUUID()}`;const engine=str('engine')??'pi';
         const key=values['key-stdin']?(await stdin(64*1024)).replace(/\r?\n$/,''):'';
         print(await call('maker:provider:custom:create',[{id,name:required(str('name')),auth:{method:key?'apiKey':'none'},runtimes:{[engine]:{baseUrl:required(str('url')),wireProtocol:str('protocol')??'openai-chat',models:[{id:required(str('model')),name:str('model')}]}}},{[engine]:key}]));
       }else if(subcommand==='remove')print(await call('maker:provider:custom:delete',[required(rest[0])]));
+      else if(subcommand==='disconnect')print(await call('maker:provider:custom:disconnect',[required(rest[0])]));
+      else if(subcommand==='edit'||subcommand==='test'||subcommand==='discover'){
+        if(device)throw new Error('LOCAL_CONFIGURATION_REQUIRED');
+        const id=required(rest[0]);const state=object(await call('terminal:models:get',[],false));
+        const provider=(state.providers as Array<Record<string,any>>).find(p=>p.id===id);if(!provider)throw new Error('PROVIDER_NOT_FOUND');
+        const engine=str('engine')??Object.keys(provider.runtimes)[0];const runtime=provider.runtimes[engine];if(!runtime)throw new Error('PROVIDER_RUNTIME_REQUIRED');
+        if(subcommand==='edit'){
+          const key=values['key-stdin']?(await stdin(64*1024)).replace(/\r?\n$/,''):undefined;
+          print(await call('maker:provider:custom:update',[{...provider,name:str('name')??provider.name,runtimes:{...provider.runtimes,[engine]:{...runtime,baseUrl:str('url')??runtime.baseUrl,wireProtocol:str('protocol')??runtime.wireProtocol}}},key===undefined?{}:{[engine]:key}],false));
+        }else print(await call(subcommand==='test'&&values.generate?'maker:provider:test-connection':'maker:provider:models-fetch',[subcommand==='test'&&values.generate?{kind:'saved',agent:engine,providerId:id}:{agent:engine,baseUrl:runtime.baseUrl,wireProtocol:runtime.wireProtocol,authMethod:provider.auth?.method??'apiKey',savedProviderId:id}],false));
+      }
       else throw new Error('UNKNOWN_COMMAND');return;
     }
     if(command==='tasks'){
       const id=()=>required(rest[0],'TASK_ID_REQUIRED');
-      if(subcommand==='list')print(await call('local-db:sessions:list',[100,values.all?undefined:'active']));
+      if(subcommand==='list')print(await call('local-db:sessions:list',[str('limit')?Number(str('limit')):100,values.all?undefined:'active']));
       else if(subcommand==='get')print(await call('local-db:sessions:get',[id()]));
-      else if(subcommand==='history')print(await call('local-db:messages:list',[id(),{limit:200}]));
+      else if(subcommand==='history')print(await call('local-db:messages:list',[id(),{limit:str('limit')?Number(str('limit')):200,...(str('cursor')?{before:str('cursor')}:{})}]));
+      else if(subcommand==='export'){
+        const handle=str('output')?await fs.open(path.resolve(str('output')!),'wx',0o600):undefined;
+        const write=async(value:unknown)=>{const line=JSON.stringify(value)+'\n';if(handle)await handle.writeFile(line);else if(!process.stdout.write(line))await once(process.stdout,'drain');};
+        try{
+          await write({type:'session',order:'newest-first',session:unwrap(await call('local-db:sessions:get',[id()]))});
+          let before:string|undefined;
+          const cursors=new Set<string>();
+          for(;;){
+            const raw=unwrap(await call('local-db:messages:list',[id(),{limit:200,...(before?{before}:{})}]));
+            const rows=Array.isArray(raw)?raw:object(raw).messages;
+            if(!Array.isArray(rows))throw new Error('INVALID_RESPONSE');
+            if(!rows.length)break;
+            for(const message of rows)await write({type:'message',message});
+            const next=rows.at(-1)?.id;
+            if(typeof next!=='string'||cursors.has(next))throw new Error('INVALID_HISTORY_CURSOR');
+            cursors.add(next);before=next;
+          }
+        }finally{await handle?.close();}
+      }
+      else if(subcommand==='search')print(await call('local-db:history:query',[{tool:'search_chat_history',args:{query:required(rest.join(' ')),...(str('cwd')?{workdir:str('cwd')}:{}),...(str('cursor')?{cursor:str('cursor')}:{}),...(str('limit')?{limit:Number(str('limit'))}:{})}}]));
       else if(subcommand==='stop')print(await call('maker:abort-session',[id()]));
+      else if(subcommand==='resume')print(await call('maker:input:resume',[id()]));
+      else if(subcommand==='cancel-queued')print(await call('maker:input:remove',[id(),required(rest[1],'REQUEST_ID_REQUIRED')]));
+      else if(subcommand==='delete'){if(device)throw new Error('LOCAL_CONFIGURATION_REQUIRED');print(await call('terminal:tasks:delete',[id()],false));}
       else if(subcommand==='send'){
         const requestId=str('request-id')??randomUUID();
-        const result=await call('maker:send',[id(),{text:values.stdin?await stdin():required(rest.slice(1).join(' '),'MESSAGE_REQUIRED'),clientId:requestId}]);
+        const message=values.stdin?await stdin():rest.slice(1).join(' ');if(!message.trim()&&!inputFiles.length)throw new Error('MESSAGE_REQUIRED');
+        const result=await enqueueMessage(client,id(),message,requestId,device,{files:inputFiles,sendAtMs});
         await finishTurn(id(),requestId,result,values.wait===true);
       }
-      else if(subcommand==='rename')print(await call('local-db:sessions:update',[id(),{title:required(rest.slice(1).join(' '))}]));
-      else if(subcommand==='archive'||subcommand==='restore')print(await call('local-db:sessions:update',[id(),{status:subcommand==='archive'?'archived':'active'}]));
+      else if(subcommand==='rename')print(await call('local-db:sessions:patch-meta',[id(),{title:required(rest.slice(1).join(' '))}]));
+      else if(subcommand==='archive'||subcommand==='restore')print(await call('local-db:sessions:patch-meta',[id(),{status:subcommand==='archive'?'archived':'active'}]));
+      else if(subcommand==='compact')print(await call('maker:compact-session',[id(),rest.slice(1).join(' ')||undefined]));
+      else if(subcommand==='queue')print(await call('maker:input:get-projection',[id()]));
+      else if(subcommand==='model')print(await call('maker:set-model',[id(),required(str('model')??rest[1]),{...(str('provider')?{providerId:str('provider')}:{})}]));
+      else if(subcommand==='effort')print(await call('maker:set-effort',[id(),required(str('effort')??rest[1])]));
+      else if(subcommand==='permission')print(await call('maker:set-permission-mode',[id(),required(str('mode')??rest[1])]));
+      else if(subcommand==='plan'||subcommand==='fast'){if(!['on','off'].includes(rest[1]))throw new Error('ON_OR_OFF_REQUIRED');print(await call(`maker:set-${subcommand==='plan'?'plan':'fast'}-mode`,[id(),rest[1]==='on']));}
       else throw new Error('UNKNOWN_COMMAND');return;
     }
     if(command==='requests'){
       if(subcommand==='list')print(await call('maker:get-pending-interactions',[required(rest[0],'TASK_ID_REQUIRED')]));
+      else if(['approve','deny','show'].includes(subcommand)){
+        const pending=unwrap(await call('maker:get-pending-interactions',[required(rest[0],'TASK_ID_REQUIRED')]));
+        if(!Array.isArray(pending))throw new Error('INVALID_RESPONSE');
+        const request=pending.map(p=>p.request??p).find(p=>p.requestId===required(rest[1],'REQUEST_ID_REQUIRED'));
+        if(!request)throw new Error('REQUEST_ALREADY_RESOLVED');
+        if(subcommand==='show')print(request);
+        else{if(request.kind==='ask_user_question')throw new Error('QUESTION_REQUIRES_ANSWER');print(await call('maker:resolve-interaction',[request.requestId,{kind:request.kind,behavior:subcommand==='approve'?'allow':'deny'}]));}
+      }
       else if(subcommand==='resolve'){
         if(!values.stdin)throw new Error('DECISION_STDIN_REQUIRED');
         let decision:unknown;try{decision=JSON.parse(await stdin(64*1024));}catch{throw new Error('INVALID_DECISION');}
         print(await call('maker:resolve-interaction',[required(rest[0]),decision]));
       }else throw new Error('UNKNOWN_COMMAND');return;
+    }
+    if(command==='terminal'){
+      if(subcommand==='list'||subcommand==='close')print(unwrap(await call(REMOTE_TERMINAL_CHANNEL,[{version:1,op:subcommand,id:subcommand==='close'?required(rest[0]):undefined}])));
+      else if(!subcommand||subcommand==='open'||subcommand==='attach'){
+        if(json||values['no-input'])throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
+        process.exitCode=await runShell(client,{device,id:subcommand==='attach'?required(rest[0]):undefined,cwd:str('cwd'),shell:str('shell'),locale});
+      }else throw new Error('UNKNOWN_COMMAND');
+      return;
     }
     if(command==='ssh'){
       if(device)throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
@@ -248,6 +385,7 @@ async function main() {
       const base={workdir:device?workdir:path.resolve(workdir),relPath:rest[0]??''};
       const fileCall=async(op:string,extra:Record<string,unknown>={})=>unwrap(await call('file-browser:remote-op',[{...base,...extra,op}]));
       if(subcommand==='list')print(await fileCall('listDir'));
+      else if(subcommand==='create')print(await fileCall('createFile'));
       else if(subcommand==='read')print(await fileCall('readFile'));
       else if(subcommand==='stat')print(await fileCall('stat'));
       else if(subcommand==='write'){
@@ -273,15 +411,19 @@ async function main() {
       }else throw new Error('UNKNOWN_COMMAND');
       return;
     }
+    if(command&&resourceCollections[command]&&subcommand){
+      let input:unknown={};if(values.stdin){try{input=JSON.parse(await stdin());}catch{throw new Error('INVALID_JSON_INPUT');}}
+      print(await runResourceCommand(client,{collection:str('collection')??resourceCollections[command],operation:str('action')??subcommand,id:rest[0],input,device,locale,cursor:str('cursor'),limit}));return;
+    }
     const interactive=!json&&!values['no-input']&&!values.once&&process.stdin.isTTY&&process.stdout.isTTY;
-    const uiCommand=!command||['login','models','providers','devices','config','attach','resources'].includes(command)||(command==='chat'&&!values.once);
+    const uiCommand=!command||!!resourceCollections[command]||['login','models','providers','devices','config','attach','resources'].includes(command)||(command==='chat'&&!values.once);
     if(uiCommand){
       if(!interactive)throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
       client=reconnectingClient(directory,client);
-      const page=command==='login'?'login':command==='models'||command==='providers'?'models':command==='devices'?'connections':command==='config'?'service':command==='resources'?'resources':'tasks';
+      const page=command==='login'?'login':command==='models'||command==='providers'?'models':command==='devices'?'connections':command==='config'?'service':command==='resources'||command&&resourceCollections[command]?'resources':'tasks';
       let nextPage=page;
       for(;;){
-        const external=await runTui(client,{locale,page:nextPage,task:command==='attach'?required(subcommand,'TASK_ID_REQUIRED'):undefined,device,sso:values.sso===true});
+        const external=await runTui(client,{locale,page:nextPage,task:command==='attach'?required(subcommand,'TASK_ID_REQUIRED'):undefined,device,sso:values.sso===true,collection:command?str('collection')??resourceCollections[command]:undefined});
         if(!external)break;
         if(external.type==='service-uninstall'){
           print(await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).completeUninstall());return;
@@ -296,14 +438,17 @@ async function main() {
     }
     if(command==='chat'&&values.once){
       const text=values.stdin?await stdin():positionals.slice(1).join(' ');
-      if(!text.trim())throw new Error('MESSAGE_REQUIRED');
-      const data=object(await call('maker:create-session',[{title:t.newTask,
+      if(!text.trim()&&!inputFiles.length)throw new Error('MESSAGE_REQUIRED');
+      const selection=device?(await connectedModels(client,device)).find(model=>(!str('provider')||model.providerId===str('provider'))&&(!str('engine')||model.agentKind===str('engine'))&&(!str('model')||model.model===str('model'))):undefined;
+      if(device&&!selection)throw new Error('MODEL_NOT_CONFIGURED');
+      const data=object(await call('maker:create-session',[{...selection,title:t.newTask,
+        ...(!str('cwd')?{workspaceKind:'dialogue'}:{}),
         ...(str('cwd')?{workingDir:device?str('cwd'):path.resolve(str('cwd')!)}:{}),...(str('model')?{model:str('model')}:{}),
         ...(str('provider')?{providerId:str('provider')}:{}),...(str('engine')?{agentKind:str('engine')}:{}),
       }]));
       const id=data.sessionId??data.id;if(typeof id!=='string')throw new Error('INVALID_SESSION_RESPONSE');
       const requestId=str('request-id')??randomUUID();
-      const result=await call('maker:send',[id,{text,clientId:requestId}]);
+      const result=await enqueueMessage(client,id,text,requestId,device,{files:inputFiles,sendAtMs});
       await finishTurn(id,requestId,result,!values.detach);return;
     }
     throw new Error('UNKNOWN_COMMAND');

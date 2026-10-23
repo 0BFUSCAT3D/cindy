@@ -11,7 +11,9 @@ import type { AuthFlowState, TerminalAuthSnapshot } from '@cindy/auth-client';
 import type { TerminalClient } from '../contracts.js';
 import type { Locale } from './i18n.js';
 import { Authentication } from './authentication.js';
-import { terminalText } from './input.js';
+import { InteractionView } from './interaction.js';
+import type { InteractionRequest } from '@cindy/maker-core';
+import { Input, terminalText } from './input.js';
 
 const membership = { id:'fictional-member', kind:'personal' as const, role:'owner' as const, displayName:'Example person', email:'person@example.invalid', orgId:null, orgName:null };
 const providers = { region:'global' as const, email:true, phone:true, social:['google' as const,'apple' as const,'wechat' as const], attribution:'email' as const };
@@ -51,13 +53,13 @@ function fakeClient(flow: AuthFlowState | null = initialFlow, locked = false) {
   return {client,publish,handle:(next:typeof handler)=>{handler=next;}};
 }
 
-async function mount(client: TerminalClient, options: {locale?:Locale;sso?:boolean} = {}) {
+async function mount(client: TerminalClient, options: {locale?:Locale;sso?:boolean;node?:React.ReactNode} = {}) {
   const frames: string[] = [];
   const input = Object.assign(new PassThrough(), {isTTY:true,setRawMode(){},ref(){},unref(){}});
   const output = Object.assign(new Writable({write(chunk,_encoding,callback){frames.push(String(chunk));callback();}}),{isTTY:true,columns:72,rows:32});
   const onDone = vi.fn(); const onNeedsVault = vi.fn();
   let instance!: Instance;
-  await act(async()=>{ instance = render(<Authentication client={client} locale={options.locale ?? 'en'} sso={options.sso} onDone={onDone} onNeedsVault={onNeedsVault} />,{
+  await act(async()=>{ instance = render(options.node??<Authentication client={client} locale={options.locale ?? 'en'} sso={options.sso} onDone={onDone} onNeedsVault={onNeedsVault} />,{
     stdin:input as unknown as NodeJS.ReadStream,stdout:output as unknown as NodeJS.WriteStream,stderr:output as unknown as NodeJS.WriteStream,
     debug:true,interactive:true,patchConsole:false,exitOnCtrlC:false,maxFps:1000,
   }); });
@@ -73,6 +75,31 @@ async function mount(client: TerminalClient, options: {locale?:Locale;sso?:boole
 }
 
 describe('terminal authentication surface',()=>{
+  it('keeps a long pasted draft inside the input viewport without truncating submission',async()=>{
+    const submit=vi.fn();
+    function Draft(){const [value,setValue]=React.useState('');return <Input value={value} onChange={setValue} onSubmit={submit} multiline/>;}
+    const screen=await mount(fakeClient().client,{node:<Draft/>});
+    const draft=Array.from({length:20},(_,i)=>`中文第${i+1}行`).join('\n');
+    await screen.press(`\x1b[200~${draft}\x1b[201~`);
+    expect(screen.latest()).toContain('中文第20行');
+    expect(screen.latest()).not.toContain('中文第1行');
+    await screen.press('\x01');
+    expect(screen.latest()).toContain('中文第1行');
+    await screen.press('\r');
+    expect(submit).toHaveBeenCalledExactlyOnceWith(draft);
+  });
+  // Same-frame input must resolve the visible choice, including each question
+  // in a multi-question request. This guards actual authorization decisions.
+  it('resolves approval and successive questions using the latest keyboard selection',async()=>{
+    const resolve=vi.fn();const host=fakeClient();
+    const screen=await mount(host.client,{node:<InteractionView request={{requestId:'permission',kind:'permission',toolName:'fixture',input:{}} as InteractionRequest} locale="en" resolve={resolve} back={()=>{}} busy={false}/>});
+    await screen.burst(['\x1b[B','\r']);
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({kind:'permission',behavior:'allow'});
+    resolve.mockClear();
+    const questions=await mount(host.client,{node:<InteractionView request={{requestId:'question',kind:'ask_user_question',questions:[{question:'First',options:[{label:'A'},{label:'B'}]},{question:'Second',options:[{label:'C'},{label:'D'}]}]} as InteractionRequest} locale="en" resolve={resolve} back={()=>{}} busy={false}/>});
+    await questions.burst(['\x1b[B','\r','\x1b[B','\r']);
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({kind:'ask_user_question',answers:{First:'B',Second:'D'}});
+  });
   // Regression from real PTY typing: several input events can precede a React
   // render. Each event must see the previous edit, including Enter's payload.
   it('retains rapid edits received before the next frame',async()=>{

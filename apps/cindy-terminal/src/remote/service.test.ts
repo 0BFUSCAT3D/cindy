@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PROTOCOL_VERSION, SHARED_TASK_RELAY_CAPABILITY, type Envelope, type WsLike } from '@cindy/device-link';
 import { TerminalDeviceService } from './service.js';
+import { TerminalMembershipService } from './membership.js';
+import type { TerminalRemoteAccountService } from './account.js';
 import type { TerminalDeviceServiceOptions, TerminalRemoteContext } from './types.js';
 
 /** Exercises the production client on both ends. Only the authenticated relay
@@ -203,4 +205,30 @@ describe('terminal bidirectional remote service', () => {
     await disposeFirst(); expect(lastTopics).toEqual(['session:s1']);
     await disposeSecond(); expect(lastTopics).toEqual([]);
   });
+  it('delivers only the joined task metadata and hides private handoff cards from guests', async () => {
+    const relay = new Relay();
+    const membership = new TerminalMembershipService({
+      getOwnerScope: () => 'owner', getDeviceId: () => 'host',
+      account: { sharedTasks: { get: async () => ({ sharedTaskId: 'shared', sessionId: 'task', hostDeviceId: 'host', status: 'active', guests: [{ memberId: 'member', deviceIds: ['guest'], accountId: 'visitor' }], memberLabels: [] }) } } as unknown as TerminalRemoteAccountService,
+    });
+    const host = make(relay, 'host', { resolveScopedAuthority: source => membership.resolve(source) });
+    await online(host);
+    const replies: Envelope[] = [];
+    const guest = new Socket(relay, 'guest');
+    guest.on('message', (raw: string) => replies.push(JSON.parse(raw)));
+    relay.sockets.set('guest', guest);
+    relay.sockets.get('host')!.push({ v: PROTOCOL_VERSION, kind: 'invoke', src: 'guest', dst: 'host', id: 'subscribe',
+      sharedTask: { sharedTaskId: 'shared', source: { role: 'guest', memberId: 'member' }, target: { role: 'host' } },
+      payload: { channel: 'device-link:subscribe', args: [{ topics: ['session:task'] }] } });
+    await vi.waitFor(() => expect(replies.find(frame => frame.id === 'subscribe')?.payload).toMatchObject({ok:true}), {interval:1});
+    await host.publish('local-db:sessions:patched', { sessionId: 'task', patch: { title: 'allowed' } });
+    await host.publish('local-db:sessions:patched', { sessionId: 'other', patch: { title: 'private' } });
+    await host.publish('maker:interaction-request', { sessionId: 'task', request: { kind: 'input_handoff', value: 'private' } });
+    await host.publish('maker:event:batch', { sessionId: 'task', events: [{ sessionId: 'other' }] });
+    await host.publish('maker:input:projection', { sessionId: 'task', pendingQueue: [] });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(replies.filter(frame => frame.kind === 'push').map(frame => (frame.payload as {channel:string}).channel)).toEqual(['local-db:sessions:patched', 'maker:input:projection']);
+    membership.close();
+  });
+
 });

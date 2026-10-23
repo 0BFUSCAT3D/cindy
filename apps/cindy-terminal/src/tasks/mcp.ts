@@ -4,6 +4,8 @@ import type { AddressInfo, Socket } from 'node:net';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { createSchedulerMcpServer } from '../../../../packages/lizi-mcps/src/cindy_schedulerMcpServer.js';
+import type { SchedulerMcpDeps } from '../../../../packages/lizi-mcps/src/types.js';
 import { createXdtHelperMcpServer, type XdtHelperMcpDeps } from '../../../../packages/lizi-mcps/src/lizi_xdtHelperMcpServer.js';
 import type { AgentKind, McpProvider, PiExtraSpawnConfig } from '@cindy/maker-core';
 
@@ -11,6 +13,8 @@ import type { AgentKind, McpProvider, PiExtraSpawnConfig } from '@cindy/maker-co
  * accounts revokes old tools even if a native child retained its environment. */
 export async function createTaskTools(options: {
   sessionId: string; workingDir: string; agentKind: AgentKind;
+  scheduler?: SchedulerMcpDeps;
+  extraFactories?: Record<string, () => McpServer>;
   helper: XdtHelperMcpDeps; isCurrent(): boolean;
 }) {
   let closed = false;
@@ -24,6 +28,11 @@ export async function createTaskTools(options: {
       return { ok: true, run: async operation => { assertCurrent(); const value = await operation(); assertCurrent(); return value; } };
     } }, context),
   };
+  if(options.scheduler)factories.cindy_scheduler = () => createSchedulerMcpServer({...options.scheduler!,authorizeCall:async()=>{assertCurrent();return {ok:true,run:async operation=>{assertCurrent();const value=await operation();assertCurrent();return value;}};}},context);
+  for(const [name,factory] of Object.entries(options.extraFactories??{})) {
+    if(!/^[A-Za-z0-9_-]{1,80}$/.test(name)||Object.hasOwn(factories,name))throw new Error('INVALID_MCP_FACTORY_NAME');
+    factories[name]=()=>{assertCurrent();return factory();};
+  }
   const token = randomBytes(32).toString('hex');
   const envKey = `CINDY_TERMINAL_MCP_${randomBytes(8).toString('hex').toUpperCase()}`;
   const transports = new Map<string, { name: string; transport: StreamableHTTPServerTransport; server: McpServer }>();
@@ -74,7 +83,7 @@ export async function createTaskTools(options: {
   const url = (name: string) => `http://127.0.0.1:${port}/mcp/${name}`;
   const providers: McpProvider[] = Object.keys(factories).map(name => ({
     name,
-    capability: { title: name === 'cindy_helper' ? 'Cindy tasks' : 'Cindy documents', description: name === 'cindy_helper' ? 'Read and manage tasks on this computer' : 'Read spreadsheet files in this task', source: 'builtin', ...(name === 'cindy_helper' ? { discovery: { tool: 'list_tools' } } : {}) },
+    capability: { title: name === 'cindy_helper' ? 'Cindy tasks' : name === 'cindy_scheduler' ? 'Cindy schedules' : name, description: name === 'cindy_helper' ? 'Read and manage tasks on this computer' : name === 'cindy_scheduler' ? 'Manage scheduled tasks on this computer' : 'Tools for this task', source: 'builtin', ...(name === 'cindy_helper' ? { discovery: { tool: 'list_tools' } } : {}) },
     toClaudeSdkConfig: () => { assertCurrent(); const instance = factories[name](); inProcess.add(instance); return { type: 'sdk', name, instance }; },
     toCodexMcpConfig: () => { assertCurrent(); return { type: 'http', url: url(name), bearerTokenEnvVar: envKey }; },
     getExtraEnv: () => ({ [envKey]: token }),

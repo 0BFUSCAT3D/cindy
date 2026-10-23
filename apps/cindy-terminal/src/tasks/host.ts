@@ -1,24 +1,29 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { stat, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { Maker, type AgentEvent, type AgentKind, type BaseAgent, type InteractionDecision, type InteractionRequest, type Logger, type PermissionMode, type Session, type UserMessage } from '@cindy/maker-core';
+import { ClaudeCodeAgent, CodexAgent, PiAgent, Maker, type AgentEvent, type AgentKind, type BaseAgent, type InteractionDecision, type InteractionRequest, type Logger, type PermissionMode, type Session, type UserMessage } from '@cindy/maker-core';
 import { buildClientDeviceNote, buildMessageSourceNote, messageSourceSenderFromMeta } from '@cindy/maker-shared/message-source';
 import { resolveRoute, type Catalog, type ResolvedRoute } from '@cindy/model-providers';
 import { type InvocationContext, type TerminalSecrets } from '../contracts.js';
 import { createDeviceAgentStarter, readDeviceProviderViews, hostedStartOptions, type HostedStartInput, type DeviceAgentServiceDeps } from '@cindy/remote-agent';
+import { readTaskDelivery, validateTaskDelivery, type TaskDeliveryProof } from './handoff.js';
+import { TerminalTaskMedia } from './media.js';
+import { normalizeTaskInput, appendInputText, inputPlainText, persistedInput, type InputHost, type AttachmentLifecycle } from './input.js';
 import { createRemoteHistory } from './remote-history.js';
-import { privateDirectory } from '../platform.js';
+import { atomicPrivateWrite, readPrivateFile, privateDirectory } from '../platform.js';
+import { testConnection, fetchModels } from '../models/operations.js';
 import { ENGINES, TerminalModelConfig, type ModelSelection } from '../models/config.js';
 import { createTerminalAgent, discoverNativeModels, findAgentBinary, nativeAuthState, type RuntimeInput } from '../models/runtime.js';
 import { createTaskTools } from './mcp.js';
 import { TerminalTaskStorage, type TerminalTaskMeta, type Submission } from './storage.js';
 
 export const TERMINAL_TASK_CHANNELS = [
-  'local-db:history:messages', 'local-db:history:query', 'maker:input:enqueue', 'maker:input:get-projection', 'maker:create-session', 'maker:close-session', 'maker:abort-session', 'maker:send', 'maker:steer',
+  'maker:input:stop', 'maker:input:resume', 'maker:input:remove', 'maker:input:update-text', 'maker:input:update-content', 'maker:input:move', 'maker:input:set-expanded', 'maker:input:set-edit-lock', 'maker:input:set-interaction-lock', 'maker:get-capabilities', 'maker:get-new-maker-defaults', 'maker:git-safety:get', 'maker:get-session-tree', 'maker:set-thinking-enabled', 'maker:session:handoff', 'local-db:history:messages', 'local-db:history:query', 'maker:input:enqueue', 'maker:input:get-projection', 'maker:create-session', 'maker:close-session', 'maker:abort-session', 'maker:send', 'maker:steer',
   'maker:list-active', 'maker:any-session-in-turn', 'maker:session-in-turn', 'maker:get-context-usage',
   'maker:get-pending-interactions', 'maker:resolve-interaction', 'maker:set-model', 'maker:set-effort',
   'maker:set-permission-mode', 'maker:set-plan-mode', 'maker:set-fast-mode', 'maker:compact-session',
   'maker:list-available-agents', 'maker:agent:status', 'maker:provider:list',
+  'maker:provider:presets', 'maker:provider:test-connection', 'maker:provider:models-fetch', 'maker:provider:models-refresh', 'maker:provider:models-rediscover', 'maker:provider:models-auto-refresh', 'maker:provider:custom:disconnect', 'maker:model-disable:set',
   'maker:provider:custom:create', 'maker:provider:custom:update', 'maker:provider:custom:delete',
   'terminal:tasks:turn-status', 'terminal:tasks:submit', 'terminal:tasks:status', 'terminal:tasks:wait',
   'terminal:tasks:list', 'terminal:tasks:get', 'terminal:tasks:history', 'terminal:tasks:delete', 'terminal:tasks:rename',
@@ -26,14 +31,16 @@ export const TERMINAL_TASK_CHANNELS = [
   'local-db:sessions:list', 'local-db:sessions:get', 'local-db:sessions:update', 'local-db:sessions:patch-meta', 'local-db:messages:list',
 ] as const;
 
-export interface TerminalTaskHostOptions {
+export interface TerminalTaskHostOptions extends InputHost {
   profileDir: string;
   logger: Logger;
   secretStore: TerminalSecrets;
   emit(channel: string, args: unknown[]): void;
   defaultTitle?: string | (() => string);
+  beforeTaskUnavailable?: (sessionId:string)=>Promise<void>;
+  authorizeHostedRequest?: (input: {sessionId:string;providerId:string;model:string}) => Promise<boolean>;
   authorizeGuestRequest?: (input: {sessionId:string;providerId:string;routeToken:string;model:string}) => Promise<boolean>;
-  resolveExecutionRoute?: (input: { agentDeviceId?: string; providerId: string; model: string; agentKind: AgentKind; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding }, taskId: string) => Promise<{ agentDeviceId?: string; providerId: string; model: string; agentKind: AgentKind; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding }>;
+  resolveExecutionRoute?: (input: { agentDeviceId?: string; providerId?: string; model?: string; agentKind?: AgentKind; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding }, taskId: string) => Promise<{ agentDeviceId?: string; providerId: string; model: string; agentKind: AgentKind; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding } | null>;
   remoteInvoke?: DeviceAgentServiceDeps['remoteInvoke'];
   binaryPaths?: Partial<Record<AgentKind, string>>;
   catalog?: Catalog;
@@ -41,8 +48,8 @@ export interface TerminalTaskHostOptions {
   createAgent?: (input: RuntimeInput) => Promise<BaseAgent>;
   nativeStatus?: (kind: AgentKind, binary: string | null) => ReturnType<typeof nativeAuthState>;
 }
-type ScheduledOrigin = { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string };
-type TaskInvocationContext = InvocationContext & { scheduler?: ScheduledOrigin };
+type ScheduledOrigin = { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string; firedAt?: number };
+type TaskInvocationContext = InvocationContext & { scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
 type LiveTask = { maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
 type Pending = { sessionId: string; request: InteractionRequest; settle: (decision: InteractionDecision) => void };
 
@@ -66,15 +73,25 @@ export class TerminalTaskHost {
   readonly channels = TERMINAL_TASK_CHANNELS;
   readonly models: TerminalModelConfig;
   readonly storage: TerminalTaskStorage;
+  readonly media: TerminalTaskMedia;
   private readonly live = new Map<string, LiveTask>();
   private readonly starts = new Map<string, Promise<LiveTask>>();
+  private schedulerDeps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps;
+  private readonly taskObservers = new Map<string,Set<(event:AgentEvent)=>void>>();
   private readonly pending = new Map<string, Pending>();
-  private readonly queuedSubmissions = new Map<string, Array<{ requestId: string; message: UserMessage; context: TaskInvocationContext }>>();
+  private readonly queuedSubmissions = new Map<string, Array<{ requestId: string; message: UserMessage; context: TaskInvocationContext; sendAtMs?: number }>>();
+  private readonly queuePaused = new Set<string>();
+  private readonly queueMutations = new Set<string>();
+  private readonly queueLocks = new Map<string, Set<string>>();
+  private readonly queueEditLocks = new Map<string, Set<string>>();
+  private readonly queueTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly submissionText = new Map<string, string>();
   private readonly activeSubmissions = new Map<string, string>();
   private readonly receiptListeners = new Set<(receipt: Submission) => void>();
   private readonly sending = new Set<string>();
   private readonly groupBindings = new Map<string, import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding>();
+  private readonly hostedRuntimeIds = new Set<string>();
+  private hostedWrites: Promise<void> = Promise.resolve();
   private readonly hosted = new Set<import('@cindy/maker-core').AgentSessionHandle>();
   private readonly binaries = new Map<AgentKind, string | null>();
   private readonly authCache = new Map<AgentKind, { at: number; value: Awaited<ReturnType<typeof nativeAuthState>> }>();
@@ -85,6 +102,7 @@ export class TerminalTaskHost {
 
   constructor(private readonly options: TerminalTaskHostOptions) {
     if (!path.isAbsolute(options.profileDir)) throw new Error('PROFILE_DIRECTORY_MUST_BE_ABSOLUTE');
+    this.media = new TerminalTaskMedia(options.profileDir);
     this.storage = new TerminalTaskStorage(path.join(options.profileDir, 'tasks'));
     this.models = new TerminalModelConfig(options.profileDir, options.secretStore, kind => this.authState(kind), options.catalog, options.createAgent ? undefined : async kind => { const binary = this.binaries.get(kind); return binary ? discoverNativeModels(kind, binary, options.profileDir, options.logger) : []; });
     this.ready = this.initialize();
@@ -92,10 +110,13 @@ export class TerminalTaskHost {
   private async initialize() {
     await privateDirectory(this.options.profileDir);
     await Promise.all([this.storage.open(), this.models.open(), ...ENGINES.map(async kind => this.binaries.set(kind, await findAgentBinary(kind, this.options.binaryPaths?.[kind])))]);
+    const hostedFile=await readPrivateFile(path.join(this.options.profileDir,'hosted-runtimes.json'));
+    if(hostedFile){const ids=JSON.parse(hostedFile.toString());if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(id)))throw new Error('INVALID_HOSTED_RUNTIME_INDEX');for(const id of ids)this.hostedRuntimeIds.add(id);}
     for (const row of await this.storage.list()) {
+      if (row.queuePaused) this.queuePaused.add(row.id);
       if (row.groupBinding) this.groupBindings.set(row.id, row.groupBinding);
       const queued = await this.storage.queued(row.id);
-      for (const receipt of queued) if (receipt.message) this.enqueueSubmission(row.id, receipt.message, receipt.requestId, { source: receipt.source ?? 'local', deviceId: receipt.deviceId, ownerId: receipt.ownerId, scheduler: receipt.scheduler, ...(receipt.sharedTask ? { sharedTask: receipt.sharedTask, assertCurrent: () => { throw new Error('SHARED_TASK_REVALIDATION_REQUIRED'); } } : {}) });
+      for (const receipt of queued) if (receipt.message) this.enqueueSubmission(row.id, receipt.message, receipt.requestId, { source: receipt.source ?? 'local', deviceId: receipt.deviceId, ownerId: receipt.ownerId, scheduler: receipt.scheduler, sender:receipt.sender, deliveryProof: receipt.deliveryProof, ...(receipt.sharedTask ? { sharedTask: receipt.sharedTask, assertCurrent: () => { throw new Error('SHARED_TASK_REVALIDATION_REQUIRED'); } } : {}) }, receipt.sendAtMs);
     }
   }
   private async authState(kind: AgentKind) {
@@ -129,11 +150,39 @@ export class TerminalTaskHost {
       extraDirs: [], writableDirs: [],
     };
   }
+  resolveManaged(url: string, sessionId?: string) { return this.media.resolveManaged(url, sessionId); }
+  configureScheduler(deps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps) {this.schedulerDeps=deps;}
+  helperDeps(input:{sessionId:string;workingDir:string;agentKind:AgentKind;setTitle?:(title:string)=>Promise<void>;title?:()=>string}):import('../../../../packages/lizi-mcps/src/lizi_xdtHelperMcpServer.js').XdtHelperMcpDeps {
+    return {
+      history:this.historyDeps(),
+      runtimeCapabilities:async()=>({terminal:true,tasks:true,nativeAgent:input.agentKind,available:['tasks','history','approvals','models',...(this.schedulerDeps?['scheduler']:[])],unavailable:['contacts','browser','media-generation']}),
+      setCurrentSessionTitle:async({sessionId,title})=>{if(sessionId!==input.sessionId)throw new Error('TASK_SCOPE_MISMATCH');if(input.setTitle)await input.setTitle(title);else await this.patchMeta(sessionId,{title});return {ok:true,sessionId,title};},
+      sendToSession:async params=>{
+        if(params.useWorktree)return {ok:false,errorCode:'WORKTREE_UNAVAILABLE',message:'Worktree creation is not configured'};
+        let id=params.targetSessionId;const existing=id?await this.storage.get(id):null;
+        if(id&&!existing)return {ok:false,errorCode:'NOT_FOUND',message:'Task not found'};
+        if(existing?.deleted)return {ok:false,errorCode:'DELETED',message:'Task is deleted'};
+        if(existing?.archived)return {ok:false,errorCode:'ARCHIVED',message:'Task is archived'};
+        if(!id){const created=await this.create({workingDir:params.workingDir??input.workingDir,title:params.title,...(params.agentKind?{agentKind:params.agentKind}:{}),...(params.model?{model:params.model}:{}),...(params.effort?{effort:params.effort}:{})},()=>this.guard({source:'local'}));id=created.id;}
+        const target=await this.storage.get(id);if(!target)throw new Error('TASK_NOT_FOUND');
+        const receipt=await this.submit(id,{text:params.message},{},{source:'local',sender:{sessionId:input.sessionId,title:input.title?.()}});
+        return {ok:true,targetSessionId:id,agentKind:target.agentKind,wakeKind:existing?'queued':'created',targetTitle:target.title,targetLastUserSendAt:null,queuedMessageId:receipt.requestId,providerId:target.providerId??null,model:target.model};
+      },
+      sessionQueue:{
+        listSessionQueue:async id=>{if(!await this.storage.get(id))return {ok:false,errorCode:'NOT_FOUND',message:'Task not found'};const rows=await this.storage.queued(id);return {ok:true,messages:rows.map((row,index)=>({queuedMessageId:row.requestId,position:index,source:row.scheduler?'scheduler':row.sender?'session':'user',sourceLabel:row.scheduler?.scheduleName??row.sender?.title??null,enqueuedAtMs:row.createdAt,content:inputPlainText(row.message),consuming:false}))};},
+        listSessionQueuedCounts:async ids=>({ok:true,counts:Object.fromEntries(await Promise.all(ids.map(async id=>[id,(await this.storage.queued(id)).length])))})
+      }
+    };
+  }
+  createToolsForCompanion(input:{sessionId:string;workingDir:string;agentKind:AgentKind;setTitle?:(title:string)=>Promise<void>;title?:()=>string;extraFactories?:Parameters<typeof createTaskTools>[0]['extraFactories']}) {
+    return createTaskTools({...input,isCurrent:()=>!this.closed,helper:this.helperDeps(input),scheduler:this.schedulerDeps});
+  }
+  observeTask(id:string, listener:(event:AgentEvent)=>void) {const set=this.taskObservers.get(id)??new Set();set.add(listener);this.taskObservers.set(id,set);return ()=>{set.delete(listener);if(!set.size)this.taskObservers.delete(id);};}
   listBindings() { return Object.fromEntries(this.groupBindings); }
   async sessionGroup(id: string) { const row = await this.storage.get(id); return row?.groupBinding ? { groupDeviceId: row.groupBinding.groupDeviceId ?? null, providerId: row.groupBinding.providerId } : null; }
   isTurnRunning(id: string): boolean { return this.starts.has(id) || this.sending.has(id) || this.activeSubmissions.has(id) || this.live.get(id)?.session.isTurnRunning() === true; }
   async submitScheduled(id: string, text: string, origin: Omit<ScheduledOrigin, 'kind'> & { requestId?: string; assertCurrent?: () => void }) {
-    return this.submit(id, { text }, { requestId: origin.requestId ?? randomUUID() }, { source: 'local', assertCurrent: origin.assertCurrent, scheduler: { kind: 'scheduler', scheduleId: origin.scheduleId, scheduleName: origin.scheduleName, runId: origin.runId } });
+    return this.submit(id, { text }, { requestId: origin.requestId ?? randomUUID() }, { source: 'local', assertCurrent: origin.assertCurrent, scheduler: { kind: 'scheduler', scheduleId: origin.scheduleId, scheduleName: origin.scheduleName, runId: origin.runId, firedAt:origin.firedAt } });
   }
   isBusy(): boolean { return this.hosted.size > 0 || this.starts.size > 0 || this.sending.size > 0 || this.pending.size > 0 || [...this.queuedSubmissions.values()].some(queue => queue.length > 0) || [...this.live.values()].some(task => task.session.isTurnRunning()); }
   isAgentAvailable(kind: AgentKind): boolean { return Boolean(this.binaries.get(kind)); }
@@ -141,18 +190,29 @@ export class TerminalTaskHost {
     await Promise.all(ENGINES.map(async kind => this.binaries.set(kind, await findAgentBinary(kind, paths?.[kind] ?? this.options.binaryPaths?.[kind]))));
     this.authCache.clear();
   }
+  async purgeHostedTranscripts(hostSessionIds: readonly string[], _nativeIds: readonly string[] = []): Promise<void> {
+    await this.ready;
+    for(const id of hostSessionIds){ if(!this.hostedRuntimeIds.has(id))continue;
+      for(const kind of ['codex','pi'])await rm(path.join(this.options.profileDir,'engines',kind,id),{recursive:true,force:true});
+      this.hostedRuntimeIds.delete(id);
+    }
+    await this.persistHostedIndex();
+  }
+  private persistHostedIndex(){this.hostedWrites=this.hostedWrites.then(()=>atomicPrivateWrite(path.join(this.options.profileDir,'hosted-runtimes.json'),JSON.stringify([...this.hostedRuntimeIds])));return this.hostedWrites;}
   async startHosted(input: HostedStartInput): Promise<import('@cindy/maker-core').AgentSessionHandle> {
     await this.ready;
     if (this.closed) throw new Error('TASK_HOST_CLOSED');
+    if(!/^[a-zA-Z0-9_-]{1,100}$/.test(input.hostSessionId)||await this.storage.get(input.hostSessionId))throw new Error('INVALID_HOST_SESSION_ID');
+    this.hostedRuntimeIds.add(input.hostSessionId);await this.persistHostedIndex();
     // Sharing needs a per-run outbound credential boundary; never hand the local
     // native account or long-lived provider key to an isolated guest process.
     const chosen = await this.models.select({ agentKind: input.kind, providerId: input.options.providerId, model: input.options.model });
     if (input.guest && (chosen.route.provider.source !== 'user' || !input.guestProvider || !this.options.authorizeGuestRequest)) throw new Error('GUEST_PROVIDER_PROXY_REQUIRED');
-    const authorizeRequest = input.guest && input.guestProvider ? (model: string) => this.options.authorizeGuestRequest!({sessionId:input.hostSessionId,providerId:chosen.selection.providerId,routeToken:input.guestProvider!.routeToken,model}) : undefined;
+    const authorizeRequest = input.guest && input.guestProvider ? (model: string) => this.options.authorizeGuestRequest!({sessionId:input.hostSessionId,providerId:chosen.selection.providerId,routeToken:input.guestProvider!.routeToken,model}) : chosen.route.provider.source === 'user' && this.options.authorizeHostedRequest ? (model: string) => this.options.authorizeHostedRequest!({sessionId:input.hostSessionId,providerId:chosen.selection.providerId,model}) : undefined;
     if (authorizeRequest && !await authorizeRequest(chosen.selection.model)) throw new Error('GUEST_PROVIDER_UNAUTHORIZED');
     const binary = this.binaries.get(input.kind);
     if (!binary) throw new Error('ENGINE_NOT_INSTALLED');
-    const agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: input.hostSessionId, selection: chosen.selection, route: chosen.route, binaryPath: binary, models: this.models, logger: this.options.logger, authorizeRequest });
+    const agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: input.hostSessionId, selection: chosen.selection, route: chosen.route, binaryPath: binary, models: this.models, logger: this.options.logger, authorizeRequest, ...(input.guest ? {guestHome:input.guestHome} : {}) });
     try {
       const handle = await agent.startSession(hostedStartOptions(input));
       const close = handle.close.bind(handle);
@@ -191,8 +251,13 @@ export class TerminalTaskHost {
   }
   private async create(input: Record<string, unknown>, guard: () => void) {
     const id = randomUUID();
-    if (this.options.resolveExecutionRoute && input.providerId && input.model && input.agentKind) input = { ...input, ...await this.options.resolveExecutionRoute(input as {agentKind:AgentKind;providerId:string;model:string},id) };
-    const resolved = await this.selection(input);
+    if (this.options.resolveExecutionRoute) { const execution = await this.options.resolveExecutionRoute(input, id); if (execution) input = { ...input, ...execution }; guard(); }
+    let resolved = await this.selection(input);
+    if (this.options.resolveExecutionRoute && !input.groupBinding) {
+      const execution = await this.options.resolveExecutionRoute({ ...input, ...resolved.selection }, id);
+      guard();
+      if (execution) { input = { ...input, ...execution }; resolved = await this.selection(input); }
+    }
     guard();
     const cwd = input.workingDir ?? input.workDir ?? path.join(this.options.profileDir, 'workspaces', id);
     if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error('WORKING_DIRECTORY_MUST_BE_ABSOLUTE');
@@ -225,17 +290,14 @@ export class TerminalTaskHost {
     if (!row) throw new Error('TASK_NOT_FOUND');
     const previous = this.live.get(id);
     if (previous) await this.closeTask(id);
-    if (!resolved && row.groupBinding && this.options.resolveExecutionRoute) { const execution=await this.options.resolveExecutionRoute({agentDeviceId:row.agentDeviceId,providerId:row.providerId!,model:row.model,agentKind:row.agentKind,groupBinding:row.groupBinding},id); resolved=await this.selection(execution); }
+    if (!resolved && row.groupBinding && this.options.resolveExecutionRoute) { const execution=await this.options.resolveExecutionRoute({agentDeviceId:row.agentDeviceId,providerId:row.providerId!,model:row.model,agentKind:row.agentKind,groupBinding:row.groupBinding},id); if (!execution) throw new Error('GROUP_UNAVAILABLE'); resolved=await this.selection(execution); }
     const chosen = resolved ?? await this.selection({ agentDeviceId: row.agentDeviceId, agentKind: row.agentKind, providerId: row.providerId, model: row.model, ...(row.effort ? { effort: row.effort } : {}) });
     const binary = this.binaries.get(chosen.selection.agentKind);
     if (!binary && !row.agentDeviceId) throw new Error('ENGINE_NOT_INSTALLED');
     const tools = await createTaskTools({ sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind,
       isCurrent: () => !this.closed,
-      helper: {
-        setCurrentSessionTitle: async ({ sessionId, title }) => { await this.patchMeta(sessionId, { title }); return { ok: true, sessionId, title }; },
-        history: this.historyDeps(),
-        runtimeCapabilities: async () => ({ terminal: true, tasks: true, nativeAgent: chosen.selection.agentKind, available: ['tasks', 'history', 'approvals', 'models'], unavailable: ['plugins', 'scheduler', 'contacts', 'browser', 'media-generation'] }),
-      },
+      scheduler: this.schedulerDeps,
+      helper: this.helperDeps({sessionId:id,workingDir:row.workDir,agentKind:chosen.selection.agentKind,title:()=>row.title}),
     });
     let agent;
     try { agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, remote: Boolean(row.agentDeviceId) }); } catch (error) { await tools.close(); throw error; }
@@ -253,6 +315,7 @@ export class TerminalTaskHost {
     } catch (error) { await maker.shutdown(); await tools.close(); throw error; }
   }
   private onEvent(id: string, event: AgentEvent) {
+    for(const observer of this.taskObservers.get(id)??[])observer(event);
     // Generated byte payloads are host-owned, not durable conversation text.
     let saved = event;
     if (event.type === 'image' && event.data && typeof event.data === 'object') {
@@ -334,6 +397,7 @@ export class TerminalTaskHost {
     this.guard(context);
     const result = await this.dispatch(channel, args, context);
     this.guard(context);
+    if(channel.startsWith('maker:input:')&&channel!=='maker:input:get-projection')this.emit('maker:input:projection',result);
     return result;
   }
   private async dispatch(channel: string, args: unknown[], context: TaskInvocationContext): Promise<unknown> {
@@ -341,27 +405,72 @@ export class TerminalTaskHost {
     if (this.closed) throw new Error('TASK_HOST_CLOSED');
     if (!Array.isArray(args)) throw new Error('INVALID_ARGUMENTS');
     this.guard(context);
+    if (context.source==='remote'&&(channel==='maker:model-disable:set'||['maker:provider:test-connection','maker:provider:models-fetch'].includes(channel)))throw new Error('LOCAL_CONFIGURATION_REQUIRED');
     if (context.source === 'remote' && channel.startsWith('terminal:models:')) throw new Error('LOCAL_CONFIGURATION_REQUIRED');
     if (context.source === 'remote' && channel.startsWith('maker:provider:custom:') && (!context.ownerId || !context.deviceId || !context.assertCurrent)) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
     if (context.source === 'remote' && channel.startsWith('maker:provider:custom:') && args[1] && Object.keys(record(args[1])).length) throw new Error('PROTECTED_SECRET_SUBMISSION_REQUIRED');
     if (context.sharedTask) {
-      const allowed = ['maker:input:enqueue', 'maker:input:get-projection', 'maker:send', 'maker:abort-session', 'maker:session-in-turn', 'maker:get-context-usage', 'maker:get-pending-interactions', 'maker:resolve-interaction', 'local-db:sessions:get', 'local-db:messages:list', 'local-db:history:messages', 'terminal:tasks:turn-status'];
+      const allowed = ['maker:provider:list', 'maker:get-capabilities', 'maker:input:stop', 'maker:input:resume', 'maker:input:remove', 'maker:input:update-text', 'maker:input:update-content', 'maker:input:move', 'maker:input:set-expanded', 'maker:input:set-edit-lock', 'maker:input:set-interaction-lock', 'maker:input:enqueue', 'maker:input:get-projection', 'maker:send', 'maker:abort-session', 'maker:session-in-turn', 'maker:get-context-usage', 'maker:get-pending-interactions', 'maker:resolve-interaction', 'local-db:sessions:get', 'local-db:messages:list', 'local-db:history:messages', 'terminal:tasks:turn-status'];
       if (!allowed.includes(channel)) throw new Error('SHARED_TASK_PERMISSION_DENIED');
-      const target = channel === 'maker:resolve-interaction' ? this.pending.get(string(args[0]))?.sessionId : channel === 'local-db:history:messages' ? record(args[0]).sessionId : args[0];
+      if(channel==='maker:provider:list' && args.length && (args.length>1||!args[0]||typeof args[0]!=='object'||Object.keys(args[0] as object).some(key=>!['includeCapabilities','capabilities'].includes(key))))throw new Error('INVALID_ARGUMENT');
+      if(channel==='maker:get-capabilities'&&!ENGINES.includes(args[0] as AgentKind))throw new Error('INVALID_ENGINE');
+      const target = channel==='maker:provider:list'||channel==='maker:get-capabilities' ? context.sharedTask.sessionId : channel === 'maker:resolve-interaction' ? this.pending.get(string(args[0]))?.sessionId : channel === 'local-db:history:messages' ? record(args[0]).sessionId : args[0];
       if (target !== context.sharedTask.sessionId) throw new Error('SHARED_TASK_SCOPE_MISMATCH');
     }
     switch (channel) {
+      case 'maker:input:stop': {
+        const id=string(args[0]),opts=args[1]?record(args[1]):{};this.queuePaused.add(id);
+        await this.storage.update(id,{queuePaused:opts.pauseQueue!==false});
+        if(opts.keepQueue===false)for(const item of await this.storage.queued(id))await this.removeQueued(id,item.requestId,context);
+        await this.live.get(id)?.session.abort();if(opts.pauseQueue===false){this.queuePaused.delete(id);this.drain(id);}return this.projection(id);
+      }
+      case 'maker:input:resume': {const id=string(args[0]);await this.storage.update(id,{queuePaused:false});this.queuePaused.delete(id);this.drain(id);return this.projection(id);}
+      case 'maker:input:remove': {const id=string(args[0]);await this.removeQueued(id,string(args[1]),context);return {...await this.projection(id),inputDeliveryCancelled:true};}
+      case 'maker:input:update-text':case 'maker:input:update-content': {
+        const id=string(args[0]),clientId=string(args[1]);const previous=await this.requireQueued(id,clientId,context);this.queueMutations.add(id);
+        try {const incoming=channel.endsWith('update-text')?{type:'user',content:typeof previous.message?.content==='string'?string(args[2]):[{type:'text',text:string(args[2])},...(previous.message?.content??[]).filter(block=>block.type!=='text')]}:args[2];
+          const message=await this.message(id,incoming,context);this.guard(context);await this.storage.editQueuedSubmission(id,clientId,{message,sharedTask:context.sharedTask,deviceId:context.deviceId,source:context.source,deliveryProof:undefined},()=>this.guard(context));
+          const item=this.queuedSubmissions.get(id)?.find(item=>item.requestId===clientId);if(item){item.message=message;item.context={...context,signal:undefined};}
+        }finally{this.queueMutations.delete(id);this.drain(id);}return this.projection(id);
+      }
+      case 'maker:input:move': {
+        const id=string(args[0]);this.queueMutations.add(id);
+        try {await this.requireQueued(id,string(args[1]),context);const queue=[...(this.queuedSubmissions.get(id)??[])];const index=queue.findIndex(item=>item.requestId===args[1]);const destination=Number(args[2]);if(index<0||!Number.isInteger(destination)||destination<0||destination>=queue.length)throw new Error('INVALID_QUEUE_INDEX');queue.splice(destination,0,...queue.splice(index,1));await this.storage.reorderQueued(id,queue.map(item=>item.requestId),()=>this.guard(context));this.queuedSubmissions.set(id,queue);}
+        finally {this.queueMutations.delete(id);this.drain(id);}return this.projection(id);
+      }
+      case 'maker:input:set-expanded':{const id=string(args[0]);await this.storage.update(id,{queueExpanded:args[1]===true});return this.projection(id);}
+      case 'maker:input:set-edit-lock':case 'maker:input:set-interaction-lock':{const id=string(args[0]);const map=channel.endsWith('edit-lock')?this.queueEditLocks:this.queueLocks;const locks=map.get(id)??new Set<string>();args[2]===true?locks.add(string(args[1])):locks.delete(string(args[1]));map.set(id,locks);this.drain(id);return this.projection(id);}
+
+      case 'maker:git-safety:get': return {mode:'off',autoSnapshotEnabled:false,isCustomized:false};
+      case 'maker:get-new-maker-defaults': { const selection=(await this.models.snapshot()).defaultSelection; return selection && selection.agentKind===args[0] ? {model:selection.model,providerId:selection.providerId,effort:selection.effort,permissionMode:'default',hasExplicitModel:true} : {}; }
+      case 'maker:get-capabilities': {
+        const kind=string(args[0]) as AgentKind;if(!ENGINES.includes(kind))throw new Error('INVALID_ENGINE');
+        const agent=new ({'claude-code':ClaudeCodeAgent,codex:CodexAgent,pi:PiAgent}[kind])({binaryPath:this.binaries.get(kind)??'',logger:this.options.logger,runtimeConfig:{},auth:{getState:async()=>({authenticated:false}),getAuthEnv:async()=>({}),triggerLogin:async()=>({authenticated:false}),logout:async()=>{}}});
+        const capabilities=agent.capabilities;await agent.dispose();
+        return {...capabilities,supportsSessionAgentSwitch:false,supportsModelWindowSwitchGuard:false,supportsScheduleIntervalNullClear:true,supportsSchedulePreRunHook:true};
+      }
+      case 'maker:get-session-tree': return (await this.ensureLive(string(args[0]))).session.getSessionTree();
+      case 'maker:set-thinking-enabled': {if(typeof args[1]!=='boolean')throw new Error('INVALID_ARGUMENT');await (await this.ensureLive(string(args[0]))).session.setThinkingEnabled(args[1]);return {success:true};}
+
+      case 'maker:session:handoff': {
+        if(context.source!=='remote'||!context.deviceId||!context.assertCurrent||context.sharedTask)throw new Error('AUTHENTICATED_OWNER_REQUIRED');
+        if(record(args[0]).action==='task-action-capability')return {taskActionVersion:1};
+        if(record(args[0]).action==='validate-task-action')return {valid:false};
+        const proof=readTaskDelivery(args[0],context.deviceId);await validateTaskDelivery(this.options.remoteInvoke,proof);this.guard(context);
+        const row=await this.storage.get(proof.targetSessionId);if(!row||row.deleted)throw new Error('TASK_NOT_FOUND');if(row.archived)throw new Error('TASK_ARCHIVED');
+        const receipt=await this.submit(proof.targetSessionId,{text:proof.message},{requestId:`handoff_${createHash('sha256').update(JSON.stringify([proof.controllerDeviceId,proof.receiptId])).digest('hex')}`},{...context,deliveryProof:proof});
+        return {ok:true,agentKind:row.agentKind,wakeKind:receipt.status==='queued'?'queued':'already-active',targetTitle:row.title,targetLastUserSendAt:null};
+      }
+
       case 'local-db:history:messages': return createRemoteHistory(this.historyDeps(), id => this.storage.get(id), () => this.guard(context)).messages(args[0]);
       case 'local-db:history:query': {
-        if (context.source !== 'remote' || context.sharedTask) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
+        if (context.sharedTask) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
         return createRemoteHistory(this.historyDeps(), id => this.storage.get(id), () => this.guard(context)).query(args[0]);
       }
-      case 'maker:input:get-projection': return this.projection(string(args[0]));
+      case 'maker:input:get-projection': return this.projection(string(args[0]), args[1] === undefined ? {} : record(args[1]));
       case 'maker:input:enqueue': {
         const id = string(args[0]); const item = record(args[1]);
-        if (Array.isArray(item.files) && item.files.length || Array.isArray(item.sessionRefs) && item.sessionRefs.length || Array.isArray(item.mentions) && item.mentions.length) throw new Error('ATTACHMENT_INPUT_NOT_SUPPORTED');
-        if (args[2] && record(args[2]).sendAtMs) throw new Error('SCHEDULED_INPUT_NOT_SUPPORTED');
-        await this.submit(id, { text: string(item.text) }, { requestId: string(item.clientId) }, context);
+        await this.submit(id, item, { ...(args[2] ? record(args[2]) : {}), requestId: string(item.clientId) }, context);
         return this.projection(id);
       }
       case 'maker:create-session': return this.create(record(args[0] ?? {}), () => this.guard(context));
@@ -372,17 +481,17 @@ export class TerminalTaskHost {
       case 'terminal:tasks:list': return (await this.storage.list()).map(row => this.view(row));
       case 'local-db:sessions:list': return (await this.storage.list()).filter(row => args[1] === 'archived' ? row.archived && !row.deleted : args[1] === 'deleted' ? row.deleted : !row.archived && !row.deleted).slice(0, typeof args[0] === 'number' ? Math.min(1000, Math.max(1, args[0])) : 100).map(row => this.guiSession(row));
       case 'local-db:sessions:get': { const row = await this.storage.get(string(args[0])); return row ? this.guiSession(row) : null; }
-      case 'local-db:sessions:update': case 'local-db:sessions:patch-meta': return this.patchMeta(string(args[0]), record(args[1]));
+      case 'local-db:sessions:update': case 'local-db:sessions:patch-meta': return this.patchMeta(string(args[0]), record(args[1]),()=>this.guard(context));
       case 'local-db:messages:list': return this.messages(string(args[0]), args[1] === undefined ? {} : record(args[1]));
       case 'terminal:tasks:get': { const row = await this.storage.get(string(args[0])); if (!row) throw new Error('TASK_NOT_FOUND'); return this.view(row); }
       case 'terminal:tasks:history': { const page = args[1] === undefined ? {} : record(args[1]); return this.storage.history(string(args[0]), Number(page.after ?? 0), Number(page.limit ?? 200)); }
       case 'terminal:tasks:rename': { const row = await this.storage.update(string(args[0]), { title: string(args[1]) }); this.emit('terminal:tasks:changed', { sessionId: row.id }); return this.view(row); }
-      case 'terminal:tasks:delete': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.closeTask(id); await this.storage.delete(id); this.emit('terminal:tasks:changed', { sessionId: id }); return { success: true }; }
+      case 'terminal:tasks:delete': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.options.beforeTaskUnavailable?.(id); this.guard(context); await this.closeTask(id); await this.storage.delete(id); await this.media.removeSession(id); this.emit('terminal:tasks:changed', { sessionId: id }); return { success: true }; }
       case 'maker:list-active': { const sessions = [...this.live.values()].map(({ session }) => ({ sessionId: session.id, agentKind: session.agentKind, workDir: session.workDir, capabilities: session.capabilities, isTurnRunning: session.isTurnRunning() })); return args[0] && record(args[0]).snapshotVersion === 2 ? { format: 'active-sessions-v2', sessions } : sessions; }
       case 'maker:any-session-in-turn': return [...this.live.values()].some(task => task.session.isTurnRunning());
       case 'maker:session-in-turn': return this.live.get(string(args[0]))?.session.isTurnRunning() ?? false;
-      case 'maker:get-pending-interactions': return [...this.pending.values()].filter(p => p.sessionId === args[0]).map(p => ({ request: p.request }));
-      case 'maker:resolve-interaction': return this.resolveInteraction(string(args[0]), args[1]);
+      case 'maker:get-pending-interactions': return [...this.pending.values()].filter(p => p.sessionId === args[0] && (!context.sharedTask || ['permission','ask_user_question','plan_review'].includes(p.request.kind))).map(p => ({ request: p.request }));
+      case 'maker:resolve-interaction': {if(context.sharedTask){const pending=this.pending.get(string(args[0]));const decision=record(args[1]);if(!pending||!['permission','ask_user_question','plan_review'].includes(pending.request.kind)||decision.updatedInput!==undefined||decision.permissionUpdates!==undefined)throw new Error('SHARED_TASK_PERMISSION_DENIED');}return this.resolveInteraction(string(args[0]), args[1]);}
       case 'maker:close-session': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.closeTask(id); return { success: true }; }
       case 'maker:abort-session': { const task = this.live.get(string(args[0])); await task?.session.abort(); return { success: true }; }
       case 'maker:send': {
@@ -393,19 +502,20 @@ export class TerminalTaskHost {
         const id = string(args[0]);
         if (this.persistenceFaults.has(id)) throw new Error('TASK_HISTORY_WRITE_FAILED');
         if (this.sending.has(id) || this.live.get(id)?.session.isTurnRunning()) throw new Error('SESSION_RUNNING');
-        const message: UserMessage = typeof args[1] === 'string' ? { type: 'user', content: args[1] } : this.message(args[1]);
+        const message = await this.message(id, args[1], context);
         this.sending.add(id);
         try {
           const task = await this.ensureLive(id);
           this.guard(context);
-          const agentMeta = context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.deviceId ? { sourceDevice: { deviceId: context.deviceId, platform: 'desktop' as const } } : undefined;
+          if(context.deliveryProof){await validateTaskDelivery(this.options.remoteInvoke,context.deliveryProof);this.guard(context);}
+          const agentMeta = context.deliveryProof ? {origin:{kind:'session' as const,senderSessionId:`${context.deliveryProof.controllerDeviceId}::${context.deliveryProof.sessionId}`,senderSessionTitle:context.deliveryProof.senderTitle,displayText:context.deliveryProof.message}} : context.sender ? {origin:{kind:'session' as const,senderSessionId:context.sender.sessionId,senderSessionTitle:context.sender.title,displayText:inputPlainText(message)}} : context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.deviceId ? { sourceDevice: { deviceId: context.deviceId, platform: 'desktop' as const } } : undefined;
           await this.storage.append(id, { kind: 'user', message, clientId: this.activeSubmissions.get(id), origin: context.source, ...(agentMeta ? { agentMeta } : {}) });
           this.guard(context);
-          const payload = context.scheduler ? { ...message, content: `${typeof message.content === 'string' ? message.content : ''}\n\n[Scheduled run context]\nschedule: ${JSON.stringify(context.scheduler.scheduleName)} (schedule_id: ${context.scheduler.scheduleId})\nrun_id: ${context.scheduler.runId}\nfiredAtUtc: ${new Date().toISOString()}` } : agentMeta ? { ...message, content: `${typeof message.content === 'string' ? message.content : ''}\n\n${'sourceDevice' in agentMeta && agentMeta.sourceDevice ? buildClientDeviceNote(agentMeta.sourceDevice) : buildMessageSourceNote(messageSourceSenderFromMeta(agentMeta))}` } : message;
+          const payload = context.scheduler ? appendInputText(message, `[Scheduled run context]\nschedule: ${JSON.stringify(context.scheduler.scheduleName)} (schedule_id: ${context.scheduler.scheduleId})\nrun_id: ${context.scheduler.runId}\nfiredAtUtc: ${new Date(context.scheduler.firedAt??Date.now()).toISOString()}`) : agentMeta ? appendInputText(message, 'sourceDevice' in agentMeta && agentMeta.sourceDevice ? buildClientDeviceNote(agentMeta.sourceDevice) : buildMessageSourceNote(messageSourceSenderFromMeta(agentMeta)) ?? '') : message;
           return await task.session.send(payload, ...(context.scheduler ? [{ origin: context.scheduler }] : []));
         } finally { this.sending.delete(id); }
       }
-      case 'maker:steer': return (await this.ensureLive(string(args[0]))).session.steer(typeof args[1] === 'string' ? args[1] : this.message(args[1]));
+      case 'maker:steer': return (await this.ensureLive(string(args[0]))).session.steer(typeof args[1] === 'string' ? args[1] : await this.message(string(args[0]), args[1], context));
       case 'maker:get-context-usage': return (await this.ensureLive(string(args[0]))).session.getContextUsage();
       case 'maker:set-model': {
         const id = string(args[0]); const row = await this.storage.get(id); if (!row) throw new Error('TASK_NOT_FOUND');
@@ -422,6 +532,13 @@ export class TerminalTaskHost {
       case 'maker:list-available-agents': return ENGINES.filter(kind => Boolean(this.binaries.get(kind)));
       case 'maker:agent:status': { const kind = string(args[0]) as AgentKind; if (!ENGINES.includes(kind)) throw new Error('INVALID_ENGINE'); const binary = this.binaries.get(kind) ?? null; const auth = await this.authState(kind); return { binaryReady: Boolean(binary), binaryPath: binary, authReady: auth.authenticated, ...auth }; }
       case 'maker:provider:list': return this.models.views();
+      case 'maker:provider:presets': return {presets:this.models.presets()};
+      case 'maker:provider:test-connection': return testConnection(this.models,args[0],()=>this.guard(context),context.signal);
+      case 'maker:provider:models-fetch': return fetchModels(this.models,args[0],()=>this.guard(context),context.signal);
+      case 'maker:provider:models-refresh': case 'maker:provider:models-rediscover': {const result=await this.models.refresh(string(args[0]));this.emit('maker:provider:changed',{});return result;}
+      case 'maker:provider:models-auto-refresh': {if(!['providers-open','model-selector-open'].includes(string(args[0])))throw new Error('INVALID_REFRESH_TRIGGER');await this.models.views();return {ok:true};}
+      case 'maker:provider:custom:disconnect': await this.models.disconnect(string(args[0]),()=>this.guard(context));this.emit('maker:provider:changed',{});return {ok:true};
+      case 'maker:model-disable:set': await this.models.setDisabled(args[0],()=>this.guard(context));this.emit('maker:provider:changed',{});return {ok:true};
       case 'terminal:models:get': return this.models.snapshot();
       case 'terminal:models:set-default': await this.models.setDefault(args[0], () => this.guard(context)); return this.models.snapshot();
       case 'terminal:models:reset-default': await this.models.resetDefault(() => this.guard(context)); return this.models.snapshot();
@@ -435,46 +552,76 @@ export class TerminalTaskHost {
       const receipt = await this.storage.updateSubmission(id, requestId, status, error, finalText);
       this.emit('terminal:tasks:submission', receipt);
       for (const listener of this.receiptListeners) listener(receipt);
+      if(receipt.deliveryProof && ['completed','failed','interrupted'].includes(receipt.status))void validateTaskDelivery(this.options.remoteInvoke,receipt.deliveryProof,true).catch(()=>undefined);
       return receipt;
     } catch { this.options.logger.error('Terminal submission persistence failed'); return null; }
   }
   private receiptView(receipt: Submission) {
     const pendingRequests = [...this.pending.values()].filter(item => item.sessionId === receipt.sessionId).map(item => item.request);
-    return { ...receipt, clientId: receipt.requestId, status: pendingRequests.length && ['running', 'sending'].includes(receipt.status) ? 'waiting' : receipt.status === 'sending' ? 'running' : receipt.status, errorCode: receipt.error ?? null, finalText: receipt.finalText ?? this.submissionText.get(receipt.sessionId) ?? '', pendingRequests };
+    return { ...receipt, clientId: receipt.requestId, status: pendingRequests.length && ['running', 'sending'].includes(receipt.status) ? 'waiting' : receipt.status === 'sending' ? 'running' : receipt.status, errorCode: receipt.error ?? null, finalText: receipt.finalText ?? (this.activeSubmissions.get(receipt.sessionId) === receipt.requestId ? this.submissionText.get(receipt.sessionId) : '') ?? '', pendingRequests };
   }
   private async submit(id: string, input: unknown, options: Record<string, unknown>, context: TaskInvocationContext) {
-    const message = typeof input === 'string' ? { type: 'user' as const, content: input } : this.message(input);
+    const lifecycle: AttachmentLifecycle = {cleanup:[],accepted:[]};
+    try {
+    const message = await this.message(id, input, context, lifecycle);
     const requestId = options.requestId === undefined ? randomUUID() : string(options.requestId);
     if (!/^[a-zA-Z0-9_-]{1,100}$/.test(requestId)) throw new Error('INVALID_REQUEST_ID');
-    const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId })).digest('hex');
-    const claimed = await this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler });
+    const sendAtMs = options.sendAtMs === undefined ? undefined : Number(options.sendAtMs);
+    if (sendAtMs !== undefined && (!Number.isFinite(sendAtMs) || sendAtMs < 0)) throw new Error('INVALID_SEND_TIME');
+    const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId, sendAtMs })).digest('hex');
+    const claimed = await this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, deliveryProof:context.deliveryProof, sendAtMs });
+    for(const accepted of lifecycle.accepted) await accepted().catch(()=>this.options.logger.warn('ATTACHMENT_RELAY_CLEANUP_FAILED'));
     if (!claimed.created) return claimed.receipt;
     // Acceptance is durable before work begins; reconnecting with the same key
     // returns the original receipt, including after a process restart.
-    this.enqueueSubmission(id, message, requestId, { ...context, signal: undefined });
+    this.enqueueSubmission(id, message, requestId, { ...context, signal: undefined }, sendAtMs);
     return claimed.receipt;
+    } finally { await Promise.allSettled(lifecycle.cleanup.map(cleanup=>cleanup())); }
   }
-  private enqueueSubmission(id: string, message: UserMessage, requestId: string, context: TaskInvocationContext) {
+  private enqueueSubmission(id: string, message: UserMessage, requestId: string, context: TaskInvocationContext, sendAtMs?: number) {
     const queue = this.queuedSubmissions.get(id) ?? [];
-    if (!queue.some(item => item.requestId === requestId)) queue.push({ message, requestId, context });
+    if (!queue.some(item => item.requestId === requestId)) queue.push({ message, requestId, context, sendAtMs });
     this.queuedSubmissions.set(id, queue);
     setImmediate(() => this.drain(id));
     void this.projection(id).then(projection => this.emit('maker:input:projection', projection)).catch(() => undefined);
   }
   private drain(id: string) {
-    if (this.closed || this.activeSubmissions.has(id) || this.starts.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning()) return;
-    const next = this.queuedSubmissions.get(id)?.shift();
+    if (this.closed || this.queuePaused.has(id) || this.queueMutations.has(id) || this.queueLocks.get(id)?.size || this.queueEditLocks.get(id)?.size || this.activeSubmissions.has(id) || this.starts.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning()) return;
+    const queue = this.queuedSubmissions.get(id) ?? [];
+    const readyIndex = queue.findIndex(item => !item.sendAtMs || item.sendAtMs <= Date.now());
+    const next = readyIndex >= 0 ? queue.splice(readyIndex,1)[0] : undefined;
+    const timer = this.queueTimers.get(id); if (timer) clearTimeout(timer); this.queueTimers.delete(id);
+    if (!next && queue.length) { const delay = Math.min(...queue.map(item => item.sendAtMs ?? Date.now())) - Date.now(); const pending = setTimeout(()=>{this.queueTimers.delete(id);this.drain(id);},Math.min(2_147_483_647, Math.max(1, delay))); pending.unref(); this.queueTimers.set(id,pending); }
     if (next) void this.runSubmission(id, next.message, next.requestId, next.context);
   }
-  private async projection(id: string) {
+  private async requireQueued(id:string,clientId:string,context:TaskInvocationContext){
+    const receipt=await this.storage.submission(id,clientId);if(!receipt||receipt.status!=='queued'||this.activeSubmissions.get(id)===clientId)throw new Error('QUEUED_MESSAGE_NOT_FOUND');
+    if(context.sharedTask&&receipt.sharedTask?.memberId!==context.sharedTask.memberId)throw new Error('SHARED_TASK_INPUT_NOT_OWNED');return receipt;
+  }
+  private async removeQueued(id:string,clientId:string,context:TaskInvocationContext){
+    await this.requireQueued(id,clientId,context);this.queueMutations.add(id);
+    try {const receipt=await this.storage.editQueuedSubmission(id,clientId,{status:'interrupted',error:'INPUT_REMOVED'},()=>this.guard(context));this.emit('terminal:tasks:submission',receipt);for(const listener of this.receiptListeners)listener(receipt);const queue=this.queuedSubmissions.get(id);const index=queue?.findIndex(item=>item.requestId===clientId)??-1;if(index>=0)queue!.splice(index,1);}
+    finally {this.queueMutations.delete(id);this.drain(id);}
+  }
+  private async projection(id: string, options: Record<string, unknown> = {}) {
+    const requested = options.deliveryClientIds;
+    if (requested !== undefined && (!Array.isArray(requested) || requested.length > 100 || requested.some(id => typeof id !== 'string' || id.length > 100))) throw new Error('INVALID_DELIVERY_CLIENT_IDS');
+    const deliveryReceipts = Array.isArray(requested) ? await Promise.all([...new Set(requested as string[])].map(async clientId => {
+      const receipt = await this.storage.submission(id, clientId);
+      if (!receipt) return { clientId, state: 'unknown' as const };
+      const view = this.receiptView(receipt);
+      return { clientId, state: receipt.error === 'INPUT_REMOVED' ? 'removed' as const : receipt.status === 'queued' ? 'pending' as const : 'accepted' as const,
+        turnStatus: view.status, finalText: view.finalText, errorCode: view.errorCode, pendingRequests: view.pendingRequests };
+    })) : undefined;
     const row = await this.storage.get(id);
     if (!row) throw new Error('TASK_NOT_FOUND');
-    const queued = await this.storage.queued(id);
-    return { sessionId: id, turnInProgress: this.activeSubmissions.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning() === true,
-      pendingQueue: queued.map(item => ({ clientId: item.requestId, text: item.message?.content ?? '', persistedContent: item.message?.content ?? '', model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir,
-        chatMessage: { clientId: item.requestId, role: 'user', content: item.message?.content ?? '', createdAt: new Date(item.createdAt).toISOString() },
+    const persisted = await this.storage.queued(id);
+    const order = this.queuedSubmissions.get(id)??[];const queued = [...persisted].sort((a,b)=>order.findIndex(item=>item.requestId===a.requestId)-order.findIndex(item=>item.requestId===b.requestId));
+    return { sessionId: id, terminalTurnReceiptsVersion: 1, ...(deliveryReceipts ? {deliveryReceipts} : {}), turnInProgress: this.activeSubmissions.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning() === true,
+      pendingQueue: queued.map(item => ({ clientId: item.requestId, ...(item.sendAtMs ? {sendAtMs:item.sendAtMs} : {}), text: inputPlainText(item.message), persistedContent: item.message ? persistedInput(item.message) : '', model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir,
+        chatMessage: { clientId: item.requestId, role: 'user', content: item.message ? persistedInput(item.message) : '', createdAt: new Date(item.createdAt).toISOString() },
         createOpts: { agentKind: row.agentKind, workingDir: row.workDir, model: row.model, providerId: row.providerId },
-      })), steeringQueueClientIds: [], queuePaused: false, queueExpanded: true, queueInteractionLocks: [], queueEditLocks: [], queueAbortPending: false, error: null, errorReason: null, recovery: null, errorRetryText: null, credentialSwitchWait: null };
+      })), steeringQueueClientIds: [], queuePaused: this.queuePaused.has(id), queueExpanded: row.queueExpanded!==false, queueInteractionLocks: [...(this.queueLocks.get(id)??[])], queueEditLocks: [...(this.queueEditLocks.get(id)??[])], queueAbortPending: false, error: null, errorReason: null, recovery: null, errorRetryText: null, credentialSwitchWait: null };
   }
   private async runSubmission(id: string, message: UserMessage, requestId: string, context: TaskInvocationContext) {
     try {
@@ -482,7 +629,7 @@ export class TerminalTaskHost {
       if (this.activeSubmissions.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning()) throw new Error('SESSION_RUNNING');
       this.activeSubmissions.set(id, requestId);
       if (!await this.updateReceipt(id, requestId, 'sending')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
-      const result = await this.invoke('maker:send', [id, message], context) as { accepted: boolean; reason?: string };
+      const result = await this.invoke('maker:send', [id, message], {...context, normalizedInput:true}) as { accepted: boolean; reason?: string };
       if (!result.accepted) throw new Error(result.reason ?? 'SEND_REJECTED');
       await this.updateReceipt(id, requestId, 'running');
       void this.projection(id).then(projection => this.emit('maker:input:projection', projection)).catch(() => undefined);
@@ -512,11 +659,10 @@ export class TerminalTaskHost {
       if (context.signal?.aborted) abort();
     });
   }
-  private message(value: unknown): UserMessage {
-    const input = record(value);
-    if (typeof input.text === 'string') return { type: 'user', content: input.text };
-    if (input.type !== 'user' || typeof input.content !== 'string') throw new Error('TEXT_MESSAGE_REQUIRED');
-    return { type: 'user', content: input.content };
+  private async message(id: string, value: unknown, context: TaskInvocationContext, lifecycle?: AttachmentLifecycle): Promise<UserMessage> {
+    if (context.normalizedInput) return value as UserMessage;
+    const row = await this.storage.get(id); if (!row) throw new Error('TASK_NOT_FOUND');
+    return normalizeTaskInput({...this.options, ingestAttachment: this.options.ingestAttachment ?? ((input,ctx)=>this.media.ingest(input,()=>this.guard(ctx))), resolveAttachment: async (reference,ctx,sid) => reference.startsWith('cindy-media://') ? this.media.resolveManaged(reference,ctx.sharedTask ? sid : undefined) : this.options.resolveAttachment ? this.options.resolveAttachment(reference,ctx,sid) : Promise.reject(new Error('ATTACHMENT_RESOLVER_REQUIRED'))},id,value,context,row.workDir,()=>this.guard(context),lifecycle);
   }
   private async messages(id: string, options: Record<string, unknown>, internal = false) {
     const limit = typeof options.limit === 'number' ? Math.max(1, Math.min(internal ? Infinity : 1000, options.limit)) : 200;
@@ -537,7 +683,7 @@ export class TerminalTaskHost {
       for (const row of page.records) {
         if (row.kind === 'user' && row.message) {
           assistant = undefined;
-          const content = typeof row.message.content === 'string' ? row.message.content : row.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+          const content = persistedInput(row.message);
           add({ id: `${id}:${row.sequence}`, clientId: row.clientId ?? `${id}:${row.sequence}`, sessionId: id, role: 'user', content, createdAt: new Date(row.timestamp).toISOString(), agentKind: task.agentKind === 'claude-code' ? 'cc' : task.agentKind, agentMeta: row.agentMeta ?? null });
         } else if (row.event?.type === 'text') {
           const data = typeof row.event.data === 'string' ? { text: row.event.data } : record(row.event.data);
@@ -558,7 +704,7 @@ export class TerminalTaskHost {
     } while (true);
     return result.reverse();
   }
-  private historyDeps(): import('../../../../packages/lizi-mcps/src/xdt-helper/_history_types.js').XdtHelperHistoryDeps {
+  historyDeps(): import('../../../../packages/lizi-mcps/src/xdt-helper/_history_types.js').XdtHelperHistoryDeps {
     type Cursor = { id: string; createdAt: number };
     const page = <T extends Cursor>(items: T[], limit: number, order: 'asc' | 'desc', cursor: Cursor | null) => {
       const direction = order === 'asc' ? 1 : -1;
@@ -603,7 +749,7 @@ export class TerminalTaskHost {
       },
     };
   }
-  private async patchMeta(id: string, patch: Record<string, unknown>) {
+  private async patchMeta(id: string, patch: Record<string, unknown>, guard:()=>void=()=>{}) {
     if (Object.keys(patch).some(key => !['title', 'status', 'pinnedAt'].includes(key))) throw new Error('UNSUPPORTED_SESSION_PATCH_FIELD');
     const update: Partial<TerminalTaskMeta> = {};
     if (patch.title !== undefined) update.title = string(patch.title);
@@ -611,14 +757,14 @@ export class TerminalTaskHost {
       if (!['active', 'archived', 'deleted'].includes(String(patch.status))) throw new Error('INVALID_SESSION_STATUS');
       if (patch.status !== 'active' && (this.starts.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning())) throw new Error('SESSION_RUNNING');
       update.archived = patch.status === 'archived'; update.deleted = patch.status === 'deleted';
-      if (patch.status !== 'active') await this.closeTask(id);
+      if (patch.status !== 'active') { await this.options.beforeTaskUnavailable?.(id); guard(); await this.closeTask(id); }
     }
     if (patch.pinnedAt !== undefined) {
       const at = patch.pinnedAt === null ? null : typeof patch.pinnedAt === 'number' ? patch.pinnedAt : Date.parse(string(patch.pinnedAt));
       if (at !== null && !Number.isFinite(at)) throw new Error('INVALID_PINNED_TIMESTAMP');
       update.pinnedAt = at;
     }
-    const row = await this.storage.update(id, update);
+    guard();const row = await this.storage.update(id, update);
     this.emit('local-db:sessions:patched', { sessionId: id, patch: this.guiSession(row) });
     return this.guiSession(row);
   }
@@ -628,10 +774,11 @@ export class TerminalTaskHost {
   }
   private async shutdown() {
     this.closed = true;
+    for (const timer of this.queueTimers.values()) clearTimeout(timer); this.queueTimers.clear();
     await this.ready;
     await Promise.allSettled(this.starts.values());
     await Promise.all([...this.live.keys()].map(id => this.closeTask(id)));
     await Promise.allSettled([...this.hosted].map(handle => handle.close()));
-    await Promise.all([this.storage.flush(), this.models.flush()]);
+    await Promise.all([this.storage.flush(), this.models.flush(), this.media.close()]);
   }
 }

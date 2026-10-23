@@ -10,6 +10,9 @@ export const terminalSettingsSchema = z.object({
   remoteEnabled: z.boolean().optional(),
   language: z.enum(['zh-CN', 'zh-TW', 'en', 'ja', 'ko']).optional(),
   workingDir: z.string().min(1).refine(value => path.isAbsolute(value), 'Absolute path required').optional(),
+  targetModels: z.record(z.string().min(1).max(300), z.object({
+    providerId:z.string().min(1).max(300),agentKind:z.enum(['pi','codex','claude-code']),model:z.string().min(1).max(300),
+  }).strict()).refine(value=>Object.keys(value).length<=1000).optional(),
 }).strict();
 export type TerminalSettings = z.infer<typeof terminalSettingsSchema>;
 const recordSchema = z.object({ version: z.literal(1), deviceId: z.string().uuid(), overrides: terminalSettingsSchema }).strict();

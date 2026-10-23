@@ -27,6 +27,8 @@ export interface TerminalScopedAuthority {
   allowedChannels: ReadonlySet<string>;
   allowedTopics: ReadonlySet<Topic>;
   allowedPushChannels?: ReadonlySet<string>;
+  /** Last-mile data scope check, including batch contents and private interactions. */
+  acceptsPush?(channel: string, payload: unknown): boolean;
   assertCurrent(): void;
 }
 

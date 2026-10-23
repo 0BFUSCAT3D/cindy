@@ -37,7 +37,13 @@
     "@cindy/anthropic-compat-proxy": "workspace:*",
     "@cindy/anthropic-responses-bridge": "workspace:*",
     "@cindy/responses-anthropic-bridge": "workspace:*",
-    "@cindy/responses-chat-bridge": "workspace:*"
+    "@cindy/responses-chat-bridge": "workspace:*",
+    "@cindy/media-core": "workspace:*",
+    "better-sqlite3": "^12.9.0",
+    "drizzle-orm": "^0.45.2",
+    "@cindy/terminal-core": "workspace:*",
+    "@cindy/companion-core": "workspace:*",
+    "@cindy/plugin-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -47,6 +53,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5.7.0",
     "vitest": "^3.2.4",
-    "@types/yauzl": "^2.10.3"
+    "@types/yauzl": "^2.10.3",
+    "@types/better-sqlite3": "^7.6.13"
   }
 }

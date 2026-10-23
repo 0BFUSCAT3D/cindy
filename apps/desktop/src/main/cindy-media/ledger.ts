@@ -1,3 +1,4 @@
+import * as coreLedger from '@cindy/media-core/ledger';
 /**
  * ledger.ts — cindy-media 账本(唯一真相)。
  * ---------------------------------------------------------------------------
@@ -79,12 +80,7 @@ export async function relocateGhostMediaRefs(
 
 /** Shared task reads use existing provenance; knowing a blob hash grants nothing. */
 export async function sessionCanRead(hash: string, sessionId: string, db: LedgerDb = defaultDb()): Promise<boolean> {
-  const rows = await db.select({ one: sql`1` }).from(mediaRefs).where(and(
-    eq(mediaRefs.hash, hash),
-    or(eq(mediaRefs.originSessionId, sessionId),
-      and(eq(mediaRefs.refKind, 'session-attachment'), eq(mediaRefs.refId, sessionId))),
-  )).limit(1).all();
-  return rows.length > 0;
+  return coreLedger.sessionCanRead(hash, sessionId, db);
 }
 
 /**
@@ -169,24 +165,7 @@ export async function recordBlob(
   params: RecordBlobParams,
   db: LedgerDb = defaultDb(),
 ): Promise<void> {
-  const now = Date.now();
-  const isCache = params.isCache ?? false;
-  await db
-    .insert(mediaBlobs)
-    .values({
-      hash: params.hash,
-      ext: params.ext,
-      mimeType: params.mimeType,
-      bytes: params.bytes,
-      isCache,
-      createdAt: now,
-      lastAccessAt: now,
-    })
-    .onConflictDoUpdate({
-      target: mediaBlobs.hash,
-      set: isCache ? { lastAccessAt: now } : { lastAccessAt: now, isCache: false },
-    })
-    .run();
+  return coreLedger.recordBlob(params, db);
 }
 
 /**
@@ -197,42 +176,17 @@ export async function recordBlob(
  * 才写),查无此账 no-op;不提供反向升级。
  */
 export async function pinBlob(hash: string, db: LedgerDb = defaultDb()): Promise<void> {
-  await db
-    .update(mediaBlobs)
-    .set({ isCache: false })
-    .where(and(eq(mediaBlobs.hash, hash), eq(mediaBlobs.isCache, true)))
-    .run();
+  return coreLedger.pinBlob(hash, db);
 }
 
 /** 加一条引用行,返回引用 id。blob 行必须已入账(FK 保证)。 */
 export async function addRef(params: AddRefParams, db: LedgerDb = defaultDb()): Promise<string> {
-  // message ref 的生命周期靠 removeSessionRefs 按出生会话连坐清理,漏传
-  // originSessionId 的引用将永远无人回收——契约升级为代码级断言(规则 9)。
-  if (params.refKind === 'message' && !params.originSessionId) {
-    throw new Error('cindy-media: message ref requires originSessionId');
-  }
-  const id = params.id ?? randomUUID();
-  await db
-    .insert(mediaRefs)
-    .values({
-      id,
-      hash: params.hash,
-      refKind: params.refKind,
-      refId: params.refId,
-      originSessionId: params.originSessionId ?? null,
-      originKind: params.originKind ?? null,
-      originId: params.originId ?? null,
-      label: params.label ?? null,
-      createdAt: Date.now(),
-    })
-    .run();
-  return id;
+  return coreLedger.addRef(params, db);
 }
 
 /** Remove exactly one reference row created by a staged operation. */
 export async function removeRefById(id: string, db: LedgerDb = defaultDb()): Promise<number> {
-  const result = await db.delete(mediaRefs).where(eq(mediaRefs.id, id)).run();
-  return result.changes;
+  return coreLedger.removeRefById(id, db);
 }
 
 /**
@@ -264,21 +218,7 @@ export async function hasRef(
   },
   db: LedgerDb = defaultDb(),
 ): Promise<boolean> {
-  const predicates = [
-    eq(mediaRefs.hash, params.hash),
-    eq(mediaRefs.refKind, params.refKind),
-    eq(mediaRefs.refId, params.refId),
-  ];
-  if (params.originKind !== undefined) {
-    predicates.push(eq(mediaRefs.originKind, params.originKind));
-  }
-  const rows = await db
-    .select({ one: sql`1` })
-    .from(mediaRefs)
-    .where(and(...predicates))
-    .limit(1)
-    .all();
-  return rows.length > 0;
+  return coreLedger.hasRef(params, db);
 }
 
 /**
@@ -389,11 +329,7 @@ export async function removeRefs(
   params: { refKind: MediaRefKind; refId: string },
   db: LedgerDb = defaultDb(),
 ): Promise<number> {
-  const result = await db
-    .delete(mediaRefs)
-    .where(and(eq(mediaRefs.refKind, params.refKind), eq(mediaRefs.refId, params.refId)))
-    .run();
-  return result.changes;
+  return coreLedger.removeRefs(params, db);
 }
 
 /**
@@ -525,13 +461,7 @@ export async function getBlobInfo(
   hash: string,
   db: LedgerDb = defaultDb(),
 ): Promise<{ ext: string; mimeType: string; bytes: number } | null> {
-  const rows = await db
-    .select({ ext: mediaBlobs.ext, mimeType: mediaBlobs.mimeType, bytes: mediaBlobs.bytes })
-    .from(mediaBlobs)
-    .where(eq(mediaBlobs.hash, hash))
-    .limit(1)
-    .all();
-  return rows[0] ?? null;
+  return coreLedger.getBlobInfo(hash, db);
 }
 
 // ── 回收器查询与条件删账──────────────────────────────────────────────

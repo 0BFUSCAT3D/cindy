@@ -3,13 +3,23 @@
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
+const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const output = path.join(app, 'dist', 'diagnostic-service.mjs');
+await build({
+  stdin: { contents: "export { TerminalService } from './src/service.ts';", resolveDir: app },
+  outfile: output, platform: 'node', target: 'node22', format: 'esm', bundle: true,
+  loader: { '.md': 'text' }, external: ['@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2'],
+  banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);' },
+});
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-start-diagnostic-'));
 const home = path.join(temporary, 'home'); await mkdir(home);
 for (const key of Object.keys(process.env)) {
   if (!['PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'CI'].includes(key)) delete process.env[key];
 }
 Object.assign(process.env, { HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'), XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.local/state') });
-const { TerminalService } = await import('../src/service.ts');
+const { TerminalService } = await import(pathToFileURL(output).href);
 const service = new TerminalService(path.join(temporary, 'profile'));
 try { await service.start(); console.log('ISOLATED_START_OK'); }
 catch (error) {

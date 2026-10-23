@@ -7,7 +7,7 @@ import type { TerminalMembershipService } from './membership.js';
 import type { TerminalRemoteAccountService } from './account.js';
 import type { TerminalRemoteModelGrants } from './model-grants.js';
 
-const text = (fallback: string, zh: string) => ({ fallback, translations: { 'zh-CN': zh } });
+import { remoteText as text, remoteString } from './text.js';
 const modelKey = (model: string) => createHash('sha256').update(model).digest('hex');
 
 /** Non-secret management uses the existing resource protocol on GUI and TUI. */
@@ -18,19 +18,19 @@ export function registerRemoteManagementResources(registry: RemoteResourceRegist
 }) {
   const providers = async (): Promise<RemoteCollectionItem[]> => (await options.agent.views()).map(provider => ({
     ref: { collectionId: 'remote-providers', kind: 'provider', id: provider.id }, revision: String(provider.remoteInvocationEnabled), links: [],
-    display: { title: provider.name, subtitle: provider.remoteInvocationEnabled ? 'Remote access enabled' : 'Remote access off' },
+    display: { title: provider.name, subtitle: text(provider.remoteInvocationEnabled ? 'Remote access enabled' : 'Remote access off') },
     actions: [{ id: provider.remoteInvocationEnabled ? 'disable' : 'enable', label: provider.remoteInvocationEnabled ? text('Disable remote access', '关闭远程调用') : text('Enable remote access', '开启远程调用') },
-      ...(provider.remoteInvocationEnabled ? [{ id: 'create-share', label: text('Create invitation', '创建分享链接') }] : [])],
+      ...(provider.remoteInvocationEnabled ? [{ id: 'create-share', label: text('Create invitation') }] : [])],
   }));
   registry.register({
     collection: { id: 'remote-providers', resourceKind: 'provider', title: text('Remote providers', '远程供应商'), placement: 'settings' },
     list: async () => ({ collectionId: 'remote-providers', revision: '1', items: await providers() }),
-    get: async (_context, request) => {
+    get: async (context, request) => {
       const item = (await providers()).find(item => item.ref.id === request.ref.id); if (!item) throw new Error('PROVIDER_NOT_FOUND');
       const provider=(await options.agent.views()).find(value=>value.id===item.ref.id)!;
       const models=[...new Set(Object.values(provider.models).flatMap(values=>values?.filter(model=>!model.disabled).map(model=>model.id)??[]))];
       const rule=options.modelGrants.read(provider.id);
-      return {...item,actions:[...item.actions??[],{id:'models-all',label:text('Allow all models','允许全部模型')},...models.map(model=>({id:`model:${modelKey(model)}`,label:{fallback:`${options.modelGrants.allows(provider.id,model)?'Disable':'Enable'} ${model}`}}))],blocks:[{id:'models',primitive:'text',fallbackMarkdown:rule.models===null?'All offered models':rule.models.join('\n')||'No models allowed'}]};
+      return {...item,actions:[...item.actions??[],{id:'models-all',label:text('Allow all models','允许全部模型')},...models.map(model=>({id:`model:${modelKey(model)}`,label:text(options.modelGrants.allows(provider.id,model)?'Disable {name}':'Enable {name}',undefined,{name:model})}))],blocks:[{id:'models',primitive:'text',fallbackMarkdown:rule.models===null?remoteString('All offered models',request.client.locale):rule.models.join('\n')||remoteString('No models allowed',request.client.locale)}]};
     },
     invoke: async (context, request) => {
       const provider = (await options.agent.views()).find(provider => provider.id === request.resourceRef?.id);
@@ -55,28 +55,28 @@ export function registerRemoteManagementResources(registry: RemoteResourceRegist
   });
   const groupItems = async (): Promise<RemoteCollectionItem[]> => { await options.groups.list(); return (await options.agent.views()).map(provider => ({
     ref: { collectionId: 'provider-groups', kind: 'provider-group', id: provider.id }, revision: JSON.stringify(options.groups.read(provider.id)), links: [],
-    display: { title: provider.name, subtitle: options.groups.read(provider.id)?.strategy ?? 'No group' },
-    actions: [{ id: 'strategy', label: text('Strategy', '分配策略'), fields: [{ id: 'strategy', label: text('Strategy', '分配策略'), kind: 'select', required: true, options: PROVIDER_GROUP_STRATEGIES.map(value => ({ value, label: { fallback: value } })) }] }],
+    display: { title: provider.name, subtitle: text(options.groups.read(provider.id)?.strategy ?? 'No group') },
+    actions: [{ id: 'strategy', label: text('Strategy', '分配策略'), fields: [{ id: 'strategy', label: text('Strategy', '分配策略'), kind: 'select', required: true, options: PROVIDER_GROUP_STRATEGIES.map(value => ({ value, label: text(value) })) }] }],
   })); };
   registry.register({
     collection: { id: 'provider-groups', resourceKind: 'provider-group', title: text('Provider groups', '供应商组'), placement: 'settings' },
     list: async () => ({ collectionId: 'provider-groups', revision: '1', items: await groupItems() }),
-    get: async (_context, request) => {
+    get: async (context, request) => {
       const item = (await groupItems()).find(item => item.ref.id === request.ref.id); if (!item) throw new Error('PROVIDER_NOT_FOUND');
       const id = item.ref.id, config = options.groups.read(id);
       const candidates = await options.groups.candidates(id);
       const actions: RemoteActionDescriptor[] = [...item.actions ?? []];
       if (candidates.length) actions.push({ id: 'add', label: text('Add computer', '添加电脑'), fields: [{ id: 'member', kind: 'select', required: true, label: text('Computer', '电脑'), options: candidates.filter(candidate => !candidate.blocked).map(candidate => ({ value: candidate.key, label: { fallback: candidate.label } })) }] });
       for (const member of config?.members ?? []) {
-        actions.push({ id: `remove:${member.key}`, label: { fallback: `Remove ${member.label ?? member.key}` } });
-        actions.push({ id: `pause:${member.key}`, label: { fallback: `${member.paused ? 'Resume' : 'Pause'} ${member.label ?? member.key}` } });
+        actions.push({ id: `remove:${member.key}`, label: text('Remove {name}',undefined,{name:member.label??member.key}) });
+        actions.push({ id: `pause:${member.key}`, label: text(member.paused?'Resume {name}':'Pause {name}',undefined,{name:member.label??member.key}) });
       }
-      return { ...item, actions, blocks: [{ id: 'members', primitive: 'text', fallbackMarkdown: (await options.groups.router.view(id)).members.map(member => `${member.label}: ${member.state}`).join('\n') }] };
+      return { ...item, actions, blocks: [{ id: 'members', primitive: 'text', fallbackMarkdown: (await options.groups.router.view(id)).members.map(member => `${member.label}: ${remoteString(member.state,request.client.locale)}`).join('\n') }] };
     },
     invoke: async (context, request) => {
       const id = request.resourceRef?.id; if (!id) throw new Error('INVALID_ACTION');
       const current = options.groups.read(id);
-      const config: ProviderGroupConfig = current ? structuredClone(current) : { strategy: 'least', autoSwitch: true, members: [{ key: 'local', kind: 'local', agentDeviceId: null, providerId: id, label: 'This computer', limit: 4, weight: 1, paused: false }] };
+      const config: ProviderGroupConfig = current ? structuredClone(current) : { strategy: 'least', autoSwitch: true, members: [{ key: 'local', kind: 'local', agentDeviceId: null, providerId: id, label: remoteString('This computer',request.client.locale), limit: 4, weight: 1, paused: false }] };
       if (request.actionId === 'strategy') {
         const strategy = request.input?.strategy;
         if (!PROVIDER_GROUP_STRATEGIES.includes(strategy as never)) throw new Error('INVALID_STRATEGY');

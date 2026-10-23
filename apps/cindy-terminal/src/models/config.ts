@@ -1,11 +1,11 @@
 import path from 'node:path';
-import { BUNDLED_CATALOG, buildRegistry, buildUserProvider, resolveRoute, type AgentKind, type Catalog, type CustomProviderConfig, type Effort, type ProviderView, type ResolvedRoute, type CatalogModel, type ProviderRuntimeModelConfig } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildRegistry, buildUserProvider, resolveRoute, type AgentKind, type Catalog, type CustomProviderConfig, type Effort, type ProviderView, type ResolvedRoute, type CatalogModel, type ProviderRuntimeModelConfig, type ModelDisableOverrides, modelDisableKey, MODEL_METADATA_FIELDS, validModelMetadata, isProviderRequestPath, PI_MODEL_APIS } from '@cindy/model-providers';
 import type { TerminalSecrets } from '../contracts.js';
 import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platform.js';
 
 export const ENGINES = ['claude-code', 'codex', 'pi'] as const;
 export type ModelSelection = { agentKind: AgentKind; providerId: string; model: string; effort?: Effort };
-type ModelState = { version: 1; providers: CustomProviderConfig[]; defaultSelection?: ModelSelection };
+type ModelState = { version: 1; providers: CustomProviderConfig[]; defaultSelection?: ModelSelection; disabled?: ModelDisableOverrides };
 export type NativeStatus = (agent: AgentKind) => Promise<{ authenticated: boolean }>;
 
 function object(value: unknown): Record<string, unknown> {
@@ -37,7 +37,7 @@ export class TerminalModelConfig {
     if (parsed.version !== 1 || !Array.isArray(parsed.providers)) throw new Error('UNSUPPORTED_MODEL_CONFIGURATION');
     const providers = parsed.providers.map(value => this.parseProvider(value));
     if (new Set(providers.map(p => p.id)).size !== providers.length) throw new Error('DUPLICATE_PROVIDER');
-    this.state = { version: 1, providers, ...(parsed.defaultSelection ? { defaultSelection: parseSelection(parsed.defaultSelection) } : {}) };
+    this.state = { version: 1, providers, ...(parsed.disabled && typeof parsed.disabled==='object' ? {disabled: parsed.disabled as ModelDisableOverrides} : {}), ...(parsed.defaultSelection ? { defaultSelection: parseSelection(parsed.defaultSelection) } : {}) };
   }
   private parseProvider(value: unknown): CustomProviderConfig {
     const input = object(value);
@@ -62,15 +62,28 @@ export class TerminalModelConfig {
         if (typeof model.id !== 'string' || !model.id.trim()) throw new Error('INVALID_MODEL_ID');
         const copy: Record<string, unknown> = { id: model.id, name: typeof model.name === 'string' ? model.name : model.id };
         if (model.contextWindow !== undefined && (typeof model.contextWindow !== 'number' || !Number.isSafeInteger(model.contextWindow) || model.contextWindow < 1)) throw new Error('INVALID_CONTEXT_WINDOW');
-        for (const key of ['contextWindow', 'defaultEnabled', 'api', 'piApi', 'reasoning', 'reasoningEfforts', 'reasoningDefaultEffort', 'supportsImageInput', 'thinkingToggle']) {
+        for (const key of [...MODEL_METADATA_FIELDS, 'defaultEnabled', 'api', 'piApi', 'reasoning', 'reasoningEfforts', 'reasoningDefaultEffort', 'thinkingToggle', 'discoveredMetadata', 'discoveredCost', 'nameExplicit', 'supportsUltrafastMode', 'route']) {
           if (model[key] !== undefined) copy[key] = model[key];
         }
+        for(const key of MODEL_METADATA_FIELDS)if(copy[key]!==undefined&&!validModelMetadata({[key]:copy[key]}))throw new Error('INVALID_MODEL_METADATA');
+        for(const key of ['api','piApi'])if(copy[key]!==undefined&&!PI_MODEL_APIS.includes(copy[key] as typeof PI_MODEL_APIS[number]))throw new Error('INVALID_MODEL_API');
+        if(copy.route){const route=object(copy.route);const routeUrl=new URL(String(route.baseUrl));if(routeUrl.origin!==url.origin||routeUrl.username||routeUrl.password||routeUrl.search||routeUrl.hash||!['anthropic-messages','openai-responses','openai-chat','google-generative-ai'].includes(String(route.wireProtocol))||route.requestPath!==undefined&&!isProviderRequestPath(route.requestPath))throw new Error('INVALID_MODEL_ROUTE');copy.route={baseUrl:route.baseUrl,wireProtocol:route.wireProtocol,...(route.requestPath?{requestPath:route.requestPath}:{})};}
+        if(copy.discoveredMetadata!==undefined&&!validModelMetadata(copy.discoveredMetadata))throw new Error('INVALID_MODEL_METADATA');
+        if(copy.discoveredCost!==undefined){const cost=object(copy.discoveredCost);copy.discoveredCost=Object.fromEntries(Object.entries(cost).filter(([key])=>['input','output','cacheRead','cacheWrite'].includes(key)).map(([key,value])=>{if(typeof value!=='number'||!Number.isFinite(value)||value<0)throw new Error('INVALID_MODEL_COST');return [key,value];}));}
         return copy;
       });
       const protocol = runtime.wireProtocol ?? (kind === 'claude-code' ? 'anthropic-messages' : kind === 'codex' ? 'openai-responses' : 'openai-chat');
-      if (!['anthropic-messages', 'openai-responses', 'openai-chat'].includes(String(protocol))) throw new Error('INVALID_WIRE_PROTOCOL');
+      if (!['anthropic-messages', 'openai-responses', 'openai-chat', 'google-generative-ai'].includes(String(protocol))) throw new Error('INVALID_WIRE_PROTOCOL');
 
+      if(runtime.requestPath!==undefined&&!isProviderRequestPath(runtime.requestPath))throw new Error('INVALID_PROVIDER_PATH');
+      if(runtime.modelsUrl!==undefined){const target=new URL(String(runtime.modelsUrl));if(!['https:','http:'].includes(target.protocol)||target.username||target.password||target.hash)throw new Error('INVALID_MODELS_URL');}
+      const fields:Record<string,unknown>={};
+      for(const key of ['catalogPresetId','piCatalogProviderId','modelsUrl','requestPath'])if(runtime[key]!==undefined){if(typeof runtime[key]!=='string'||(runtime[key] as string).length>2048)throw new Error('INVALID_PROVIDER_CONFIGURATION');fields[key]=runtime[key];}
+      if(runtime.supportsImageGeneration!==undefined){if(typeof runtime.supportsImageGeneration!=='boolean')throw new Error('INVALID_PROVIDER_CONFIGURATION');fields.supportsImageGeneration=runtime.supportsImageGeneration;}
+      if(runtime.imageApi!==undefined){if(runtime.imageApi!=='openai-images')throw new Error('INVALID_PROVIDER_CONFIGURATION');fields.imageApi=runtime.imageApi;}
+      if(runtime.videoApi!==undefined){if(runtime.videoApi!=='xai-videos')throw new Error('INVALID_PROVIDER_CONFIGURATION');fields.videoApi=runtime.videoApi;}
       clean.runtimes[kind as AgentKind] = {
+        ...fields,
         baseUrl: runtime.baseUrl.replace(/\/+$/, ''),
         wireProtocol: protocol as 'anthropic-messages' | 'openai-responses' | 'openai-chat',
         models: models as unknown as ProviderRuntimeModelConfig[],
@@ -81,8 +94,40 @@ export class TerminalModelConfig {
     buildUserProvider(clean);
     return clean;
   }
+  previewProvider(input:unknown) {
+    const provider=this.parseProvider(input);const kind=Object.keys(provider.runtimes)[0] as AgentKind;
+    const view=buildRegistry({...this.catalog,providers:[buildUserProvider(provider)]},{[provider.id]:true});
+    const model=provider.runtimes[kind]!.models[0].id;const route=resolveRoute(view,provider.id,model,kind);
+    if(!route)throw new Error('MODEL_ROUTE_UNAVAILABLE');return {route,selection:{agentKind:kind,providerId:provider.id,model}};
+  }
+  presets() { return structuredClone(this.catalog.presets ?? []); }
+  async refresh(providerId:string) {
+    const kind=providerId==='openai'?'codex':providerId==='anthropic'?'claude-code':null;
+    if(!kind||!this.discover)throw new Error('PROVIDER_DISCOVERY_UNAVAILABLE');
+    this.discovery.delete(kind);await this.views();
+    if(!this.discovery.has(kind))throw new Error('PROVIDER_DISCOVERY_FAILED');
+    return {ok:true as const,providerId};
+  }
+  setDisabled(input:unknown,guard:()=>void) {
+    const patch=object(input);const id=patch.providerId;
+    if(typeof id!=='string'||!id||id.length>256||!['model','provider','reset'].includes(String(patch.kind)))throw new Error('INVALID_MODEL_DISABLE');
+    if(patch.kind!=='reset'&&typeof patch.disabled!=='boolean')throw new Error('INVALID_MODEL_DISABLE');
+    const ids=patch.modelIds;
+    if(patch.kind==='model'&&(!Array.isArray(ids)||ids.length<1||ids.length>512||ids.some(id=>typeof id!=='string'||!id||id.length>256)))throw new Error('INVALID_MODEL_DISABLE');
+    return this.change(async()=>{
+      guard();const provider=buildRegistry(this.activeCatalog(),{}).find(p=>p.id===id);
+      if(patch.disabled&&!provider)throw new Error('PROVIDER_NOT_FOUND');
+      if(patch.kind==='model'&&patch.disabled&&(ids as string[]).some(id=>!Object.values(provider!.models).some(models=>models?.some(m=>m.id===id))))throw new Error('MODEL_NOT_FOUND');
+      const disabled=structuredClone(this.state.disabled??{});disabled.disabledProviders??={};disabled.disabledModels??={};
+      if(patch.kind==='reset'){delete disabled.disabledProviders[id];for(const key of Object.keys(disabled.disabledModels))if(key.startsWith(id+':'))delete disabled.disabledModels[key];}
+      else if(patch.kind==='provider'){if(patch.disabled)disabled.disabledProviders[id]=true;else delete disabled.disabledProviders[id];}
+      else for(const modelId of ids as string[]){const key=modelDisableKey(id,modelId);if(patch.disabled)disabled.disabledModels[key]=true;else delete disabled.disabledModels[key];}
+      guard();await this.persist({...this.state,disabled});
+    });
+  }
+  disconnect(id:string,guard:()=>void) {return this.change(async()=>{guard();if(!this.state.providers.some(p=>p.id===id))throw new Error('PROVIDER_NOT_FOUND');for(const kind of ENGINES){guard();await this.secrets.delete(this.key(id,kind));}});}
   private activeCatalog(): Catalog {
-    return { ...this.catalog, providers: [...this.catalog.providers.map(provider => { const kind = provider.id === 'openai' ? 'codex' : provider.id === 'anthropic' ? 'claude-code' : null; return kind && this.nativeModels.has(kind) ? { ...provider, models: { ...provider.models, [kind]: this.nativeModels.get(kind)! } } : provider; }), ...this.state.providers.map(p => buildUserProvider(p))] };
+    return { ...this.catalog, providers: [...this.catalog.providers.map(provider => { const kind = provider.id === 'openai' ? 'codex' : provider.id === 'anthropic' ? 'claude-code' : null; return kind && this.nativeModels.has(kind) ? { ...provider, models: { ...provider.models, [kind]: this.nativeModels.get(kind)! } } : provider; }), ...this.state.providers.map(p => buildUserProvider(p,{modelRegistry:this.catalog.modelRegistry,presets:this.catalog.presets}))] };
   }
   async views(): Promise<ProviderView[]> {
     await this.pending;
@@ -101,7 +146,7 @@ export class TerminalModelConfig {
       }
       await pending;
     }));
-    return buildRegistry(this.activeCatalog(), connected);
+    return buildRegistry(this.activeCatalog(), connected, {}, this.state.disabled);
   }
   snapshot() { return structuredClone(this.state); }
   async select(input?: unknown): Promise<{ selection: ModelSelection; route: ResolvedRoute }> {

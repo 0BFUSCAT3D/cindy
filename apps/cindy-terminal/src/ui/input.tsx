@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { Text, useInput, usePaste } from 'ink';
+import { Text, useInput, usePaste, useWindowSize } from 'ink';
+import wrapAnsi from 'wrap-ansi';
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 export function graphemes(value: string): string[] { return Array.from(segmenter.segment(value), part => part.segment); }
@@ -16,6 +17,7 @@ export function Input({ value, onChange, onSubmit, onCancel, secret = false, mul
   onCancel?: () => void; secret?: boolean; multiline?: boolean; active?: boolean;
 }) {
   const [cursor, setCursor] = useState(() => graphemes(value).length);
+  const {columns,rows}=useWindowSize();
   // Keypresses and pasted input can arrive together before React paints. Keep
   // the editing buffer synchronous so Enter cannot submit an earlier frame.
   const buffer = useRef({ value, cursor });
@@ -58,5 +60,12 @@ export function Input({ value, onChange, onSubmit, onCancel, secret = false, mul
     insert(text);
   }, { isActive: active });
   const display = secret ? chars.map(() => '•') : chars;
-  return <Text>{display.slice(0, position).join('')}<Text inverse={active}>{display[position] || ' '}</Text>{display.slice(position + 1).join('')}</Text>;
+  const before=display.slice(0,position).join('');
+  const at=display[position]||' ';
+  const after=display.slice(position+1).join('');
+  const width=Math.max(8,columns-2),height=multiline?Math.max(2,Math.min(5,Math.floor(rows/4))):3;
+  const cursorLine=wrapAnsi(before+(at==='\n'?' ':at),width,{hard:true,trim:false}).split('\n').length-1;
+  const lines=wrapAnsi(`${before}${active?'\x1b[7m':''}${at==='\n'?' ':at}${active?'\x1b[27m':''}${at==='\n'?'\n':''}${after}`,width,{hard:true,trim:false}).split('\n');
+  const start=Math.max(0,cursorLine-height+1);
+  return <Text>{lines.slice(start,start+height).join('\n')}</Text>;
 }

@@ -53,6 +53,7 @@ export interface RuntimeInput {
   models: TerminalModelConfig;
   logger: Logger;
   remote?: boolean;
+  guestHome?: string;
   authorizeRequest?: (model: string) => Promise<boolean>;
   tools?: Awaited<ReturnType<typeof createTaskTools>>;
 }
@@ -63,13 +64,14 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
   const { selection, route, binaryPath, models, profileDir, taskId, logger } = input;
   const custom = route.provider.source === 'user';
   const key = custom && !input.remote ? await models.credential(selection.providerId, selection.agentKind) : null;
+  const codexHome = custom && !input.remote && selection.agentKind === 'codex' ? (input.guestHome ? path.join(input.guestHome,'codex') : path.join(profileDir, 'engines', 'codex', taskId)) : undefined;
+  const claudeHome = input.guestHome && selection.agentKind==='claude-code' ? path.join(input.guestHome,'claude') : undefined;
+  for(const directory of [codexHome,claudeHome])if(directory)await privateDirectory(directory);
   const proxy = custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest) : null;
   const runtimeKey = proxy?.token ?? key;
   const endpoint = proxy?.url ?? route.routing.upstream;
   const own = (agent: BaseAgent) => { if (proxy) { const dispose = agent.dispose.bind(agent); agent.dispose = async () => { try { await dispose(); } finally { await proxy.close(); } }; } return agent; };
   const keyless = route.provider.auth.method === 'none';
-  const codexHome = custom && !input.remote && selection.agentKind === 'codex' ? path.join(profileDir, 'engines', 'codex', taskId) : undefined;
-  if (codexHome) await privateDirectory(codexHome);
   const auth: AuthAdapter = {
     async getState() {
       return custom ? { authenticated: keyless || Boolean(key), authSource: key ? 'api-key' : undefined } : nativeAuthState(selection.agentKind, binaryPath);
@@ -77,7 +79,7 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
     async getAuthEnv() {
       if (!custom) return {};
       const env: Record<string, string> = {};
-      if (selection.agentKind === 'claude-code') env.ANTHROPIC_API_KEY = runtimeKey ?? 'terminal-keyless';
+      if (selection.agentKind === 'claude-code') {env.ANTHROPIC_API_KEY = runtimeKey ?? 'terminal-keyless';if(claudeHome)env.CLAUDE_CONFIG_DIR=claudeHome;}
       if (selection.agentKind === 'codex') {
         env.CINDY_TERMINAL_PROVIDER_KEY = runtimeKey ?? 'terminal-keyless';
         if (codexHome) env.CODEX_HOME = codexHome;
@@ -92,7 +94,7 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
   const deps = {
     auth, binaryPath, logger,
     mcpProviders: input.tools?.providers,
-    runtimeConfig: { userDataPath: profileDir, ...(custom && selection.agentKind === 'claude-code' ? { endpoint } : {}) },
+    runtimeConfig: { userDataPath: input.guestHome ?? profileDir, ...(custom && selection.agentKind === 'claude-code' ? { endpoint } : {}) },
     capabilityAdditions: { availableModels: catalogModels.map(model => ({
       id: model.id, displayName: model.name, contextWindow: model.contextWindow,
       efforts: model.efforts ?? [], defaultEffort: model.defaultEffort ?? null,
@@ -123,7 +125,7 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
   return own(new PiAgent({
     ...deps,
     preparePiExtraSpawnConfig: async () => input.tools?.pi() ?? null,
-    resolvePiAgentHome: () => path.join(profileDir, 'engines', 'pi', taskId),
+    resolvePiAgentHome: () => input.guestHome ? path.join(input.guestHome,'pi') : path.join(profileDir, 'engines', 'pi', taskId),
     resolvePiNativeProviders: async (): Promise<PiNativeProvidersResult> => {
       const native = resolvePiModelRoute(route.model, { baseUrl: endpoint, wireProtocol: route.routing.wireProtocol });
       if (!native) throw new Error('PI_MODEL_PROTOCOL_UNSUPPORTED');

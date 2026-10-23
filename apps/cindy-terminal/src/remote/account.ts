@@ -34,6 +34,27 @@ export class TerminalRemoteAccountService {
     return value.card;
   }
 
+  /** Captured only for completing shared-task cleanup of this exact account.
+   * The capability stays in memory and is never used for the next account. */
+  async captureSharedTaskCleanup() {
+    const owner = this.options.getOwnerScope();
+    const baseUrl = this.options.getApiBaseUrl();
+    const token = await this.options.getToken();
+    if (!owner || owner !== this.options.getOwnerScope() || !token) throw new TerminalRemoteError('OWNER_CHANGED', 'Remote account changed');
+    return createSharedTaskApi({
+      captureScope: () => ({isCurrent: () => true}),
+      request: async (route, request) => {
+        if (!route.startsWith('/api/device-link/shared-tasks')) throw new Error('INVALID_CLEANUP_ENDPOINT');
+        const response = await (this.options.fetch ?? fetch)(new URL(route, baseUrl), {method:request.method,
+          headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},
+          ...(request.body === undefined ? {} : {body:JSON.stringify(request.body)}),
+          redirect:'error',signal:AbortSignal.timeout(15_000)});
+        if (!response.ok) throw new Error('SHARED_TASK_CLEANUP_FAILED');
+        return response.json();
+      },
+    });
+  }
+
   constructor(private readonly options: TerminalRemoteAccountOptions) {
     const api = {
       captureScope: () => {
@@ -55,9 +76,12 @@ export class TerminalRemoteAccountService {
           ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
           redirect: 'error', signal: AbortSignal.timeout(30_000),
         });
-        check();
+        // Creation must expose a committed ID to the host-only cleanup observer.
+        // createSharedTaskApi still rejects delivery after its own scope check.
+        const creation = path === '/api/device-link/shared-tasks' && request.method === 'POST';
+        if (!creation) check();
         if (!response.ok) throw new TerminalRemoteError(response.status === 401 ? 'AUTH_REQUIRED' : 'REMOTE_API_ERROR', 'Remote account operation failed');
-        const value: unknown = await response.json(); check(); return value;
+        const value: unknown = await response.json(); if (!creation) check(); return value;
       },
     };
     this.sharedTasks = createSharedTaskApi(api);

@@ -1,0 +1,69 @@
+import path from 'node:path';
+import { open, lstat, realpath, chmod } from 'node:fs/promises';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { createBlobStore, sniffMediaMime, recordBlob, addRef, hasRef, removeRefs, sessionCanRead, getBlobInfo } from '@cindy/media-core';
+import * as schema from '@cindy/media-core/schema';
+import { privateDirectory } from '../platform.js';
+import type { AttachmentResolution } from './input.js';
+
+/** Uses the same byte store, tables and reference operations as Desktop.
+ * A terminal profile is already isolated to one authenticated owner. */
+export class TerminalTaskMedia {
+  private readonly store;
+  private native?: Database.Database;
+  private db?: ReturnType<typeof drizzle<typeof schema>>;
+  private operations: Promise<unknown> = Promise.resolve();
+  private readonly ready: Promise<void>;
+  constructor(private readonly profileDir:string) { this.store=createBlobStore(()=>profileDir); this.ready=this.initialize(); }
+  private async initialize() {
+    const directory=path.join(this.profileDir,'cindy-media'); await privateDirectory(directory);
+    const file=path.join(directory,'ledger.sqlite');
+    // SQLite opens its own sidecars, so check all existing paths before it can follow links.
+    for(const candidate of [file,`${file}-wal`,`${file}-shm`]) {
+      const info=await lstat(candidate).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;});
+      if(info&&(!info.isFile()||info.isSymbolicLink()||(process.platform!=='win32'&&typeof process.getuid==='function'&&info.uid!==process.getuid())))throw new Error('UNSAFE_MEDIA_DATABASE');
+    }
+    const database=new Database(file);
+    this.native=database; database.pragma('foreign_keys = ON'); database.pragma('journal_mode = WAL');
+    // These are the shared media tables, not Desktop's unrelated user database.
+    database.exec(`CREATE TABLE IF NOT EXISTS media_blobs (hash TEXT PRIMARY KEY, ext TEXT NOT NULL, mime_type TEXT NOT NULL, bytes INTEGER NOT NULL, is_cache INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, last_access_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS media_refs (id TEXT PRIMARY KEY, hash TEXT NOT NULL REFERENCES media_blobs(hash) ON DELETE CASCADE, ref_kind TEXT NOT NULL, ref_id TEXT NOT NULL, origin_session_id TEXT, origin_kind TEXT, origin_id TEXT, label TEXT, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS media_refs_hash_idx ON media_refs(hash);
+CREATE INDEX IF NOT EXISTS media_refs_ref_idx ON media_refs(ref_kind,ref_id);`);
+    if(process.platform!=='win32')await chmod(file,0o600);
+    this.db=drizzle(database,{schema});
+  }
+  private run<T>(action:()=>Promise<T>):Promise<T> { const next=this.operations.then(async()=>{await this.ready;return action();});this.operations=next.catch(()=>{});return next; }
+  ingest(input:{sessionId:string;bytes?:Buffer;path?:string;mimeType?:string;name?:string},guard:()=>void):Promise<AttachmentResolution> {
+    return this.run(async()=>{
+      guard(); let probe:Buffer;
+      if(input.bytes)probe=input.bytes.subarray(0,65536);
+      else if(input.path){const handle=await open(input.path,'r');try{const info=await handle.stat();if(!info.isFile())throw new Error('INVALID_MEDIA_FILE');const bytes=Buffer.alloc(Math.min(info.size,65536));const read=await handle.read(bytes,0,bytes.length,0);probe=bytes.subarray(0,read.bytesRead);}finally{await handle.close();}}
+      else throw new Error('MEDIA_BYTES_REQUIRED');
+      const mimeType=sniffMediaMime(probe,input.mimeType);if(!mimeType)throw new Error('UNRECOGNIZED_MEDIA_TYPE');guard();
+      const written=await this.store.writeBlob({...(input.bytes?{buffer:input.bytes}:{filePath:input.path!}),mimeType,assertStillValid:guard});guard();
+      // Local SQLite commit and acknowledgement are in-process. Reference insert
+      // and owner recheck share one transaction, so rollback needs no remote ACK journal.
+      this.native!.exec('BEGIN IMMEDIATE');
+      try {
+        await recordBlob({...written,isCache:false},this.db!);guard();
+        if(!await hasRef({hash:written.hash,refKind:'session-attachment',refId:input.sessionId},this.db!))await addRef({hash:written.hash,refKind:'session-attachment',refId:input.sessionId,originSessionId:input.sessionId,originKind:'user',label:input.name},this.db!);
+        guard();this.native!.exec('COMMIT');
+      }catch(error){this.native!.exec('ROLLBACK');throw error;}
+      const resolved=this.store.resolveSafe(written.url);return {path:resolved.absPath,managedUrl:written.url,mimeType};
+    });
+  }
+  async resolveManaged(url:string,sessionId?:string):Promise<AttachmentResolution> {
+    await this.ready;await this.operations;const resolved=this.store.resolveSafe(url);
+    if(sessionId&&!await sessionCanRead(resolved.hash,sessionId,this.db!))throw new Error('MEDIA_SESSION_ACCESS_DENIED');
+    if(!await getBlobInfo(resolved.hash,this.db!))throw new Error('MEDIA_NOT_FOUND');
+    const info=await lstat(resolved.absPath);
+    if(!info.isFile()||info.isSymbolicLink())throw new Error('MEDIA_NOT_FOUND');
+    const root=await realpath(path.join(this.profileDir,'cindy-media','blobs'));const actual=await realpath(resolved.absPath);const relative=path.relative(root,actual);
+    if(relative.startsWith('..'+path.sep)||relative==='..'||path.isAbsolute(relative))throw new Error('UNSAFE_MEDIA_PATH');
+    return {path:resolved.absPath,managedUrl:url,mimeType:resolved.mimeType};
+  }
+  removeSession(id:string):Promise<void>{return this.run(async()=>{await removeRefs({refKind:'session-attachment',refId:id},this.db!);});}
+  async close(){await this.ready;await this.operations;this.native?.close();}
+}

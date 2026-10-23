@@ -6,8 +6,8 @@ import type { SessionMeta, SessionStorage, AgentEvent, UserMessage } from '@cind
 import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platform.js';
 import type { ModelSelection } from '../models/config.js';
 
-export type TerminalTaskMeta = SessionMeta & { providerId?: string; archived?: boolean; deleted?: boolean; pinnedAt?: number | null; agentDeviceId?: string; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding; usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number } };
-export type Submission = { requestId: string; sessionId: string; fingerprint: string; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; ownerId?: string; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
+export type TerminalTaskMeta = SessionMeta & { providerId?: string; archived?: boolean; deleted?: boolean; pinnedAt?: number | null; agentDeviceId?: string; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding; queuePaused?: boolean; queueExpanded?: boolean; clearedAt?: number; usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number } };
+export type Submission = { requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
 export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string };
 function taskId(value: string): string {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(value)) throw new Error('INVALID_TASK_ID');
@@ -174,7 +174,7 @@ export class TerminalTaskStorage implements SessionStorage {
     taskId(id); await this.writes.get(id);
     return structuredClone(this.submissions.get(id)?.find(item => item.requestId === requestId) ?? null);
   }
-  claimSubmission(id: string, requestId: string, fingerprint: string, guard: () => void, payload?: Pick<Submission, 'message' | 'source' | 'deviceId' | 'ownerId' | 'sharedTask' | 'scheduler'>): Promise<{ receipt: Submission; created: boolean }> {
+  claimSubmission(id: string, requestId: string, fingerprint: string, guard: () => void, payload?: Pick<Submission, 'message' | 'source' | 'deviceId' | 'ownerId' | 'sharedTask' | 'scheduler' | 'sendAtMs' | 'deliveryProof' | 'sender'>): Promise<{ receipt: Submission; created: boolean }> {
     return this.enqueue(id, async () => {
       guard();
       if (!this.rows.has(id)) throw new Error('TASK_NOT_FOUND');
@@ -188,6 +188,23 @@ export class TerminalTaskStorage implements SessionStorage {
       await atomicPrivateWrite(path.join(this.directory(id), 'requests.json'), JSON.stringify([...entries, receipt]));
       this.submissions.set(id, [...entries, receipt]);
       return { receipt: structuredClone(receipt), created: true };
+    });
+  }
+  editQueuedSubmission(id:string,requestId:string,patch:Partial<Submission>,guard:()=>void):Promise<Submission> {
+    return this.enqueue(id,async()=>{
+      guard();const entries=this.submissions.get(id)??[];const found=entries.find(item=>item.requestId===requestId);
+      if(!found||found.status!=='queued')throw new Error('QUEUED_MESSAGE_NOT_FOUND');
+      const next={...found,...patch,requestId:found.requestId,sessionId:found.sessionId,updatedAt:Date.now()};
+      const updated=entries.map(item=>item===found?next:item);guard();await atomicPrivateWrite(path.join(this.directory(id),'requests.json'),JSON.stringify(updated));this.submissions.set(id,updated);return structuredClone(next);
+    });
+  }
+  reorderQueued(id:string,requestIds:string[],guard:()=>void):Promise<void> {
+    return this.enqueue(id,async()=>{
+      guard();const entries=this.submissions.get(id)??[];const pending=entries.filter(item=>item.status==='queued');
+      if(requestIds.length!==pending.length||new Set(requestIds).size!==pending.length||requestIds.some(id=>!pending.some(item=>item.requestId===id)))throw new Error('QUEUE_CHANGED');
+      const byId=new Map(pending.map(item=>[item.requestId,item]));let index=0;
+      const updated=entries.map(item=>item.status==='queued'?byId.get(requestIds[index++])!:item);
+      guard();await atomicPrivateWrite(path.join(this.directory(id),'requests.json'),JSON.stringify(updated));this.submissions.set(id,updated);
     });
   }
   updateSubmission(id: string, requestId: string, status: Submission['status'], error?: string, finalText?: string): Promise<Submission> {

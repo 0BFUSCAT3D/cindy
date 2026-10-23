@@ -5,6 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 export class TerminalGuestRoutes {
   private readonly owner: string | null;
   private readonly routes = new Map<string, { providerId: string; token: string; allows(model: string): Promise<boolean> }>();
+  private readonly ownerRoutes = new Map<string, { providerId: string; allows?: (providerId:string,model:string)=>boolean }>();
   private closed = false;
   constructor(private readonly scope: () => string | null) { this.owner = scope(); }
   register(sessionId: string, providerId: string, allows: (model: string) => Promise<boolean>, _restricted: () => boolean) {
@@ -29,5 +30,15 @@ export class TerminalGuestRoutes {
     const binding = this.routes.get(sessionId);
     return !!binding && this.check({ sessionId, providerId, model, routeToken: binding.token });
   }
-  close() { this.closed = true; this.routes.clear(); }
+  bindOwner(sessionId:string,providerId:string,allows?: (providerId:string,model:string)=>boolean) {
+    if(this.closed||this.scope()!==this.owner)throw new Error('OWNER_CHANGED');
+    const binding={providerId,allows};this.ownerRoutes.set(sessionId,binding);
+    return{setProvider:(providerId:string)=>{if(this.ownerRoutes.get(sessionId)===binding)binding.providerId=providerId;},release:()=>{if(this.ownerRoutes.get(sessionId)===binding)this.ownerRoutes.delete(sessionId);}};
+  }
+  ownerAllowed(input:{sessionId:string;providerId:string;model:string}):boolean{
+    if(this.closed||this.owner===null||this.scope()!==this.owner)return false;
+    const binding=this.ownerRoutes.get(input.sessionId);
+    try{return !!binding&&(binding.allows?.(input.providerId,input.model)??binding.providerId===input.providerId);}catch{return false;}
+  }
+  close() { this.closed = true; this.routes.clear(); this.ownerRoutes.clear(); }
 }

@@ -6,13 +6,9 @@
  */
 
 import {
-  CODEX_HISTORY_OVERSIZED_REASON,
-  CONTEXT_OVERFLOW_REASON,
   PI_REQUEST_BODY_RECOVERY_EXHAUSTED,
   type PiCacheCompatibility,
-  isContextOverflowErrorMessage,
   isDeterministicHostCompactFailure,
-  isRemoteCompactEncryptedContentError,
   isUnsupportedRequestOptionErrorMessage,
   unsupportedRequestOptionCompatOverride,
   UNSUPPORTED_REQUEST_OPTION_REASON,
@@ -69,21 +65,8 @@ export type OverflowRolloverPlan =
     }
   | { action: 'stop'; reason: OverflowRolloverStopReason };
 
-export function isContextOverflowErrorData(data: unknown): boolean {
-  if (!data || typeof data !== 'object') return false;
-  const rec = data as { reason?: unknown; message?: unknown; sdkError?: unknown };
-  if (rec.reason === CONTEXT_OVERFLOW_REASON) return true;
-  return [rec.message, rec.sdkError].some(
-    (value) =>
-      typeof value === 'string' &&
-      (isContextOverflowErrorMessage(value) || isRemoteCompactEncryptedContentError(value)),
-  );
-}
-
-export function isOversizedHistoryErrorData(data: unknown): boolean {
-  if (!data || typeof data !== 'object') return false;
-  return (data as { reason?: unknown }).reason === CODEX_HISTORY_OVERSIZED_REASON;
-}
+export { isContextOverflowErrorData, isOversizedHistoryErrorData } from '@cindy/remote-agent/groups/errorClassifiers';
+import { isContextOverflowErrorData, isOversizedHistoryErrorData } from '@cindy/remote-agent/groups/errorClassifiers';
 
 /** A new companion input may retire an explicitly rejected compact operation.
  * Bare empty responses, transport failures and ordinary generation errors are

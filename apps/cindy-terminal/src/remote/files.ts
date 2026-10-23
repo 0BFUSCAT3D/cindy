@@ -71,7 +71,7 @@ export class TerminalFilePeerService {
     const request = parseFilePeerRequest(value);
     if (request.action === 'caps') return {
       version: 1, maxBytes: FILE_PEER_MAX_BYTES, streaming: true,
-      attachments: !!this.options.attachment, largeAttachments: false,
+      attachments: !!this.options.attachment, largeAttachments: !!this.options.attachment,
       streamAttachments: !!this.options.attachment, idleMs: FILE_PEER_IDLE_MS,
       sessionBound: false,
     };
