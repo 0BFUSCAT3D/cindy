@@ -130,6 +130,44 @@ function fixture(remote: { remoteHostId?: string; agentDeviceId?: string } = {})
 afterEach(() => vi.useRealTimers());
 
 describe('Harness host bridge', () => {
+  // Startup row availability is transient; aborting still owns terminal signals.
+  // These unit inputs cover states the active/eligible fixtures did not exercise.
+  it('retries eligibility after repeated startup misses without granting early access', async () => {
+    const f = fixture();
+    f.eligible.mockResolvedValue('retry');
+    const request = { kind: 'read', name: 'runtime', sessionId: 's' };
+    for (let i = 0; i < 5; i++) {
+      expect(await f.slot.handleRequest('a', request, () => true)).toMatchObject({ errorCode: 'DENIED' });
+    }
+    f.eligible.mockResolvedValue('eligible');
+    expect(await f.slot.handleRequest('a', request, () => true)).toMatchObject({ ok: true });
+    expect(f.eligible).toHaveBeenCalledTimes(6);
+    f.dispose();
+  });
+
+  it('delivers terminal status and usage while aborting without accepting new requests or hooks', async () => {
+    const f = fixture();
+    f.ghosts[0].manifest.harness!.events!.push('status', 'usage');
+    f.ghosts[0].harnessCapabilityApproved!.push('harness:events:status', 'harness:events:usage');
+    await f.slot.handleRequest('a', { kind: 'read', name: 'runtime', sessionId: 's' }, () => true);
+    vi.spyOn(f.session, 'getStatus').mockReturnValue('aborting');
+    // Session still reserves the interrupt action until the native RPC returns.
+    expect(f.session.isTurnRunning()).toBe(true);
+    f.emit({ type: 'status', sessionTurnGeneration: 1, data: { isRunning: false } });
+    f.emit({ type: 'done', sessionTurnGeneration: 1, data: { usage: { inputTokens: 42 } } });
+    expect(f.events).toMatchObject([
+      { name: 'status.updated', data: { status: 'idle' } },
+      { name: 'usage.updated', data: { usage: { inputTokens: 42 } } },
+    ]);
+    expect(f.guards.every(current => current())).toBe(true);
+    expect(await f.slot.handleRequest('a', {
+      kind: 'read', name: 'runtime', sessionId: 's',
+    }, () => true)).toMatchObject({ errorCode: 'SESSION_UNAVAILABLE' });
+    expect(await f.screen()).toEqual({ action: 'continue' });
+    expect(f.messages).toHaveLength(0);
+    f.dispose();
+  });
+
   // Unit regressions for the local-only, per-turn and per-runtime contracts.
   // Existing cases only used local bindings and current event generations.
   it.each([{ remoteHostId: 'ssh-host' }, { agentDeviceId: 'other-device' }])(

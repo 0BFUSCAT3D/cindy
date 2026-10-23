@@ -46,7 +46,6 @@ interface Binding {
   current(): boolean;
   eligibility: Promise<boolean> | null;
   eligibilityState: 'unknown' | 'eligible' | 'ineligible';
-  eligibilityAttempts: number;
   buffered: Array<Omit<GhostPipeHarnessEvent, 'seq' | 'ts'>>;
   dropped: number;
   hooks: Map<string, boolean>;
@@ -97,16 +96,17 @@ export class GhostHarnessSlot {
       nativeIdentity: this.nativeIdentity(session),
       eligibility: null,
       eligibilityState: 'unknown',
-      eligibilityAttempts: 0,
       buffered: [],
       dropped: 0,
       hooks: new Map(),
       actions: new Map(),
       lastUsage: {},
+      // Native terminal signals can arrive before abort acknowledgement.
+      // Requests and Hook decisions still require active status below.
       current: () =>
         this.bindings.get(session.id) === binding &&
         isCurrent() &&
-        session.getStatus() === 'active' &&
+        (session.getStatus() === 'active' || session.getStatus() === 'aborting') &&
         isGhostOwnerScopeUsable(this.deps.ownerScope, owner),
     };
     this.bindings.set(session.id, binding);
@@ -157,17 +157,11 @@ export class GhostHarnessSlot {
     if (binding.eligibilityState !== 'unknown')
       return Promise.resolve(binding.eligibilityState === 'eligible');
     if (!binding.eligibility) {
-      binding.eligibilityAttempts += 1;
       binding.eligibility = this.deps
         .eligible(binding.session.id)
         .then((outcome) => {
           if (!binding.current()) return false;
-          binding.eligibilityState =
-            outcome === 'retry'
-              ? binding.eligibilityAttempts >= 5
-                ? 'ineligible'
-                : 'unknown'
-              : outcome;
+          binding.eligibilityState = outcome === 'retry' ? 'unknown' : outcome;
           if (binding.eligibilityState === 'eligible') {
             for (const queued of binding.buffered.splice(0)) this.publish(binding, queued);
           } else if (binding.eligibilityState === 'ineligible') binding.buffered.length = 0;
@@ -239,7 +233,8 @@ export class GhostHarnessSlot {
     if (!ghost || !hasGhostHarnessPermission(ghost, group, p.name))
       return { ok: false, errorCode: 'DENIED' };
     const binding = this.bindings.get(p.sessionId);
-    if (!binding?.current()) return { ok: false, errorCode: 'SESSION_UNAVAILABLE' };
+    if (!binding?.current() || binding.session.getStatus() !== 'active')
+      return { ok: false, errorCode: 'SESSION_UNAVAILABLE' };
     this.sync(binding);
     const runtimeId = binding.runtimeId;
     const current = () => {
@@ -247,6 +242,7 @@ export class GhostHarnessSlot {
       return (
         sourceCurrent() &&
         binding.current() &&
+        binding.session.getStatus() === 'active' &&
         binding.runtimeId === runtimeId &&
         this.deps.allowed(ghostId, binding.session) &&
         this.pluginCurrent(ghost, group, p.name as string)
@@ -469,7 +465,8 @@ export class GhostHarnessSlot {
         }
         break;
       case 'status':
-        data.status = binding.session.isTurnRunning() ? 'running' : 'idle';
+        data.status = (typeof raw.isRunning === 'boolean' ? raw.isRunning : binding.session.isTurnRunning())
+          ? 'running' : 'idle';
         break;
       case 'done':
         break;
@@ -541,7 +538,7 @@ export class GhostHarnessSlot {
       .sort((a, b) =>
         installedGhostStoragePart(a).localeCompare(installedGhostStoragePart(b), 'en'),
       );
-    if (!ghosts.length || !binding.current()) return CONTINUE;
+    if (!ghosts.length || !binding.current() || binding.session.getStatus() !== 'active') return CONTINUE;
     const data = this.metadata(binding);
     if (request.toolName) data.toolName = request.toolName.slice(0, 128);
     if (request.toolUseId) data.toolId = ghostActivityId(data.runtimeId, request.toolUseId);
@@ -575,6 +572,7 @@ export class GhostHarnessSlot {
           sourceCurrent() &&
           this.deps.allowed(ghostId, binding.session) &&
           binding.current() &&
+          binding.session.getStatus() === 'active' &&
           binding.runtimeId === data.runtimeId &&
           binding.session.getTurnGeneration() === generation &&
           binding.hooks.get(`${ghostId}:${request.name}`) !== false &&
