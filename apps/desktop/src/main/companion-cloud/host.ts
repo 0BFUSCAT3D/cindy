@@ -280,8 +280,8 @@ function createMaterializer(input: {
         fence.assertCurrent();
       }
       await createMessage(sessionId, { clientId: row.clientId, role: row.role, createdAt: row.createdAt,
-        content: row.role === 'user' ? { text: row.text, images, files: others }
-          : [{ type: 'text', text: replyTextWithFiles(row.text, files) }] });
+        // An assistant row holds its reply as a plain string, like every other reply the chat shows.
+        content: row.role === 'user' ? { text: row.text, images, files: others } : replyTextWithFiles(row.text, files) });
     },
     rebuildContext: sessionId => input.rebuildContext(sessionId),
   };
