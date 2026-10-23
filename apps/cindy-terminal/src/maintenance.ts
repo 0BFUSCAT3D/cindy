@@ -18,7 +18,7 @@ import { terminalSettingsSchema } from './settings.js';
 const derive = promisify(scrypt);
 const MAGIC = Buffer.from('CINDY-BACKUP-1\n');
 const EXCLUDED = ['sign-in tokens', 'provider credentials', 'device identity', 'remote grants', 'installed engines', 'files outside the profile'];
-const OWNER_PATHS = new Set(['models.json', 'projects.json', 'tasks', 'schedules.json', 'workspaces', 'scheduled-workspaces', 'cindy-media', 'knowledge-settings.json', 'maker-memory', 'maker-contacts', 'companions']);
+const OWNER_PATHS = new Set(['models.json', 'projects.json', 'tasks', 'schedules.json', 'workspaces', 'scheduled-workspaces', 'cindy-media', 'knowledge-settings.json', 'maker-memory', 'maker-contacts', 'companions', 'capabilities.json', 'managed-agent-skills']);
 const COMPANION_PATHS = new Set(['profiles.json', 'homes', 'history', 'memory', 'backups', 'cloud']);
 // Cloud installation / homes snapshots bind this machine to server identities.
 // Keep only sync cursors and demotion history; fresh sign-in must resolve homes.

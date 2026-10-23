@@ -165,16 +165,41 @@ export class TerminalServiceManager {
       const temporary = path.join(this.profileDir, 'boot-service.plist');
       const args = [this.node, this.entry, 'serve', '--state-dir', this.profileDir];
       await atomicPrivateWrite(temporary, `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${this.id}</string><key>UserName</key><string>${xml(this.userName)}</string><key>ProgramArguments</key><array>${args.map(value => `<string>${xml(value)}</string>`).join('')}</array><key>EnvironmentVariables</key><dict><key>HOME</key><string>${xml(this.home)}</string><key>USER</key><string>${xml(this.userName)}</string><key>LOGNAME</key><string>${xml(this.userName)}</string></dict><key>WorkingDirectory</key><string>${xml(this.profileDir)}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`);
+      const previous = await this.inspect();
+      let copied = false;
+      let userDisabled = false;
+      let systemStarted = false;
+      let committed = false;
       try {
         await this.execute('plutil', ['-lint', temporary], { timeout: 10_000 });
         await this.interactive('/usr/bin/sudo', ['/usr/bin/install', '-o', 'root', '-g', 'wheel', '-m', '644', temporary, target]);
+        copied = true;
         await this.execute('launchctl', ['disable', this.launchdTarget()], { timeout: 10_000 });
-        const current = await this.inspect();
-        if (current.registered) await this.execute('launchctl', ['bootout', this.launchdTarget()], { timeout: 15_000 });
+        userDisabled = true;
+        if (previous.registered) await this.execute('launchctl', ['bootout', this.launchdTarget()], { timeout: 15_000 });
         await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'enable', `system/${this.id}`]);
         await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'bootstrap', 'system', target]);
+        systemStarted = true;
         await atomicPrivateWrite(this.metadata, JSON.stringify({ ...installation, scope: 'system', file: target, starts: 'boot', activeAfter: 'next-boot', registrationOnly: true }));
-        await fs.rm(installation.file, { force: true });
+        committed = true;
+        // The user descriptor is disabled and is no longer authoritative.
+        await fs.rm(installation.file, { force: true }).catch(() => {});
+      } catch (error) {
+        if (!committed && copied) {
+          try {
+            if (systemStarted) await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'bootout', `system/${this.id}`]);
+            await this.interactive('/usr/bin/sudo', ['/bin/rm', '-f', target]);
+            if (userDisabled) {
+              await this.execute('launchctl', ['enable', this.launchdTarget()], { timeout: 10_000 });
+              if (previous.registered && !(await this.inspect()).registered) {
+                await this.execute('launchctl', ['bootstrap', `gui/${this.userId()}`, installation.file], { timeout: 15_000 });
+              }
+            }
+          } catch (rollbackError) {
+            throw new Error('SERVICE_BOOT_ROLLBACK_REQUIRED', { cause: rollbackError });
+          }
+        }
+        throw error;
       } finally { await fs.rm(temporary, { force: true }); }
     } else {
       const { stdout } = await this.execute('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 });

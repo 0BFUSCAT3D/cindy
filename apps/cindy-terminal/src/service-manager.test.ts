@@ -93,3 +93,24 @@ it.each(['darwin', 'win32'] as const)('registers explicit %s boot operation thro
     expect(Object.keys(env ?? {})).not.toContain('PASSWORD');
   }
 });
+
+// A rejected system bootstrap must not disable an existing working user job.
+it('restores the user registration after macOS boot migration fails', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'cindy-service-command-test-')); directories.push(directory);
+  let loaded = true;
+  const execute = vi.fn(async (_file: string, args: string[]) => {
+    if (args[0] === 'bootout') loaded = false;
+    if (args[0] === 'bootstrap') loaded = true;
+    if (args[0] === 'print' && !loaded) throw new Error('job not loaded');
+    return { stdout: 'state = running\npid = 3456\n', stderr: '' };
+  });
+  const interactive = vi.fn(async (_file: string, args: string[]) => {
+    if (args[1] === 'bootstrap') throw new Error('SERVICE_BOOT_SETUP_FAILED');
+  });
+  const manager = new TerminalServiceManager(path.join(directory, 'profile'), path.join(directory, 'cli.js'), process.execPath, { platform: 'darwin', home: directory, uid: 12345, execute, interactive });
+  const before = await manager.install();
+  await expect(manager.enableBoot()).rejects.toThrow('SERVICE_BOOT_SETUP_FAILED');
+  expect(await manager.status()).toEqual(before);
+  expect(await manager.inspect()).toMatchObject({ running: true, starts: 'login' });
+  expect(await stat(before.file)).toBeTruthy();
+});

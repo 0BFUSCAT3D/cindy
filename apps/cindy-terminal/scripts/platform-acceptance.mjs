@@ -129,5 +129,5 @@ try {
   server?.kill();
   await writeFile(path.join(report, 'results.json'), JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, results }, null, 2));
   await writeFile(path.join(report, 'runtime-manifest.json'), await readFile(path.join(runtime, 'runtime-manifest.json')));
-  await rm(temporary, { recursive: true, force: true });
+  await rm(temporary, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 }

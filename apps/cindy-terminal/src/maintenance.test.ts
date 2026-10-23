@@ -37,6 +37,9 @@ describe('terminal offline maintenance', () => {
     await privateDirectory(path.join(owner, 'maker-memory'));
     await atomicPrivateWrite(path.join(owner, 'maker-memory', 'MEMORY.md'), 'retained-memory');
     await atomicPrivateWrite(path.join(owner, 'knowledge-settings.json'), '{"version":1}');
+    await atomicPrivateWrite(path.join(owner, 'capabilities.json'), '{"version":1,"skills":[]}');
+    await privateDirectory(path.join(owner, 'managed-agent-skills', 'example'));
+    await atomicPrivateWrite(path.join(owner, 'managed-agent-skills', 'example', 'SKILL.md'), '# Retained skill');
     const outside = path.join(root, 'outside'); await fs.writeFile(outside, 'outside-test-data');
     if (process.platform !== 'win32') await fs.symlink(outside, path.join(owner, 'tasks', 'external'));
     const backup = path.join(root, 'portable.backup');
@@ -49,9 +52,10 @@ describe('terminal offline maintenance', () => {
     expect(await fs.readFile(path.join(restored, 'owners', 'a'.repeat(32), 'tasks', 'task-one', 'history.jsonl'), 'utf8')).toBe('private-test-task-data');
     expect((await fs.readdir(restored)).sort()).toEqual(['owners', 'settings.json']);
     const restoredOwner = path.join(restored, 'owners', 'a'.repeat(32));
-    expect((await fs.readdir(restoredOwner)).sort()).toEqual(['cindy-media', 'companions', 'knowledge-settings.json', 'maker-memory', 'tasks']);
+    expect((await fs.readdir(restoredOwner)).sort()).toEqual(['capabilities.json', 'cindy-media', 'companions', 'knowledge-settings.json', 'maker-memory', 'managed-agent-skills', 'tasks']);
     expect(await fs.readdir(path.join(restoredOwner, 'companions', 'cloud'))).toEqual(['a'.repeat(64)+'.json']);
     expect(await fs.readFile(path.join(restoredOwner, 'maker-memory', 'MEMORY.md'), 'utf8')).toBe('retained-memory');
+    expect(await fs.readFile(path.join(restoredOwner, 'managed-agent-skills', 'example', 'SKILL.md'), 'utf8')).toBe('# Retained skill');
     const restoredLedger = new Database(path.join(restoredOwner, 'cindy-media', 'ledger.sqlite'), { readonly: true });
     try { expect(restoredLedger.prepare('select id from media').get()).toEqual({ id: 'media-test' }); } finally { restoredLedger.close(); }
     expect(await fs.readFile(path.join(restoredOwner, 'cindy-media', 'blobs', 'image-test'), 'utf8')).toBe('private-media-test');
