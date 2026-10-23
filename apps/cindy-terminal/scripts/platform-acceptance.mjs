@@ -138,9 +138,10 @@ try {
     assert.ok(Number.isSafeInteger(endpoint.pid)&&endpoint.pid>0);
     console.log('SYNTHETIC_SERVICE_CRASH_PID',endpoint.pid);
     process.kill(endpoint.pid,'SIGKILL');
+    try{process.kill(endpoint.pid,0);console.log('SYNTHETIC_KILLED_PID_STILL_PRESENT');}catch(error){console.log('SYNTHETIC_KILLED_PID_RESULT',error.code);}
     const recoveryDeadline=Date.now()+100_000;let recovered=false,lastRecoveryState,lastRecoveryError;
     while(Date.now()<recoveryDeadline){
-      try{const state=await run(['service','status'],{timeout:10_000});lastRecoveryState={startedAt:state.startedAt,service:state.service};if(state.startedAt>restarted.startedAt&&state.service?.running){assert.equal(state.deviceId,restarted.deviceId);recovered=true;break;}}catch(error){lastRecoveryError=String(error.message);}
+      try{const state=await run(['service','status'],{timeout:25_000});lastRecoveryState={startedAt:state.startedAt,service:state.service};if(state.startedAt>restarted.startedAt&&state.service?.running){assert.equal(state.deviceId,restarted.deviceId);recovered=true;break;}}catch(error){lastRecoveryError=String(error.message);}
       await new Promise(resolve=>setTimeout(resolve,500));
     }
     if(!recovered)console.log('SYNTHETIC_RECOVERY_STATE',JSON.stringify({lastRecoveryState,lastRecoveryError}));
@@ -167,9 +168,9 @@ try {
   if(process.platform==='win32'){
     const installation=JSON.parse(await readFile(path.join(profile,'service-installation.json'),'utf8').catch(()=>'null'));
     if(installation?.id){
-      const script=`$ErrorActionPreference='Stop';$s=New-Object -ComObject Schedule.Service;$s.Connect();$t=$s.GetFolder('\\').GetTask('${installation.id}');[Console]::WriteLine('State='+[int]$t.State);[Console]::WriteLine('LastResult='+$t.LastTaskResult);[Console]::WriteLine('LastRun='+$t.LastRunTime);[Console]::WriteLine($t.Xml)`;
+      const script=`$ErrorActionPreference='Stop';[Console]::WriteLine('PS_START');$s=New-Object -ComObject Schedule.Service;[Console]::WriteLine('PS_COM');$s.Connect();[Console]::WriteLine('PS_CONNECTED');$t=$s.GetFolder('\\').GetTask('${installation.id}');[Console]::WriteLine('State='+[int]$t.State);[Console]::WriteLine('LastResult='+$t.LastTaskResult);[Console]::WriteLine('LastRun='+$t.LastRunTime);[Console]::WriteLine($t.Xml)`;
       const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe');
-      const diagnostic=await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:String(error.message)+' '+(error.stderr??'')}));
+      const diagnostic=await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env:process.env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:String(error.message)+' '+(error.stderr??'')}));
       console.log('SYNTHETIC_SCHEDULER_STATE',diagnostic.stdout,diagnostic.stderr);
       console.log('SYNTHETIC_SERVICE_ENDPOINT',await readFile(path.join(profile,'service.json'),'utf8').then(text=>{const {pid}=JSON.parse(text);return {pid};}).catch(()=>null));
     }

@@ -141,7 +141,7 @@ export class TerminalServiceManager {
         result.running = stdout.trim() === '4';
         result.starts = installation.starts;
       }
-    } catch(error) { console.error('SYNTHETIC_SERVICE_INSPECT_ERROR',error); }
+    } catch(error) { console.error('SYNTHETIC_SERVICE_INSPECT_ERROR',error,{uid:this.uid,euid:process.geteuid?.(),runtime:this.env.XDG_RUNTIME_DIR,bus:this.env.DBUS_SESSION_BUS_ADDRESS,systemdBus:this.env.SYSTEMD_BUS_ADDRESS}); }
     return result;
   }
 
