@@ -6,7 +6,6 @@ import {
   parseAuxiliaryModelRef,
 } from './auxiliaryModelChain.js';
 import { decodeCatalogModelPin } from './catalogModelPin.js';
-import type { CatalogModelPinAgentKind } from './catalogModelPin.js';
 import { isUtilityModelProviderKind } from './utilityModelProfiles.js';
 
 /** Main-owned ordered model chain for short, host-generated auxiliary text. */
@@ -32,7 +31,7 @@ export interface AuxiliaryModelOption {
   label: string;
   group: string;
   providerId: string;
-  agentKind: CatalogModelPinAgentKind;
+  agentKind: 'codex' | 'claude-code' | 'pi';
   modelId: string;
   modelName: string;
   /** Auxiliary default; direct HTTP models do not inherit harness compatibility defaults. */
@@ -116,7 +115,7 @@ export function isCustomAuxiliaryModelList(models: readonly string[]): boolean {
 
 export function describeAuxiliaryModelRef(ref: string): {
   providerId: string;
-  agentKind: CatalogModelPinAgentKind;
+  agentKind: 'codex' | 'claude-code' | 'pi';
   model: string;
 } | null {
   const parsed = parseAuxiliaryModelRef(ref);

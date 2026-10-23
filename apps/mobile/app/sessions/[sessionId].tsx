@@ -22,7 +22,7 @@ import { keyboardControlRegion, type LayoutRect } from '@/platform/windowGeometr
 import { useAdaptiveWindow, PaneViewportProvider } from '@/platform/AdaptiveWindowContext';
 import { useSessionHeaderHeight } from '@/session/useSessionHeaderHeight';
 import { useDoubleTap } from '@/session/useDoubleTap';
-import { sessionPaneLayout } from '@/session/sessionPaneLayout';
+import { useSessionPaneLayout } from '@/session/ResidentHomeList';
 import { ComposerExpandButton } from '@/session/ComposerExpandButton';
 import { nativeComposerAvailable } from '@/session/ComposerNativeInput';
 import { getActiveMobileSessionRealm } from '@/config/env';
@@ -170,7 +170,7 @@ import { findRemoteHistoryView, useRemoteHistoryView } from '@/session/remoteHis
 import { HistoryViewHandoff, historyAfter, isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
 import { SideChatsSheet } from '@/session/SideChatsSheet';
 import { useSideChatCount } from '@/session/useSideChatCount';
-import { SideChatTaskBoundary } from '@/session/SideChatTaskBoundary';
+import { SessionTaskLayout, type SessionTaskChrome } from '@/session/SessionTaskLayout';
 import { buildMobileSessionRenderWindow } from '@/session/mobileHistoryRender';
 import { createMobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { startFocusedTopicSubscription } from '@/device-link/focusedTopicSubscription';
@@ -229,6 +229,7 @@ import { ComposerRichInput, type ComposerRichInputHandle } from '@/session/Compo
 import { createComposerDraftSource, useComposerVoiceDraftWriter, type ComposerDraftSource } from '@/session/composerDraftSource';
 import { InlineQueueSection } from '@/session/InlineQueueSection';
 import { inputProjectionErrorI18nKey } from '@/session/inputProjectionError';
+import { remoteActionErrorI18nKey } from '@/session/agentErrorI18n';
 import { RewindPreviewPanel } from '@/session/RewindPreviewPanel';
 import { BlurBackdrop, FLOATING_CHROME_BLUR_INTENSITY } from '@/session/BlurBackdrop';
 import { SheetModal } from '@/session/SheetModal';
@@ -683,7 +684,6 @@ import {
   useSessionRunning,
   useSessionTaskUpdates,
 } from '@/session/remoteSessionStore';
-import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
 import { useFailedCreationReturnToEdit } from '@/session/useFailedCreationReturnToEdit';
 import type {
   MobileGoalLimitsInput,
@@ -1019,22 +1019,10 @@ function composerDraftScopeKey(sessionId: string, routeDraft: string | null): st
 }
 
 export default function SessionScreen() {
-  const params = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
-  const sessionId = readRouteParam(params.sessionId) ?? '';
-  const deviceId = readRouteParam(params.deviceId)
-    ?? remoteSessionStore.getSessionDeviceId(sessionId) ?? '';
-  const session = useRemoteSessionDetail(deviceId, sessionId);
-  return (
-    <SideChatTaskBoundary key={`${deviceId}:${sessionId}`} deviceId={deviceId}
-      sessionId={sessionId} enabled={session?.source === 'side-chat'}>
-      <CindyMakeSessionGate sessionId={sessionId} deviceId={deviceId || undefined} ownsSessionSubscription>
-        <SessionScreenContent />
-      </CindyMakeSessionGate>
-    </SideChatTaskBoundary>
-  );
+  return <SessionTaskLayout>{chrome => <SessionScreenContent {...chrome} />}</SessionTaskLayout>;
 }
 
-function SessionScreenContent() {
+function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: SessionTaskChrome) {
   const styles = useThemedStyles(makeStyles);
   const composerPullThrough = useComposerPullThroughBridge();
   const renderMessageScroll = useCallback(
@@ -1535,6 +1523,16 @@ function SessionScreenContent() {
     discardAllPendingUploadsForScopeChange();
     discardSessionComposerAttachmentStateRef.current();
   }, [discardAllPendingUploadsForScopeChange, sessionId]);
+  useLayoutEffect(() => {
+    const discard = () => {
+      discardAllPendingUploadsForScopeChange();
+      discardSessionComposerAttachmentStateRef.current();
+    };
+    beforeSessionSwitchRef.current = discard;
+    return () => {
+      if (beforeSessionSwitchRef.current === discard) beforeSessionSwitchRef.current = null;
+    };
+  }, [beforeSessionSwitchRef, discardAllPendingUploadsForScopeChange]);
   const queueEditLockOwnerRef = useRef<QueueEditLockOwner | null>(null);
   const queueEditSaveOwnerRef = useRef<QueueEditLockOwner | null>(null);
   // 「已出队、消息尚未回流」的落定中条目:桌面端 drain 会先从 pendingQueue 摘除、
@@ -3012,7 +3010,7 @@ function SessionScreenContent() {
     [remoteAgentCatalogs],
   );
   const adaptiveWindow = useAdaptiveWindow();
-  const paneLayout = sessionPaneLayout(adaptiveWindow);
+  const paneLayout = useSessionPaneLayout();
   const horizontalSystemHeader = Platform.OS === 'ios' && adaptiveWindow.barEdge === 'none'
     && !paneLayout.persistent && !shareSelectionActive && !companionChat;
   const composerRegion = keyboardControlRegion(adaptiveWindow, keyboardState.height);
@@ -3057,6 +3055,10 @@ function SessionScreenContent() {
     windowDimensions.width, windowDimensions.height, windowDimensions.fontScale,
     insets.top, insets.bottom, insets.left, insets.right, adaptiveWindow.barEdge,
   ]), sessionListDrawerOverlayMounted);
+  // Duo shares the status area with its native toolbar. Its measured height
+  // already includes that area; safeArea.top + 44 would count the toolbar twice.
+  const topChromeHeight = Math.max(topOverlayHeight,
+    horizontalSystemHeader ? nativeHeaderHeight : insets.top + navigationChrome.target);
   // 退出宽屏后 layout.drawerWidth 会变 0;退场期间继续用最后一个有效宽度,避免面板几何跳变。
   const sessionListDrawerWidthRef = useRef(wideSessionNav.drawerWidth);
   if (wideSessionNav.enabled) sessionListDrawerWidthRef.current = wideSessionNav.drawerWidth;
@@ -3152,7 +3154,7 @@ function SessionScreenContent() {
   // 前进导航防连点:快速双击「新建」会把 /sessions/new 压栈两层(返回要退两次),
   // 与首页各入口同一把 guardedPush 锁。
   const guardedPush = useGuardedPush();
-  const homeNewSessionActionRef = useRef<(() => void) | null>(null);
+  const homeNewSessionActionRef = newSessionActionRef;
   const handleDrawerNewSession = useCallback(() => {
     if (homeNewSessionActionRef.current) { homeNewSessionActionRef.current(); return; }
     queueDrawerNavigation(() => {
@@ -7754,6 +7756,24 @@ function SessionScreenContent() {
     });
   };
 
+  const moveQueueItem = useCallback((clientId: string, direction: 'up' | 'down') => {
+    // 菜单打开期间队列可能变化：按最新位置重新判断方向和目标。
+    const projection = remoteSessionStore.getInputProjection(sessionId);
+    const originalIndex = projection.pendingQueue.findIndex((entry) => entry.clientId === clientId);
+    const item = projection.pendingQueue[originalIndex];
+    if (!item) return;
+    const { actions } = buildQueueRowPresentation({
+      busy: queueBusy, item, originalIndex, projection,
+      queueLength: projection.pendingQueue.length,
+      readOnlyReason: queueAvailabilityReason,
+    });
+    const action = actions[direction === 'up' ? 'moveUp' : 'moveDown'];
+    if (action.disabled || action.targetIndex == null) return;
+    const targetIndex = action.targetIndex;
+    setQueueSelectedClientId(null);
+    void runQueueAction(() => maker.input.move(sessionId, clientId, targetIndex));
+  }, [maker, queueAvailabilityReason, queueBusy, runQueueAction, sessionId]);
+
   const setQueueEditLock = useCallback((clientId: string, locked: boolean) => {
     const projectionEpochAtRequestStart =
       remoteSessionStore.captureInputProjectionAuthorityEpoch(sessionId);
@@ -7935,10 +7955,11 @@ function SessionScreenContent() {
         setQueueSelectedClientId(null);
         steerQueueItem(target);
       },
+      onMove: moveQueueItem,
       onRetryOutbox: retryOutboxItem,
       onRemoveOutbox: removeOutboxItem,
     }),
-    [beginQueueEdit, queueBusy, queueSelectedClientId, removeQueueItem, removeOutboxItem, retryOutboxItem, sessionId, steerQueueItem],
+    [beginQueueEdit, moveQueueItem, queueBusy, queueSelectedClientId, removeQueueItem, removeOutboxItem, retryOutboxItem, sessionId, steerQueueItem],
   );
 
   // ⚠️ 临时取证(定位「气泡凭空消失」,定位完成后删):会话页实例身份 + 挂载/卸载。
@@ -9444,8 +9465,9 @@ function SessionScreenContent() {
       });
     } catch (err) {
       const detail = formatRemoteError(err);
-      const projectionKey = inputProjectionErrorI18nKey(detail);
-      setError(projectionKey ? t(projectionKey) : detail);
+      // 远程 Agent 的分叉失败(如 REMOTE_AGENT_FORK_FAILED)用 session.remoteError 的本地化文案，不显示原始错误码。
+      const key = inputProjectionErrorI18nKey(detail) ?? remoteActionErrorI18nKey(detail);
+      setError(key ? t(key) : detail);
     } finally {
       setMessageActionBusy(null);
     }
@@ -9883,7 +9905,7 @@ function SessionScreenContent() {
         style={[styles.keyboard, { marginLeft: paneLayout.detail.x, marginRight: Math.max(0, windowDimensions.width - paneLayout.detail.x - paneLayout.detail.width) }]}
       >
         {Platform.OS === 'ios' ? (
-          <SessionHeaderNativeBlur height={Math.max(topOverlayHeight, insets.top + 44)}
+          <SessionHeaderNativeBlur height={topChromeHeight}
             fadeInside={companionHeaderShown ? CHAT_HEADER_BLUR_FADE_INSIDE : undefined} />
         ) : null}
         <SessionChromeLayer
@@ -11072,12 +11094,13 @@ function SessionScreenContent() {
         <SessionTransientNotice
           notice={transientNotice}
           onDismiss={dismissTransientNotice}
-          top={Math.max(topOverlayHeight, insets.top + 44) + spacing.sm}
+          top={topChromeHeight + spacing.sm}
         />
       </MessageHistoryOverlay>
-      <MessageHistoryOverlay enabled={!paneLayout.persistent || sessionListDrawerOverlayMounted}>
-        {/* The persistent panel stays below the shared resident list. Only modal
-            drawers cover resident histories, including their closing animation. */}
+      <MessageHistoryOverlay>
+        {/* The persistent panel belongs to SessionTaskLayout, outside this keyed
+            task. Modal drawers keep their exit/navigation lifecycle here. */}
+        {!paneLayout.persistent || sessionListDrawerOverlayMounted ? (
         <SessionListDrawer
           newSessionActionRef={homeNewSessionActionRef}
           newSessionInSystemBar={paneLayout.persistent && Platform.OS === 'ios' && adaptiveWindow.barEdge !== 'none'}
@@ -11086,10 +11109,10 @@ function SessionScreenContent() {
           onClosed={handleSessionListDrawerClosed}
           runNavigation={queueDrawerNavigation}
           onSelectSession={handleDrawerSelectSession}
-          persistent={paneLayout.persistent && !sessionListDrawerOverlayMounted}
-          open={(paneLayout.persistent && !sessionListDrawerOverlayMounted) || sessionListDrawerOpen}
-          width={paneLayout.persistent && !sessionListDrawerOverlayMounted ? paneLayout.sidebarWidth : sessionListDrawerWidthRef.current}
+          open={sessionListDrawerOpen}
+          width={sessionListDrawerWidthRef.current}
         />
+        ) : null}
       </MessageHistoryOverlay>
     </View>
   );
@@ -11318,14 +11341,14 @@ function SessionHeaderBar({
       <SystemNavigationBack label={t('shared.back')} onPress={onBack} />
       {sessionListButton}
       {systemBack ? <Stack.Toolbar placement="right">
-        {workerHeader ? null : <>
+        {workerHeader ? null :
         <Stack.Toolbar.Button icon={require('../../assets/navigation/monitor.png')} iconRenderingMode="template"
-          accessibilityLabel={t('remoteDesktop.title')} disabled={!currentSession} onPress={onOpenRemoteDesktop} />
+          accessibilityLabel={t('remoteDesktop.title')} disabled={!currentSession} onPress={onOpenRemoteDesktop} />}
+        {workerHeader ? null :
         <Stack.Toolbar.Button icon={require('../../assets/navigation/folder.png')} iconRenderingMode="template"
           accessibilityLabel={t('session.presentation.overview.actions.files.a11y')}
           disabled={!currentSession || !overview?.actions.some(action => action.id === 'files' && !action.disabled)}
-          onPress={onOpenFiles} />
-        </>}
+          onPress={onOpenFiles} />}
         <Stack.Toolbar.Button icon="ellipsis" accessibilityLabel={t('session.menu.details')}
           disabled={!currentSession} onPress={onOpenSettings} />
       </Stack.Toolbar> : null}

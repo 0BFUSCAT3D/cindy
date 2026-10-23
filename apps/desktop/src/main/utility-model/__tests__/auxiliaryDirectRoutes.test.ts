@@ -43,8 +43,12 @@ describe('auxiliary direct HTTP admission', () => {
     expect(buildTextOneshotPinOptions(catalog, undefined, undefined, () => false, 'auxiliary')).toEqual([]);
     expect(buildTextOneshotPinOptions(catalog, { disabledModels: { [`${provider.id}:${modelId}`]: true } }, undefined, () => true, 'auxiliary')).toEqual([]);
     expect(buildTextOneshotPinOptions(catalog, { disabledProviders: { [provider.id]: true } }, undefined, () => true, 'auxiliary')).toEqual([]);
-    expect(buildTextOneshotPinOptions(catalog, undefined)).toEqual([]);
-    expect(decodeCatalogPin('cat:go:pi:deepseek-v4.1-flash')).toBeNull();
+    expect(buildTextOneshotPinOptions(catalog, undefined)).toEqual([
+      expect.objectContaining({ agentKind: 'pi', defaultEnabled: false }),
+    ]);
+    expect(decodeCatalogPin('cat:go:pi:deepseek-v4.1-flash')).toEqual({
+      providerId: 'go', agentKind: 'pi', model: modelId,
+    });
   });
 
   it.each(['google-generative-ai', 'bedrock-converse-stream', 'azure-openai-responses'] as const)(

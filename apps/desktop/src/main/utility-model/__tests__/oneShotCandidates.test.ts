@@ -4753,6 +4753,27 @@ describe('utility one-shot candidates', () => {
       expect(bodyOf(0)).toMatchObject({ max_output_tokens: 16 });
     });
 
+    it('retains the Responses fallback for a Pi connection without a wire override', async () => {
+      activeCatalog.mockReturnValue({
+        providers: [{
+          id: 'custom-pi', name: 'Custom Pi', source: 'user', agents: ['pi'],
+          auth: { method: 'apiKey' },
+          routing: { pi: { upstream: 'https://custom.example/v1', authStrategy: 'api-key-header' } },
+          models: { pi: [{ id: 'pi-model', name: 'Pi Model', contextWindow: 100_000, efforts: [] }] },
+        }],
+      } as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock.mockResolvedValueOnce(responsesOk('ok') as never);
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: 'custom-pi', agentKind: 'pi', model: 'pi-model', disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'ok' });
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://custom.example/v1/responses');
+      expect(bodyOf(0)).toMatchObject({ model: 'pi-model' });
+    });
+
     it('still turns thinking off first for a custom Pi model with a placeholder effort list', async () => {
       activeCatalog.mockReturnValue({
         providers: [{

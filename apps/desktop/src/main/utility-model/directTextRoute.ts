@@ -27,7 +27,7 @@ export function resolveDirectTextRoute(
   if (!provider.agents.includes(agent) || !routing || routing.disabled) return null;
   if (!['api-key-header', 'oauth-token', 'none'].includes(routing.authStrategy)) return null;
   const defaultWire = routing.wireProtocol
-    ?? (agent === 'claude-code' ? 'anthropic-messages' : agent === 'codex' ? 'openai-responses' : undefined);
+    ?? (agent === 'claude-code' ? 'anthropic-messages' : 'openai-responses');
   const target = resolvePiModelRoute(model, { baseUrl: routing.upstream, wireProtocol: defaultWire });
   if (!target?.baseUrl.trim()) return null;
   // Retain legacy connection paths when the model restates the same target.

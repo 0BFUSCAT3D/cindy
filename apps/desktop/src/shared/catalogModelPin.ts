@@ -9,7 +9,6 @@
 
 export const CATALOG_MODEL_PIN_PREFIX = 'cat:';
 
-/** Pi identifies an auxiliary HTTP connection, not a supported Agent.oneShot implementation. */
 export type CatalogModelPinAgentKind = 'codex' | 'claude-code' | 'pi';
 
 export interface CatalogModelPinRoute {

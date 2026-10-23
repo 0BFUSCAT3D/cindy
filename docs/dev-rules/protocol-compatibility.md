@@ -1290,6 +1290,13 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
 重建只决定原生会话能否复用，不把子任务改送到当前设备。
 Desktop 与 Mobile 沿用 `maker:fork`；共享任务访客与 SSH 工作区的现有边界不变。
 
+运行端上 Agent 原生分叉失败时回 `REMOTE_AGENT_FORK_FAILED`(原始原因只记运行端日志)，但只回给
+`op: fork` 带了可选 `acceptsForkFailed: true` 的控制端；组所在电脑转发时原样带上受邀者的声明，旧控制端
+不带、旧运行端忽略，照旧得到 `REMOTE_AGENT_UNAVAILABLE`。经供应商组转来的请求在组内电脑缺 Agent 时回
+`REMOTE_AGENT_UNAVAILABLE`(位置类，组所在电脑统一成「暂时不可用」)，直接调用方仍得到 `REMOTE_AGENT_UNSUPPORTED`。
+实现见 `apps/desktop/src/main/remote-agent/host/runHost.ts` 与 `controller/fork.ts`，回归见
+`groupRelay.test.ts`、`groupRelayClaudeFork.e2e.test.ts`。
+
 运行端按已认证调用方复核供应商权限；受邀者及转分享还必须拥有来源原生会话。
 存储目录由运行端派生，不接受调用方传入路径。Claude 返回消息 UUID 映射，
 Codex/Pi 在受邀者原有隔离目录分叉；新原生会话登记到既有归属索引，支持继续分叉和恢复。
@@ -1974,7 +1981,9 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
   没带(旧 O)回已有的 `REMOTE_AGENT_PROVIDER_NOT_ALLOWED`，旧 O 照常换组里下一台、转给 G 时统一成「暂时不可用」。
   主人撤回同意时 M 立即结束这个人经组转来的任务；M 在所有异步查询结束后、登记任务前再次核对同意，核对与登记之间不等待。
   O 收到 `REMOTE_AGENT_RESHARE_NOT_ALLOWED` 时重新核对同意情况，之后不再选它。
-- O 移出最后一个组引用时，在本机组设置里原子记下待清空代次；`reshare` 空名单得到有效回包后才删除该代次，失败每分钟重试，
+- O 移出最后一个组引用时，在本机组设置里原子记下待清空代次；`reshare` 空名单得到有效回包后才删除该代次，失败与普通同步一起按
+  1、1、5、10、20、30 分钟退避(上限 30 分钟)，重复快照和组详情读取不能穿透；成功重置，观察到对端恢复在线只唤醒那台。
+  暂停分享或完整可信名单确认分享已删除时不发同步，未确认的清理代次仍保留；`ACCESS_REVOKED` 本身不是永久删除证据。
   重启后继续。重新加入时先清空再报人；迟到的确认不能吞掉再次移出的新代次。不新增 wire 字段，沿用整体替换的幂等语义。
 - O 给 G 的匿名组状态(`groupStatus`)里，没同意过 G 的分享来的电脑显示 `unavailable`(那台给不出同意时 `needs-update`)，与实际
   分配一致；`groupSize` 不变。
@@ -2670,12 +2679,20 @@ Chat Server `/me` 追加 `capabilities.groupSingleSpeaker: 1`，服务端派发�
 它们本就声明 `planVersion: 1` 领取安排步骤、渲染安排卡并能「继续」；仍发送的 `deferExecution` /
 `continueDiscussion` 被接受（后者只记录、不续圈），旧的「继续讨论」只叫被 @ 的伙伴或第一位伙伴。
 
-新 Desktop 只在看到该能力时：不再发 `deferExecution`、不做发送前的辅助判断、不发 `continueDiscussion`；
+新 Desktop 只在看到该能力时：普通消息不再发 `deferExecution`、不做发送前的辅助判断、不发 `continueDiscussion`；
 队列停着等继续时新消息按新请求发送（不作为补充）。队列前 5 位由服务端自动接续，无需客户端参与。
 `chat_plan.kind` 是附加字段，旧客户端忽略；新客户端缺字段时按旧分工卡呈现。手机解析电脑的群资源时，
 保留经校验的可选 `kind`（talk/work）与 `canAdd`（boolean）；缺失或非法时沿用旧分工呈现，不把字符串当作补充权限。
-`mentioned` 的运行中 talk 队列及存量 work 分工不接受普通无 @ 消息作为自动补充，两端输入框不得承诺交给正在答的伙伴；存量 work 分工仍保留未结束时阻止新建分工的限制。
-手机须保留电脑投影的 `singleSpeaker: true`，据此隐藏不支持的「安排分工」；远程电脑传输不等于旧群。缺字段的旧电脑沿用原入口。
+`mentioned` 的运行中 talk 队列及 work 分工不接受普通无 @ 消息作为自动补充，两端输入框不得承诺交给正在答的伙伴；work 分工仍保留未结束时阻止新建分工的限制。
+手机须保留电脑投影的 `singleSpeaker: true`（据此隐藏「发言方式」）；远程电脑传输不等于旧群。
+
+2026-10-23 起客户端在同一能力下恢复「安排分工」，**不改服务端、不新增 wire 字段**，只组合现有接口：
+主群消息带 `deferExecution: true` 挂起；请求写好步骤时 `POST /plans`（`kind` 缺省为 `work`）后立即
+`action: start`，否则负责人出卡；没有卡时 `POST /messages/:id/continue` 立即回答（该服务端没有 `cancel-planning`，
+不处理会在两分钟后被排成讨论队列）。本人等继续的 `talk` 队列先 `action: stop` 再建卡，否则服务端返回 `PLAN_OPEN`。
+手机经电脑发起分工走同一路径；手机直连服务器不提供「安排分工」。Chat Server wire 不变；电脑给手机的群投影追加可选
+`supportsDivision: true`（仅 `singleSpeaker` 群），手机只在看到它时于该类群显示「安排分工」——更早的电脑会把分工请求
+当普通排队消息处理，缺字段即不显示。
 停止的范围收窄与主群上下文精简都只在看到该能力时启用，旧服务器保留整轮停止与完整主群历史；收窄只在执行端实现（成员只停自己的请求与伙伴，群主或管理员——含本账号拥有的管理员伙伴——可 `all`），沿用既有 control /
 plan action 的服务端权限，IPC `bot-group:stop` 追加可选 `scope`；
 手机经电脑的远程动作不变（停止为本人范围）。发布顺序：服务端整集群先上，再发客户端。
@@ -2847,12 +2864,19 @@ Claude 原生 `user` 范围投影为 `global`；控制端读取早期 Host 的 `
 沿用现有 account-usage IPC 和账号作用域缓存，所以设置卡片与任务用量提示使用相同来源。
 服务端尚未提供接口（404），或明确返回 501/MODEL_ACCESS_QUOTA_NOT_SUPPORTED（Nova），
 才使用原有网关查询。鉴权失败、上游故障或响应无效均显示不可用，不回退或借用其他身份数据。
-本接口尚无当日统计，todaySpend 为 null；未设周期上限时不伪造有限配额。
+`dailyLimitEnabled` 只有严格等于 `true` 才表示企业开启日额度；`false`、`null`、缺失或
+非法值均视为未开启。企业快照明确带出布尔值，未开启时 `todaySpend` 按 `null` 处理，
+隐藏日额度、软限额口径和今日明细不可用警告，月额度不受影响。旧服务端缺少开关字段时
+也按未开启处理。开启时，`todaySpend` 为有限且 ≥ 0 的数字表示 UTC 当天消费；缺失、
+`null` 或非法值按 `null` 处理，只显示今日明细不可用提示，不影响其余额度字段。
+快照新增可选 `dailyLimitEnabled?: boolean`，沿既有 IPC 和 device-link 原样传递；非企业
+旧网关路径不设置此字段，保留原有日额度及不可用提示行为。旧控制端忽略新增字段，
+需更新控制端才能隐藏未开启时的警告。未设周期上限时不伪造有限配额的原有行为保持不变。
 本地手填网关和个人计费路径保持原协议。无新环境变量或数据库变更。
 
 管理员取消周期上限后，主进程明确清空当前 owner 的配额缓存，并通过现有
 `usage:claude-account-changed` 广播 null；renderer 同步清除当前 owner 的快照与热缓存。
-已有未知载荷消费者会忽略 null，新旧有限配额快照字段不变；网络失败仍保留既有缓存策略。
+已有未知载荷消费者会忽略 null，其余有限配额快照字段不变；网络失败仍保留既有缓存策略。
 
 配额读取 IPC 返回 null 仅表示当前无可用快照，不清除 renderer 已缓存的同账号额度；只有权威 clear 读取结果或显式 clear push 才清除缓存。
 
@@ -3213,6 +3237,14 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 旧端没有该确认或未收到释放回执时保留原过期清理，不把旧端的普通验证成功当作释放成功。断线、撤销、账号切换或重启后
 无法复核时不投递，不自动重放；已送达历史保留。未知投递结果仍要求先读取目标核实。
 没有新 relay channel、服务端变更、数据库 migration 或 Mobile 原生指纹变化。
+
+### 转达原话的核实标记（2026-10-23）
+
+`maker:session:handoff` 与伙伴跨电脑私信的 `requestSource` 增加可选 `ownerVerified: true`：发送端只在宿主
+核实为主人代办的轮次里转达时携带。接收端经 `readForwardedRequestSource` 只认字面量 `true`，并继续用
+`matchesForwardedRequest` 校验正文；正文三行格式不变。旧接收端忽略该字段，行为与之前相同；旧发送端
+不发送，新接收端按未核实处理。同账号鉴权、行动回执与共享访客限制不变。产品语义见
+[伙伴代表谁](../product-rules/teammate-authority.md)。
 
 
 ## 伙伴跟进邀请（2026-10-21）
