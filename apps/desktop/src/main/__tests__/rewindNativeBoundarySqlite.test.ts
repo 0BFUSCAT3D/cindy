@@ -14,13 +14,27 @@ import { getTableConfig } from 'drizzle-orm/sqlite-core';
 import type { DbClient } from '../localDb/client/DbClient';
 import { clearCurrentDbClient, setCurrentDbClient } from '../localDb/client/current';
 import { messages, sessions } from '../localDb/schema';
+import { commitRewindAtMessage } from '../maker-orchestration/rewind';
+
+// Keep the real local rewind SQL and history helpers without starting the
+// unrelated device-link host (same boundary as rewind.test.ts, #6563).
+vi.mock('../device-link/index.js', () => ({
+  remoteBackgroundInvoke: () => { throw new Error('unexpected remote invocation in local rewind'); },
+}));
 
 const commitRewindFilesMock = vi.fn();
 const isTurnRunningMock = vi.fn(() => false);
-const recomputePrRefsForSessionMock = vi.fn();
-const executeCodexFileRewindPlanWithThreadRollbackMock = vi.fn();
-const executeCodexFileRestorePlanWithThreadRollbackMock = vi.fn();
-const detectCwdMock = vi.fn();
+const {
+  recomputePrRefsForSessionMock,
+  executeCodexFileRewindPlanWithThreadRollbackMock,
+  executeCodexFileRestorePlanWithThreadRollbackMock,
+  detectCwdMock,
+} = vi.hoisted(() => ({
+  recomputePrRefsForSessionMock: vi.fn(),
+  executeCodexFileRewindPlanWithThreadRollbackMock: vi.fn(),
+  executeCodexFileRestorePlanWithThreadRollbackMock: vi.fn(),
+  detectCwdMock: vi.fn(),
+}));
 
 type FakeSession = {
   agentKind: 'codex';
@@ -71,8 +85,6 @@ const txMock = vi.fn(async () => ({}));
 
 let sqlite: Database.Database;
 let client: DbClient;
-// Load the production module once during collection, outside per-case setup.
-const { commitRewindAtMessage } = await import('../maker-orchestration/rewind');
 
 function insertSession(over: { clearedAt?: number | null } = {}): void {
   client.drizzle
@@ -124,7 +136,7 @@ const oldAnchorMeta = JSON.stringify({
   },
 });
 
-beforeEach(async () => {
+beforeEach(() => {
   sqlite = new Database(':memory:');
   for (const table of [sessions, messages]) {
     const { name, columns } = getTableConfig(table);
