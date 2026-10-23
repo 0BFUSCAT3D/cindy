@@ -1,6 +1,6 @@
 // Fresh owner-scoped terminal database. Schema and triggers match Desktop
 // migrations 0083, 0086, 0087 and 0088; historical migrations remain unchanged.
-export const GROUP_WINDOW_SCHEMA_SQL = String.raw`CREATE TABLE IF NOT EXISTS \`hook_group_messages\` (
+export const GROUP_WINDOW_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS \`hook_group_messages\` (
 	\`id\` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	\`provider\` text NOT NULL,
 	\`chat_id\` text NOT NULL,

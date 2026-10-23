@@ -31,7 +31,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
   const [input,setInput]=useState('');
   const [cursor,setCursor]=useState<string>();
   const epoch=useRef(0);
-  const descriptor={protocolVersion:1,primitives:['text','actions','session-controls'],locale};
+  const descriptor={protocolVersion:1,primitives:['text','form','actions','session-controls'],locale};
   const txt=(value?:RemoteText)=>terminalText(typeof value==='string'?value:value?.translations?.[locale]??value?.fallback??'');
   async function call<T>(suffix:string,args:Record<string,unknown>):Promise<T>{return client.invoke<T>(`maker:remote-resources:${suffix}`,[{client:descriptor,...args}],device);}
   async function run(work:()=>Promise<void>){setBusy(true);setError('');try{await work();}catch(reason){setError(`${t.error} · ${reason instanceof Error&&/^[A-Z_]+$/.test(reason.message)?reason.message:'RESOURCE_REQUEST_FAILED'}`);}finally{setBusy(false);}}
@@ -63,7 +63,12 @@ export function Resources({ client, device, locale, initialCollection, initialRe
       if(effect.kind==='toast')setNotice(txt(effect.message));
       else if(effect.kind==='navigate'){if(effect.target.kind==='session')onTask(effect.target.sessionId);else await open(effect.target.ref);}
       else if(effect.kind==='refresh-resource'&&resource)await open(effect.ref);
-      else if(effect.kind==='refresh-collection'&&effect.collectionId===collection.id)await list(collection);
+      else if(effect.kind==='refresh-collection'&&effect.collectionId===collection.id){
+        if(resource){
+          const result=await call<{items:RemoteCollectionItem[];nextCursor?:string}>('list',{collectionId:collection.id,limit:100});
+          setItems(result.items);setCursor(result.nextCursor);
+        }else await list(collection);
+      }
     }
   }
   function begin(chosen:RemoteActionDescriptor){
@@ -89,7 +94,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     ...links.map(link=>({id:link.rel,title:txt(link.label)||t.history,run:()=>{const target=link.target;return target.kind==='session'?onTask(target.sessionId):void run(()=>open(target.ref));}})),
     ...actions.map(item=>({id:item.id,title:txt(item.label)+(item.disabled?' · —':''),run:()=>begin(item)})),
   ]:collection?[
-    ...items.map(item=>({id:item.ref.id,title:txt(item.display.title),run:()=>void run(()=>open(item.ref))})),
+    ...items.map(item=>({id:item.ref.id,title:txt(item.display.title)+(item.display.status?` · ${txt(item.display.status.label)}`:''),run:()=>void run(()=>open(item.ref))})),
     ...actions.map(item=>({id:item.id,title:`+ ${txt(item.label)}`,run:()=>begin(item)})),
     ...(cursor?[{id:'more',title:t.next,run:()=>void run(()=>list(collection,cursor))}]:[]),
   ]:collections.map(item=>({id:item.id,title:txt(item.title),run:()=>void run(()=>list(item))}));
@@ -125,16 +130,17 @@ export function Resources({ client, device, locale, initialCollection, initialRe
   });
   const bodyRows=Math.max(3,Math.floor(rows/3));
   const bodyLines=wrapAnsi((resource?.blocks??[]).filter(block=>block.primitive!=='form').map(block=>terminalText(block.fallbackMarkdown)).filter(Boolean).join('\n\n'),Math.max(10,columns-4),{hard:true,trim:false}).split('\n');
-  const pageSize=Math.max(3,Math.floor((rows-12)/2));
+  const visibleBody=resource&&!action&&bodyLines.some(line=>line.trim())?Math.min(bodyRows,bodyLines.length)+(bodyLines.length>bodyRows?1:0)+1:0;
+  const pageSize=Math.max(1,Math.floor((rows-12-visibleBody)/2));
   const start=Math.max(0,selected-pageSize+1);
   return <Box flexDirection="column" gap={1}>
-    <Text bold>{resource?txt(resource.display.title):collection?txt(collection.title):t.resources}{busy?` · ${t.loading}`:''}</Text>
-    {resource&&!action&&<Box flexDirection="column"><Text>{bodyLines.slice(bodyOffset,bodyOffset+bodyRows).join('\n')}</Text>{bodyLines.length>bodyRows&&<Text dimColor>{bodyOffset+1}–{Math.min(bodyOffset+bodyRows,bodyLines.length)} / {bodyLines.length} · PgUp / PgDn</Text>}</Box>}
+    <Text bold>{resource?txt(resource.display.title):collection?txt(collection.title):t.resources}{resource?.display.status?` · ${txt(resource.display.status.label)}`:''}{busy?` · ${t.loading}`:''}</Text>
+    {visibleBody>0&&<Box flexDirection="column"><Text>{bodyLines.slice(bodyOffset,bodyOffset+bodyRows).join('\n')}</Text>{bodyLines.length>bodyRows&&<Text dimColor>{bodyOffset+1}–{Math.min(bodyOffset+bodyRows,bodyLines.length)} / {bodyLines.length} · PgUp / PgDn</Text>}</Box>}
     {action?<>
       <Text>{!confirmed?txt(action.confirmation?.title):fieldDescriptor?txt(fieldDescriptor.label):txt(action.label)}</Text>
       {!confirmed&&action.confirmation?.body&&<Text>{txt(action.confirmation.body)}</Text>}
       {isText?<Input value={input} onChange={setInput} active={!busy} secret={fieldDescriptor?.kind==='secret'} multiline={fieldDescriptor?.kind==='multiline'} onSubmit={nextField} onCancel={()=>setAction(undefined)} />
-        :choices.map((choice,index)=><Text key={index} bold={index===selected}>{index===selected?'› ':'  '}{choice}</Text>)}
+        :choices.slice(start,start+pageSize).map((choice,index)=><Text key={index+start} bold={index+start===selected}>{index+start===selected?'› ':'  '}{choice}</Text>)}
     </>:lines.slice(start,start+pageSize).map((line,index)=><Text key={line.id} bold={selected===index+start}>{selected===index+start?'› ':'  '}{line.title}</Text>)}
     {!action&&!busy&&!error&&lines.length===0&&<Text dimColor>{t.emptyResources}</Text>}
     {notice&&<Text>{notice}</Text>}{error&&<Text color="red">{error}</Text>}

@@ -65,6 +65,14 @@ try {
   await run(['vault', 'setup', '--passphrase-stdin'], { input: 'test-only-platform-passphrase\n' });
   record('passphrase vault setup', 'PASS');
   const tasks = await run(['tasks', 'list']); assert.ok(tasks); record('daemon command through authenticated IPC', 'PASS');
+  const channels = await run(['channels', 'list']);
+  assert.deepEqual(channels.items.map(item => item.ref.id).sort(), ['dingtalk', 'discord', 'telegram', 'wecom']);
+  const telegram = await run(['channels', 'get', 'telegram']);
+  assert.equal(telegram.ref.id, 'telegram');
+  assert.ok(telegram.actions.some(action => action.id === 'persona'));
+  // Reading Telegram's form opens the real fresh group-history database. CLI
+  // status alone would miss a background channel initialization failure.
+  record('fresh IM history + channel configuration resources', 'PASS');
   const second = await run(['serve'], { raw: true, timeout: 10_000 }); assert.equal(second.code, 0); record('duplicate host does not replace original owner', 'PASS');
   await run(['status']);
   await run(['service', 'stop']);
