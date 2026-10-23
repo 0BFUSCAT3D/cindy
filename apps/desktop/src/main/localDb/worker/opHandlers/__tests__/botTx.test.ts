@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { tx } from '../tx.js';
+import { normalizeBotProfileModelChain } from '../../../ipc/botProfileVersioning';
 import { createBotModelRouteReconciler } from '../../../../maker-ipc/botModelRouteReconciler';
 import { createScheduledModelScope } from '../../../../maker-ipc/scheduledModelSelection';
 import { normalizeBotModelChain } from '../../../../../shared/botModelChain';
@@ -207,9 +208,11 @@ describe('Bot named worker transactions', () => {
     expect(h.current().model).toBe('permanent');
   });
 
-  it.each(['save-before-begin', 'save-during-begin', 'save-after-begin'])('serializes the real scope writer and permanent save: %s', async order => {
+  it.each(['save-before-begin', 'save-during-begin', 'save-after-begin'].flatMap(order =>
+    [null, '{broken'].map(initialBaseline => ({ order, initialBaseline })),
+  ))('serializes the real scope writer and permanent save: $order / $initialBaseline', async ({ order, initialBaseline }) => {
     const h = savedModelFixture();
-    h.writeBaseline(null);
+    h.writeBaseline(initialBaseline);
     const scope = createScheduledModelScope({ ...h.scopeDeps,
       write: async (...args) => {
         if (order === 'save-during-begin') h.save('permanent');
@@ -237,6 +240,20 @@ describe('Bot named worker transactions', () => {
     } });
     await expect(scope.begin('saved-session')).resolves.toBe('unused');
     expect(JSON.parse(h.readBaseline()!).pendingBotProfileVersion).toBeUndefined();
+  });
+
+  it('preserves runtime fallback when a non-model edit normalizes a legacy chain-only profile', async () => {
+    const h = savedModelFixture();
+    const fallback = { ...h.original, model: 'runtime-fallback', scopeId: 'automation' };
+    h.writeBaseline(JSON.stringify(fallback));
+    const previous = JSON.parse(db.prepare('SELECT capabilities_json FROM bot_profile_versions').pluck().get() as string);
+    expect(previous.model).toBeUndefined();
+    const next = normalizeBotProfileModelChain({ ...previous, skills: ['new-skill'] });
+    h.save('old', 1, { capabilitiesJson: JSON.stringify(next), identitySource: 'edited identity' });
+    expect(h.readBaseline()).toBe(JSON.stringify(fallback));
+    await h.reconcile()('saved-session');
+    await h.scope.restore('saved-session');
+    expect(h.current().model).toBe('runtime-fallback');
   });
 
   it('atomically rejects duplicate names and a second Cindy without touching the first profile', () => {

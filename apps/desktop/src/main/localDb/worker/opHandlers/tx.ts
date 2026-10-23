@@ -472,7 +472,7 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
           // A save must also fence a begin that read a null baseline, or begins
           // before the async profile refresh. This record is never restored:
           // only acceptance of this permanent choice may consume it.
-          const baseline = parseScheduledModelBaseline(target.baseline ?? JSON.stringify({
+          const baseline = parseScheduledModelBaseline(target.baseline) ?? parseScheduledModelBaseline(JSON.stringify({
             scopeId: `${target.id}:profile:${nextVersion}`, agentKind: dbToMakerAgentKind(target.agentKind),
             model: target.model, providerId: target.providerId, effort: target.effort,
             fastMode: fastModeFromStorage(target.fastMode),

@@ -1,4 +1,3 @@
-import { normalizeBotModelChain, readBotTaskModelOverride } from '../../../shared/botModelChain.js';
 import { normalizeBotToolCapabilities, reconcileBotCapabilityList } from '../../../shared/botCapabilitySelection.js';
 import { throwIpcError } from '../../utils/ipcValidate.js';
 
@@ -14,7 +13,7 @@ export function botProfileContentChanged(input: {
   );
 }
 
-export { botProfileModelSelectionChanged } from '../../../shared/botModelChain.js';
+export { botProfileModelSelectionChanged, normalizeBotProfileModelChain } from '../../../shared/botModelChain.js';
 
 export function mergeBotProfileCapabilities(input: {
   previous: Record<string, unknown>;
@@ -57,39 +56,4 @@ export function mergeBotProfileCapabilities(input: {
     }
   }
   return normalizeBotToolCapabilities(next);
-}
-
-/** Main-owned persistence boundary for the ordered Bot runtime routes. */
-export function normalizeBotProfileModelChain(
-  value: Record<string, unknown>,
-): Record<string, unknown> {
-  const next = { ...value };
-  if (Object.prototype.hasOwnProperty.call(next, 'taskModelOverride')) {
-    next.taskModelOverride = readBotTaskModelOverride(next.taskModelOverride);
-  }
-  if (Object.prototype.hasOwnProperty.call(next, 'modelChain')) {
-    const chain = normalizeBotModelChain(next.modelChain);
-    if (chain.length === 0 && next.modelChainOverride !== null && next.modelOverride !== null) {
-      throw new Error('modelChain must contain at least one valid route');
-    }
-    const primary = chain[0];
-    next.modelChain = chain;
-    if (primary) {
-      next.harness = primary.harness;
-      next.model = primary.model;
-      next.providerId = primary.providerId;
-      next.effort = primary.effort;
-      next.fastMode = primary.fastMode;
-    }
-  }
-  if (Array.isArray(next.modelChainOverride)) {
-    const override = normalizeBotModelChain(next.modelChainOverride);
-    if (override.length === 0) {
-      throw new Error('modelChainOverride must contain at least one valid route');
-    }
-    next.modelChainOverride = override;
-  } else if (next.modelChainOverride !== null && next.modelChainOverride !== undefined) {
-    throw new Error('modelChainOverride must be an ordered route list or null');
-  }
-  return next;
 }
