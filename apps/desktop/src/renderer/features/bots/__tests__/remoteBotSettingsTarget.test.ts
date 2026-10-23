@@ -163,3 +163,20 @@ it('offers only the pages whose operations the host implements', () => {
   // The Home folder is a path on the teammate's computer: no remote host ever offers it.
   expect(remoteBotSettingsPages(new Set(ALL_OPS)).has('advanced')).toBe(false);
 });
+
+it('starts again from the host profile, not from the old one, when a later part of a split patch fails after an earlier one was saved', async () => {
+  const { target, profiles } = create();
+  host.invoke.mockResolvedValueOnce(ok({ profile: profile() }));
+  await profiles.load();
+  const long = '字'.repeat(12_000);
+  host.invoke
+    .mockResolvedValueOnce(ok({ profile: profile({ avatarColor: 'blue' }) }))
+    .mockResolvedValueOnce(ok({ profile: profile({ avatarColor: 'blue', identitySource: long }) }))
+    .mockResolvedValueOnce(refused('INTERNAL', 'Computer went away'))
+    // The re-read after the failure: the first two parts are on the computer.
+    .mockResolvedValueOnce(ok({ profile: profile({ avatarColor: 'blue', identitySource: long }) }));
+  await expect(target.profile.update('bot-1', { identitySource: long, userContextSource: long, avatarColor: 'blue' }))
+    .rejects.toSatisfy((error) => extractIpcError(error)?.code === 'INTERNAL');
+  expect(sent(4)).toMatchObject({ input: { op: 'profile.get' } });
+  expect(profiles.get()).toMatchObject({ avatarColor: 'blue', identitySource: long, userContextSource: '' });
+});

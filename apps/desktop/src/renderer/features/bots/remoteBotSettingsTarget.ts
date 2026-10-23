@@ -71,9 +71,13 @@ export function createRemoteProfileStore(deviceId: string, botId: string) {
         ...(capabilityBaseline ? { capabilityBaseline } : {}),
         ...(profilePatch.avatar !== undefined ? { expectedAvatar: before.avatar } : {}),
       };
+      let saved = 0;
       try {
         let raw: unknown;
-        for (const part of splitProfilePatch(body)) raw = await invokeBotSettings(deviceId, 'profile.update', botId, { patch: part });
+        for (const part of splitProfilePatch(body)) {
+          raw = await invokeBotSettings(deviceId, 'profile.update', botId, { patch: part });
+          saved += 1;
+        }
         const next = normalizeDbProfile((raw as { profile?: unknown } | null)?.profile);
         if (!next) throw createIpcError('INTERNAL', 'Invalid teammate profile');
         // A newer write on this profile is closer to what the person wants now.
@@ -84,8 +88,15 @@ export function createRemoteProfileStore(deviceId: string, botId: string) {
         return next;
       } catch (error) {
         if (generation === writeGeneration) {
-          profile = before;
-          emit();
+          // A large patch goes in several requests: when an earlier one is already saved on the
+          // computer, `before` is no longer what it holds, so the page starts again from what it has.
+          let reread: unknown = null;
+          if (saved > 0) reread = await invokeBotSettings(deviceId, 'profile.get', botId).catch(() => null);
+          if (reread && normalizeDbProfile((reread as { profile?: unknown }).profile)) adopt(reread);
+          else {
+            profile = before;
+            emit();
+          }
         }
         throw error;
       } finally {
