@@ -15,7 +15,7 @@ import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { buildPeerAttachmentRef, parsePeerAttachmentRef } from '@cindy/device-link';
-type PeerUpload = (source: string | Buffer, mimeType?: string) => Promise<string | null>;
+type PeerUpload = (source: string | Buffer, mimeType?: string, signal?: AbortSignal) => Promise<string | null>;
 type RetainSentImage = (source: string | Buffer, ref: string) => Promise<void>;
 const peerUploadContext = new AsyncLocalStorage<{ upload: PeerUpload; retain?: RetainSentImage }>();
 export function withPeerAttachmentUpload<T>(upload: PeerUpload, operation: () => Promise<T>, retain?: RetainSentImage) {
@@ -25,7 +25,7 @@ export function withPeerAttachmentUpload<T>(upload: PeerUpload, operation: () =>
 import { createLogger } from '../logger';
 import * as imageCacheStore from '../imageCacheStore';
 import * as cindyMediaBlobStore from '../cindy-media/blobStore';
-import { uploadLocalFile, uploadBuffer, mimeOf, type UploadResult } from './mediaTransfer';
+import { uploadLocalFile, uploadBuffer, removeRemote, mimeOf, type UploadResult } from './mediaTransfer';
 import { sharedTaskMediaId } from './sharedTaskMediaContext.js';
 import {
   OUTBOUND_IMAGE_INPUT_MAX_BYTES,
@@ -36,7 +36,7 @@ import { buildLegacyAttachmentOssRef, parseAttachmentOssRef } from '../../shared
 import { readStartReviewRequest } from '../maker-ipc/reviewStartHandler.js';
 import { withPreparedOutboundReview } from '../maker-ipc/reviewOutboundInput.js';
 import { createSourceFileAccessError, isSourceFileAccessError } from './sourceFileError';
-import { readWithSourceFileAccessRecovery } from './sourceFileAccessRecovery';
+import { readWithSourceFileAccessRecovery, sourceFileAccessTransferOptions, onSourceFileAccessDiscard } from './sourceFileAccessRecovery';
 
 const log = createLogger('device-link:outboundMedia');
 
@@ -104,7 +104,10 @@ async function uploadAttachment(src: AttachmentSource): Promise<string> {
     const context = peerUploadContext.getStore();
     if (!context || sharedTaskMediaId()) return null;
     const effectiveMime = contentType ?? mimeOf(typeof source === 'string' ? path.extname(source).slice(1).toLowerCase() : 'bin');
-    const result = await context.upload(source, effectiveMime);
+    const transfer = sourceFileAccessTransferOptions();
+    transfer.assertCurrent?.();
+    const result = await context.upload(source, effectiveMime, transfer.signal);
+    transfer.assertCurrent?.();
     const parsed = result && parsePeerAttachmentRef(result);
     return parsed ? buildPeerAttachmentRef({ ...parsed, originalName }) : null;
   };
@@ -114,12 +117,25 @@ async function uploadAttachment(src: AttachmentSource): Promise<string> {
     await peerUploadContext.getStore()?.retain?.(source, ref).catch(() => undefined);
     return ref;
   };
-  const bufferRef = async (bytes: Buffer, options: Parameters<typeof uploadBuffer>[1]) => retain(bytes,
-    await direct(bytes, options?.contentType) ?? buildUploadedAttachmentRef(await uploadBuffer(bytes, options), originalName));
+  const retainUpload = async (source: string | Buffer, uploaded: UploadResult) => {
+    onSourceFileAccessDiscard(() => { void removeRemote(uploaded.key); });
+    sourceFileAccessTransferOptions().assertCurrent?.();
+    const ref = await retain(source, buildUploadedAttachmentRef(uploaded, originalName));
+    sourceFileAccessTransferOptions().assertCurrent?.();
+    return ref;
+  };
+  const bufferRef = async (bytes: Buffer, options: Parameters<typeof uploadBuffer>[1]) => {
+    const peerRef = await direct(bytes, options?.contentType);
+    return peerRef ? retain(bytes, peerRef) : retainUpload(bytes,
+      await uploadBuffer(bytes, { ...options, ...sourceFileAccessTransferOptions() }));
+  };
   const fileRef = async (file: string, options: Parameters<typeof uploadLocalFile>[1]) => {
     try {
-      return await readWithSourceFileAccessRecovery(file, async () => retain(file,
-        await direct(file, options?.contentType) ?? buildUploadedAttachmentRef(await uploadLocalFile(file, options), originalName)));
+      return await readWithSourceFileAccessRecovery(file, async () => {
+        const peerRef = await direct(file, options?.contentType);
+        if (peerRef) return retain(file, peerRef);
+        return retainUpload(file, await uploadLocalFile(file, { ...options, ...sourceFileAccessTransferOptions() }));
+      });
     } catch (error) {
       if (isSourceFileAccessError(error, file)) {
         // Do not send Node's private source path across IPC or persist it in chat history.

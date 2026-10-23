@@ -167,6 +167,19 @@ describe('uploadLocalFile — 小文件整体 PUT', () => {
     expect(netFetchMock).not.toHaveBeenCalled();
   });
 
+  it.each(['stat', 'presign', 'read', 'put'])('stops a stale attachment after %s and cleans any staged object', async stage => {
+    let current = true;
+    const assertCurrent = () => { if (!current) throw new Error('stale attachment'); };
+    if (stage === 'stat') statMock.mockImplementationOnce(async () => { current = false; return { isFile: () => true, size: 100 }; });
+    if (stage === 'presign') apiFetch.mockImplementationOnce(async () => { current = false; return { putUrl: 'https://oss.example/put', key: KEY }; });
+    if (stage === 'read') readFileMock.mockImplementationOnce(async () => { current = false; return Buffer.alloc(100); });
+    if (stage === 'put') undiciFetchMock.mockImplementationOnce(async () => { current = false; return { ok: true, status: 200 }; });
+    await expect(uploadLocalFile('/tmp/a.png', { assertCurrent })).rejects.toThrow('stale attachment');
+    expect(apiFetch.mock.calls.map(([path]) => path)).toEqual(stage === 'stat' ? [] : [PUT_PATH, DEL_PATH]);
+    expect(undiciFetchMock).toHaveBeenCalledTimes(stage === 'put' ? 1 : 0);
+    expect(netFetchMock).not.toHaveBeenCalled();
+  });
+
   it('取消上传 → 立刻中止 PUT,不换传输栈重试,并删除已签发的对象', async () => {
     const abort = new AbortController();
     undiciFetchMock.mockImplementation(
@@ -719,6 +732,15 @@ describe('putBytesToOss — 传输栈回退', () => {
 });
 
 describe('uploadBuffer — 内存字节(base64 附件)', () => {
+  it.each(['presign', 'put'])('discards a stale in-memory attachment after %s', async stage => {
+    let current = true;
+    if (stage === 'presign') apiFetch.mockImplementationOnce(async () => { current = false; return { putUrl: 'https://oss.example/put', key: KEY }; });
+    else undiciFetchMock.mockImplementationOnce(async () => { current = false; return { ok: true, status: 200 }; });
+    await expect(uploadBuffer(Buffer.from([1]), { ext: 'png', assertCurrent: () => { if (!current) throw new Error('stale'); } })).rejects.toThrow('stale');
+    expect(apiFetch.mock.calls.map(([path]) => path)).toEqual([PUT_PATH, DEL_PATH]);
+    expect(undiciFetchMock).toHaveBeenCalledTimes(stage === 'put' ? 1 : 0);
+  });
+
   it('presign-put 带 size/ext/contentType,整体 PUT,返回 key', async () => {
     okPut();
     const r = await uploadBuffer(Buffer.from([1, 2, 3, 4, 5]), {

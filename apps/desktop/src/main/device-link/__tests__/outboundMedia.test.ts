@@ -8,7 +8,8 @@ import path from 'node:path';
 
 const uploadLocalFile = vi.hoisted(() => vi.fn());
 const uploadBuffer = vi.hoisted(() => vi.fn());
-vi.mock('../mediaTransfer', () => ({ uploadLocalFile, uploadBuffer, mimeOf: () => 'text/plain' }));
+const removeRemote = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('../mediaTransfer', () => ({ uploadLocalFile, uploadBuffer, removeRemote, mimeOf: () => 'text/plain' }));
 
 const resolveSafe = vi.hoisted(() => vi.fn());
 vi.mock('../../imageCacheStore', () => ({ resolveSafe }));
@@ -60,10 +61,32 @@ describe('rewriteOutboundMedia — channel gating', () => {
     const selectFile = vi.fn(async () => file);
     const result = await withSourceFileAccessRecovery({ selectFile, assertCurrent: () => {} },
       () => rewriteOutboundMedia('maker:send', args));
-    expect(isAttachmentOssRef((result[1] as any).content[0].path)).toBe(true);
+    expect(isAttachmentOssRef((result[1] as { content: Array<{ path: string }> }).content[0].path)).toBe(true);
     expect(selectFile).toHaveBeenCalledWith(file);
     expect(uploadLocalFile).toHaveBeenCalledTimes(2);
-    expect((args[1] as any).content[0].path).toBe(file);
+    expect((args[1] as { content: Array<{ path: string }> }).content[0].path).toBe(file);
+  });
+
+  it('discards an uploaded object if its owner becomes stale while retaining the sent image', async () => {
+    let current = true;
+    const file = '/private/wechat/test.pdf';
+    const signal = new AbortController().signal;
+    await expect(withSourceFileAccessRecovery({ signal, selectFile: async () => file, assertCurrent: () => { if (!current) throw new Error('stale'); } },
+      () => withPeerAttachmentUpload(async () => null,
+        () => rewriteOutboundMedia('maker:send', ['session', { type: 'user', content: [{ type: 'file', path: file }] }]),
+        async () => { current = false; }))).rejects.toThrow('stale');
+    expect(uploadLocalFile).toHaveBeenCalledWith(file, expect.objectContaining({ signal, assertCurrent: expect.any(Function) }));
+    expect(removeRemote).toHaveBeenCalledWith('cindy/device-link/u/x.png');
+  });
+
+  it('discards earlier objects in the same unsent batch when a later file loses its owner', async () => {
+    const controller = new AbortController();
+    let current = true;
+    uploadLocalFile.mockResolvedValueOnce({ key: 'first-object', size: 1, contentType: 'application/octet-stream', sha256: SHA256 });
+    uploadLocalFile.mockImplementationOnce(async () => { current = false; controller.abort(); throw new Error('cancelled'); });
+    await expect(withSourceFileAccessRecovery({ signal: controller.signal, selectFile: async () => null, assertCurrent: () => { if (!current) throw new Error('stale'); } },
+      () => rewriteOutboundMedia('maker:send', ['session', { type: 'user', content: [{ type: 'file', path: '/first' }, { type: 'file', path: '/second' }] }]))).rejects.toThrow('stale');
+    expect(removeRemote).toHaveBeenCalledExactlyOnceWith('first-object');
   });
 
   it.each([null, '/private/another.pdf'])('keeps the original unsent when confirmation returns %s', async selected => {
@@ -119,7 +142,7 @@ describe('rewriteOutboundMedia — channel gating', () => {
     const [cancelled, completed] = await Promise.allSettled([send(first, null), send(second, second)]);
     expect(cancelled.status).toBe('rejected');
     expect(completed.status).toBe('fulfilled');
-    if (completed.status === 'fulfilled') expect(isAttachmentOssRef((completed.value[1] as any).content[0].path)).toBe(true);
+    if (completed.status === 'fulfilled') expect(isAttachmentOssRef((completed.value[1] as { content: Array<{ path: string }> }).content[0].path)).toBe(true);
     expect(uploadLocalFile.mock.calls.map(([file]) => file)).toEqual([first, second, second]);
   });
   it.each([
@@ -201,11 +224,26 @@ describe('rewriteOutboundMedia — channel gating', () => {
     }
   });
 
+  it('propagates foreground cancellation to peer upload and never falls back to OSS', async () => {
+    const controller = new AbortController();
+    const direct = vi.fn(async (_source: string | Buffer, _mime?: string, signal?: AbortSignal) => {
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+      throw new Error('FILE_PEER_CANCELLED');
+    });
+    await expect(withSourceFileAccessRecovery({ signal: controller.signal, selectFile: async () => null, assertCurrent: () => { controller.signal.throwIfAborted(); } },
+      () => withPeerAttachmentUpload(direct, () => rewriteOutboundMedia('maker:send', ['session', {
+        type: 'user', content: [{ type: 'file', path: '/controller/a.txt' }],
+      }])))).rejects.toThrow();
+    expect(direct).toHaveBeenCalledOnce();
+    expect(uploadLocalFile).not.toHaveBeenCalled();
+  });
+
   it('uses peer staging for exact file bytes, preserves the name and retains OSS fallback', async () => {
     const direct = vi.fn(async () => buildPeerAttachmentRef({ ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', size: 10, sha256: SHA256, mimeType: 'text/plain' }));
     const args = ['session', { type: 'user', content: [{ type: 'file', path: '/controller/a.txt', originalName: 'a.txt' }] }];
     const result = await withPeerAttachmentUpload(direct, () => rewriteOutboundMedia('maker:send', args));
-    const ref = (result[1] as any).content[0].path;
+    const ref = (result[1] as { content: Array<{ path: string }> }).content[0].path;
     expect(parsePeerAttachmentRef(ref)?.originalName).toBe('a.txt');
     expect(uploadLocalFile).not.toHaveBeenCalled();
     await withPeerAttachmentUpload(async () => null, () => rewriteOutboundMedia('maker:send', args));

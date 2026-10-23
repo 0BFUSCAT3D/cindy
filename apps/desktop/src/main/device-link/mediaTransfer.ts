@@ -291,6 +291,7 @@ async function putBytesToOss(
   bodySource: OssPutBodySource,
   contentType: string,
   signal?: AbortSignal,
+  assertCurrent?: () => void,
 ): Promise<void> {
   const host = hostOf(putUrl);
   const headers: Record<string, string> = {
@@ -338,6 +339,7 @@ async function putBytesToOss(
   const failures: string[] = [];
   const hints: string[] = [];
   for (const transport of order) {
+    assertCurrent?.();
     try {
       signal?.throwIfAborted();
       await attempt(transport.impl);
@@ -418,9 +420,13 @@ export async function uploadLocalFile(
     onProgress?: (uploadedBytes: number) => void;
     /** Aborting stops the PUT at once (no transport retry) and deletes the staged object. */
     signal?: AbortSignal;
+    /** Initiating request owner/window guard; never prepare or publish under a new scope. */
+    assertCurrent?: () => void;
   } = {},
 ): Promise<UploadResult> {
+  opts.assertCurrent?.();
   const st = await withSourceFileHandleContext(localPath, () => stat(localPath));
+  opts.assertCurrent?.();
   if (!st.isFile()) throw new Error(`不是文件: ${localPath}`);
   const size = st.size;
   if (opts.maxBytes !== undefined) {
@@ -443,6 +449,8 @@ export async function uploadLocalFile(
   const sourcesClosed: Promise<void>[] = [];
 
   try {
+    opts.assertCurrent?.();
+    opts.signal?.throwIfAborted();
     if (size <= STREAM_THRESHOLD) {
       // 小媒体:读进 Buffer 整体 PUT(成熟稳定路径)。整体 PUT 无中间粒度,
       // 完成时一次性回调。
@@ -469,6 +477,7 @@ export async function uploadLocalFile(
         buf = await withSourceFileHandleContext(localPath, () =>
           readFile(localPath, opts.signal ? { signal: opts.signal } : undefined));
       }
+      opts.assertCurrent?.();
       if (buf.byteLength !== size) {
         throw new Error(`文件在上传前发生变化:预期 ${size} 字节,实际 ${buf.byteLength} 字节`);
       }
@@ -480,6 +489,7 @@ export async function uploadLocalFile(
         { create: () => exactArrayBuffer(buf) },
         contentType,
         opts.signal,
+        opts.assertCurrent,
       );
       opts.onProgress?.(size);
     } else {
@@ -547,7 +557,7 @@ export async function uploadLocalFile(
         // 已缓冲的数据,每次换栈上传都漏一个。
         dispose: () => attempts.at(-1)?.dispose(),
       };
-      await putBytesToOss(putUrl, bodySource, contentType, opts.signal);
+      await putBytesToOss(putUrl, bodySource, contentType, opts.signal, opts.assertCurrent);
       const uploadedAttempt = attempts.at(-1);
       if (!uploadedAttempt || uploadedAttempt.sent !== size) {
         // Cleanup is centralized below so transport and source-stream errors use the same path.
@@ -558,6 +568,8 @@ export async function uploadLocalFile(
       if (!uploadedAttempt.sha256) throw new Error('上传流未读完，无法确认字节摘要');
       sha256 = uploadedAttempt.sha256;
     }
+    opts.assertCurrent?.();
+    opts.signal?.throwIfAborted();
   } catch (error) {
     // Cleanup is best-effort after every post-presign transfer failure; a cancelled upload
     // does not wait for it.
@@ -577,8 +589,10 @@ export async function uploadLocalFile(
  */
 export async function uploadBuffer(
   bytes: Buffer,
-  opts: { ext: string; contentType?: string },
+  opts: { ext: string; contentType?: string; signal?: AbortSignal; assertCurrent?: () => void },
 ): Promise<UploadResult> {
+  opts.assertCurrent?.();
+  opts.signal?.throwIfAborted();
   const size = bytes.byteLength;
   if (size <= 0) throw new Error('uploadBuffer: 空字节');
   if (size > MAX_MEDIA_BYTES) {
@@ -586,13 +600,22 @@ export async function uploadBuffer(
   }
   const ext = extOf(`x.${opts.ext}`);
   const contentType = opts.contentType ?? mimeOf(ext);
-  const { putUrl, key } = await presignPut(size, ext, contentType);
+  const { putUrl, key } = await abortable(presignPut(size, ext, contentType), opts.signal);
   const ab = bytes.buffer.slice(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
   const sha256 = createHash('sha256').update(bytes).digest('hex');
-  await putBytesToOss(putUrl, { create: () => ab }, contentType);
+  try {
+    opts.assertCurrent?.();
+    await putBytesToOss(putUrl, { create: () => ab }, contentType, opts.signal, opts.assertCurrent);
+    opts.assertCurrent?.();
+    opts.signal?.throwIfAborted();
+  } catch (error) {
+    const removing = removeRemote(key);
+    if (!opts.signal?.aborted) await removing;
+    throw error;
+  }
   log.debug(`uploaded(buffer) key=${key} size=${size} ct=${contentType} integrity=sha256`);
   return { key, size, contentType, sha256 };
 }

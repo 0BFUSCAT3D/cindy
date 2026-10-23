@@ -30,7 +30,7 @@ import { PLUGIN_OAUTH_CHANNEL, PLUGIN_OAUTH_LOCAL_CHANNEL, PLUGIN_SECRET_LOCAL_C
 import { handleAssistPluginOauth, handleSubmitPluginSecret, handleSubmitPluginConnection, handleSubmitInputHandoff, handleOpenInputHandoffPicture, handleAnswerInputHandoffPicture, type LocalOauthDeps } from '../plugin-oauth/localIpc.js';
 import { LocalDeviceCodeSessions } from '../plugin-oauth/deviceCodeSessions.js';
 import { PLUGIN_OAUTH_DEVICE_CODE_CHANNEL } from '../../shared/pluginOauthDeviceCode.js';
-import { getActiveAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
+import { getActiveAppSession, isAppSessionBoundaryPending, onAppSessionInvalidated } from '../appSessionState.js';
 import {
   DL_SESSION_REFERENCE_CAPABILITY_CHANNEL,
   DeviceLinkError,
@@ -83,7 +83,7 @@ import { createSentImageRetainer } from './remoteMediaPersistentCache';
 import { withOutboundReviewConfirmation } from '../maker-ipc/reviewOutboundInput.js';
 import { confirmReviewArtifacts } from '../reviewer/confirmReviewArtifacts.js';
 import { tryUploadPeerAttachment } from './filePeer';
-import { withSourceFileAccessRecovery } from './sourceFileAccessRecovery';
+import { withSourceFileAccessRecovery, releaseSourceFileAccessUploads } from './sourceFileAccessRecovery';
 import { parseSharedTaskPeer, scrubSharedProviderCatalog } from '@cindy/device-link';
 import { withSharedTaskMedia } from './sharedTaskMediaContext.js';
 import {
@@ -722,7 +722,7 @@ export async function handleInvoke(
       if (projectionUnavailable) {
         throwIpcError('DEVICE_LINK_CHANNEL_NOT_ALLOWED', 'Queued content editing is not supported by the target device');
       }
-      callArgs = await withPeerAttachmentUpload((source, mime) => peer ? Promise.resolve(null) : tryUploadPeerAttachment(normalizedDeviceId, source, mime, deps.invoke), () =>
+      callArgs = await withPeerAttachmentUpload((source, mime, signal) => peer ? Promise.resolve(null) : tryUploadPeerAttachment(normalizedDeviceId, source, mime, deps.invoke, undefined, signal), () =>
         withSharedTaskMedia(peer?.role === 'host' ? peer.sharedTaskId : undefined,
           () => existing ? deps.rewriteOutboundMedia!(channel, callArgs, existing) : deps.rewriteOutboundMedia!(channel, callArgs)),
         createSentImageRetainer(normalizedDeviceId));
@@ -1691,16 +1691,18 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
         () => handleInvoke(diagnostics.forWindow(deps, e.sender.id), p.deviceId, p.channel, p.args),
       );
     }
-    const interactiveAttachmentSend = ['maker:send', 'maker:steer', 'maker:input:enqueue', 'maker:input:steer'].includes(String(p.channel))
+    const interactiveAttachmentSend = ['maker:send', 'maker:steer', 'maker:input:enqueue', 'maker:input:steer', 'maker:input:update-content'].includes(String(p.channel))
       && !(p.scheduling && typeof p.scheduling === 'object' && 'background' in p.scheduling && p.scheduling.background === true);
     if (interactiveAttachmentSend) {
       assertTrustedAppRendererEvent(e);
       const owner = getActiveAppSession();
+      const transfer = new AbortController();
+      const cancel = () => transfer.abort();
       const frame = e.senderFrame;
       const targetWindow = BrowserWindow.fromWebContents(e.sender);
       const assertCurrent = () => {
         const current = getActiveAppSession();
-        if (isAppSessionBoundaryPending() || !owner.dataOwnerId
+        if (transfer.signal.aborted || isAppSessionBoundaryPending() || !owner.dataOwnerId
           || current.dataOwnerId !== owner.dataOwnerId || current.generation !== owner.generation
           || e.sender.isDestroyed() || !frame || frame.detached || e.sender.mainFrame !== frame
           || !targetWindow || targetWindow.isDestroyed()) {
@@ -1712,10 +1714,21 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
       // This guard also runs immediately before final message dispatch, after all file awaits.
       const guardedDeps: DeviceLinkIpcDeps = {
         ...scopedDeps,
-        invoke: (...args) => { assertCurrent(); return scopedDeps.invoke(...args); },
+        invoke: (...args) => {
+          assertCurrent();
+          if (args[1] === p.channel) releaseSourceFileAccessUploads();
+          return scopedDeps.invoke(...args);
+        },
       };
+      const unsubscribe = onAppSessionInvalidated(cancel);
+      e.sender.on('destroyed', cancel);
+      const onNavigation = (_event: unknown, _url: string, _inPlace: boolean, isMainFrame: boolean) => {
+        if (isMainFrame) cancel();
+      };
+      e.sender.on('did-start-navigation', onNavigation);
       return withSourceFileAccessRecovery({
         assertCurrent,
+        signal: transfer.signal,
         selectFile: async (source) => {
           assertCurrent();
           const selected = await dialog.showOpenDialog(targetWindow!, {
@@ -1728,7 +1741,11 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
           assertCurrent();
           return selected.canceled || selected.filePaths.length !== 1 ? null : selected.filePaths[0];
         },
-      }, () => handleInvoke(guardedDeps, p.deviceId, p.channel, p.args, p.scheduling));
+      }, () => handleInvoke(guardedDeps, p.deviceId, p.channel, p.args, p.scheduling)).finally(() => {
+        unsubscribe();
+        e.sender.removeListener('destroyed', cancel);
+        e.sender.removeListener('did-start-navigation', onNavigation);
+      });
     }
     return handleInvoke(diagnostics.forWindow(deps, e.sender.id), p.deviceId, p.channel, p.args, p.scheduling);
   });
