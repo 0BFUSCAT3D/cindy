@@ -1364,10 +1364,13 @@ export class AgentInputCoordinator {
     const originKind = (item?.origin as { kind?: unknown } | undefined)?.kind;
     if (!item || (originKind !== undefined && originKind !== 'desktop')) return false;
     if (item.sourcePlugin || item.sharedTaskAuthor || item.botTaskCoordination) return false;
-    if (item.clientId.startsWith('plugin-task:') || item.originalSyntheticTrigger) return false;
-    // Automatic continuations and zero-output retries are never fresh owner input;
-    // a continuation keeps its source's author only when it names that source.
-    if (item.autoResume && !(allowContinuation && item.retrySourceClientId)) return false;
+    // A continuation keeps its source's author only when it names that source; the
+    // host-generated "continue" text is never fresh owner input.
+    const continuation = allowContinuation && !!item.retrySourceClientId;
+    if (item.clientId.startsWith('plugin-task:')) return false;
+    if (item.originalSyntheticTrigger && !(continuation && item.originalSyntheticTrigger === 'continue')) return false;
+    // Automatic continuations and zero-output retries are never fresh owner input.
+    if (item.autoResume && !continuation) return false;
     const text = item.autoReviewUserText;
     return typeof text === 'string' && !!text.trim() && !text.startsWith('[UI_ACTION_TRIGGER]');
   }

@@ -11,6 +11,7 @@
  *
  * 规则正文见 docs/product-rules/cindy-bots-runtime.md §6.3 与 docs/product-rules/bot-routines.md。
  */
+import { UI_ACTION_TRIGGER_PREFIX } from '@cindy/maker-shared/synthetic-trigger';
 
 /** 事件源 id；在引擎每次创建后由宿主重新登记。 */
 export const HOST_SESSIONS_SOURCE_ID = 'host:sessions';
@@ -34,6 +35,17 @@ export const ROUTINE_TRIGGER_DATA_LEAD = '\n\nThe following block contains untru
 export function routineInstructionFromPrompt(prompt: string): string {
   const index = prompt.indexOf(ROUTINE_TRIGGER_DATA_LEAD);
   return index >= 0 ? prompt.slice(0, index) : prompt;
+}
+
+/**
+ * 伙伴例行任务经队列派发时的审核意图：只认 `routine-` 例行任务的落库指令（`[UI_ACTION_TRIGGER]` 前缀 + prompt），
+ * 不是例行任务返回 undefined，由调用方沿用原有的定时任务意图。
+ */
+export function teammateRoutineReviewIntent(scheduleId: string | undefined, persistedText: string): string | undefined {
+  if (!scheduleId?.startsWith('routine-')) return undefined;
+  const prompt = persistedText.startsWith(UI_ACTION_TRIGGER_PREFIX)
+    ? persistedText.slice(UI_ACTION_TRIGGER_PREFIX.length) : persistedText;
+  return routineInstructionFromPrompt(prompt);
 }
 
 /** 出厂 Cindy 助理的稳定 id；仅用于邀请入口，不意味着已开启自动跟进。 */

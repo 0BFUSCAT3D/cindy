@@ -1,7 +1,8 @@
 import { forwardedRequestDisplayText } from '@cindy/maker-shared/message-source';
 import { setMainLocale } from '../../i18n.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { captureAgentRequest } from '../forwardedRequest.js';
+import { captureAgentRequest, ownerChannelInputEvidence } from '../forwardedRequest.js';
+import { beginChannelToolScope, readChannelToolScope } from '../../im/shared/channelToolScope.js';
 import { formatForwardedRequest, matchesForwardedRequest, readForwardedRequestSource, verifiedOwnerRequestText } from '../../../shared/forwardedRequest.js';
 import { restoreAutoReviewUserIntent } from '../autoReviewUserIntent.js';
 
@@ -87,6 +88,25 @@ describe('host-owned forwarded request', () => {
     expect(verifiedOwnerRequestText(carried.autoReviewUserText)).toBeUndefined();
     const missing = await captureAgentRequest('caller', 'analysis', null, async () => [], true, true);
     expect(missing.autoReviewUserText.request).toEqual({ userText: null });
+  });
+
+  // PR #6936 review: IM turns bypass the input coordinator and persist no receipt, so a verified
+  // owner relay from IM carried no original words. The IM runner's per-turn lease names the row.
+  it.each([true, false])('captures the persisted IM input of the turn requester (owner=%s)', async requesterIsOwner => {
+    const release = beginChannelToolScope({ sessionId: 'lane', sessionInstanceId: 'instance', scope: {
+      channel: 'wecom', botId: 'bot', laneUserId: 'u', chatId: 'c', chatKind: 'direct', requesterIsOwner, companion: true,
+      inputClientId: 'im-row' } });
+    try {
+      const read = vi.fn(async (clientId: string) => clientId === 'im-row' ? '可以提交 pr' : null);
+      const evidence = await ownerChannelInputEvidence(readChannelToolScope({ sessionId: 'lane', sessionInstanceId: 'instance' }), read);
+      const result = await captureAgentRequest('lane', 'background', evidence, async () => [], true, true);
+      if (requesterIsOwner) {
+        expect(result.autoReviewUserText.request).toEqual({ userText: '可以提交 pr', sessionId: 'lane', clientId: 'im-row', ownerVerified: true });
+      } else {
+        expect(read).not.toHaveBeenCalled();
+        expect(result.autoReviewUserText.request).toEqual({ userText: null });
+      }
+    } finally { release(); }
   });
 
   it.each([

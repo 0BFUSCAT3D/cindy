@@ -12653,6 +12653,24 @@ describe('AgentInputCoordinator 中断自动续跑', () => {
     return { h, guard, fail };
   }
 
+  // PR #6936 review: the generated continuation carries originalSyntheticTrigger='continue'.
+  // It keeps the owner's authorship for teammate task actions, never as fresh owner input.
+  it.each([
+    ['owner', { autoReviewUserText: 'Relay the fix to the other task' }, true],
+    ['another task', { autoReviewUserText: 'Relay it', origin: { kind: 'session' as const, senderSessionId: 'other', displayText: 'relay' } }, false],
+  ] as const)('attributes a real automatic continuation of %s input', async (_label, patch, expected) => {
+    const { h, fail } = availabilityHarness();
+    const sid = `pi-availability-continuation-${expected}`;
+    h.coordinator.enqueue(sid, { ...availabilityInput(), ...patch } as AgentInputQueuedMessage);
+    await flush();
+    await fail(sid, { toolResult: true });
+    expect(await h.coordinator.autoRetryLastError(sid, 1)).toBe('resumed');
+    await flush();
+    expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({ type: 'user', content: CONTINUE_AFTER_ERROR_PROMPT });
+    expect(h.coordinator.isActiveInputOwnerContinuation(sid)).toBe(expected);
+    expect(h.coordinator.isActiveInputOwnerAuthored(sid)).toBe(false);
+  });
+
   it('continues after a completed tool and stops at the existing host retry budget', async () => {
     const { h, guard, fail } = availabilityHarness();
     const sid = 'pi-availability-budget';
