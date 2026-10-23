@@ -4140,6 +4140,8 @@ const createWindow = () => {
     refreshWindowsAppBadge();
     if (!app.isPackaged || isCindyVersionLaunchPending())
       markDesktopDevWindowReady(mainWindow.webContents.getOSProcessId());
+    worktreeMaintenanceReadyWindows.add(mainWindow);
+    startReadyWorktreeMaintenance();
     void runComputerUseSmokeIfRequested();
     // 资源用量窗口不应与主窗口首帧争 CPU。主窗口可见后再后台完成 BrowserWindow、
     // renderer 和首份进程快照预热；回调绑定当代主窗口，重建/退出后不会创建孤儿窗。
@@ -10671,26 +10673,33 @@ if (
 
 let worktreeRuntimeCloseReady = false;
 let lastWorktreeMaintenanceDb: ReturnType<typeof tryGetDbClient> = null;
+const worktreeMaintenanceReadyWindows = new WeakSet<BrowserWindow>();
 
-/** Worktree maintenance needs both storage and runtime-close services. */
+/** Never let optional disk cleanup compete with the main window's first frame. */
 function startReadyWorktreeMaintenance(): void {
+  const isReady = () => !isQuitting && mainWindowRef !== null && !mainWindowRef.isDestroyed()
+    && worktreeMaintenanceReadyWindows.has(mainWindowRef)
+    && worktreeRuntimeCloseReady && getMakerIfReady() !== null && tryGetDbClient() !== null;
+  if (!isReady()) return;
   startWorktreeRecycleMaintenance({
-    isReady: () =>
-      worktreeRuntimeCloseReady && getMakerIfReady() !== null && tryGetDbClient() !== null,
+    isReady,
+    // Runs only after the maintenance startup grace, not from the DB-ready hook.
+    onReady: async () => {
+      const db = tryGetDbClient();
+      if (!db || db === lastWorktreeMaintenanceDb) return;
+      await auditRegisteredWorktrees().catch((error) =>
+        dbClientLog.warn('worktree audit postponed', error),
+      );
+      if (!isReady() || tryGetDbClient() !== db) return;
+      await WorktreePool.recoverPool().catch((error) =>
+        dbClientLog.warn('worktree pool recovery postponed', error),
+      );
+      if (tryGetDbClient() === db) lastWorktreeMaintenanceDb = db;
+    },
     recycleCurrentSession: (sessionId, status) =>
       recycleSessionWorktreeForStatusChange(sessionId, status),
     onAttemptComplete: auditRegisteredWorktrees,
   });
-  const db = tryGetDbClient();
-  if (worktreeRuntimeCloseReady && getMakerIfReady() && db && db !== lastWorktreeMaintenanceDb) {
-    lastWorktreeMaintenanceDb = db;
-    void auditRegisteredWorktrees().catch((error) =>
-      dbClientLog.warn('worktree audit postponed', error),
-    );
-    void WorktreePool.recoverPool().catch((error) =>
-      dbClientLog.warn('worktree pool recovery postponed', error),
-    );
-  }
 }
 
 onQuit('remote-desktop-viewer', () => remoteDesktopViewerWindows.reset(), 'sync');
