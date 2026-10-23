@@ -24,6 +24,7 @@ const Context = createContext<{
   persistent: boolean;
   mounted: { current: boolean };
   publish(entry: Entry): void;
+  unpublish(owner: string): void;
   host: React.RefObject<View | null>;
 } | null>(null);
 
@@ -75,7 +76,10 @@ export function ResidentHomeListProvider({ children }: { children: ReactNode }) 
   const [entry, setEntry] = useState<Entry | null>(null);
   const reduceMotion = useReduceMotionEnabled();
   const publish = useCallback((next: Entry) => { setEntry(next); }, []);
-  const context = useMemo(() => ({ persistent, mounted, publish, host }), [persistent, publish]);
+  const unpublish = useCallback((owner: string) => {
+    setEntry(current => current?.owner === owner ? null : current);
+  }, []);
+  const context = useMemo(() => ({ persistent, mounted, publish, unpublish, host }), [persistent, publish, unpublish]);
   useLayoutEffect(() => {
     mounted.current = !!entry;
   }, [entry]);
@@ -109,6 +113,7 @@ export function ResidentHomeList({ children, focused, top, left, right }: {
   children: ReactNode; focused: boolean; top: number; left: number; right: number;
 }) {
   const context = useContext(Context);
+  const unpublish = context?.unpublish;
   const owner = useId();
   const anchor = useRef<View>(null);
   const latest = useRef({ children, focused });
@@ -128,6 +133,12 @@ export function ResidentHomeList({ children, focused, top, left, right }: {
     measure();
     return () => { ++measureRevision.current; };
   }, [measure, children, focused, top, left, right]);
+  // iOS Home lives in its native route, so an unmounted drawer has no successor
+  // in this host. Android retains the root list through route-owner handoffs.
+  // Layout/prop updates keep the live list; an old owner cannot clear a new one.
+  useLayoutEffect(() => {
+    if (Platform.OS === 'ios') return () => { unpublish?.(owner); };
+  }, [unpublish, owner]);
   return <View ref={anchor} collapsable={false} pointerEvents="none" onLayout={measure}
     style={{ flex: 1, marginTop: top, marginLeft: -left, marginRight: -right }} />;
 }

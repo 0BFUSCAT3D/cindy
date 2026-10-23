@@ -287,3 +287,47 @@ it('does not draw the retained iOS sidebar over home during return', () => {
   expect(state.slide().opacity).toBe(0);
   expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('none');
 });
+
+// Unit regression #6902: earlier return coverage kept the drawer owner mounted.
+// Real iOS back unmounts it; entering another task must not expose its old actions
+// while the next drawer waits for measurement, or resurrect it from a late one.
+it('revokes an unmounted iOS drawer while the next task waits for measurement', () => {
+  state.platform = 'ios'; state.segments = ['sessions', '[sessionId]'];
+  const host = document.createElement('div'), root = createRoot(host); roots.push(root);
+  const oldSelect = vi.fn(), nextSelect = vi.fn();
+  const render = (task: string | null) => act(() => root.render(<ResidentHomeListProvider>
+    {task ? <ResidentHomeList key={task} focused top={80} left={0} right={0}>
+      <ListProbe onSelect={task === 'old' ? oldSelect : nextSelect} />
+    </ResidentHomeList> : null}
+  </ResidentHomeListProvider>));
+  render('old');
+  expect(host.querySelector('[data-select]')).not.toBeNull();
+  state.deferMeasure = true; render('old');
+  state.segments = []; render(null);
+  act(() => { while (state.measurements.length) state.measurements.shift()!(); });
+  state.segments = ['sessions', '[sessionId]']; render('next');
+  expect(host.querySelector('[data-select]')).toBeNull();
+  act(() => { while (state.measurements.length) state.measurements.shift()!(); });
+  act(() => (host.querySelector('[data-select]') as HTMLButtonElement).click());
+  expect(nextSelect).toHaveBeenCalledOnce(); expect(oldSelect).not.toHaveBeenCalled();
+});
+
+it('keeps the new drawer entry when an older retained owner unmounts later', () => {
+  state.platform = 'ios'; state.segments = ['sessions', '[sessionId]'];
+  const host = document.createElement('div'), root = createRoot(host); roots.push(root);
+  const oldSelect = vi.fn(), nextSelect = vi.fn();
+  const render = (old: boolean, next: boolean) => act(() => root.render(<ResidentHomeListProvider>
+    {old ? <ResidentHomeList key="old" focused={!next} top={80} left={0} right={0}>
+      <ListProbe onSelect={oldSelect} />
+    </ResidentHomeList> : null}
+    {next ? <ResidentHomeList key="next" focused top={80} left={0} right={0}>
+      <ListProbe onSelect={nextSelect} />
+    </ResidentHomeList> : null}
+  </ResidentHomeListProvider>));
+  render(true, false); render(true, true);
+  const list = host.querySelector('[data-select]');
+  render(false, true);
+  expect(host.querySelector('[data-select]')).toBe(list);
+  act(() => (list as HTMLButtonElement).click());
+  expect(nextSelect).toHaveBeenCalledOnce(); expect(oldSelect).not.toHaveBeenCalled();
+});
