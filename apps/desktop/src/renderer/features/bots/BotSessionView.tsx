@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { Spinner } from '@/components/ui/spinner';
 import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
 import { useCompanionCloud } from './companionCloudStore';
+import { withoutShadowedBots } from './companionCloudPresentation';
 import { useCompanionArrivalNotice } from './useCompanionArrivalNotice';
 import { CompanionShadowBanner } from './CompanionShadowBanner';
 import type { ComposerBotMention } from '@/lib/fileTypes';
@@ -87,7 +88,12 @@ function BotSessionGateView() {
   const [reloadVersion, setReloadVersion] = useState(0);
   const [gate, setGate] = useState<BotSessionGate>({ kind: 'loading' });
   // The companion now runs on its main computer: this copy's main task is read only.
-  const shadowed = useCompanionCloud().demotedBotIds.includes(botId ?? '');
+  const cloud = useCompanionCloud();
+  const shadowed = cloud.demotedBotIds.includes(botId ?? '');
+  // The send / delegate choices leave out copies that run on another computer or were retired
+  // there, like the roster (cloud-companions.md §6); read live, the gate's list is a one-off.
+  const readyMentions = gate.kind === 'ready' ? gate.mentions : null;
+  const mentions = useMemo(() => (readyMentions ? withoutShadowedBots(readyMentions, cloud) : []), [readyMentions, cloud]);
   useBotIslandVisibleSession(gate.kind === 'ready' ? sessionId ?? null : null);
   // The gate proves ownership once; name and avatar edited in settings must
   // still reach the open chat's header and composer.
@@ -265,11 +271,11 @@ function BotSessionGateView() {
     <main className="relative flex h-full min-w-0 overflow-hidden bg-[var(--surface)]">
       {/* 私聊话题只属于本机的伙伴主对话；只读副本没有话题。 */}
       <BotDmThreadHost enabled={gate.isCanonical && !readOnly} bot={identity ?? gate.identity}
-        rootSessionId={sessionId} mentions={gate.mentions}>
+        rootSessionId={sessionId} mentions={mentions}>
         {readOnly && botId ? <CompanionShadowBanner botId={botId} name={(identity ?? gate.identity).name} /> : null}
         <div className="min-h-0 flex-1">
           <CCAgentSessionView
-            botMentions={gate.mentions}
+            botMentions={mentions}
             botIdentity={chatIdentity ?? gate.identity}
             botInvitationStage={gate.isCanonical ? liveInvitationStage : undefined}
             botUnreadBoundaryAt={gate.unreadBoundaryAt}
