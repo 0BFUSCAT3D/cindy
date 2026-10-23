@@ -43,14 +43,30 @@ function makeTree(): UseFileTreeReturn {
 
 afterEach(() => cleanup());
 
-describe('FileTreeView active prop（隐藏 tab 不渲染行）', () => {
-  it('active=false 时不产出任何行 DOM', () => {
-    const { container } = render(
+describe('FileTreeView active prop（隐藏 tab 不渲染行，容器保留）', () => {
+  it('active=false 时不产出任何行 DOM，但滚动容器留在 DOM（不丢 scrollTop）', () => {
+    const { container, rerender } = render(
+      <FileTreeView tree={makeTree()} selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    const scroller = container.querySelector('.tree-hscroll') as HTMLElement;
+    expect(scroller).not.toBeNull();
+    scroller.scrollTop = 200;
+
+    rerender(
       <FileTreeView active={false} tree={makeTree()} selectedPath={null} onSelectFile={vi.fn()} />,
     );
-
     expect(container.querySelectorAll('[data-relpath]')).toHaveLength(0);
-    expect(container.firstChild).toBeNull();
+    // 容器同一节点：scrollTop 不被重置（评审 P2：return null 会连容器卸掉，
+    // 切回标签回到顶部）。
+    const hiddenScroller = container.querySelector('.tree-hscroll') as HTMLElement;
+    expect(hiddenScroller).not.toBeNull();
+    expect(hiddenScroller.scrollTop).toBe(200);
+
+    rerender(
+      <FileTreeView active tree={makeTree()} selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    expect(container.querySelectorAll('[data-relpath]')).toHaveLength(2);
+    expect((container.querySelector('.tree-hscroll') as HTMLElement).scrollTop).toBe(200);
   });
 
   it('不传 active（doc 侧栏等单宿主场景）与 active=true 都照常渲染', () => {

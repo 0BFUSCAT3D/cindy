@@ -293,7 +293,18 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
   // 就有上千行,两份并行渲染把展开的主线程阻塞直接翻倍。数据层(useFileTree 的
   // store / watcher / 展开态持久化)都在父组件,这里只是不产出 DOM;切回来时按
   // 当前 store 一次性渲染,不重新拉盘、不丢展开态。
-  if (active === false) return null;
+  // 注意:行可以卸,**滚动容器本身必须留在 DOM**(同一位置同类型 → React 复用
+  // 节点,scrollTop 不丢)—— return null 会连容器一起卸掉,切回标签回到顶部
+  //(评审 P2)。
+  if (active === false) {
+    return (
+      <div
+        ref={containerRef}
+        className="tree-hscroll flex h-full w-full flex-col gap-px overflow-auto py-2"
+        aria-hidden
+      />
+    );
+  }
 
   if (tree.initialLoading) {
     // 本地首个 listDir <50ms,门控内保持空白(规则 7);远程慢通道超过阈值
