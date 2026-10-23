@@ -5,11 +5,11 @@ import { createOutboxSessionAccess } from '@/session/mobileOutboxSessionAdapter'
 function harness(sessions: Array<{ id: string; source?: string; deviceLinkDeviceId: string }>) {
   const record = { deviceId: 'desktop', state: 'queued', uploads: [],
     item: { sessionId: 'session', clientId: 'client', attachmentSlots: [] } } as unknown as DurableOutboxRecord;
-  const invoke = vi.fn(async (_device: string, _channel: string, _args: unknown[] | undefined, options: { preSend(): void }) => {
-    options.preSend(); return { id: 'session', source: 'cc' };
+  const invoke = vi.fn(async (_device: string, _channel: string, _args: unknown[] | undefined, options: { preSend(): void }): Promise<{ id: string; source: string; workingDir?: string }> => {
+    options.preSend(); return { id: 'session', source: 'cc', workingDir: '/repo' };
   });
   const latest = { current: { link: { status: 'online', getPresenceAvailability: () => true, invoke } } };
-  const owner = { current: true, records: [record] };
+  const owner = { current: true, records: [record], creationHeld: false };
   const hasCreationTask = vi.fn(() => false);
   const callbacks = createOutboxSessionAccess({
     getSessions: () => sessions,
@@ -18,7 +18,7 @@ function harness(sessions: Array<{ id: string; source?: string; deviceLinkDevice
     isCurrent: () => owner.current,
     isForeground: () => true,
     canConnect: () => latest.current.link.status === 'online' && latest.current.link.getPresenceAvailability() !== false,
-    isCreationHeld: () => false,
+    isCreationHeld: () => owner.creationHeld,
     hasCreationTask,
     needsReconciliation: () => true,
     invoke: (deviceId, channel, args, options) => latest.current.link.invoke(deviceId, channel, args, options),
@@ -28,6 +28,29 @@ function harness(sessions: Array<{ id: string; source?: string; deviceLinkDevice
 }
 
 describe('Cindy Make outbox bridge guards', () => {
+  // mobile-development: follow-ups wait for creation ownership, while policy and
+  // preparation reuse the same authoritative row. Replaces old bridge literals.
+  it('waits for both draft handoff and task creation before allowing delivery', () => {
+    const { record, callbacks, owner, hasCreationTask } = harness([]);
+    owner.creationHeld = true;
+    expect(callbacks.canRun(record)).toBe(false);
+    expect(hasCreationTask).not.toHaveBeenCalled();
+    owner.creationHeld = false;
+    hasCreationTask.mockReturnValue(true);
+    expect(callbacks.canRun(record)).toBe(false);
+    hasCreationTask.mockReturnValue(false);
+    expect(callbacks.canRun(record)).toBe(true);
+  });
+
+  it('shares the authoritative task row between preparation and delivery policy', async () => {
+    const { record, callbacks, invoke } = harness([]);
+    const row = callbacks.readSessionOnce(record);
+    await expect(callbacks.sessionPolicy(record)).resolves.toBe('deliver');
+    await expect(row).resolves.toMatchObject({ id: 'session', workingDir: '/repo' });
+    expect(callbacks.readSessionOnce(record)).toBe(row);
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+
   // Unit: extracting the bridge must retain both ownership barriers around a
   // delayed RPC. Source-visibility tests alone do not cover removal/account changes.
   it('does not send a record removed while the transport was waiting', async () => {

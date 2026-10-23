@@ -16,6 +16,7 @@ import { createInitialNewSessionDraft, patchNewSessionDraft, restoreNewSessionDr
 import { useNewSessionStashedDraft, useNewSessionWorkspacePreferences, useNewSessionWorkspaceActions, useNewSessionInitialWorkspace } from '@/session/useNewSessionWorkspace';
 import { readNewSessionPreferences, saveNewSessionPreferences } from '@/session/newSessionPreferenceStore';
 import type { RemoteSerializedAttachment, RemoteSession } from '@/session/types';
+import type { OrcaWorkerFormValue } from '@/session/orcaTeam';
 
 vi.mock('@/session/newSessionPreferenceStore', () => ({
   readNewSessionPreferences: vi.fn(),
@@ -40,7 +41,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; });
 
-function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: NewSessionWorkspaceKind; suggestion?: string; routeDraft?: string | string[]; deviceExplicit?: boolean } = {}) {
+function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: NewSessionWorkspaceKind; collabDraft?: OrcaWorkerFormValue; suggestion?: string; routeDraft?: string | string[]; deviceExplicit?: boolean } = {}) {
   let resolveRead!: (value: NewSessionStoredPreferences) => void;
   const pendingRead = new Promise<NewSessionStoredPreferences>((resolve) => { resolveRead = resolve; });
   const deviceOptions = [{ deviceId: 'a', name: 'A' }, { deviceId: 'b', name: 'B' }];
@@ -59,8 +60,9 @@ function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: Ne
       draft: { ...DEFAULT_NEW_SESSION_DRAFT, workspaceKind: options.restoredKind,
         workingDir: options.restoredKind === 'project' ? '/restored/project' : '',
         firstMessage: 'restored draft' },
-      attachments: [], deviceId: 'a', deviceName: 'A', notice: null, collabDraft: null,
+      attachments: [], deviceId: 'a', deviceName: 'A', notice: null, collabDraft: options.collabDraft ?? null,
     } : null),
+    onRestoreCollab: vi.fn(),
     loadBrowsePath: vi.fn(async () => {}), setDevicePickerOpen: vi.fn(),
     setAttachments: vi.fn(), setAttachmentError: vi.fn(), setBrowseOpen: vi.fn(),
     setBrowseError: vi.fn(), setShowHiddenDirectories: vi.fn(), setWorkspacePickerOpen: vi.fn(),
@@ -109,7 +111,7 @@ function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: Ne
       workingDirPreferenceOverridesRef, initialWorkspaceKeyRef, appliedDefaultDeviceKeyRef,
       userTouchedDeviceRef, userTouchedWorkspaceRef, draft, setDraft, preferredDefaultDevice };
     useNewSessionStashedDraft({ ...common, sessionId: bindings.params.editSessionId, deviceId: 'a',
-      restoreCreationDraft, onRestoreCollab: () => {} });
+      restoreCreationDraft });
     useNewSessionWorkspacePreferences(common);
     const patchDraft = useCallback((patch: Partial<NewSessionDraft>) => patchNewSessionDraft({
       ...bindings, firstMessageRef, setDraft,
@@ -201,13 +203,21 @@ describe('new session workspace page effects', () => {
   });
 
   it.each(['project', 'dialogue'] as const)('preserves a restored %s draft over a late default', async (kind) => {
-    const page = mountWorkspace({ restoredKind: kind, suggestion: 'findFile' });
+    // Creation recovery must restore the associated Worker plan along with the
+    // Lead's input; the former page-literal guard could miss a disconnected hook.
+    const collabDraft: OrcaWorkerFormValue = {
+      role: 'Worker', agent: 'pi', model: null, permissionMode: 'auto', initialTask: 'review changes',
+    };
+    const page = mountWorkspace({ restoredKind: kind, suggestion: 'findFile', collabDraft });
     expect(page.bindings.drainStashedNewSessionDraft).toHaveBeenCalledExactlyOnceWith('failed-task', 'a');
     await page.resolvePreferences(kind === 'project' ? 'dialogue' : 'project', 'b');
     expect(page.current.draft).toMatchObject({ workspaceKind: kind,
       workingDir: kind === 'project' ? '/restored/project' : '' });
     expect(page.current.selectedDeviceId).toBe('a');
     expect(page.current.firstMessageSelection).toEqual({ start: 'restored draft'.length, end: 'restored draft'.length });
+    expect(page.bindings.onRestoreCollab).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      deviceId: 'a', collabDraft, draft: expect.objectContaining({ firstMessage: 'restored draft' }),
+    }));
   });
 
   it.each(['project', 'dialogue'] as const)('preserves a manual %s choice made during the read', async (kind) => {
