@@ -116,17 +116,35 @@ function insert(text: string) {
 describe('task image delivery', () => {
   // #6773: run both production preparation passes; a shared PDF definition
   // must not be interpreted as an image after the file has been extracted.
-  it.each(['nested', 'sibling'])('delivers shared file/image references through both preparation passes (%s)', async mode => {
-    const pdf = path.join(work, 'report.pdf');
+  it.each(['nested', 'sibling'].flatMap(mode => ['pdf', 'png'].map(ext => [mode, ext])))('delivers shared non-image references through both preparation passes (%s, .%s)', async (mode, ext) => {
+    const pdf = path.join(work, `report.${ext}`);
     const bytes = Buffer.from('%PDF-1.4\nreport');
     await fs.writeFile(pdf, bytes);
     const label = mode === 'nested' ? '[![preview][report]][report]' : '[report][report] ![preview][report]';
     const files = await prepareChatReplyFiles(`${label}\n\n[report]: <${pdf}>`, 's', () => {});
     expect(files.attachments).toHaveLength(1);
     expect(await files.attachments[0]!.readBytes!()).toEqual(bytes);
-    const images = await prepareChatReplyImages(files.text, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
     expect(images.attachments).toEqual([]);
     expect(images.text).not.toContain(pdf);
+    expect(images.text).not.toContain('![');
+    expect(images.text).not.toContain('[report]');
+  });
+
+  it.each(['nested', 'sibling'])('keeps a real shared-reference image through both reply passes (%s)', async mode => {
+    // Content, not the extension, decides whether this shared target is an image.
+    const source = path.join(work, 'asset.bin');
+    await fs.writeFile(source, PNG);
+    const body = mode === 'nested' ? '[![preview][asset]][asset]' : '[download][asset] ![preview][asset]';
+    const files = await prepareChatReplyFiles(`${body}\n\n[asset]: <${source}>`, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
+    const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({ category: 'image', mimeType: 'image/png', sourceOffset: 0 });
+    expect(images.text).toContain('preview');
+    expect(images.text).not.toContain('![');
+    expect(images.text).not.toContain('[asset]');
+    expect(images.text).not.toContain(source);
   });
 
   it.each(['image-first', 'file-first'])('uploads eleven real images once through both reply passes, in source order (%s)', async order => {
@@ -140,7 +158,7 @@ describe('task image delivery', () => {
     const body = `${order === 'image-first' ? image(0) : file(0)} [report](<${pdf}>) ${order === 'image-first' ? file(0) : image(0)} `
       + targets.slice(1).map((_, index) => `${image(index + 1)} ${file(index + 1)}`).join(' ');
     const files = await prepareChatReplyFiles(body, 's', () => {});
-    const images = await prepareChatReplyImages(files.text, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
     const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
     expect(attachments).toHaveLength(12);
     expect(attachments.map(a => a.category)).toEqual(['image', 'file', ...Array(10).fill('image')]);
@@ -154,7 +172,7 @@ describe('task image delivery', () => {
     await fs.writeFile(first, PNG);
     await fs.writeFile(second, PNG);
     const files = await prepareChatReplyFiles(`[download](<${second}>) ![a](<${first}>) ![b](<${second}>)`, 's', () => {});
-    const images = await prepareChatReplyImages(files.text, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
     const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({ category: 'image', sourceOffset: 0 });
@@ -166,7 +184,7 @@ describe('task image delivery', () => {
     await fs.writeFile(source, PNG);
     await fs.link(source, path.join(state.root, 'outside.png'));
     const files = await prepareChatReplyFiles(`![preview](<${source}>) [download](<${source}>)`, 's', () => {});
-    const images = await prepareChatReplyImages(files.text, 's', () => {});
+    const images = await prepareChatReplyImages(files.text, 's', () => {}, files.attachments);
     const attachments = mergeChatReplyAttachments(images.attachments, files.attachments);
     expect(attachments.map(a => a.category)).toEqual(['image', 'file']);
     await expect(attachments[1]!.readBytes!()).rejects.toThrow('ATTACHMENT_UNAVAILABLE');

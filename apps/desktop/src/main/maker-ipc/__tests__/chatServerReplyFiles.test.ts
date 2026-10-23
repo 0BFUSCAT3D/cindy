@@ -64,7 +64,7 @@ describe('group reply file delivery', () => {
     expect((await result.attachments[0]!.readBytes!()).toString()).toContain('%PDF');
     expect(result.text).toContain(image);
     expect(result.text).not.toContain(`[${image}]`);
-    if (mode === 'shared-reference') expect(result.text).not.toContain(`[image]: <${pdf}>`);
+    if (mode === 'shared-reference') expect(result.text).toContain(`[image]: <${pdf}>`);
   });
 
   it.each(['file', 'xdt-file', 'xdt-query'].flatMap(scheme => ['100% done.pdf', 'encoded%20.pdf'].map(name => [scheme, name])))('preserves literal or once-encoded percent paths: %s %s', async (scheme, name) => {

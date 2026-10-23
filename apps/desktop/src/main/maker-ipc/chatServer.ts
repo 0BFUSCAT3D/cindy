@@ -1505,6 +1505,19 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           let contentText = text;
           let files: ChatContentBlock[] = [];
           const ordinaryReply = !run.plan || run.plan.kind === 'talk';
+          const validateUpload = async () => {
+            assertCurrent();
+            if (pending.fileReply?.attachments.length) {
+              try { await validateExecutionAuthority(run); }
+              catch (error) {
+                // Definitive revocation ends delivery; transport failures retain
+                // the same result for retry without running the Agent again.
+                if (error instanceof GroupToolAuthorizationError) throw new ChatResponseError('PERMISSION_DENIED', 403);
+                throw error;
+              }
+            }
+            assertCurrent();
+          };
           try {
             if (terminal.outcome !== 'error') {
               if (ordinaryReply) {
@@ -1512,24 +1525,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
                   assertCurrent();
                   if (run.execution.access_mode === 'chat') throw new Error('ATTACHMENT_UNAVAILABLE');
                 }, !terminal.resultText.trim() ? terminal.resultMessageClientId : undefined);
-                pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(pending.fileReply.text, run.sessionId, assertCurrent) };
+                // Shared reference classification reads file bytes before image import.
+                // Retain the later upload/seal checks and authorize this read as well.
+                if (!pending.reply && pending.fileReply.attachments.length) await validateUpload();
+                pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(pending.fileReply.text, run.sessionId, assertCurrent,
+                  pending.fileReply.attachments) };
                 contentText = pending.reply.text;
                 produced.push(...mergeChatReplyAttachments(pending.reply.attachments, pending.fileReply.attachments));
                 if (produced.length > BOT_GROUP_ATTACHMENTS_MAX) throw new Error('ATTACHMENT_UNAVAILABLE');
               }
-              const validateUpload = async () => {
-                assertCurrent();
-                if (pending.fileReply?.attachments.length) {
-                  try { await validateExecutionAuthority(run); }
-                  catch (error) {
-                    // Definitive revocation ends delivery; transport failures retain
-                    // the same result for retry without running the Agent again.
-                    if (error instanceof GroupToolAuthorizationError) throw new ChatResponseError('PERMISSION_DENIED', 403);
-                    throw error;
-                  }
-                }
-                assertCurrent();
-              };
               if (ordinaryReply) await validateUpload();
               files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`,
                 produced, run.execution.bot_id, ordinaryReply ? validateUpload : undefined);

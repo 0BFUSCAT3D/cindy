@@ -654,6 +654,8 @@ describe('Chat Server result delivery and refresh', () => {
     const uploads = fixture.upload.mock.calls.length;
     await service.settleLaneTurn({ ...terminal, resultText: '[Report](./report.pdf)' });
     expect(fixture.upload.mock.calls.length).toBe(uploads);
+    // Shared-reference classification can read bytes; it must wait for current authority.
+    expect(replyImages).not.toHaveBeenCalled();
     expect(deliveries()).toHaveLength(0);
     if (change === 'temporary') revoked = false;
     await vi.advanceTimersByTimeAsync(16000);

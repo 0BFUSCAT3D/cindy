@@ -62,6 +62,8 @@ export function replyFileLinks(text: string) {
   });
   const links: Array<{ url: string; start: number; end: number; label: string }> = [];
   const usedDefinitions = new Set<string>();
+  const imageDefinitions = new Set<string>();
+  visit(tree, 'imageReference', node => { imageDefinitions.add(node.identifier); });
   visit(tree, node => {
     if (node.type !== 'link' && node.type !== 'linkReference') return;
     const target = node.type === 'link' ? node : definitions.get(node.identifier);
@@ -76,8 +78,10 @@ export function replyFileLinks(text: string) {
   });
   const edits = links.map(link => ({ start: link.start, end: link.end, text: link.label }));
   for (const identifier of usedDefinitions) {
+    // The image pass decides from authorized bytes whether a shared target is
+    // an image or a file-only preview. Keep its definition until then.
+    if (imageDefinitions.has(identifier)) continue;
     const node = definitions.get(identifier)!;
-    // A shared image reference must not send this already-delivered file through image import.
     if (node.position?.start.offset !== undefined && node.position.end.offset !== undefined)
       edits.push({ start: node.position.start.offset, end: node.position.end.offset, text: '' });
   }
@@ -246,6 +250,7 @@ export async function prepareChatReplyFiles(text: string, sessionId: string, ass
     assertCurrent();
     let digest: string | undefined;
     attachments.push({ id: canonicalSource, sourceOffset: link.outputStart, name: path.basename(source), category: 'file',
+      sourceUrl: link.url,
       sourcePaths: realSource && isPathWithin(root, realSource) ? [realSource] : [],
       mimeType: path.extname(source).toLowerCase() === '.pdf' ? 'application/pdf' : 'application/octet-stream',
       size: 0, path: null, url: null, assertCurrent,

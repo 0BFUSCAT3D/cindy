@@ -4,12 +4,16 @@ import { BOT_GROUP_ATTACHMENTS_MAX } from '../../shared/botGroupChat.js';
 import { parseBlobUrl, resolveSafe } from '../cindy-media/blobStore.js';
 import { sessionCanRead } from '../cindy-media/ledger.js';
 import { materializeTaskImageTextResult } from '../cindy-media/taskImageDelivery.js';
+import { sniffMediaMime } from '../cindy-media/sniffMediaMime.js';
 import { hasLocalTaskImages, localTaskImagePath, taskImageReferences, rewriteTaskImageReferences } from '../cindy-media/taskImageMarkdown.js';
 import type { ChatUploadAttachment } from './chatServerMedia.js';
 import { getDbClient } from '../localDb/client/current.js';
 
+const imageLabel = (image: { alt: string }) => image.alt.replace(/[\\`*_{}[\]<>#!|]/g, '\\$&');
+
 /** Prepare only rendered, task-owned generated images. Never reads legacy caches. */
-export async function prepareChatReplyImages(text: string, sessionId: string, assertCurrent: () => void) {
+export async function prepareChatReplyImages(text: string, sessionId: string, assertCurrent: () => void,
+  authorizedFiles: ChatUploadAttachment[] = []) {
   assertCurrent();
   const originalImages = taskImageReferences(text);
   const localSources = new Map<string, string>();
@@ -20,6 +24,25 @@ export async function prepareChatReplyImages(text: string, sessionId: string, as
     assertCurrent();
     if (real) localSources.set(ref.url, real);
   }
+  const fileOnly = new Map<string, string>();
+  const inspected = new Set<string>();
+  for (const ref of originalImages) {
+    if (!ref.identifier || inspected.has(ref.url)) continue;
+    const real = localSources.get(ref.url);
+    const file = authorizedFiles.find(file => file.sourceUrl === ref.url
+      || (real !== undefined && file.sourcePaths?.includes(real)));
+    if (!file) continue;
+    inspected.add(ref.url);
+    // A shared PDF definition must not enter image import, while real images
+    // (including extensionless ones) retain the existing materialization path.
+    // The caller verifies live file authority before these bounded descriptor reads.
+    if (!localTaskImagePath(ref.url)) { fileOnly.set(ref.url, ref.url); continue; }
+    if (!file.readBytes) throw new Error('ATTACHMENT_UNAVAILABLE');
+    const bytes = await file.readBytes();
+    assertCurrent();
+    if (!sniffMediaMime(bytes)?.startsWith('image/')) fileOnly.set(ref.url, ref.url);
+  }
+  text = rewriteTaskImageReferences(text, fileOnly, imageLabel);
   let replacements = new Map<string, string>();
   if (hasLocalTaskImages(text)) {
     const imported = await materializeTaskImageTextResult(sessionId, text);
@@ -57,6 +80,5 @@ export async function prepareChatReplyImages(text: string, sessionId: string, as
       mimeType: image.mimeType, size: stat.size, url: ref.url, path: null });
     delivered.set(ref.url, ref.url);
   }
-  return { attachments, text: rewriteTaskImageReferences(text, delivered, image =>
-    image.alt.replace(/[\\`*_{}[\]<>#!|]/g, '\\$&')) };
+  return { attachments, text: rewriteTaskImageReferences(text, delivered, imageLabel) };
 }

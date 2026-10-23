@@ -19,6 +19,8 @@ export type ChatUploadAttachment = BotGroupAttachment & {
   sourceOffset?: number;
   /** Canonical local image/file sources, used only to reconcile the two reply passes. */
   sourcePaths?: string[];
+  /** Original Markdown target, for shared reference definitions; never serialized. */
+  sourceUrl?: string;
   readBytes?: () => Promise<Buffer>;
   assertCurrent?: () => void;
 };
