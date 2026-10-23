@@ -69,6 +69,9 @@ vi.mock('../../turnCostBroadcaster.js', () => ({
 vi.mock('../../modelMismatchBroadcaster.js', () => ({
   recordModelMismatchOnMessage: effects.fn('recordModelMismatchOnMessage'),
 }));
+vi.mock('../botLearningReview.js', () => ({
+  reviewTeammateLearning: effects.fn('reviewTeammateLearning'),
+}));
 vi.mock('../../usage/claudeAccountUsage.js', () => ({
   triggerClaudeAccountUsageRefresh: effects.fn('triggerClaudeAccountUsageRefresh'),
 }));
@@ -554,9 +557,11 @@ describe('production Session event pipeline', () => {
   it.each(['completed', 'failed', 'cancelled', 'interrupted'])(
     'runs the upstream-merge follow-up only for a successful product boundary: %s', async (status) => {
       const h = harness();
+      effects.fn('consumeLastTopLevelAssistantPersistId').mockReturnValueOnce('completed-reply');
       h.emit(event('status', { isRunning: true }));
       h.emit(event('done', { status }));
       await microtasks();
+      expect(effects.fn('reviewTeammateLearning')).not.toHaveBeenCalled();
       expect(h.deps.onSuccessfulProductTurn).toHaveBeenCalledTimes(status === 'completed' ? 1 : 0);
       expect(h.deps.onUnsuccessfulProductTurn).toHaveBeenCalledTimes(status === 'completed' ? 0 : 1);
       await h.dispose();
