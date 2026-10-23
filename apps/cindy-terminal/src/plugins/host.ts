@@ -16,7 +16,7 @@ import { handleGhostKvRequest, readBoundedBodyText } from '@cindy/plugin-runtime
 import { assertGhostInstallConsent, confirmedTaskCapability, type GhostInstallConsentDecision } from '@cindy/plugin-runtime/ghostInstallConsent';
 import { evaluateGhostInstallConsent, ghostInstallConsentKey, ghostInstallConsentReceiverIdentity, type GhostInstallConsentFacts } from '@cindy/plugin-runtime/shared/ghostInstallConsent';
 import { isValidPluginStoragePart, installedGhostStoragePart, installedGhostPhysicalRelId, findInstalledGhostForDeliveryTarget } from '@cindy/plugin-runtime/shared/pluginIdentity';
-import { ghostInstallApprovalToken, type InstalledGhost } from '@cindy/plugin-runtime/shared/ghost';
+import { GHOST_SECRET_VALUE_MAX_CHARS, ghostInstallApprovalToken, type InstalledGhost } from '@cindy/plugin-runtime/shared/ghost';
 import type { TerminalDurableSecrets } from '../contracts.js';
 import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platform.js';
 import { TerminalPluginCredentials, type TerminalPluginCredentialOptions } from './credentials.js';
@@ -203,7 +203,7 @@ export class TerminalPlugins {
     const migrated=value.slice(-4);this.options.secrets.setSync(tailKey,migrated);return migrated;
   }
   async saveSecret(id:string,key:string,value:string,expectedApproval?:string,assertCurrent:()=>void=()=>{}){
-    if(typeof value!=='string'||value.length>64*1024)throw new Error('PLUGIN_SECRET_INVALID');
+    if(typeof value!=='string'||value.length>GHOST_SECRET_VALUE_MAX_CHARS)throw new Error('PLUGIN_SECRET_INVALID');
     await this.mutate(async()=>{
       const ghost=await this.get(id);
       assertCurrent();

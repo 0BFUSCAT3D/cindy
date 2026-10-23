@@ -107,6 +107,81 @@ async function setup(native = engine()) {
 }
 
 describe('terminal task host', () => {
+  // Integration / im-turn-flow: Desktop's mocked SQL tests do not cover the
+  // terminal owner's atomic file or daemon retirement. Two identities claiming
+  // one real task must survive restart, and a stale card must not revoke the new
+  // target. Deleting the task must durably retire its takeover.
+  it('restores channel takeovers after restart and retires them with their task', async () => {
+    const { host, create } = await setup();
+    const first = await host.invoke('maker:create-session', [{ title: 'First takeover' }]) as { id: string };
+    const second = await host.invoke('maker:create-session', [{ title: 'Second takeover' }]) as { id: string };
+    const discord = { channel: 'discord', botContextId: 'bot', userId: 'owner' };
+    const feishu = { channel: 'feishu', botContextId: 'app', userId: 'owner' };
+    await host.channelBindings.store.attach(discord, first.id, { attachedViaCardMessageId: 'card-1' });
+    expect(await host.channelBindings.store.attachWithResult(feishu, first.id)).toEqual({ displaced: { identity: discord, attachedViaCardMessageId: 'card-1' } });
+    await host.channelBindings.store.attach(feishu, second.id, { attachedViaCardMessageId: 'card-2' });
+    await host.close();
+    const resumed = create();
+    await resumed.ready;
+    expect(resumed.channelBindings.store.get(discord)).toBeNull();
+    expect(resumed.channelBindings.store.get(feishu)).toBe(second.id);
+    expect(resumed.channelBindings.store.getAttachCardMessageId(feishu)).toBe('card-2');
+    expect(await resumed.channelBindings.store.detachIfTarget(feishu, first.id)).toBe(false);
+    await expect(host.channelBindings.store.attach(discord, first.id)).rejects.toThrow('IM_BINDINGS_CLOSED');
+    await resumed.invoke('terminal:tasks:delete', [second.id]);
+    expect(resumed.channelBindings.store.get(feishu)).toBeNull();
+    await resumed.close();
+    const afterDeletion = create();
+    await afterDeletion.ready;
+    expect(afterDeletion.channelBindings.store.listAttachedTargets()).toEqual([]);
+  });
+  // Integration: deleting a terminal task must retire adopted channel files
+  // without deleting an unrelated message still waiting for its own task.
+  it('cleans adopted channel attachments through task deletion and preserves unclaimed files', async () => {
+    const { host } = await setup();
+    const task = await host.invoke('maker:create-session', [{ title: 'Channel files' }]) as { id: string };
+    const staged = await host.channelFiles.stageInboundFile({ integration: 'discord', buffer: Buffer.from('task attachment'), fileName: '验收.txt' });
+    const unclaimed = await host.channelFiles.stageInboundFile({ integration: 'discord', buffer: Buffer.from('later message'), fileName: 'later.txt' });
+    const attachments: import('@cindy/im').IMAttachment[] = [{ kind: 'file', absPath: staged.absPath, originalName: '验收.txt', mimeType: 'text/plain' }];
+    await host.channelFiles.adoptStagedInboundFiles(task.id, attachments);
+    expect(attachments[0]!.absPath).not.toBe(staged.absPath);
+    expect(await readFile(attachments[0]!.absPath, 'utf8')).toBe('task attachment');
+    await host.invoke('terminal:tasks:delete', [task.id]);
+    await expect(readFile(attachments[0]!.absPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(unclaimed.absPath, 'utf8')).toBe('later message');
+    await host.close();
+    await expect(host.channelFiles.stageInboundFile({ integration: 'discord', buffer: Buffer.from('old owner'), fileName: 'closed.txt' })).rejects.toThrow('TASK_HOST_CLOSED');
+  });
+  // Integration: channel takeover must reuse the GUI/TUI task runtime, expose
+  // the same approval, and restore its saved route after that runtime closes.
+  it('shares live tasks, approvals and cold channel startup with the GUI task host', async () => {
+    const { host, native, nextPush } = await setup();
+    const task = await host.invoke('maker:create-session', [{ title: 'Channel takeover' }]) as { id: string };
+    const runtime = host.channelRuntime();
+    const events: import('@cindy/maker-core').MakerEvent[] = [];
+    const off = runtime.on(event => events.push(event));
+    const session = await runtime.createSession({ id: task.id, agentKind: 'claude-code', workingDir: 'ignored-existing-task', model: 'ignored-existing-model', vendorOptions: { source: 'discord', discordChatId: 'owner' } });
+    expect(runtime.getSession(task.id)).toBe(session);
+    expect(native.starts).toHaveLength(1);
+    expect(native.starts[0]?.vendorOptions?.discordChatId).toBeUndefined();
+    const approval = nextPush('maker:interaction-request');
+    const sending = session.send({ type: 'user', content: 'permission' });
+    const request = await approval as { request: import('@cindy/maker-core').InteractionRequest };
+    await host.invoke('maker:resolve-interaction', [request.request.requestId, { kind: 'permission', behavior: 'allow' }]);
+    await sending;
+    expect(native.decisions).toHaveLength(1);
+    await host.storage.update(task.id, { fastMode: true });
+    await host.invoke('maker:close-session', [task.id]);
+    expect(runtime.getSession(task.id)).toBeUndefined();
+    expect(events.filter(event => event.type === 'session:closed')).toHaveLength(1);
+    const resumed = await runtime.createSession({ id: task.id, agentKind: 'claude-code', model: 'ignored-existing-model', workingDir: 'ignored-existing-task', vendorOptions: { source: 'discord', discordChatId: 'owner' } });
+    expect(resumed).not.toBe(session);
+    expect(native.starts).toHaveLength(2);
+    expect(native.starts[1]).toMatchObject({ model: 'test-model', fastMode: true, vendorOptions: { source: 'discord', discordChatId: 'owner' } });
+    await host.invoke('maker:send', [task.id, { text: 'shared-again' }]);
+    expect(native.starts).toHaveLength(2);
+    off();
+  });
   // Integration: the live CLI could not create any task once the market tools
   // were wired. The full plugin composition must precede native session startup
   // without eagerly requiring its not-yet-created incarnation.

@@ -23,6 +23,10 @@ jobs:
             target: win32-x64
           - runner: ubuntu-24.04-arm
             target: linux-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: macos-15
+            target: darwin-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     env:
@@ -65,7 +69,7 @@ jobs:
       - name: Typecheck shared message runtime
         run: pnpm --filter @cindy/im-runtime typecheck
       - name: Existing channel routing, takeover, commands and cancellation
-        run: pnpm --filter desktop exec vitest run src/main/im/shared/__tests__/turnRunnerSendOutcome.test.ts src/main/im/shared/__tests__/turnRunnerThreadRouting.test.ts src/main/im/shared/__tests__/turnRunnerCompanionRouting.test.ts src/main/im/shared/__tests__/authCheck.test.ts src/main/im/shared/__tests__/channelDefaultRoute.test.ts src/main/im/shared/__tests__/slashCommands.test.ts src/main/im/shared/__tests__/permissionModeControl.test.ts src/main/im/shared/__tests__/botCommands.test.ts src/main/im/shared/__tests__/controlState.test.ts src/main/im/shared/__tests__/interactionCardModel.test.ts src/main/maker-host/__tests__/send-outcome.test.ts src/main/maker-ipc/__tests__/agentHandoff.test.ts src/main/maker-ipc/__tests__/planReconcile.test.ts src/main/maker-ipc/__tests__/interactionRouter.test.ts --maxWorkers=1 --minWorkers=1
+        run: pnpm --filter desktop exec vitest run src/main/im/__tests__/binding.test.ts src/main/im/shared/__tests__/inboundFileStaging.test.ts src/main/im/shared/__tests__/cardActionAskMulti.test.ts src/main/im/shared/__tests__/cardActionTakeoverReplace.test.ts src/main/im/shared/__tests__/cardActionGroupLaneGuard.test.ts src/main/im/shared/__tests__/turnRunnerSendOutcome.test.ts src/main/im/shared/__tests__/turnRunnerThreadRouting.test.ts src/main/im/shared/__tests__/turnRunnerCompanionRouting.test.ts src/main/im/shared/__tests__/authCheck.test.ts src/main/im/shared/__tests__/channelDefaultRoute.test.ts src/main/im/shared/__tests__/channelDefaultRouteSync.test.ts src/main/im/shared/__tests__/slashCommands.test.ts src/main/im/shared/__tests__/permissionModeControl.test.ts src/main/im/shared/__tests__/botCommands.test.ts src/main/im/shared/__tests__/controlState.test.ts src/main/im/shared/__tests__/interactionCardModel.test.ts src/main/maker-host/__tests__/send-outcome.test.ts src/main/maker-ipc/__tests__/agentHandoff.test.ts src/main/maker-ipc/__tests__/planReconcile.test.ts src/main/maker-ipc/__tests__/interactionRouter.test.ts --maxWorkers=1 --minWorkers=1
       - name: Native plugin worker and existing broker ABI
         run: pnpm --filter @cindy/plugin-runtime exec vitest run src/nativeProcess.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal

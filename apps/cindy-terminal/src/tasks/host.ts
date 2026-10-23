@@ -24,6 +24,10 @@ import { TerminalCapabilities, CAPABILITY_CHANNELS } from './capabilities.js';
 import { registerCapabilityResources } from './capability-resources.js';
 import { installDesktopInteractionHandler, beginInteractionRoute, requestHostInteraction, noteInteractionRouteSteer } from '@cindy/im-runtime/interactionRouter';
 import type { SharedPermission } from '@cindy/im-runtime/sharedPermission';
+import type { ImTurnHost } from '@cindy/im-runtime/turnHost';
+import { createInboundFileStaging } from '@cindy/im-runtime/inboundFileStaging';
+import { TerminalImBindings } from '../im/bindings.js';
+import type { Capabilities, MakerEventListener } from '@cindy/maker-core';
 import { createHistoryViewReader } from '@cindy/remote-agent/host/historyViewReader';
 import type { HistoryWorkReference } from '@cindy/maker-shared/message-window';
 import { TerminalTaskStorage, type TerminalTaskMeta, type Submission } from './storage.js';
@@ -91,6 +95,8 @@ export class TerminalTaskHost {
   readonly storage: TerminalTaskStorage;
   readonly media: TerminalTaskMedia;
   readonly capabilities: TerminalCapabilities;
+  readonly channelFiles: ReturnType<typeof createInboundFileStaging>;
+  readonly channelBindings: TerminalImBindings;
   private readonly live = new Map<string, LiveTask>();
   private readonly starts = new Map<string, Promise<LiveTask>>();
   private pluginFactory?: (context:PluginTaskContext)=>Promise<TerminalPluginTask>;
@@ -98,6 +104,10 @@ export class TerminalTaskHost {
   private knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>;
   private schedulerDeps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps;
   private readonly taskObservers = new Map<string,Set<(event:AgentEvent)=>void>>();
+  private readonly makerObservers = new Set<MakerEventListener>();
+  private readonly engineCapabilities = new Map<AgentKind, Capabilities>();
+  private readonly channelVendorOptions = new Map<string, Record<string, unknown>>();
+  private channelMaker?: ReturnType<ImTurnHost['getMaker']>;
   private readonly pending = new Map<string, Pending>();
   private readonly queuedSubmissions = new Map<string, Array<{ requestId: string; message: UserMessage; context: TaskInvocationContext; sendAtMs?: number }>>();
   private readonly queuePaused = new Set<string>();
@@ -122,18 +132,37 @@ export class TerminalTaskHost {
   private readonly persistenceFaults = new Set<string>();
 
   constructor(private readonly options: TerminalTaskHostOptions) {
+    this.channelFiles = createInboundFileStaging({
+      createLogger: () => options.logger,
+      ownerScopedImUserDataPath: (...segments) => {
+        if (this.closed) throw new Error('TASK_HOST_CLOSED');
+        return path.join(options.profileDir, ...segments);
+      },
+      ensureDirectory: privateDirectory,
+    });
     this.pendingDispatchReady=!options.deferPendingTasks;
     if (!path.isAbsolute(options.profileDir)) throw new Error('PROFILE_DIRECTORY_MUST_BE_ABSOLUTE');
     this.media = new TerminalTaskMedia(options.profileDir);
     this.storage = new TerminalTaskStorage(path.join(options.profileDir, 'tasks'));
+    this.channelBindings = new TerminalImBindings({ root: options.profileDir, logger: options.logger, assertCurrent: () => { if (this.closed) throw new Error('TASK_HOST_CLOSED'); } });
     this.capabilities = new TerminalCapabilities({root:options.profileDir,secrets:options.secretStore,assertCurrent:()=>{if(this.closed)throw new Error('TASK_HOST_CLOSED');},changed:()=>{this.emit('maker:mcp:changed',{});this.emit('maker:remote-resources:changed',{collectionId:'skills'});this.emit('maker:remote-resources:changed',{collectionId:'mcp'});},workingDirs:async()=>[...new Set((await this.storage.list()).filter(row=>!row.deleted).map(row=>row.workDir))]});
     this.models = new TerminalModelConfig(options.profileDir, options.secretStore, kind => this.authState(kind), options.catalog, options.createAgent ? undefined : async kind => { const binary = this.binaries.get(kind); return binary ? discoverNativeModels(kind, binary, options.profileDir, options.logger) : []; });
     this.ready = this.initialize();
   }
   private async initialize() {
     await privateDirectory(this.options.profileDir);
-    const initialized=await Promise.allSettled([this.storage.open(),this.models.open(),this.media.ready,this.capabilities.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
+    const initialized=await Promise.allSettled([this.storage.open(),this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
     const failed=initialized.find((result):result is PromiseRejectedResult=>result.status==='rejected');if(failed)throw failed.reason;
+    for (const id of this.channelBindings.store.listAttachedTargets()) {
+      const row = await this.storage.get(id);
+      const identity = this.channelBindings.store.findByTarget(id);
+      if (identity && (!row || row.deleted || row.archived)) await this.channelBindings.store.detachIfTarget(identity, id);
+    }
+    for (const kind of ENGINES) {
+      const agent = this.capabilityAgent(kind);
+      this.engineCapabilities.set(kind, agent.capabilities);
+      await agent.dispose();
+    }
     const hostedFile=await readPrivateFile(path.join(this.options.profileDir,'hosted-runtimes.json'));
     if(hostedFile){const ids=JSON.parse(hostedFile.toString());if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(id)))throw new Error('INVALID_HOSTED_RUNTIME_INDEX');for(const id of ids)this.hostedRuntimeIds.add(id);}
     for (const row of await this.storage.list()) {
@@ -199,6 +228,36 @@ export class TerminalTaskHost {
   async beginChannelInteraction(id:string,registration:Parameters<typeof beginInteractionRoute>[1]){
     const task=await this.ensureLive(id);
     return beginInteractionRoute(task.session,registration);
+  }
+  /** Trusted channel adapters use the same running tasks as GUI/TUI clients.
+   * The channel repository must commit the task before attaching its runtime. */
+  channelRuntime(): ReturnType<ImTurnHost['getMaker']> {
+    return this.channelMaker ??= {
+      on: listener => { this.guard({source:'local'}); this.makerObservers.add(listener); return () => { this.makerObservers.delete(listener); }; },
+      getSession: id => {
+        if (this.closed) return undefined;
+        const session = this.live.get(id)?.session;
+        return session?.getStatus() === 'active' ? session : undefined;
+      },
+      getCapabilities: kind => {
+        const capabilities = this.engineCapabilities.get(kind);
+        if (!capabilities) throw new Error('TASK_HOST_NOT_READY');
+        return capabilities;
+      },
+      getAgentAuthState: async kind => { await this.ready; this.guard({source:'local'}); return this.authState(kind); },
+      createSession: async input => {
+        await this.ready; this.guard({source:'local'});
+        if (!input.id) throw new Error('CHANNEL_TASK_ID_REQUIRED');
+        const row = await this.storage.get(input.id);
+        if (!row || row.deleted || row.archived) throw new Error('TASK_NOT_FOUND');
+        this.guard({source:'local'});
+        if (this.live.get(input.id)?.session.getStatus() !== 'active' && input.vendorOptions) this.channelVendorOptions.set(input.id, input.vendorOptions);
+        return (await this.ensureLive(input.id)).session;
+      },
+    };
+  }
+  private capabilityAgent(kind: AgentKind) {
+    return new ({'claude-code':ClaudeCodeAgent,codex:CodexAgent,pi:PiAgent}[kind])({binaryPath:this.binaries.get(kind)??'',logger:this.options.logger,runtimeConfig:{},auth:{getState:async()=>({authenticated:false}),getAuthEnv:async()=>({}),triggerLogin:async()=>({authenticated:false}),logout:async()=>{}}});
   }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
   async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<(import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot & {autoReviewOwner:'native'|'cindy'})|null>{
@@ -378,8 +437,13 @@ export class TerminalTaskHost {
     try { agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, taskShellEnv:()=>this.options.protectedInput?.envFor(id)??{}, remote: Boolean(row.agentDeviceId), capabilities:capability,getGhostRosterPrompt:plugin?.getGhostRosterPrompt, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { revoked=true;plugin?.close();await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
     const startDeviceAgentSession = row.agentDeviceId && this.options.remoteInvoke ? createDeviceAgentStarter({ remoteInvoke: this.options.remoteInvoke, rgPath: () => 'rg', codexPath: () => this.binaries.get('codex') ?? undefined, mcpProviders: () => tools.providers, prepareMcpBridge: async () => tools.pi(), makerMemory: () => knowledge?.memory, logger: this.options.logger }) : undefined;
     const maker = new Maker({ agents: { [chosen.selection.agentKind]: agent }, storage: this.storage, logger: this.options.logger, ...(knowledge ? {makerMemory:knowledge.memory} : {}), ...(startDeviceAgentSession ? { startDeviceAgentSession } : {}) });
+    const stopObservingMaker = maker.on(event => {
+      for (const observer of this.makerObservers) {
+        try { observer(event); } catch { this.options.logger.warn('Channel task lifecycle observer failed'); }
+      }
+    });
     try {
-      const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, planMode: row.planMode, ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
+      const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, vendorOptions: this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
       const task: LiveTask = { revoke:()=>{revoked=true;plugin?.close();},plugin,capabilityRevision:capability.revision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
       installDesktopInteractionHandler(session,(request,shared)=>this.interaction(id,request,undefined,shared),(sourceRequestId,decision)=>{
         for(const pending of this.pending.values())if(pending.sessionId===id&&pending.sourceRequestId===sourceRequestId){pending.settle(decision);return true;}
@@ -387,10 +451,11 @@ export class TerminalTaskHost {
       });
       task.dispose.push(session.onEvent(event => this.onEvent(id, event)));
       task.dispose.push(session.onStatusChange(status => this.emit('maker:status-changed', { sessionId: id, status })));
+      task.dispose.push(stopObservingMaker);
       lease=task;this.live.set(id, task);
       if (this.closed) { await this.closeTask(id); throw new Error('TASK_HOST_CLOSED'); }
       return task;
-    } catch (error) { revoked=true;plugin?.close();await maker.shutdown(); await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
+    } catch (error) { revoked=true;plugin?.close();try { await maker.shutdown(); } finally { stopObservingMaker(); } await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
   }
   private onEvent(id: string, event: AgentEvent) {
     for(const observer of this.taskObservers.get(id)??[])observer(event);
@@ -559,8 +624,7 @@ export class TerminalTaskHost {
       case 'maker:get-new-maker-defaults': { const selection=(await this.models.snapshot()).defaultSelection; return selection && selection.agentKind===args[0] ? {model:selection.model,providerId:selection.providerId,effort:selection.effort,permissionMode:'default',hasExplicitModel:true} : {}; }
       case 'maker:get-capabilities': {
         const kind=string(args[0]) as AgentKind;if(!ENGINES.includes(kind))throw new Error('INVALID_ENGINE');
-        const agent=new ({'claude-code':ClaudeCodeAgent,codex:CodexAgent,pi:PiAgent}[kind])({binaryPath:this.binaries.get(kind)??'',logger:this.options.logger,runtimeConfig:{},auth:{getState:async()=>({authenticated:false}),getAuthEnv:async()=>({}),triggerLogin:async()=>({authenticated:false}),logout:async()=>{}}});
-        const capabilities=agent.capabilities;await agent.dispose();
+        const capabilities=this.channelRuntime().getCapabilities(kind);
         return {...capabilities,supportsSessionAgentSwitch:false,supportsModelWindowSwitchGuard:false,supportsScheduleIntervalNullClear:true,supportsSchedulePreRunHook:true};
       }
       case 'maker:get-session-tree': return (await this.ensureLive(string(args[0]))).session.getSessionTree();
@@ -611,7 +675,7 @@ export class TerminalTaskHost {
       case 'terminal:tasks:get': { const row = await this.storage.get(string(args[0])); if (!row) throw new Error('TASK_NOT_FOUND'); return this.view(row); }
       case 'terminal:tasks:history': { const page = args[1] === undefined ? {} : record(args[1]); return this.storage.history(string(args[0]), Number(page.after ?? 0), Number(page.limit ?? 200)); }
       case 'terminal:tasks:rename': { const row = await this.storage.update(string(args[0]), { title: string(args[1]) }); this.emit('terminal:tasks:changed', { sessionId: row.id }); return this.view(row); }
-      case 'terminal:tasks:delete': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.options.beforeTaskUnavailable?.(id); this.guard(context); await this.closeTask(id); await this.storage.delete(id); await this.media.removeSession(id); this.emit('terminal:tasks:changed', { sessionId: id }); return { success: true }; }
+      case 'terminal:tasks:delete': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.options.beforeTaskUnavailable?.(id); this.guard(context); await this.closeTask(id); const channelFilesRoot=this.channelFiles.imAttachmentsRoot(); const channelIdentity=this.channelBindings.store.findByTarget(id); if(channelIdentity)await this.channelBindings.store.detachIfTarget(channelIdentity,id); await this.storage.delete(id); await this.media.removeSession(id); await this.channelFiles.removeImSessionAttachmentDirs(id,channelFilesRoot); this.channelVendorOptions.delete(id); this.emit('terminal:tasks:changed', { sessionId: id }); return { success: true }; }
       case 'maker:list-active': { const sessions = [...this.live.values()].map(({ session }) => ({ sessionId: session.id, agentKind: session.agentKind, workDir: session.workDir, capabilities: session.capabilities, isTurnRunning: session.isTurnRunning() })); return args[0] && record(args[0]).snapshotVersion === 2 ? { format: 'active-sessions-v2', sessions } : sessions; }
       case 'maker:any-session-in-turn': return [...this.live.values()].some(task => task.session.isTurnRunning());
       case 'maker:session-in-turn': return this.live.get(string(args[0]))?.session.isTurnRunning() ?? false;
@@ -915,6 +979,9 @@ export class TerminalTaskHost {
     await this.ready.catch(()=>{});
     await Promise.allSettled(this.starts.values());
     await Promise.all([...this.live.keys()].map(id => this.closeTask(id)));
+    this.makerObservers.clear();
+    this.channelVendorOptions.clear();
+    await this.channelBindings.close();
     await this.capabilities.close();
     await Promise.allSettled([...this.hosted].map(handle => handle.close()));
     await Promise.all([this.storage.flush(), this.models.flush(), this.media.close()]);

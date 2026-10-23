@@ -9,6 +9,7 @@ import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/di
 import { TerminalPluginSetup } from './setup.js';
 import { TerminalPluginPages } from './pages.js';
 import { parsePluginSecretForm } from './secret-form.js';
+import { GHOST_SECRET_VALUE_MAX_CHARS } from '@cindy/plugin-runtime/shared/ghost';
 import { TerminalProtectedInput } from '../protected-input.js';
 import { createPluginSecretPresentation } from '@cindy/plugin-runtime/shared/pluginOauth';
 import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
@@ -114,6 +115,10 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     // must never carry the entered value, including local controller wrappers.
     const form=parsePluginSecretForm({pluginId:instance,...saveRequest.input});
     await controllerAuthorization.saveRemotePluginSecret('host-device',instance,form.key,form.approval,form.value);
+    expect(host.readSecretSync(instance,'key')).toBe('synthetic-acceptance-key');
+    const oversized='x'.repeat(GHOST_SECRET_VALUE_MAX_CHARS+1);
+    expect(()=>parsePluginSecretForm({pluginId:instance,key:binding,value:oversized})).toThrow('PLUGIN_SECRET_INVALID');
+    await expect(host.saveSecret(instance,form.key,oversized,form.approval)).rejects.toThrow('PLUGIN_SECRET_INVALID');
     expect(host.readSecretSync(instance,'key')).toBe('synthetic-acceptance-key');
     expect(JSON.stringify(wire)).not.toContain('synthetic-acceptance-key');
     // Integration tier: the public terminal pipe downloads real bytes through
