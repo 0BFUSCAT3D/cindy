@@ -113,6 +113,10 @@ export interface UseFileTreeReturn {
   initialLoading: boolean;
   /** root 加载失败标记(device-too-old = 对方设备版本过旧);见 store 注释。 */
   loadError: 'device-too-old' | 'load-failed' | null;
+
+  /** 树身份(workdir + 远端/设备,不含显示模式段)。切项目 / 换远端才变 —— 滚动
+   *  锚点继承靠它区分「同树换视口」(可继承位置)与「换树」(位置不得跨树泄漏)。 */
+  treeIdentityKey: string;
   /**
    * 「显示被忽略的目录」在当前会话是否真的生效:
    *   - true  本地 / SSH / 支持该字段的被控端;
@@ -122,7 +126,8 @@ export interface UseFileTreeReturn {
    * 标题行据此把开关渲染成不可用 + 说明原因;树本身在 false 时已经按隐藏态
    * 建 store(不向老端发一个无效字段)。
    */
-  showIgnoredDirsSupported: boolean | null;
+  /** 探测未完成时是 null；上游合入的测试夹具不提供该字段（可选）。 */
+  showIgnoredDirsSupported?: boolean | null;
 
   /** 当前 store 的稳定标识（workdir + hideMetaFiles + showIgnoredDirs + host/device）。
    *  切「显示被忽略的目录」会换一份 store，这个值跟着变；同一 store 内因 snapshot
@@ -249,6 +254,16 @@ function storeKey(opts: Required<UseFileTreeOptions>): string {
   const device = opts.deviceId ? `::device=${opts.deviceId}` : '';
   const reveal = opts.showIgnoredDirs ? '::reveal' : '';
   return `${opts.workdir}::doc=${opts.docMode}::hideMeta=${opts.hideMetaFiles}${reveal}${remote}${device}`;
+}
+
+function treeIdentityKey(
+  workdir: string,
+  remoteHostId: string | null,
+  deviceId: string | null,
+): string {
+  const remote = remoteHostId ? `::remote=${remoteHostId}` : '';
+  const device = deviceId ? `::device=${deviceId}` : '';
+  return `${workdir}${remote}${device}`;
 }
 
 function emit(store: FileTreeStore): void {
@@ -933,11 +948,12 @@ export function useFileTree({
       // 非 device 会话恒 true;device 会话见上面探测注释。
       showIgnoredDirsSupported: deviceId ? deviceRevealSupported : true,
       storeKey: store.key,
+      treeIdentityKey: treeIdentityKey(workdir, remoteHostId, deviceId),
       toggleFolder: toggleFolderCb,
       collapseAll: collapseAllCb,
       refresh: refreshCb,
       expandToPath: expandToPathCb,
     }),
-    [snapshot, deviceId, deviceRevealSupported, store, toggleFolderCb, collapseAllCb, refreshCb, expandToPathCb],
+    [snapshot, deviceId, deviceRevealSupported, store, toggleFolderCb, collapseAllCb, refreshCb, expandToPathCb, workdir, remoteHostId],
   );
 }

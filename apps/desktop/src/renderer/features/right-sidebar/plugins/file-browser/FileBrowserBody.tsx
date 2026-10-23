@@ -104,8 +104,8 @@ const BODY_MIN_RESERVE = 100;
 interface FileBrowserBodyProps {
   state: FileBrowserState;
   ctx: TabKindHostContext;
-  /** 宿主 tab 是否激活（PluginBodyHost 传入）。隐藏 tab 下不渲染文件树 DOM，
-   *  避免多标签 keep-alive 时并行渲染上千行（见 FileTreeView 的 active）。 */
+  /** 宿主 tab 是否激活（PluginBodyHost 传入）。只用于文件树滚动位置的恢复时机；
+   *  隐藏 tab 的行渲染由虚拟化的 0 视口自然跳过，不需要门控。 */
   active?: boolean;
 }
 
@@ -680,6 +680,7 @@ function FileBrowserBodyWithWorkdir({
               <FileTreeView
                 ref={fileTreeRef}
                 tree={tree}
+                scrollScope={ctx.tabId}
                 active={active}
                 selectedPath={state.selectedFilePath}
                 onSelectFile={handleSelectFile}

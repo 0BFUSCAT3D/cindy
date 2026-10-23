@@ -10,8 +10,8 @@
  * 这里只规定「隐藏宿主不产出 DOM」。
  */
 
-import { cleanup, render } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, waitFor } from '@testing-library/react';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -19,6 +19,13 @@ vi.mock('react-i18next', () => ({
 
 import { FileTreeView } from '../FileTreeView';
 import type { DirEntry, UseFileTreeReturn } from '../hooks/useFileTree';
+import {
+  flushTreeVirtualizerScrollReset,
+  installTreeViewportStub,
+  resetTestViewportSize,
+} from './treeViewportStub';
+
+beforeAll(installTreeViewportStub);
 
 const entries: DirEntry[] = [
   { name: 'index.ts', relPath: 'index.ts', type: 'file', size: 10, mtimeMs: 1 },
@@ -33,6 +40,7 @@ function makeTree(): UseFileTreeReturn {
     initialLoading: false,
     loadError: null,
     storeKey: 'test-store',
+    treeIdentityKey: 'test-store',
     showIgnoredDirsSupported: true,
     toggleFolder: vi.fn(),
     collapseAll: vi.fn(),
@@ -41,29 +49,51 @@ function makeTree(): UseFileTreeReturn {
   };
 }
 
-afterEach(() => cleanup());
+afterEach(async () => {
+  // 先排干 react-virtual 的 150ms「滚动结束」debounce，再卸载（见 treeViewportStub 注释）。
+  await flushTreeVirtualizerScrollReset();
+  cleanup();
+  resetTestViewportSize();
+});
 
 describe('FileTreeView active prop（隐藏 tab 不渲染行，容器保留）', () => {
-  it('active=false 时不产出任何行 DOM，但滚动容器留在 DOM（不丢 scrollTop）', () => {
+  it('active 翻转时滚动容器同一节点，scrollTop 跨隐藏存活（评审 P2）', async () => {
     const { container, rerender } = render(
-      <FileTreeView tree={makeTree()} selectedPath={null} onSelectFile={vi.fn()} />,
+      <FileTreeView
+        tree={makeTree()}
+        scrollScope="test-tab"
+        selectedPath={null}
+        onSelectFile={vi.fn()}
+      />,
     );
     const scroller = container.querySelector('.tree-hscroll') as HTMLElement;
     expect(scroller).not.toBeNull();
     scroller.scrollTop = 200;
 
     rerender(
-      <FileTreeView active={false} tree={makeTree()} selectedPath={null} onSelectFile={vi.fn()} />,
+      <FileTreeView
+        active={false}
+        tree={makeTree()}
+        scrollScope="test-tab"
+        selectedPath={null}
+        onSelectFile={vi.fn()}
+      />,
     );
-    expect(container.querySelectorAll('[data-relpath]')).toHaveLength(0);
-    // 容器同一节点：scrollTop 不被重置（评审 P2：return null 会连容器卸掉，
-    // 切回标签回到顶部）。
+    // 虚拟化后隐藏保留最后一个视口的行（有界，见 scroll.test 的契约用例），
+    // 这里只锁滚动容器不被卸载：return null 式实现会连容器卸掉，切回标签回到顶部。
     const hiddenScroller = container.querySelector('.tree-hscroll') as HTMLElement;
     expect(hiddenScroller).not.toBeNull();
+    expect(hiddenScroller).toBe(scroller);
     expect(hiddenScroller.scrollTop).toBe(200);
 
     rerender(
-      <FileTreeView active tree={makeTree()} selectedPath={null} onSelectFile={vi.fn()} />,
+      <FileTreeView
+        active
+        tree={makeTree()}
+        scrollScope="test-tab"
+        selectedPath={null}
+        onSelectFile={vi.fn()}
+      />,
     );
     expect(container.querySelectorAll('[data-relpath]')).toHaveLength(2);
     expect((container.querySelector('.tree-hscroll') as HTMLElement).scrollTop).toBe(200);
@@ -71,13 +101,24 @@ describe('FileTreeView active prop（隐藏 tab 不渲染行，容器保留）',
 
   it('不传 active（doc 侧栏等单宿主场景）与 active=true 都照常渲染', () => {
     const defaulted = render(
-      <FileTreeView tree={makeTree()} selectedPath={null} onSelectFile={vi.fn()} />,
+      <FileTreeView
+        tree={makeTree()}
+        scrollScope="test-tab"
+        selectedPath={null}
+        onSelectFile={vi.fn()}
+      />,
     );
     expect(defaulted.container.querySelectorAll('[data-relpath]')).toHaveLength(2);
     cleanup();
 
     const explicit = render(
-      <FileTreeView active tree={makeTree()} selectedPath={null} onSelectFile={vi.fn()} />,
+      <FileTreeView
+        active
+        tree={makeTree()}
+        scrollScope="test-tab"
+        selectedPath={null}
+        onSelectFile={vi.fn()}
+      />,
     );
     expect(explicit.container.querySelectorAll('[data-relpath]')).toHaveLength(2);
   });

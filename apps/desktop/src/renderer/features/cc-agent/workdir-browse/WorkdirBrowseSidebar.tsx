@@ -785,6 +785,7 @@ export function WorkdirBrowseSidebar({
             <FileTreeView
               ref={fileTreeRef}
               tree={tree}
+              scrollScope="doc"
               selectedPath={selectedPath}
               onSelectFile={handleSelectFile}
               onNewFile={handleNewFile}
