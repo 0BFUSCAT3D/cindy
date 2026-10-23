@@ -2879,46 +2879,35 @@ function mcpGatewayKey(serverName: string, toolName: string): string {
  * 跳过这一次落盘——本进程内存里的披露仍然有效。
  */
 function acquireDisclosureLock(lockPath: string): boolean {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      // fd 只参与 wx 独占创建这一步；锁语义是文件存在性 + pid 内容，写完即可释放。
-      const fd = openSync(lockPath, 'wx', 0o600);
-      try { writeFileSync(lockPath, String(process.pid)); } catch { /* pid 写不进去时只当普通锁 */ }
-      try { closeSync(fd); } catch { /* 关闭失败不影响已持有的锁 */ }
-      return true;
-    } catch {
-      if (attempt === 1) return false;
-      const owner = readLockOwner(lockPath);
-      if (owner === undefined || owner === process.pid || isProcessAlive(owner)) return false;
-      // 回收：把残留锁**原子地挪走**，再验证挪走的确实是自己刚读到的那个死锁。
-      // 只靠 rename 成功不够：两个实例可能先后读到同一个旧 owner，A 先回收旧锁并重建，
-      // B 随后的 rename 仍会成功——掣走的是 A 的新锁（活锁）。所以挪走后必须校验
-      // stale 内容：不是那个死 pid 就说明掣了别人的锁，立即放回并放弃本次落盘。
-      // 「只有 wx 成功才算拿到锁」的不变量保证 B 全程不会进入写入路径。
-      const stale = lockPath + '.stale-' + process.pid;
-      try { rmSync(stale, { force: true }); } catch { /* 上次没清掉的回收槽 */ }
-      try {
-        renameSync(lockPath, stale);
-      } catch {
-        return false; // 已被另一个实例回收或重建：不争，跳过本次落盘。
-      }
-      let stolen: number | undefined;
-      try {
-        const parsed = Number.parseInt(readFileSync(stale, 'utf8').trim(), 10);
-        stolen = Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-      } catch {
-        stolen = undefined;
-      }
-      if (stolen !== owner) {
-        // 掣走的是别的实例刚建的活锁：放回去（若路径已被占用则丢弃掣走的副本——
-        // 路径上那个新锁才是有效的），本次不落盘。
-        try { renameSync(stale, lockPath); } catch { try { rmSync(stale, { force: true }); } catch { /* 忽略 */ } }
-        return false;
-      }
-      try { rmSync(stale, { force: true }); } catch { /* 残留回收槽不影响正确性 */ }
-    }
+  // 1) 常规获取：wx 独占创建（锁路径无文件时）。
+  try {
+    // fd 只参与 wx 独占创建这一步；锁语义是文件存在性 + pid 内容，写完即可释放。
+    const fd = openSync(lockPath, 'wx', 0o600);
+    try { writeFileSync(lockPath, String(process.pid)); } catch { /* pid 写不进去时只当普通锁 */ }
+    try { closeSync(fd); } catch { /* 关闭失败不影响已持有的锁 */ }
+    return true;
+  } catch { /* 锁已存在 → 走接管判定 */ }
+  const owner = readLockOwner(lockPath);
+  if (owner === undefined || owner === process.pid || isProcessAlive(owner)) return false;
+  // 2) 死锁接管：用 tmp + rename **原子覆盖**锁文件，路径上的锁从不消失——
+  //    「挪走再重建」会让锁路径短暂为空，第三个实例可以趁虚 wx 成功，与被挪走
+  //    锁的原持有者同时写入；事后校验 pid 也救不回这个窗口。覆盖式 rename 串行
+  //    执行，最后落盘者是唯一候选持有者；persistDisclosures 在写入前还会重读锁
+  //    内容复核是自己 pid，被后来者覆盖的候选会放弃且不删锁。
+  const takeover = lockPath + '.takeover-' + process.pid;
+  try { rmSync(takeover, { force: true }); } catch { /* 上次残留的接管槽 */ }
+  try {
+    writeFileSync(takeover, String(process.pid), { flag: 'wx' });
+  } catch {
+    return false; // 接管槽被并发占用：不争。
   }
-  return false;
+  try {
+    renameSync(takeover, lockPath);
+  } catch {
+    try { rmSync(takeover, { force: true }); } catch { /* 忽略 */ }
+    return false;
+  }
+  return true;
 }
 
 function readLockOwner(lockPath: string): number | undefined {
@@ -3013,6 +3002,9 @@ class CindyMcpGateway {
     try {
       const lockPath = file + '.lock';
       if (!acquireDisclosureLock(lockPath)) return;
+      // 候选持有者复核：接管式回收的覆盖 rename 可能被另一个接管者再覆盖。锁内容
+      // 不是自己 pid 就说明已输掉接管竞态 —— 放弃本次落盘，且**不删锁**（那是赢家的）。
+      if (readLockOwner(lockPath) !== process.pid) return;
       try {
         // 以**锁内读到的磁盘记录为基础**，只覆盖本次实际披露的那个键。整份内存记录
         // 优先会把另一个实例刚保存的新指纹改回本进程启动时载入的旧值：A 载入 X=f1，
@@ -3038,7 +3030,11 @@ class CindyMcpGateway {
         writeFileSync(temp, JSON.stringify({ version: 1, entries: merged }), { mode: 0o600 });
         renameSync(temp, file);
       } finally {
-        try { rmSync(lockPath, { force: true }); } catch { /* 残留锁由下次写入回收 */ }
+        // 只有确认仍持有（内容是本进程 pid）才释放：被接管者覆盖后删锁会把
+        // 赢家的锁一起删掉。
+        if (readLockOwner(lockPath) === process.pid) {
+          try { rmSync(lockPath, { force: true }); } catch { /* 残留锁由下次写入回收 */ }
+        }
       }
     } catch {
       // 落盘失败只影响下次启动的体验，不影响本次门与自愈。

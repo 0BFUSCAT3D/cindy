@@ -63,9 +63,11 @@ function loadGateway(options: {
   const lockFile: { value: string | null } = { value: null };
   if (options.lockOwner !== undefined) lockFile.value = String(options.lockOwner);
 
-  // stale 回收槽：rename(lock→stale) 时锁内容搬到这里。
-  const staleFile: { value: string | null } = { value: null };
-  
+  // 接管槽：rename(takeover→lock) 覆盖接管时锁内容从这里来。
+  const takeoverFile: { value: string | null } = { value: null };
+  // 披露文件的 tmp 写入单独保存：只有 rename 到正式路径才算落盘成功。
+  const tmpFile: { value: DisclosedFile | null } = { value: null };
+
   const externalWrite = (value: DisclosedFile) => { disk.value = value; };
   const reclaimed: string[] = [];
 
@@ -95,10 +97,6 @@ function loadGateway(options: {
       dirname: (file: string) => file.slice(0, file.lastIndexOf('/')),
     },
     readFileSync: (file: string) => {
-      if (file.includes('.stale-')) {
-        if (staleFile.value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
-        return staleFile.value;
-      }
       if (file.endsWith('.lock')) {
         if (lockFile.value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
         return lockFile.value;
@@ -112,31 +110,37 @@ function loadGateway(options: {
         lockFile.value = body; // 记录持锁 pid
         return;
       }
-      disk.value = JSON.parse(body) as DisclosedFile;
-      writes.push(disk.value);
+      if (file.includes('.takeover-')) {
+        takeoverFile.value = body; // 接管槽内容（持锁 pid）
+        return;
+      }
+      // 披露文件的 tmp 写入：先暂存，rename 到正式路径才算落盘成功。
+      tmpFile.value = JSON.parse(body) as DisclosedFile;
     },
     renameSync: (from: string, to: string) => {
-      if (options.reclaimLostRace && from.endsWith('.lock')) {
-        // 模拟另一个实例先把残留锁回收并重建了新锁：本实例的 rename 失败。
+      if (options.reclaimLostRace && from.includes('.takeover-')) {
+        // 模拟接管覆盖失败（例如路径刚被另一个接管者占用）：本实例的 rename 失败。
         throw Object.assign(new Error('lock gone'), { code: 'ENOENT' });
       }
-      if (from.endsWith('.lock') && to.includes('.stale-')) {
-        // 回收挪动：锁内容搬进回收槽；外部可同时预置 reclaimReplacesWith，模拟
-        // 「挪走的其实是另一个实例刚重建的活锁」（内容与读到的死 pid 不一致）。
-        staleFile.value = options.reclaimReplacesWith !== undefined
+      if (from.includes('.takeover-') && to.endsWith('.lock')) {
+        // 接管覆盖：锁路径内容换成接管槽内容；外部可预置 reclaimReplacesWith 模拟
+        // 「本实例覆盖之后、写前复核之前，另一个接管者又覆盖了一次」。
+        lockFile.value = options.reclaimReplacesWith !== undefined
           ? String(options.reclaimReplacesWith)
-          : lockFile.value;
-        lockFile.value = null;
-      } else if (from.endsWith('.stale-') && to.endsWith('.lock')) {
-        // 放回：回收槽内容回到锁路径。
-        lockFile.value = staleFile.value;
-        staleFile.value = null;
+          : takeoverFile.value;
+        takeoverFile.value = null;
+      } else if (from.includes('.tmp') && !to.endsWith('.lock') && !to.includes('.takeover-')) {
+        // 披露文件落盘：rename 成功才算保存成功。
+        disk.value = tmpFile.value;
+        tmpFile.value = null;
+        writes.push(disk.value as DisclosedFile);
       }
       renames.push(`${from} -> ${to}`);
     },
     rmSync: (file: string) => {
-      if (file.includes('.stale-')) staleFile.value = null;
+      if (file.includes('.takeover-')) takeoverFile.value = null;
       else if (file.endsWith('.lock')) lockFile.value = null;
+      else if (file.includes('.tmp')) tmpFile.value = null;
       reclaimed.push(file);
     },
     openSync: (file: string, flags: string) => {
@@ -188,11 +192,13 @@ function loadGateway(options: {
   const listTools = registered.find((t) => t.name === 'cindy_mcp_list_tools');
   if (!callTool || !listTools) throw new Error('gateway tools not registered');
 
+  const lockOwnerAfter = () => lockFile.value;
   return {
     gateway,
     httpClient,
     externalWrite,
     reclaimed,
+    lockOwnerAfter,
     writes,
     renames,
     warnings,
@@ -325,26 +331,24 @@ describe('MCP gateway schema disclosure', () => {
       .isSchemaDisclosed(gateway.resolveCall({ server: 'cindy_orca', tool: 'send_to_worker' }))).toBe(true);
   });
 
-  it('skips persisting when another instance reclaimed the stale lock first', async () => {
-    // 回收必须与重新加锁互斥：rename 失败说明锁已被别人收走/重建，本实例直接放弃，
-    // 不能继续 rmSync（那会删掉对方刚建的锁，两边都进写入路径互相覆盖记录）。
+  it('skips persisting when the takeover rename fails, leaving the existing lock alone', async () => {
+    // 接管覆盖失败（另一个实例抢先）：不争，放弃本次落盘，不删对方的锁。
     const { call, requests, disk, reclaimed } = loadGateway({ lockOwner: 999, reclaimLostRace: true });
     await call();
     expect(requests).toHaveLength(1);
     expect(disk.value).toBeNull();
-    expect(reclaimed.some((file) => file.endsWith('.lock') && !file.includes('.stale-'))).toBe(false);
+    expect(reclaimed.some((file) => file.endsWith('.lock'))).toBe(false);
   });
 
-  it('restores the lock and skips persisting when the reclaimed lock was actually a live one', async () => {
-    // 两个实例同时读到死 pid：A 先回收旧锁并重建；B 的 rename 仍会成功，但掣走的是
-    // A 的新锁（内容 777，活进程）。校验内容不一致后必须放回并放弃本次落盘，
-    // 否则 B 会在 A 持锁写披露的同时进入写入路径，后写方覆盖先写方的记录。
-    const { call, requests, disk, renames } = loadGateway({ lockOwner: 999, reclaimReplacesWith: 777 });
+  it('aborts without deleting the lock when another instance won the takeover race', async () => {
+    // 接管覆盖成功后、写前复核前，另一个接管者又覆盖了一次（锁内容变成 777）。
+    // 本实例必须放弃落盘且**不删锁**——那是赢家的锁；删了会造成新的双写窗口。
+    const { call, requests, disk, lockOwnerAfter } = loadGateway({ lockOwner: 999, reclaimReplacesWith: 777 });
     await call();
     expect(requests).toHaveLength(1);
     expect(disk.value).toBeNull();
-    // 放回：回收槽内容回到锁路径（放回 rename + 原写入 rename 都有记录）
-    expect(renames.some((r) => r.includes('.stale-4242 -> /runtime/mcp-disclosure-s1.json.lock'))).toBe(true);
+    // 赢家的锁保持原样（内容 777，活进程），未被本实例删除或覆盖回自己的 pid。
+    expect(lockOwnerAfter()).toBe('777');
   });
 
   it('keeps another instance newer fingerprint when persisting a different tool', async () => {
