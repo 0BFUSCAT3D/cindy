@@ -170,9 +170,11 @@ describe('history ownership gate disposes the clicked island card', () => {
     history.mockResolvedValue([]);
     get.mockResolvedValue({ ...profile, sessions: [{ id: 'old-a', kind: 'channel', role: 'channel', status }] });
     const view = render(<BotHistorySessionView />);
-    await waitFor(() => expect(view.getByTestId('chat').dataset.readonly).toBe('true'));
-    // Rendering the transcript can precede the passive effect that disposes the alert.
-    await waitFor(() => expect(consumeEntryAlert).toHaveBeenCalledExactlyOnceWith('old-a', '42'));
+    // Flush the ownership promises and passive disposal effect, not just the DOM
+    // mutation (which can be observed before that effect commits on a busy runner).
+    await act(async () => {});
+    expect(view.getByTestId('chat').dataset.readonly).toBe('true');
+    expect(consumeEntryAlert).toHaveBeenCalledExactlyOnceWith('old-a', '42');
   });
 
   it.each([

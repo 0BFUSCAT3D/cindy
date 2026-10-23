@@ -1322,6 +1322,7 @@ import {
   createDeferredRestartQueueGate,
 } from './deferredRestartQueueWiring.js';
 import {
+  collectInTurnSessionIds,
   hasAnySessionInTurn,
   isSessionTurnDispatchBoundaryBusy,
   isTerminalTurnErrorEvent,
@@ -5360,6 +5361,11 @@ export function anySessionInTurn(maker?: Pick<Maker, 'listActiveSessions'> | nul
   return hasAnySessionInTurn(sessionTurnActivityTracker, maker?.listActiveSessions() ?? []);
 }
 
+/** 重启会打断的 turn 会话 id：tracker 已记下的，再加上还没记上 tracker 的 live session。 */
+export function listInTurnSessionIds(maker?: Pick<Maker, 'listActiveSessions'> | null): string[] {
+  return collectInTurnSessionIds(sessionTurnActivityTracker, maker?.listActiveSessions() ?? []);
+}
+
 /**
  * /goal 生命周期旁路(setter 注入避免 register↔goal-host 环):
  *  - goalClearObserver:clear-context(INPUT_CLEAR_SESSION)时清除该会话目标(上下文已抹,目标失去依据)。
@@ -7467,7 +7473,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             if (!fetched.has(key))
               fetched.set(
                 key,
-                await discoverGenericOAuthModels(storageProviderId, oauth, url, agent),
+                await discoverGenericOAuthModels(storageProviderId, oauth, url, agent, isCurrent),
               );
             if (!isCurrent()) break;
             const models = fetched.get(key);
