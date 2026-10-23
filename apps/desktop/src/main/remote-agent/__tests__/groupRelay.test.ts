@@ -20,7 +20,7 @@ import { decideProviderGroupFailure } from '../../provider-group/failurePolicy';
 
 import { RemoteAgentPoller } from '../controller/poller';
 import { RemoteAgentRunClient } from '../controller/runClient';
-import { relayKeyFor, reshareKeyFor, type RelayRunFailure } from '../host/groupRelay';
+import { relayConnId, relayKeyFor, reshareKeyFor, type RelayRunFailure } from '../host/groupRelay';
 import { createGuestProviderRouteBinder } from '../host/providerAccess';
 import { guestProviderRouteForToken } from '../../maker-host/guest-provider-route-store';
 import {
@@ -312,6 +312,32 @@ function switchTokenIn(stream: Awaited<ReturnType<typeof openAsGuest>>['stream']
 }
 
 describe('provider group relay for shared users', () => {
+  // Unit regression for provider-sharing.md §3: first local work must reach the member with its push,
+  // before either poll batch can report hold. Existing relay cases did not carry this busy-state field.
+  // Real guest -> owner Host.handle -> member RunClient.push with JSON serialization on both hops.
+  it('forwards the first local hold with the process startup reply to the group member', async () => {
+    let forwarded: Record<string, unknown> | undefined;
+    const env = setup({ intercept: async (_device, request, forward) => {
+      if (request.op === 'push') forwarded = request;
+      return forward();
+    } });
+    const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+    try {
+      await env.owner.handle(GUEST_A, {
+        op: 'push', runId: client.runId, seq: 1, hold: true,
+        frames: [{ connId: relayConnId(1, 'exec-1'), kind: 'message', data: '{"id":1,"result":{}}' }],
+      });
+      await vi.waitFor(() => expect(forwarded).toBeDefined());
+      expect(forwarded).toMatchObject({
+        hold: true,
+        frames: [{ connId: 'exec-1', kind: 'message', data: '{"id":1,"result":{}}' }],
+      });
+    } finally {
+      await client.close('close', 'navigation');
+      for (const host of [env.owner, ...Object.values(env.members)]) { await host.abortAll(); host.dispose(); }
+    }
+  });
+
   // Review 4328897446, unit: the old three-host harness never exercised the
   // original member's model restrictions at the executing computer. A allows
   // only opus, while the executor offers opus and sonnet; revoke opus mid-run.
@@ -603,6 +629,23 @@ describe('provider group relay for shared users', () => {
       .open('claude-code', openPayload('relayed-2', { relay: relayKeyFor(GUEST_A), options: { resumeSessionId: 'owner-native' } })))
       .rejects.toThrow(/cannot be resumed/);
     await client.close('close', 'navigation');
+  });
+
+  it.each([
+    { groupAssigned: true },
+    { groupAssigned: true, relay: relayKeyFor(GUEST_A) },
+  ])('keeps the local group policy on a guest execution even when routing was already assigned: %j', async (extra) => {
+    const env = setup({ plans: [{ kind: 'local' }] });
+    const started: Started[] = [];
+    const host = fakeAgentHost('policy-host', started, { trust: () => 'guest', groupRelay: env.relay });
+    try {
+      await host.handle(GUEST_A, { op: 'open', runId: runId(), agentKind: 'claude-code', payload: { json: openPayload('policy-task', extra) } });
+      await waitFor(() => started.length > 0);
+      expect(started[0].input.groupProviderId).toBe('shared-provider');
+      expect(env.relay.plan).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+    }
   });
 });
 

@@ -70,6 +70,7 @@ import {
   type BotSettingsPayload,
 } from './botSettingsAutosave';
 import { useBotSettingsAutosave } from './useBotSettingsAutosave';
+import { BotProjectsSettings } from './BotProjectsSettings';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -148,6 +149,7 @@ export function BotSettings({
     | 'advanced'
     | 'routines'
     | 'memory'
+    | 'projects'
   >(initialPage);
   const voiceLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const routineLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -155,7 +157,7 @@ export function BotSettings({
   const memoryLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const memoryBackRef = useRef<(() => Promise<boolean>) | null>(null);
   const pageTitle =
-    page === 'voice'
+    page === 'projects' ? t('bots.projects.title') : page === 'voice'
       ? t('bots.voiceMode.settingsTitle')
       : page === 'channels'
         ? t('bots.channels.title')
@@ -367,7 +369,7 @@ export function BotSettings({
     );
   }
 
-  const handleChooseAvatar = async (portrait?: string) => {
+  const handleChooseAvatar = async (portrait: string) => {
     if (avatarInFlight.current) return;
     avatarInFlight.current = true;
     setAvatarBusy(true);
@@ -375,9 +377,7 @@ export function BotSettings({
     try {
       await autosave.flush();
       if (autosave.isDirty()) return;
-      const next = portrait
-        ? await chooseBotAvatar(bot.id, portrait.split(',')[1])
-        : await chooseBotAvatar(bot.id);
+      const next = await chooseBotAvatar(bot.id, portrait.split(',')[1]);
       if (!next) return;
       setAvatar(next.avatar);
       setAvatarColor(next.avatarColor);
@@ -393,7 +393,6 @@ export function BotSettings({
     <BotPortraitPicker
       disabled={avatarBusy}
       onChange={portrait => void handleChooseAvatar(portrait)}
-      onUpload={() => void handleChooseAvatar()}
       trigger={
         <button
           type="button"
@@ -417,6 +416,7 @@ export function BotSettings({
     ['profile', botSettingsIcons.profile, t('bots.profile.title')],
     ['personality', botSettingsIcons.personality, t('bots.profile.personality')],
     ['memory', botSettingsIcons.memory, t('bots.memory.title')],
+    ['projects', botSettingsIcons.projects, t('bots.projects.title')],
     ['model', botSettingsIcons.model, t('bots.settingsTabs.model')],
     ['voice', botSettingsIcons.voice, t('bots.voiceMode.settingsTitle')],
     ['capabilities', botSettingsIcons.capabilities, t('bots.capabilities.title')],
@@ -643,6 +643,7 @@ export function BotSettings({
               }} />
           </div>
         </section>
+        {page === 'projects' && <BotProjectsSettings key={bot.id} botId={bot.id} />}
         {page === 'capabilities' && (
           <div>
             <BotCapabilitySettings

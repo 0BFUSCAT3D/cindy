@@ -152,6 +152,11 @@ function parseMember(value: unknown): BotGroupMemberView | null {
   const botId = id(record?.botId);
   const name = text(record?.name, MAX_NAME);
   if (!record || !botId || name === null) return null;
+  let avatarUrl: string | null = null;
+  try {
+    const url = new URL(text(record.avatarUrl, 4_096) ?? '');
+    if (url.protocol === 'https:' && !url.username && !url.password) avatarUrl = url.href;
+  } catch { /* Invalid public images leave the existing avatar fallback intact. */ }
   return {
     botId,
     name,
@@ -163,6 +168,7 @@ function parseMember(value: unknown): BotGroupMemberView | null {
     ...(typeof record.isSelf === 'boolean' ? { isSelf: record.isSelf } : {}),
     ...(record.role === 'owner' || record.role === 'admin' || record.role === 'member' || record.role === 'guest' ? { role: record.role } : {}),
     avatar: text(record.avatar, 4_096) ?? '',
+    ...(avatarUrl ? { avatarUrl } : {}),
     avatarColor: text(record.avatarColor, 64) ?? '',
     status: enumOf(record.status, MEMBER_STATUSES) ?? 'missing',
   };
@@ -265,6 +271,8 @@ function parsePlan(value: unknown): BotGroupPlanView | null {
   return {
     id: planId,
     status,
+    kind: record.kind === 'talk' || record.kind === 'work' ? record.kind : undefined,
+    canAdd: typeof record.canAdd === 'boolean' ? record.canAdd : undefined,
     organizerBotId: id(record.organizerBotId) ?? '',
     organizerName: text(record.organizerName, MAX_NAME) ?? '',
     steps: steps as BotGroupPlanStepView[],
@@ -356,6 +364,7 @@ export function parseBotGroupChatData(value: unknown): BotGroupRemoteChatData | 
     id: groupId,
     name,
     serverBacked: record.serverBacked === true,
+    singleSpeaker: record.singleSpeaker === true,
     archived: record.archived === true,
     dissolvedAt: text(record.dissolvedAt, 64),
     supportsDissolve: record.supportsDissolve === true,
