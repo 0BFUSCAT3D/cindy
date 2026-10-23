@@ -1,3 +1,5 @@
+import { createFenceNeutralizer, GROUP_WINDOW_ENTRY_TEXT_MAX_CHARS } from '@cindy/im-runtime/groupText';
+export { createFenceNeutralizer, GROUP_WINDOW_ENTRY_TEXT_MAX_CHARS } from '@cindy/im-runtime/groupText';
 /**
  * 官方/个人 Telegram bot 群消息窗口共享核心。
  *
@@ -24,7 +26,7 @@ export {
   sweepExpiredGroupWindowCursors,
 } from './groupWindowMaintenance';
 
-export const GROUP_WINDOW_ENTRY_TEXT_MAX_CHARS = 500;
+
 const CONTEXT_READ_LIMIT = 500;
 const CONTEXT_MAX_CHARS = 4_000;
 const CURSOR_MAX_KEYS = 1000;
@@ -164,11 +166,6 @@ function formatUtcOffset(d: Date): string {
 export function formatImHistoryTimeNote(nowMs: number = Date.now()): string {
   const now = new Date(nowMs);
   return `每行发言人后的时间为该消息的发送时间（本机时区 ${formatUtcOffset(now)}；未写年份的与整理时间同年，括号内另注 UTC 偏移的按所注偏移计）。本段上下文整理于 ${now.getFullYear()}-${formatMonthDayTime(now)}，可能早于实际回复时间。`;
-}
-
-export function createFenceNeutralizer(tags: readonly string[]): (value: string) => string {
-  const pattern = new RegExp(`<(\\/?)(${tags.join('|')})`, 'gi');
-  return (value) => value.replace(pattern, '<\u200b$1$2');
 }
 
 /** retention 不传即永久保留；传入时只在显式 provider 内执行两级 GC。 */

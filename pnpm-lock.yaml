@@ -125,6 +125,12 @@ importers:
       '@cindy/file-browser-core':
         specifier: workspace:*
         version: link:../../packages/file-browser-core
+      '@cindy/im':
+        specifier: workspace:*
+        version: link:../../packages/lizi-im
+      '@cindy/im-runtime':
+        specifier: workspace:*
+        version: link:../../packages/im-runtime
       '@cindy/maker-core':
         specifier: workspace:*
         version: link:../../packages/maker-core
@@ -276,6 +282,9 @@ importers:
       '@cindy/im':
         specifier: workspace:*
         version: link:../../packages/lizi-im
+      '@cindy/im-runtime':
+        specifier: workspace:*
+        version: link:../../packages/im-runtime
       '@cindy/maker-cc-manager':
         specifier: workspace:*
         version: link:../../packages/maker-cc-manager
@@ -1260,6 +1269,31 @@ importers:
         version: 5.9.3
 
   packages/heartbeat-client:
+    devDependencies:
+      '@types/node':
+        specifier: '*'
+        version: 25.9.5
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/im-runtime:
+    dependencies:
+      '@cindy/companion-core':
+        specifier: workspace:*
+        version: link:../companion-core
+      '@cindy/im':
+        specifier: workspace:*
+        version: link:../lizi-im
+      '@cindy/maker-core':
+        specifier: workspace:*
+        version: link:../maker-core
+      '@cindy/maker-shared':
+        specifier: workspace:*
+        version: link:../maker-shared
+      '@cindy/remote-agent':
+        specifier: workspace:*
+        version: link:../remote-agent
     devDependencies:
       '@types/node':
         specifier: '*'
@@ -16365,14 +16399,6 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 2.0.0
 
-  '@vitest/mocker@3.2.7(vite@6.4.3(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
-    dependencies:
-      '@vitest/spy': 3.2.7
-      estree-walker: 3.0.3
-      magic-string: 0.30.21
-    optionalDependencies:
-      vite: 6.4.3(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0)
-
   '@vitest/mocker@3.2.7(vite@6.4.3(@types/node@25.9.5)(jiti@1.21.7)(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 3.2.7
@@ -23542,7 +23568,7 @@ snapshots:
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.7
-      '@vitest/mocker': 3.2.7(vite@6.4.3(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
+      '@vitest/mocker': 3.2.7(vite@6.4.3(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       '@vitest/pretty-format': 3.2.7
       '@vitest/runner': 3.2.7
       '@vitest/snapshot': 3.2.7

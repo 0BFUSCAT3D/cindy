@@ -60,6 +60,10 @@ jobs:
         run: pnpm --filter desktop exec vitest run src/main/downloader/__tests__/download.test.ts src/main/downloader/__tests__/scheduler.test.ts src/main/downloader/__tests__/requestInjection.test.ts src/main/cindy-brain/__tests__/downloadSlot.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing remote plugin pages and encrypted settings
         run: pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mobilePageService.test.ts src/main/cindy-brain/__tests__/remotePluginSettings.test.ts src/main/cindy-brain/__tests__/mobilePageRelay.test.ts src/main/cindy-brain/__tests__/mobilePageAssets.test.ts src/main/cindy-brain/__tests__/mobilePluginConfiguration.test.ts src/main/cindy-brain/__tests__/mobilePluginUsage.test.ts src/main/cindy-brain/__tests__/mobilePreview.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Existing message ingress, permissions and reply lifecycle
+        run: pnpm --filter desktop exec vitest run src/main/im/__tests__/accountBoundary.test.ts src/main/im/__tests__/connectionLifecycle.test.ts src/main/im/shared/__tests__/stopCommandRouting.test.ts src/main/im/shared/__tests__/earlyUserMessagePersist.test.ts src/main/im/shared/__tests__/channelNote.test.ts src/main/im/shared/__tests__/turnPresenter.test.ts src/main/im/shared/__tests__/turnRetryNotice.test.ts src/main/im/shared/__tests__/pendingInteractions.test.ts src/main/im/shared/__tests__/permissionPresentation.test.ts src/main/maker-ipc/__tests__/sharedPermissionRoute.test.ts src/main/hook-control/__tests__/sharedPermission.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Typecheck shared message runtime
+        run: pnpm --filter @cindy/im-runtime typecheck
       - name: Native plugin worker and existing broker ABI
         run: pnpm --filter @cindy/plugin-runtime exec vitest run src/nativeProcess.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal

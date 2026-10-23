@@ -1,3 +1,5 @@
+import type { GroupHistorySearchLane } from '@cindy/im-runtime/groupHistoryAccess';
+export type { GroupHistorySearchLane } from '@cindy/im-runtime/groupHistoryAccess';
 /**
  * 统一 Telegram 群消息池的本地全文检索核心。
  *
@@ -17,13 +19,6 @@ const MAX_LIMIT = 20;
 const QUERY_MAX_CHARS = 256;
 const SNIPPET_TOKEN_RADIUS = 12;
 const FALLBACK_SNIPPET_CHARS = 240;
-
-export interface GroupHistorySearchLane {
-  provider: string;
-  chatId: string;
-  /** topic/thread id；空串表示主群流。必填，禁止省略为“全 chat”。 */
-  threadId: string;
-}
 
 export interface GroupHistorySearchHit {
   id: number;
