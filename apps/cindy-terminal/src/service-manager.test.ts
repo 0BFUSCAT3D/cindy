@@ -2,7 +2,7 @@
 // then the foreground caller must unload the actual launchd job. No real
 // system registration is performed by these command-contract tests.
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { TerminalServiceManager } from './service-manager.js';
@@ -92,6 +92,39 @@ it.each(['darwin', 'win32'] as const)('registers explicit %s boot operation thro
     expect(script).toContain('ZeroFreeBSTR');
     expect(Object.keys(env ?? {})).not.toContain('PASSWORD');
   }
+});
+
+// Native Windows rejected UTF-8 task XML with "unable to switch the encoding".
+// Exercise the real installation and boot-conversion entries, including paths
+// outside ASCII, rather than checking a generated source-code literal.
+it('registers and upgrades a Windows task with a decodable Unicode descriptor', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'cindy-service-command-test-')); directories.push(directory);
+  const profile = path.join(directory, '终端 配置');
+  const imported: string[] = [];
+  const readDescriptor = async (file: string) => {
+    const bytes = await readFile(file);
+    expect([...bytes.subarray(0, 2)]).toEqual([0xff, 0xfe]);
+    const text = bytes.subarray(2).toString('utf16le');
+    expect(text).toContain('encoding="UTF-16"');
+    expect(text).toContain(profile);
+    imported.push(text);
+  };
+  const manager = new TerminalServiceManager(profile, path.join(directory, '启动.js'), process.execPath, {
+    platform: 'win32', home: directory, env: {},
+    execute: async (file, args) => {
+      if (file === 'whoami.exe') return { stdout: args.length ? '"test-user","S-1-5-21-1234"' : 'machine\\test-user', stderr: '' };
+      if (file === 'schtasks.exe' && args[0] === '/Create') await readDescriptor(args[args.indexOf('/XML') + 1]);
+      return { stdout: '', stderr: '' };
+    },
+    interactive: async (_file, _args, env) => { await readDescriptor(env!.CINDY_BOOT_XML!); },
+  });
+  const installed = await manager.install();
+  await manager.enableBoot();
+  expect(imported[0]).toContain('<LogonType>InteractiveToken</LogonType>');
+  expect(imported[1]).toContain('<LogonType>Password</LogonType>');
+  expect(imported[1]).toContain('<BootTrigger>');
+  await readDescriptor(installed.file);
+  expect(imported[2]).toEqual(imported[1]);
 });
 
 // A rejected system bootstrap must not disable an existing working user job.
