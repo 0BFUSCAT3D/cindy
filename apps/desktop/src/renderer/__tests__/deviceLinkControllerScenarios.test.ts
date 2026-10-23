@@ -324,26 +324,30 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     }
   });
 
-  it('does not mirror a history publish after the view leaves', async () => {
+  it('keeps the pending-error leave cleanup when a mirror was already queued', async () => {
     const s = sid();
     host.enableHistoryView();
-    host.seedSession(s, {}, [dbMessage(s, 'first', 'first', '2026-06-15T00:00:00Z')]);
+    host.seedSession(s, {}, [dbMessage(s, 'question', 'question', '2026-06-15T00:00:00Z', 'user')]);
     remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
     const leave = makerChatStore.enterView(s);
-    const notify = vi.fn();
-    let off = () => {};
     try {
       makerChatStore.ensureInitialMessages(s);
       await flush();
-      const view = getRemoteHistoryView(s)!;
-      off = makerChatStore.subscribe(s, notify);
+      expect(makerChatStore.getSnapshot(s).historyLoaded).toBe(true);
+      host.push('maker:input:projection', { ...emptyProjection(s), error: 'remote failure' });
+      host.push('maker:event', {
+        sessionId: s,
+        persistId: 'err-1',
+        event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message: 'remote failure' } },
+      });
+      host.push('local-db:session:error-persisted', { sessionId: s, persistId: 'err-1' });
+      expect(makerChatStore.getSnapshot(s).error).toBe('remote failure');
       leave();
       await flush();
-      expect(view.isActive()).toBe(false);
-      expect(notify).not.toHaveBeenCalled();
+      expect(makerChatStore.getSnapshot(s).historyLoaded).toBe(false);
+      expect(makerChatStore.getSnapshot(s).error).toBeNull();
     } finally {
-      off();
-      leave();
+      makerChatStore.purgeSession(s);
     }
   });
 

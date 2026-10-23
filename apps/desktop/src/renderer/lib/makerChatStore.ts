@@ -4203,6 +4203,8 @@ function resolveGatewayRecoveryProviderId(
 }
 
 function enterView(sessionId: string): () => void {
+  const entry = remoteHistoryViews.get(sessionId);
+  if (entry) entry.mirrorPaused = false;
   const view = getRemoteHistoryView(sessionId);
   const deviceId = remoteProjectsStore.getSessionDeviceId(sessionId);
   if (deviceId) view?.setNetworkAvailable(!isRemoteDeviceMarkedDisconnected(deviceId));
@@ -4327,6 +4329,8 @@ function leaveView(sessionId: string): void {
     return;
   }
   _activeViewSessions.delete(sessionId);
+  const entry = remoteHistoryViews.get(sessionId);
+  if (entry) entry.mirrorPaused = true;
   getRemoteHistoryView(sessionId)?.setActive(false);
   cancelIdlePlanDiscovery(sessionId);
   _lastViewedAt.set(sessionId, Date.now());
@@ -11727,6 +11731,7 @@ const remoteHistoryViews = new Map<string, {
   view: HistoryViewController<HistoryChatMessage> | undefined;
   intentQueue: { tail: Promise<void> };
   isCurrent(): boolean;
+  mirrorPaused: boolean;
 }>();
 function releaseRemoteHistoryView(sessionId: string, expected?: HistoryViewController<HistoryChatMessage>): void {
   const entry = remoteHistoryViews.get(sessionId);
@@ -11811,6 +11816,7 @@ function createRemoteHistoryView(sessionId: string) {
   if (existing) return existing;
   const entry = remoteHistoryViews.get(sessionId) ?? {
     view: undefined, intentQueue: { tail: Promise.resolve() }, isCurrent: () => false,
+    mirrorPaused: false,
   };
   const owner = getDataOwnerGeneration();
   // Begin the protected disk read before taking write tokens for remote requests.
@@ -11868,11 +11874,9 @@ function createRemoteHistoryView(sessionId: string) {
   view.setNetworkAvailable(!deviceId || !isRemoteDeviceMarkedDisconnected(deviceId));
   let mirrorScheduled = false;
   let mirrorEpoch = 0;
-  let mirrorLease = 0;
   const mirrorSnapshot = () => {
     mirrorScheduled = false;
-    if (!isCurrent() || !sessions.has(sessionId)) return;
-    if ((_activeViewSessions.get(sessionId) ?? 0) < mirrorLease) return;
+    if (!isCurrent() || !sessions.has(sessionId) || entry.mirrorPaused) return;
     if ((_messagesEpoch.get(sessionId) ?? 0) !== mirrorEpoch) return;
     const snapshot = view.getSnapshot();
     if (isHistoryViewUnavailable(snapshot.error)) {
@@ -11933,7 +11937,6 @@ function createRemoteHistoryView(sessionId: string) {
     if (mirrorScheduled) return;
     mirrorScheduled = true;
     mirrorEpoch = _messagesEpoch.get(sessionId) ?? 0;
-    mirrorLease = _activeViewSessions.get(sessionId) ?? 0;
     queueMicrotask(mirrorSnapshot);
   });
   void view.restoreCachedView(async () => {
