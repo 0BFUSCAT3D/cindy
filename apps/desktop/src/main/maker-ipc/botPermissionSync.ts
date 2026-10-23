@@ -9,39 +9,50 @@ import { withSessionPermissionChange } from './sessionPermissionChange.js';
 export async function syncBotLanePermission(sessionId: string): Promise<void> {
   const owner = getCurrentDbClientSnapshot();
   if (!owner) return;
-  await withSessionPermissionChange(sessionId, async () => {
-    const assertCurrent = () => {
-      if (getCurrentDbClientSnapshot() !== owner) throw new Error('Account changed during lane permission update');
-    };
-    assertCurrent();
-    let saved: { mode: string | null; changed: boolean };
-    try {
-      saved = await owner.client.tx('bots.reconcileLanePermission', { sessionId });
-    } catch (error) {
+  let repairedCanonicalSessionId: string | undefined;
+  try {
+    await withSessionPermissionChange(sessionId, async () => {
+      const assertCurrent = () => {
+        if (getCurrentDbClientSnapshot() !== owner) throw new Error('Account changed during lane permission update');
+      };
       assertCurrent();
-      const maker = getMakerIfReady();
-      if (maker?.getSession(sessionId)) await maker.closeSession(sessionId);
-      throw error;
-    }
-    const { mode, changed } = saved;
-    assertCurrent();
-    if (!mode) return;
-    const maker = getMakerIfReady();
-    const live = maker?.getSession(sessionId);
-    if (changed || (live && live.stablePermissionModeState?.mode !== mode)) forgetCredentialGrants(sessionId);
-    if (live && live.stablePermissionModeState?.mode !== mode) {
+      let saved: { mode: string | null; changed: boolean; canonicalSessionId?: string };
       try {
-        await live.setPermissionMode(mode as PermissionMode);
+        saved = await owner.client.tx('bots.reconcileLanePermission', { sessionId });
       } catch (error) {
         assertCurrent();
-        // Never leave a failed tightening running with its previous authority.
-        if (maker?.getSession(sessionId) === live) await maker.closeSession(sessionId);
+        const maker = getMakerIfReady();
+        if (maker?.getSession(sessionId)) await maker.closeSession(sessionId);
         throw error;
       }
+      const { mode, changed } = saved;
       assertCurrent();
+      repairedCanonicalSessionId = saved.canonicalSessionId;
+      if (!mode) return;
+      const maker = getMakerIfReady();
+      const live = maker?.getSession(sessionId);
+      if (changed || (live && live.stablePermissionModeState?.mode !== mode)) forgetCredentialGrants(sessionId);
+      if (live && live.stablePermissionModeState?.mode !== mode) {
+        try {
+          await live.setPermissionMode(mode as PermissionMode);
+        } catch (error) {
+          assertCurrent();
+          // Never leave a failed tightening running with its previous authority.
+          if (maker?.getSession(sessionId) === live) await maker.closeSession(sessionId);
+          throw error;
+        }
+        assertCurrent();
+      }
+      broadcastSessionPatched(sessionId, { permissionMode: mode });
+    });
+  } finally {
+    // Release the current lane's fence before visiting siblings (including this
+    // lane). The transaction has already repaired their saved values atomically.
+    // Even a failed hot switch must not strand other running lanes on old authority.
+    if (repairedCanonicalSessionId && getCurrentDbClientSnapshot() === owner) {
+      await syncBotLinkedLanePermissions(repairedCanonicalSessionId);
     }
-    broadcastSessionPatched(sessionId, { permissionMode: mode });
-  });
+  }
 }
 
 /** Called after a canonical save; delegated work and archived history keep their own authority. */

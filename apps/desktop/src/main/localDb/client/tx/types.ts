@@ -837,6 +837,8 @@ export interface BotGroupsCreateLaneArgs {
 export interface BotGroupsCreateLaneResult {
   sessionId: string;
   created: boolean;
+  /** Existing runtimes must follow a canonical permission repaired during creation. */
+  permissionRepairCanonicalSessionId?: string;
 }
 
 /** 伙伴接管的个人 IM 群 / 话题专线(`role = 'channel'`)。 */
@@ -1535,7 +1537,7 @@ export type DbTxResultByName = {
   'bots.archiveLifecycle': { sessions: number };
   'bots.deleteProfile': { sessionIds: string[]; status: 'archived' | 'deleted' };
   'bots.prepareProfileDeletion': undefined;
-  'bots.reconcileLanePermission': { mode: string | null; changed: boolean };
+  'bots.reconcileLanePermission': { mode: string | null; changed: boolean; canonicalSessionId?: string };
   'bots.persistSessionPermission': { updated: boolean };
   'bots.createGroupLane': BotGroupsCreateLaneResult;
   'bots.createChannelLane': BotGroupsCreateLaneResult;

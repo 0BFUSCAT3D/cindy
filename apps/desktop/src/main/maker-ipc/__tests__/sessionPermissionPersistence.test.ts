@@ -131,6 +131,37 @@ describe('permission persistence without a live runtime', () => {
     expect(good.stablePermissionModeState.mode).toBe('ask');
   });
 
+  // #6782, unit: a legacy main/Profile disagreement survived the original fix.
+  // Minimal input: main bypass + Profile ask + existing ask lane. Calling the real
+  // send/reuse reconciliation must repair both stored siblings and live runtimes.
+  it.each([
+    ['bypassPermissions', 'ask', 'trusted'],
+    ['ask', 'bypassPermissions', 'ask'],
+  ])('uses main %s to repair stale %s lanes and Profile together', async (mainMode, staleMode, permission) => {
+    sqlite.prepare("UPDATE sessions SET permission_mode = ? WHERE id = 'chat'").run(mainMode);
+    sqlite.prepare('UPDATE bot_profile_versions SET capabilities_json = ?')
+      .run(JSON.stringify({ permissions: staleMode === 'ask' ? 'ask' : 'trusted', memory: true }));
+    sqlite.exec(`INSERT INTO sessions (id, permission_mode, updated_at) VALUES ('lane','ask',1), ('sibling','ask',1);
+      INSERT INTO bot_session_links VALUES ('bot-1','lane','channel',NULL), ('bot-1','sibling','group',NULL);`);
+    sqlite.prepare("UPDATE sessions SET permission_mode = ? WHERE id != 'chat'").run(staleMode);
+    for (const id of ['lane', 'sibling']) {
+      const live = { stablePermissionModeState: { mode: staleMode }, setPermissionMode: vi.fn(async (mode: string) => { live.stablePermissionModeState = { mode }; }) };
+      h.live.set(id, live);
+    }
+    await syncBotLanePermission('lane');
+    expect(sqlite.prepare('SELECT DISTINCT permission_mode FROM sessions').pluck().all()).toEqual([mainMode]);
+    expect(JSON.parse(sqlite.prepare('SELECT capabilities_json FROM bot_profile_versions').pluck().get() as string))
+      .toEqual({ permissions: permission, memory: true });
+    for (const id of ['lane', 'sibling']) {
+      expect(h.live.get(id)?.stablePermissionModeState.mode).toBe(mainMode);
+      expect(h.patched).toHaveBeenCalledWith(id, { permissionMode: mainMode });
+      expect(h.live.get(id)?.setPermissionMode).toHaveBeenCalledTimes(1);
+    }
+    // Reload/next send keeps the repaired authority without another hot switch.
+    await syncBotLanePermission('lane');
+    expect(h.live.get('lane')?.setPermissionMode).toHaveBeenCalledTimes(1);
+  });
+
   it('serializes successive lane updates and discards an outgoing account continuation', async () => {
     sqlite.exec(`INSERT INTO sessions (id, permission_mode, updated_at) VALUES ('lane','bypassPermissions',1);
       INSERT INTO bot_session_links VALUES ('bot-1','lane','channel',NULL);`);
@@ -150,6 +181,35 @@ describe('permission persistence without a live runtime', () => {
     owner.client.tx = async () => { h.owner = {}; return {mode:'ask'}; };
     await expect(syncBotLanePermission('lane')).rejects.toThrow('Account changed');
     expect(h.patched).not.toHaveBeenCalled();
+  });
+
+  // Distinct failure branch: repair has already cascaded saved permissions, but
+  // the initiating runtime rejects. Siblings must still consume the repair.
+  it('finishes a legacy repair on sibling runtimes after the initiating hot switch fails', async () => {
+    sqlite.exec(`UPDATE bot_profile_versions SET capabilities_json = '{"permissions":"trusted"}';
+      INSERT INTO sessions (id, permission_mode, updated_at) VALUES ('bad','bypassPermissions',1), ('good','bypassPermissions',1);
+      INSERT INTO bot_session_links VALUES ('bot-1','bad','channel',NULL), ('bot-1','good','channel',NULL);`);
+    const good = { stablePermissionModeState: { mode: 'bypassPermissions' }, setPermissionMode: vi.fn(async (mode: string) => { good.stablePermissionModeState = { mode }; }) };
+    h.live.set('bad', { stablePermissionModeState: { mode: 'bypassPermissions' }, setPermissionMode: vi.fn(async () => { throw new Error('switch failed'); }) });
+    h.live.set('good', good);
+    await expect(syncBotLanePermission('bad')).rejects.toThrow('switch failed');
+    expect(h.live.has('bad')).toBe(false);
+    expect(good.stablePermissionModeState.mode).toBe('ask');
+    expect(sqlite.prepare('SELECT DISTINCT permission_mode FROM sessions').pluck().all()).toEqual(['ask']);
+  });
+
+  it.each(['missing', 'plan'])('keeps Profile authority for lanes when main is %s', async kind => {
+    if (kind === 'missing') sqlite.exec("DELETE FROM sessions WHERE id = 'chat'");
+    else sqlite.exec("UPDATE sessions SET permission_mode = 'plan' WHERE id = 'chat'");
+    sqlite.exec(`UPDATE bot_profile_versions SET capabilities_json = '{"permissions":"trusted"}';
+      INSERT INTO sessions (id, permission_mode, updated_at) VALUES ('lane','ask',1);
+      INSERT INTO bot_session_links VALUES ('bot-1','lane','channel',NULL);`);
+    await syncBotLanePermission('lane');
+    expect(sqlite.prepare("SELECT permission_mode FROM sessions WHERE id = 'lane'").pluck().get()).toBe('bypassPermissions');
+    if (kind === 'plan') {
+      await syncBotLanePermission('chat');
+      expect(sqlite.prepare("SELECT permission_mode FROM sessions WHERE id = 'chat'").pluck().get()).toBe('plan');
+    }
   });
 
   it.each(['missing', 'malformed'])('does not keep old authority when the active Profile is %s', async failure => {

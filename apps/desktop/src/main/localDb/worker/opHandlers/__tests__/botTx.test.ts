@@ -222,8 +222,18 @@ describe('Bot named worker transactions', () => {
     tx(db, { name: 'bots.createChannelLane', args: { botId: 'bot-1', routeKey: 'im:feishu:g:2', session: session('new') } });
     expect(mode('new')).toBe('bypassPermissions');
     db.prepare("UPDATE bot_profile_versions SET capabilities_json = ? WHERE bot_id = 'bot-1'").run(JSON.stringify({ permissions: 'ask' }));
-    expect(tx(db, { name: 'bots.reconcileLanePermission', args: { sessionId: 'feishu' } })).toMatchObject({ mode: 'ask' });
-    expect(mode('feishu')).toBe('ask');
+    expect(tx(db, { name: 'bots.reconcileLanePermission', args: { sessionId: 'feishu' } }))
+      .toMatchObject({ mode: 'bypassPermissions', canonicalSessionId: 'main' });
+    expect(['main', 'feishu', 'group', 'thread', 'new'].map(mode))
+      .toEqual(Array(5).fill('bypassPermissions'));
+    expect(JSON.parse(db.prepare('SELECT capabilities_json FROM bot_profile_versions WHERE bot_id = ?').pluck().get('bot-1') as string).permissions)
+      .toBe('trusted');
+    // Main is authoritative in both directions; never choose the widest snapshot.
+    db.prepare("UPDATE sessions SET permission_mode = 'ask' WHERE id = 'main'").run();
+    expect(tx(db, { name: 'bots.reconcileLanePermission', args: { sessionId: 'main' } }))
+      .toMatchObject({ mode: 'ask', canonicalSessionId: 'main' });
+    expect(['main', 'feishu', 'group', 'thread', 'new'].map(mode)).toEqual(Array(5).fill('ask'));
+    expect(['delegation', 'history'].map(mode)).toEqual(['ask', 'ask']);
     expect(tx(db, { name: 'bots.reconcileLanePermission', args: { sessionId: 'history' } })).toMatchObject({ mode: null });
     expect(db.prepare('SELECT COUNT(*) FROM sessions').pluck().get()).toBe(7);
   });

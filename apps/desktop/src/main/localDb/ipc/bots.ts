@@ -425,6 +425,10 @@ export async function ensureBotGroupLaneSession(input: {
     },
   });
   owner.assertCurrent();
+  if (result.permissionRepairCanonicalSessionId) {
+    await syncBotLinkedLanePermissions(result.permissionRepairCanonicalSessionId);
+    owner.assertCurrent();
+  }
   return { ok: true, sessionId: result.sessionId, created: result.created };
 }
 
@@ -548,6 +552,10 @@ export async function ensureBotChannelLaneSession(input: {
     throw cause;
   }
   owner.assertCurrent();
+  if (result.permissionRepairCanonicalSessionId) {
+    await syncBotLinkedLanePermissions(result.permissionRepairCanonicalSessionId);
+    owner.assertCurrent();
+  }
   return { ok: true, sessionId: result.sessionId, created: result.created };
 }
 
@@ -679,6 +687,10 @@ export async function ensureBotDmThreadSession(input: {
     throw cause;
   }
   owner.assertCurrent();
+  if (result.permissionRepairCanonicalSessionId) {
+    await syncBotLinkedLanePermissions(result.permissionRepairCanonicalSessionId);
+    owner.assertCurrent();
+  }
   return { ok: true, sessionId: result.sessionId, created: result.created };
 }
 

@@ -970,6 +970,28 @@ describe('Bot canonical Session lifecycle', () => {
     },
   );
 
+  // #6782, unit: creation repairs in the worker before Main can see the old
+  // Profile. The returned repair receipt must still update an existing runtime.
+  it('repairs legacy permissions during new channel creation and hot-switches an existing lane', async () => {
+    const initial = await invoke('local-db:bots:update', { id: 'bot-1', capabilities: { permissions: 'ask' } });
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: initial.currentVersion,
+    });
+    const existing = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:1', title: 'Old' });
+    if (!existing.ok) throw new Error(existing.message);
+    h.sqlite!.prepare("UPDATE sessions SET permission_mode = 'bypassPermissions' WHERE id = ?").run(created.session.id);
+    const live = { compactSession: vi.fn(), stablePermissionModeState: { mode: 'ask' },
+      setPermissionMode: vi.fn(async (mode: string) => { live.stablePermissionModeState = { mode }; }) };
+    h.getSession.mockImplementation(id => id === existing.sessionId ? live : null);
+    const next = await ensureBotChannelLaneSession({ botId: 'bot-1', routeKey: 'im:feishu:fixture:g:2', title: 'New' });
+    if (!next.ok) throw new Error(next.message);
+    expect(live.stablePermissionModeState.mode).toBe('bypassPermissions');
+    expect(live.setPermissionMode).toHaveBeenCalledTimes(1);
+    expect(h.sqlite!.prepare('SELECT permission_mode FROM sessions WHERE id IN (?, ?, ?)').pluck()
+      .all(created.session.id, existing.sessionId, next.sessionId)).toEqual(Array(3).fill('bypassPermissions'));
+    expect((await invoke('local-db:bots:get', 'bot-1')).capabilities.permissions).toBe('trusted');
+  });
+
   // #6782, unit: an explicit idempotent edit is still a new permission intent.
   // The previous diff only protected changed=true profile saves.
   it('commits an explicit same-value permission after a concurrent composer choice', async () => {
