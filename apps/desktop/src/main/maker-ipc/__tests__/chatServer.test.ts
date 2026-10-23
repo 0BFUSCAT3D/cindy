@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const avatarUpload = vi.hoisted(() => vi.fn());
+vi.mock('../../ossPublicUpload.js', () => ({ uploadPublicAsset: avatarUpload }));
 const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> => []), download: vi.fn(), packaged: true, urls: [] as string[], wsUrls: [] as string[], exists: vi.fn(), config: '', handle: vi.fn(), profiles: [] as unknown[], sockets: [] as import('ws').WebSocket[], token: 'isolated-test-token', refresh: vi.fn(async () => true), requests: [] as Array<{ url: string; token: string; actor?: string }> }));
 vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, refresh: fixture.refresh }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
 vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: fixture.upload, download: fixture.download }) }));
+const replyImages = vi.hoisted(() => vi.fn(async (text: string): Promise<{ text: string; attachments: import('../../../shared/botGroupChat.js').BotGroupAttachment[] }> => ({ text, attachments: [] })));
+vi.mock('../chatServerReplyImages.js', () => ({ prepareChatReplyImages: replyImages }));
 // Persists across adapter recreation; the SQLite implementation has its own persistence tests.
 const taskPosts = vi.hoisted(() => new Map<string, unknown>());
 vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: async (taskId: string, scope: unknown, prepare: () => Promise<unknown>) => {
@@ -13,7 +17,8 @@ vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: asyn
 vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
 const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
-vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' } }));
+vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' },
+  nativeImage: { createFromBuffer: () => ({ isEmpty: () => false, getSize: () => ({ width: 1, height: 1 }) }) } }));
 // The real filesystem, except an `lstat` failure a test injects for a delivery file.
 const fsFault = vi.hoisted(() => ({ lstat: null as Error | null }));
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -148,6 +153,8 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.refresh.mockReset().mockResolvedValue(true);
     migration.read.mockReset().mockReturnValue(null);
     taskPosts.clear();
+    fixture.upload.mockReset().mockResolvedValue([]);
+    replyImages.mockReset().mockImplementation(async text => ({ text, attachments: [] }));
     deps = { ensureLane: vi.fn(async () => ({ ok: true, sessionId: 'lane' })), abortLane: vi.fn(async () => {}),
       dispatch: vi.fn(async (input: Parameters<BotGroupChatServiceDeps['dispatch']>[0]) => { await input.onAccepted?.(); return { ok: true }; }),
       onChanged: vi.fn(),
@@ -159,6 +166,45 @@ describe('Chat Server result delivery and refresh', () => {
     await service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 7 });
     expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}`, 'PATCH', expect.objectContaining({ name: 'Draft', expectedRevision: 7 }));
   });
+  // Group avatar regression: exercise the production manage entry, real image
+  // validation and HTTP payload, with only the network/image decoder faked.
+  it.each(['set', 'reset', 'keep', 'invalid', 'unsupported', 'upload-failure', 'account-change'] as const)(
+    'keeps group avatar %s scoped to the current room and account', async mode => {
+      let currentAccount = true;
+      service.dispose();
+      deps.captureOwnerScope = () => ({}) as ReturnType<NonNullable<typeof deps.captureOwnerScope>>;
+      deps.isOwnerScopeCurrent = () => currentAccount;
+      service = withChatServer({ listGroups: async () => ({ ok: true, groups: [] }), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      fixture.handle.mockImplementation(route => {
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupMemberAvatar: mode === 'unsupported' ? undefined : 1 } } };
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [
+          { id: selfId, kind: 'human', name: 'Me', displayName: 'Account me', ownerActorId: selfId, state: 'joined', role: 'owner',
+            avatar: 'https://example.com/group.png', groupAvatar: 'https://example.com/group.png', defaultAvatarUrl: 'https://example.com/account.png' },
+        ], messages: [], cursor: '1' } };
+        return response(route);
+      });
+      avatarUpload.mockImplementation(async () => {
+        if (mode === 'account-change') currentAccount = false;
+        return mode === 'upload-failure' ? { ok: false, stage: 'put', status: 500 }
+          : { ok: true, publicUrl: 'https://example.com/new-group.png' };
+      });
+      const bytes = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6sQAAAABJRU5ErkJggg==', 'base64'));
+      const avatar = mode === 'reset' || mode === 'keep' ? { type: mode }
+        : { type: 'set' as const, data: mode === 'invalid' ? new Uint8Array([1]) : bytes, mimeType: 'image/png' };
+      const result = await service.chatServer!.manage({ groupId: roomId, action: { type: 'avatar', actorId: selfId, avatar } });
+      const writes = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/nickname` && method === 'POST');
+      if (mode === 'set' || mode === 'reset') {
+        expect(result).toEqual({ ok: true });
+        expect(writes).toEqual([[`/conversations/${roomId}/nickname`, 'POST', {
+          operationId: expect.any(String), actorId: selfId, avatar: mode === 'reset' ? null : 'https://example.com/new-group.png',
+        }]]);
+      } else {
+        expect(writes).toEqual([]);
+        expect(result.ok).toBe(mode === 'keep');
+      }
+      if (['keep', 'reset', 'invalid', 'unsupported'].includes(mode)) expect(avatarUpload).not.toHaveBeenCalled();
+      expect(fixture.urls.some(url => url.includes('/api/me/profile'))).toBe(false);
+    });
   it('preserves a server revision conflict after the host precheck', async () => {
     fixture.handle.mockImplementation((route, method) => method === 'PATCH'
       ? { status: 409, body: { error: { code: 'REVISION_CONFLICT', message: 'private server detail' } } }
@@ -512,6 +558,72 @@ describe('Chat Server result delivery and refresh', () => {
   }
   const terminal = { sessionId: 'lane', activeInputClientId: null, outcome: 'done' as const, resultText: 'Finished reply' };
   const deliveries = () => fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'complete');
+
+  // #6418: media visibility changes, but the original reply still determines
+  // continuation. The helper mock isolates import/ledger tests from settlement.
+  const replyImage = { id: 'image', name: 'image.png', category: 'image' as const,
+    mimeType: 'image/png', size: 3, url: 'cindy-media://image', path: null };
+  const imageBlock = { type: 'media', mediaId: '60000000-0000-4000-8000-000000000001' };
+  it.each(['Here is ![image](cindy-media://image)', '![](cindy-media://image)'])('delivers images with baseline continuation for %s', async resultText => {
+    const display = resultText.startsWith('Here') ? 'Here is image' : '';
+    replyImages.mockResolvedValue({ text: display, attachments: [replyImage] }); fixture.upload.mockResolvedValue([imageBlock]);
+    await start(); await service.settleLaneTurn({ ...terminal, resultText });
+    expect(deliveries()[0][2]).toMatchObject({ continueDiscussion: true,
+      content: [{ type: 'text', text: display || '已完成' }, imageBlock] });
+  });
+  it.each(['Hello', '', 'NO_REPLY'])('keeps the baseline no-image result for %j', async resultText => {
+    await start(); await service.settleLaneTurn({ ...terminal, resultText });
+    expect(deliveries()[0][2].continueDiscussion).toBe(resultText === 'Hello');
+    if (resultText === 'Hello') expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'Hello' }]);
+    else expect(deliveries()[0][2]).not.toHaveProperty('content');
+  });
+  it.each([408, 429, 503])('reuses imported images after HTTP %s and completion ACK loss', async status => {
+    replyImages.mockResolvedValueOnce({ text: 'Original image', attachments: [replyImage] }).mockRejectedValue(new Error('ATTACHMENT_UNAVAILABLE'));
+    fixture.upload.mockRejectedValueOnce(new ChatResponseError('TEMPORARY_UPLOAD', status)).mockResolvedValue([imageBlock]);
+    let attempts = 0;
+    fixture.handle.mockImplementation((route, _method, body) => {
+      if (body?.action === 'complete' && attempts++ === 0) throw new Error('lost ACK'); return response(route);
+    });
+    await start(); await service.settleLaneTurn({ ...terminal, resultText: '![](xdt-image:///task/generated.png)' });
+    expect(deliveries()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(status === 429 ? 61000 : 16000);
+    expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'Original image' }, imageBlock]);
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(deliveries()).toHaveLength(2); expect(deliveries()[1][2]).toEqual(deliveries()[0][2]);
+    expect(replyImages).toHaveBeenCalledOnce(); expect(fixture.upload).toHaveBeenCalledTimes(2);
+    expect(fixture.upload.mock.calls[1].slice(0, 4)).toEqual(fixture.upload.mock.calls[0].slice(0, 4));
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['prepare', new Error('ATTACHMENT_UNAVAILABLE')],
+    ['upload', Object.assign(new Error('denied'), { code: 'EACCES', syscall: 'open' })],
+    ['upload', new ChatResponseError('UPLOAD_QUOTA', 413)],
+    ['upload', Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: 400 })],
+    ['upload', Object.assign(new TypeError('invalid URL'), { code: 'ERR_INVALID_URL' })],
+  ] as const)('settles permanent image refusal at %s: %s', async (phase, error) => {
+    replyImages.mockResolvedValue({ text: 'image', attachments: [replyImage] });
+    if (phase === 'prepare') replyImages.mockRejectedValue(error); else fixture.upload.mockRejectedValue(error);
+    await start(); await service.settleLaneTurn(terminal);
+    const failures = () => fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail');
+    expect(failures()).toHaveLength(1); expect(deliveries()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(16000); expect(failures()).toHaveLength(1); expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, 30_000, 120_000])('waits for PUT 429 cooldown %s before retrying the same reply', async delay => {
+    replyImages.mockResolvedValue({ text: 'image', attachments: [replyImage] });
+    await start();
+    const wait = Math.max(60_000, delay ?? 0);
+    fixture.upload.mockRejectedValueOnce(Object.assign(new Error('MEDIA_UPLOAD_FAILED'),
+      { status: 429, retryAt: delay === undefined ? undefined : Date.now() + delay })).mockResolvedValue([imageBlock]);
+    await service.settleLaneTurn({ ...terminal, resultText: '![](cindy-media://image)' });
+    await vi.advanceTimersByTimeAsync(wait - 1000);
+    expect(fixture.upload).toHaveBeenCalledOnce(); expect(deliveries()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(fixture.upload).toHaveBeenCalledTimes(2);
+    expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'image' }, imageBlock]);
+    expect(replyImages).toHaveBeenCalledOnce(); expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
 
   it.each([{ codexErrorInfo: 'serverOverloaded' }, { reason: 'upstream-overload' }, { errorStatus: 529 }])
     ('submits only the capacity category after the SDK terminal %j', async signals => {
@@ -1412,6 +1524,162 @@ describe('Chat Server result delivery and refresh', () => {
     expect(await service.settleLaneTurn(terminal)).toBe(true);
     expect(deliveries()).toHaveLength(1);
     expect(deliveries()[0][0]).toContain(nextId);
+  });
+
+  // bot-group-chat.md §4/§7: a groupSingleSpeaker server gives each request one teammate; the
+  // lead of an un-addressed request may name who speaks next, in the same answer. Old servers
+  // keep automatic rounds (covered by the claim fallback test below).
+  describe('one teammate per request (groupSingleSpeaker)', () => {
+    const otherBot = '20000000-0000-4000-8000-000000000002';
+    const foreignBot = '20000000-0000-4000-8000-000000000003';
+    const otherHuman = '30000000-0000-4000-8000-000000000002';
+    const member = (id: string, kind: 'human' | 'bot', ownerActorId: string, role = 'member') =>
+      ({ id, kind, name: id === botId ? 'Bot' : 'Peer', displayName: 'Peer', nickname: null, avatar: null, ownerActorId, ownerName: 'Owner', state: 'joined', role, guestAccess: 'chat', accessRevision: 1 });
+    // botRole: the account's own teammate may hold the owner/admin role instead of its human.
+    const members = (role = 'member', botRole = 'member') => [member(selfId, 'human', selfId, role), member(botId, 'bot', selfId), member(otherBot, 'bot', selfId, botRole), member(otherHuman, 'human', otherHuman), member(foreignBot, 'bot', otherHuman)];
+    const message = (id: string, text: string, extra: object = {}) => ({ id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Dash' }, origin: 'user',
+      content: [{ type: 'text', text }], createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId: null, mentions: [], ...extra });
+    function singleSpeaker(extra: (route: string, method?: string, body?: Record<string, unknown>) => unknown = () => undefined, role = 'member', botRole = 'member') {
+      fixture.handle.mockImplementation((route, method, body) => {
+        const override = extra(route, method, body);
+        if (override) return override;
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupSingleSpeaker: 1 } } };
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: members(role, botRole), messages: [], cursor: '1' } };
+        if (route.endsWith('/members')) return { body: members(role, botRole) };
+        return response(route);
+      });
+    }
+    const prompt = () => vi.mocked(deps.dispatch).mock.calls[0][0].message;
+
+    it('posts an un-addressed reply as written and never asks the server to continue a round', async () => {
+      singleSpeaker(route => route.endsWith(`/messages/${execution.source_message_id}`) ? { body: message(execution.source_message_id, 'Let us discuss') } : undefined);
+      await start();
+      await service.settleLaneTurn({ ...terminal, resultText: 'My view.' });
+      const [delivery] = deliveries();
+      expect(delivery[2].content).toEqual([{ type: 'text', text: 'My view.' }]);
+      expect(delivery[2]).not.toHaveProperty('continueDiscussion');
+    });
+
+    // A queue turn reads only its own card; a division of work (every older plan is kind=work after
+    // the server migration) keeps the main-group context it had, including chat-only steps without a workspace.
+    it.each(['talk', 'work'] as const)('gives a %s step the context of its kind', async (kind) => {
+      const planId = '80000000-0000-4000-8000-000000000001';
+      const answerId = '50000000-0000-4000-8000-000000000011', noteId = '50000000-0000-4000-8000-000000000012';
+      const unrelatedFile = '60000000-0000-4000-8000-000000000021', answerFile = '60000000-0000-4000-8000-000000000022';
+      const plan = { id: planId, revision: 3, source_message_id: execution.source_message_id, request_text: 'One reply per message?', organizer_id: otherBot, creator_id: selfId,
+        note_message_ids: [noteId], status: 'running', current_step: 1, kind, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        steps: [{ position: 0, botId: otherBot, botName: 'Peer', task: 'draft', status: 'done', resultMessageId: answerId }, { position: 1, botId, botName: 'Bot', task: 'tests', status: 'running' }] };
+      const file = (mediaId: string, caption: string) => ({ type: 'media', mediaId, caption });
+      singleSpeaker((route, _method, body) => {
+        if (route === '/executions/claim' && !claimed) { claimed = true; return { body: { execution: { ...execution, access_mode: kind === 'talk' ? 'owner' : 'chat', plan_id: planId, plan_step: 1 } } }; }
+        if (route.includes('/plans?ids=')) return { body: [plan] };
+        if (route.includes('/messages?all=true')) return { body: [
+          message('50000000-0000-4000-8000-000000000013', 'unrelated main group chatter', { content: [{ type: 'text', text: 'unrelated main group chatter' }, file(unrelatedFile, 'old.png')] }),
+          message(answerId, 'The first answer', { authorId: otherBot, author: { kind: 'bot', name: 'Peer' }, origin: 'bot', content: [{ type: 'text', text: 'The first answer' }, file(answerFile, 'draft.png')] }),
+          message(noteId, 'Mind the old groups')] };
+        if (route.endsWith(`/messages/${execution.source_message_id}`)) return { body: message(execution.source_message_id, 'One reply per message?') };
+        return body ? undefined : undefined;
+      });
+      fixture.download.mockImplementation(async (_room: string, mediaId: string) => ({ id: mediaId, name: `${mediaId}.png`, category: 'image',
+        mimeType: 'image/png', size: 1, path: `/test/${mediaId}.png`, url: null }));
+      await start();
+      expect(prompt()).toContain('The first answer');
+      expect(prompt()).toContain('Mind the old groups');
+      const downloaded = fixture.download.mock.calls.map(([, mediaId]) => mediaId);
+      if (kind === 'talk') {
+        expect(prompt()).toContain('You are turn 2 of 2. Your focus: tests.');
+        expect(prompt()).not.toContain('unrelated main group chatter');
+        expect(downloaded).toEqual([answerFile]);
+        // A queue turn only talks: no project folder or worktree, its own queue lane rather than a 分工 lane
+        // (an owner-access 分工 lane without a work directory cannot start).
+        expect(deps.ensureLane).toHaveBeenCalledWith(expect.objectContaining({ talkPlanId: planId }));
+        expect(vi.mocked(deps.ensureLane).mock.calls[0][0]).not.toHaveProperty('plan');
+      } else {
+        expect(prompt()).not.toContain('You are turn');
+        expect(prompt()).toContain('unrelated main group chatter');
+        expect(downloaded).toEqual(expect.arrayContaining([answerFile, unrelatedFile]));
+      }
+      // #6708: a talk step is an ordinary reply despite having a plan; work keeps its artifact path.
+      replyImages.mockResolvedValue({ text: 'image', attachments: [replyImage] });
+      fixture.upload.mockResolvedValue([imageBlock]);
+      await service.settleLaneTurn({ ...terminal, resultText: '![](cindy-media://image)' });
+      if (kind === 'talk') {
+        expect(replyImages).toHaveBeenCalledOnce();
+        expect(deliveries()[0][2].content).toEqual([{ type: 'text', text: 'image' }, imageBlock]);
+        expect(fixture.upload).toHaveBeenCalledWith(roomId, expect.any(String), [replyImage], botId, expect.any(Function));
+      } else expect(replyImages).not.toHaveBeenCalled();
+      expect(deliveries()[0][2]).not.toHaveProperty('continueDiscussion');
+    });
+
+    it('sends without holding the request for a helper-model arrangement decision', async () => {
+      singleSpeaker();
+      deps.decidePlan = vi.fn() as typeof deps.decidePlan;
+      expect(await service.sendMessage({ groupId: roomId, text: 'Make a draft', clientId: 'single-speaker-send', mentions: { all: false, botIds: [] }, division: true }))
+        .toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      const post = fixture.handle.mock.calls.find(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')!;
+      expect(post[2].deferExecution).toBe(false);
+      expect(deps.decidePlan).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['waiting for 继续: a new request replaces it', 'waiting', `/conversations/${roomId}/messages`],
+      ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
+    ] as const)('with an open queue %s', async (_label, status, route) => {
+      const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
+        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
+      singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] } : undefined);
+      expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: `queue-${status}`, mentions: { all: false, botIds: [] } }))
+        .toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.handle.mock.calls.filter(([, method]) => method === 'POST').map(([path]) => path)).toContain(route);
+    });
+
+    it.each([
+      ['a member stops only their own requests and teammates', 'member', undefined, [['own', undefined], ['bot', otherBot]]],
+      ['an owner may stop everyone', 'owner', 'all', [['own', undefined], ['bot', undefined], ['foreign', undefined]]],
+      ['an owner who did not ask for all stops only their own', 'owner', undefined, [['own', undefined], ['bot', otherBot]]],
+      ['a member whose own teammate is admin stops everyone as that teammate', 'member', 'all', [['own', undefined], ['bot', otherBot], ['foreign', otherBot]], 'admin'],
+    ] as const)('%s', async (_label, role, scope, expected, botRole?: string) => {
+      const ids = { own: '40000000-0000-4000-8000-00000000000a', bot: '40000000-0000-4000-8000-00000000000b', foreign: '40000000-0000-4000-8000-00000000000c' };
+      singleSpeaker(route => route === `/conversations/${roomId}/executions` ? { body: [
+        { ...execution, id: ids.own, status: 'queued', bot_id: foreignBot, requester_id: selfId },
+        { ...execution, id: ids.bot, status: 'running', bot_id: otherBot, requester_id: otherHuman },
+        { ...execution, id: ids.foreign, status: 'queued', bot_id: foreignBot, requester_id: otherHuman },
+      ] } : undefined, role, botRole ?? 'member');
+      const from = fixture.requests.length;
+      expect(await service.stopRound(roomId, scope)).toEqual({ ok: true });
+      const stops = fixture.requests.slice(from).filter(r => r.url.endsWith('/control'));
+      expect(stops.map(r => [Object.entries(ids).find(([, id]) => r.url.includes(id))![0], r.actor || undefined])).toEqual(expected);
+    });
+
+    // Without the capability the server still runs rounds: Stop ends the whole round and replies read the full main group.
+    const olderServer = (extra: (route: string) => unknown = () => undefined) =>
+      singleSpeaker(route => route === '/me' ? { body: { actor: { id: selfId } } } : extra(route));
+    it.each([['single-speaker', true], ['older', false]] as const)('offers an owner the stop-scope choice only on a %s server', async (_label, offered) => {
+      if (offered) singleSpeaker(undefined, 'owner'); else singleSpeaker(route => route === '/me' ? { body: { actor: { id: selfId } } } : undefined, 'owner');
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await service.getGroup(roomId);
+      expect(result.ok && !!result.group.canStopAll).toBe(offered);
+    });
+    it('keeps the whole-round stop on an older server', async () => {
+      olderServer(route => route === `/conversations/${roomId}/executions` ? { body: [
+        { ...execution, id: '40000000-0000-4000-8000-00000000000a', status: 'queued', bot_id: foreignBot, requester_id: selfId },
+        { ...execution, id: '40000000-0000-4000-8000-00000000000c', status: 'queued', bot_id: foreignBot, requester_id: otherHuman },
+      ] } : undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      const from = fixture.requests.length;
+      expect(await service.stopRound(roomId)).toEqual({ ok: true });
+      expect(fixture.requests.slice(from).filter(r => r.url.endsWith('/control'))).toHaveLength(2);
+    });
+    it('keeps the full main-group context on an older server', async () => {
+      const history = Array.from({ length: 15 }, (_, n) => message(`50000000-0000-4000-8000-0000000001${String(n).padStart(2, '0')}`, `earlier message ${n}`));
+      olderServer(route => route.includes('/messages?all=true') ? { body: history } : undefined);
+      await start();
+      expect(prompt()).toContain('earlier message 0');
+      expect(prompt()).not.toContain('earlierMessagesOmitted');
+    });
   });
 
   it('falls back to ordinary claims when an old strict server rejects the added capability', async () => {

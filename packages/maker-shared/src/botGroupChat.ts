@@ -129,6 +129,9 @@ export interface BotGroupMemberView {
   /** The computer running this owned companion (its Chat Server actor home); live task cards read there. */
   homeDeviceId?: string | null;
   avatarUrl?: string | null;
+  /** Explicit group-only override; null follows the account avatar. */
+  groupAvatar?: string | null;
+  defaultAvatarUrl?: string | null;
   guestAccess?: 'none' | 'chat' | 'tools';
   accessRevision?: number;
   actorKind?: 'human' | 'bot' | 'integration';
@@ -377,6 +380,12 @@ export interface BotGroupPlanView {
   /** Absolute work directory once started; git plans run in their own worktree. */
   workDir: string | null;
   branch: string | null;
+  /** Server groups: `talk` queues teammates answering in turn (the first five go on by themselves); `work` divides work into steps. */
+  kind?: 'talk' | 'work';
+  /** Server groups: the viewer may continue or stop it (creator, owner or admin). */
+  canManage?: boolean;
+  /** Server groups: what the viewer sends without naming anyone goes to the step under way (creator, or a human owner/admin). */
+  canAdd?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -389,6 +398,8 @@ export interface BotGroupOpenPlanSummary {
   /** Bot of the current step (running, being redone, or last finished / failed). */
   currentBotName: string | null;
   currentStepStatus: BotGroupPlanStepStatus | null;
+  /** Server groups: a queue of teammates answering in turn (`talk`) or a division of work. */
+  kind?: 'talk' | 'work';
 }
 
 export function isBotGroupPlanOpen(status: BotGroupPlanStatus): boolean {
@@ -423,6 +434,8 @@ export interface BotGroupRoundView {
   speakers: BotGroupSpeaker[];
   /** True when the latest round ended naturally and may be continued. */
   canContinue: boolean;
+  /** Server groups: someone else's request or teammate is also working, so stopping only yours leaves it running. */
+  othersActive?: boolean;
 }
 
 export interface BotGroupSummary {
@@ -432,10 +445,18 @@ export interface BotGroupSummary {
   /** Upgraded host forwards leave explicitly; absent on old compatibility hosts. */
   supportsGroupLeave?: boolean;
   supportsListRemoval?: boolean;
+  supportsMemberAvatar?: boolean;
   dissolvedAt?: string | null;
   archived?: boolean;
   migrationPending?: boolean;
   canInvite?: boolean;
+  /** Server groups: an owner or admin may also stop everyone's work, not only their own. */
+  canStopAll?: boolean;
+  /**
+   * Server groups whose server gives each request one teammate (the lead when nobody is named)
+   * and arranges turns itself; no reply/speaking modes and no 安排分工 entry (bot-group-chat.md §4).
+   */
+  singleSpeaker?: boolean;
   selfActorId?: string;
   topic?: string;
   description?: string;
@@ -693,7 +714,15 @@ export function chatGroupLaneRouteKey(groupId: string, access: ChatLaneAccess): 
   return `group:${groupId}:access:${access.mode}:${access.revision}`;
 }
 export function isChatOnlyGroupLane(routeKey: string | null | undefined): boolean {
-  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+|:thread:[^:]+)?$/.test(routeKey ?? '');
+  return /^group:[^:]+:access:chat:[1-9][0-9]*(?::plan:[^:]+|:thread:[^:]+|:talk:[^:]+)?$/.test(routeKey ?? '');
+}
+
+/**
+ * A queue's own lane (bot-group-chat.md §7.0): one hidden Session per queue, grant and teammate,
+ * so each turn reads only its card. It talks in the group lane's place, never a project folder.
+ */
+export function chatGroupTalkRouteKey(groupId: string, access: ChatLaneAccess, planId: string): string {
+  return `${chatGroupLaneRouteKey(groupId, access)}:talk:${planId}`;
 }
 
 /**
@@ -710,9 +739,9 @@ export function parseBotGroupThreadRouteKey(routeKey: string | null | undefined)
   return match ? { groupId: match[1]!, threadRootId: match[2]! } : null;
 }
 
-/** The group lane a Thread lane belongs to; a Thread works in the same place as its group lane. */
+/** The group lane a Thread or queue lane belongs to; both work in the same place as their group lane. */
 export function groupLaneOfRouteKey(routeKey: string): string {
-  return routeKey.replace(/:thread:[^:]+$/, '');
+  return routeKey.replace(/:(?:thread|talk):[^:]+$/, '');
 }
 
 export function botGroupLaneRouteKey(groupId: string): string {
@@ -753,6 +782,7 @@ export interface ChatInvitePreview {
 export type ChatGroupAction =
   | { type: 'update'; name: string; topic: string; description: string; expectedRevision: number; responseMode?: BotGroupReplyMode; speakingMode?: BotGroupSpeakingMode }
   | { type: 'nickname'; actorId: string; nickname: string | null }
+  | { type: 'avatar'; actorId: string; avatar: { type: 'keep' | 'reset' } | { type: 'set'; data: Uint8Array; mimeType: string } }
   | { type: 'member'; actorId: string; action: 'invite' | 'leave' | 'remove' | 'ban' | 'unban' | 'role'; role?: 'admin' | 'member' }
   | { type: 'transfer'; actorId: string }
   | { type: 'botAccess'; actorId: string; access: 'none' | 'chat' | 'tools'; expectedRevision: number }

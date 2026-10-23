@@ -18,6 +18,9 @@ export const HOST_SESSIONS_SOURCE_ID = 'host:sessions';
 /** 内置跟进例行任务的 id 前缀；完整 id 由主进程 builtinRoutine.ts 的 builtinFollowUpRoutineId 生成，幂等。 */
 export const BUILTIN_FOLLOW_UP_ROUTINE_PREFIX = 'builtin-follow-up-';
 
+/** 内置「每天查待办」例行任务的 id 前缀；主人在近况里打开时才建，完整 id 见 todoCheckRoutine.ts。 */
+export const BUILTIN_TODO_CHECK_ROUTINE_PREFIX = 'builtin-todo-check-';
+
 /** 出厂 Cindy 助理的稳定 id；仅用于邀请入口，不意味着已开启自动跟进。 */
 export const DEFAULT_SCHEDULER_BOT_ID = 'cindy-default';
 
@@ -54,6 +57,12 @@ export type WatchedPhase =
 
 export type WatchedSource = 'user' | 'bot-task' | 'routine' | 'other';
 
+/** Captured at the activity boundary; persisted events must not sample a later turn. */
+export interface BotAutonomyExecution {
+  instanceId: string;
+  generation: number;
+}
+
 /** 状态表里的一行。远程任务的 `sessionId` 带 `deviceId::` 前缀，与历史工具一致。 */
 export interface WatchedSession {
   sessionId: string;
@@ -68,6 +77,7 @@ export interface WatchedSession {
   phaseSince: number;
   lastActivityAt: number;
   startedAt: number | null;
+  execution?: BotAutonomyExecution;
   /** 等回答 / 等权限时的一句摘要（≤ 140 字），否则 null。 */
   pendingQuestion: string | null;
   /**
@@ -122,6 +132,9 @@ export const AUTONOMY_EVENT_TYPES: readonly AutonomyEventType[] = [
 
 /** `RoutineEvent.data` 的扁平字段（引擎要求 string|number|boolean）。 */
 export interface AutonomyEventData {
+  /** Optional for queues saved before execution attribution was introduced. */
+  executionInstanceId?: string;
+  executionGeneration?: number;
   sessionId: string;
   deviceId: string;
   deviceName: string;

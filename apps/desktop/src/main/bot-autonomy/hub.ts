@@ -10,6 +10,7 @@ import type { RoutineEngine, RoutineRun } from '@cindy/maker-scheduler';
 import {
   type BotAutonomySettingsView,
   type BotGlance,
+  type BotAutonomyExecution,
 } from '../../shared/botAutonomy.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
 import { createLogger } from '../logger.js';
@@ -27,6 +28,9 @@ import { errorCode, type BotAutonomyInputProjection } from './taskWatch.js';
 const log = createLogger('bot-autonomy');
 
 export interface BotAutonomyHostDeps {
+  readSessionExecution(sessionId: string): BotAutonomyExecution | null;
+  /** A durable terminal receipt owns this event's execution, including pending delivery. */
+  isCompletionHandledByTeammate(sessionId: string, botId: string, execution: BotAutonomyExecution): Promise<boolean | null>;
   /** 某个本机任务当前挂起的交互请求（只读）。 */
   getPendingInteractions(sessionId: string): readonly unknown[];
   getMainWindow(): BrowserWindow | null;
@@ -154,7 +158,28 @@ export async function currentFollowUpEvents(botId: string, events: RoutineRun['e
     });
   const allowedNow = () => filterFollowUpEvents(botId, events, watch.list(),
     resolveSchedulerBotId(readBotAutonomySettingsOverride(), ownership.bots), ownership.bots, Date.now(), subjects);
-  const allowed = allowedNow();
+  const eligible = allowedNow();
+  // Only the built-in follow-up consumes this gate. Keep publishing host events
+  // for user-authored routines, and recheck persisted batches before model work.
+  let handled: (boolean | null)[];
+  try {
+    handled = await Promise.all(eligible.map(({ event }) => {
+      const { executionInstanceId, executionGeneration } = event.data;
+      // Legacy batches have no execution proof. Preserve their follow-up rather
+      // than attributing them to whichever native turn happens to be live now.
+      if (event.type !== 'finished' || typeof event.subject !== 'string'
+        || typeof executionInstanceId !== 'string' || !executionInstanceId
+        || typeof executionGeneration !== 'number' || !Number.isSafeInteger(executionGeneration)) return false;
+      return hostDeps.isCompletionHandledByTeammate?.(event.subject, botId,
+        { instanceId: executionInstanceId, generation: executionGeneration }) ?? null;
+    }));
+  } catch (error) {
+    log.warn('autonomy completion ownership deferred', { error: errorCode(error) });
+    return null;
+  }
+  if (current !== active || !scopeIsCurrent(active.scope) || watch.getBots() !== botsAtRead
+    || handled.includes(null)) return null;
+  const allowed = eligible.filter((_event, index) => !handled[index]);
   return { events: allowed, canDispatch: () => current === active && scopeIsCurrent(active.scope) && watch.isReady()
-    && watch.getBots() === botsAtRead && allowedNow().length === allowed.length };
+    && watch.getBots() === botsAtRead && allowedNow().length === eligible.length };
 }

@@ -108,6 +108,19 @@ it('dispatches into the current canonical task through the existing silent runne
   expect((await routineTools.history('bot', routine.id))[0].resultText).toBe('Reviewed PR');
 });
 
+it('turns the teammate\'s weekday todo check on and off as one built-in routine', async () => {
+  // 近况里的「每天帮我查一次」：打开建内置例行任务，关掉只暂停，再打开复用同一条，不重复建。
+  expect(await routineTools.todoCheckEnabled('bot')).toBe(false);
+  expect(await routineTools.setTodoCheck('bot', true)).toBe(true);
+  const [routine] = await routineTools.list('bot');
+  expect(routine).toMatchObject({ builtin: 'todo-check', enabled: true, silentWhenIdle: true,
+    triggers: [{ kind: 'cron', expression: '0 9 * * 1-5' }] });
+  expect(await routineTools.setTodoCheck('bot', false)).toBe(false);
+  expect(await routineTools.todoCheckEnabled('bot')).toBe(false);
+  expect(await routineTools.setTodoCheck('bot', true)).toBe(true);
+  expect((await routineTools.list('bot')).map(row => [row.id, row.enabled])).toEqual([[routine.id, true]]);
+});
+
 it('skips a demoted teammate\'s routine while its home is another computer, keeping the rule', async () => {
   companionHomes.update({ enabled: true, selfDeviceId: 'desk', humanActorId: 'human', demotedBotIds: ['bot'],
     actors: [{ id: 'actor', externalId: 'bot', name: 'Bot', avatar: null, homeDeviceId: 'laptop' }] });
@@ -677,4 +690,24 @@ it('skips revoked follow-up batches and still dispatches authorized delegated ev
   await vi.waitFor(() => expect(mock.scheduler.runNow).toHaveBeenCalledOnce());
   expect(mock.storage.insert.mock.calls[0][0].prompt).toContain('Assigned work');
   expect(mock.storage.insert.mock.calls[0][0].prompt).not.toContain('PRIVATE_OLD_SUMMARY');
+});
+
+// #6440 / unit: one completion can match both built-in and explicitly configured
+// follow-up. A receipt-owned batch must skip only the former, before model work.
+it('preserves user routines while skipping receipt-owned built-in completion', async () => {
+  const engine = await getRoutineEngine();
+  engine.registerSource({ id: 'host:sessions', name: 'Sessions', status: 'listening',
+    events: [{ type: 'finished', name: 'Finished', fields: [] }] });
+  const input = { name: 'Completion', prompt: 'Handle result', enabled: true,
+    triggers: [{ id: 'done', kind: 'event' as const, sourceId: 'host:sessions', eventType: 'finished', filters: [] }] };
+  const builtin = await engine.ensureBuiltin('bot', 'follow-up', input, 'builtin-follow-up-bot');
+  const custom = await routineTools.save('bot', input);
+  if (!builtin) throw new Error('Follow-up routine was not created');
+  mock.followUpEvents.mockReturnValue([]);
+  await engine.publish('host:sessions', { id: 'done', type: 'finished', subject: 'delegated', occurredAt: Date.now(), data: {} });
+  await vi.waitFor(async () => {
+    expect((await routineTools.history('bot', builtin.id))[0]?.status).toBe('skipped');
+    expect((await routineTools.history('bot', custom.id))[0]?.status).toBe('success');
+  });
+  expect(mock.scheduler.runNow).toHaveBeenCalledOnce();
 });

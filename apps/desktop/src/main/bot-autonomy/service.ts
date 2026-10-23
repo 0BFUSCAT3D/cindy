@@ -102,6 +102,7 @@ function startRuntime(engine: RoutineEngine, scope: string): void {
       log,
       onChange,
       getActivitySnapshots: () => getAgentIslandService()?.getSessionActivitySnapshots() ?? [],
+      readSessionExecution: (id) => getBotAutonomyHostDeps().readSessionExecution?.(id) ?? null,
       isToolCallInFlight: (sessionId) => getAgentIslandService()?.isToolCallInFlight(sessionId) ?? false,
       getPendingInteractions: (sessionId) => {
         try {
