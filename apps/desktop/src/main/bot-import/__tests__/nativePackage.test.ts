@@ -43,9 +43,17 @@ it('loads all ten immutable recipes with complete skills, knowledge, portraits, 
     expect(options.length).toBeLessThanOrEqual(4);
     for (const option of options) expect(onboarding).toContain(`- ${option}`);
     expect(onboarding.indexOf('## 起步选项')).toBeLessThan(onboarding.indexOf('## 工具（用户选定后）'));
-    // Tools are named by capability category with examples: look at what the user already has, recommend only when nothing fits.
-    for (const phrase of ['ghost_list', 'ghost_market_search', '这只是举例', '不自动安装', '默认只读', '一次只显示用得上的那一张连接卡']) expect(onboarding, `${id}: ${phrase}`).toContain(phrase);
-    expect(manifest.profile.identitySource, id).toContain('工具按能力类别用，不绑定某个插件');
+    // Tools are named by capability category with examples. Order: what the user already has, then recommend, install only after consent,
+    // read status, then trigger the host connection card (ghost_info alone never shows one). The Skill also covers runtimes without plugin tools.
+    for (const phrase of ['ghost_list', 'ghost_market_search', 'ghost_market_install', 'ghost_info', 'connect_account', '这只是举例', '未经用户同意不安装',
+      '不会弹出连接卡', '当前环境没有插件发现工具', '默认只读', '一次只显示用得上的那一张连接卡']) expect(onboarding, `${id}: ${phrase}`).toContain(phrase);
+    const tools = onboarding.slice(onboarding.indexOf('## 工具（用户选定后）'));
+    const order = ['ghost_list', 'ghost_market_search', 'ghost_market_install', 'ghost_info', 'connect_account'].map(name => tools.indexOf(name));
+    expect(order, id).toEqual([...order].sort((a, b) => a - b));
+    expect(onboarding, id).not.toContain('不自动安装');
+    // The plugin-tool guidance lives in the Skill only: identitySource enters the system prompt, which the host teammate guide already covers
+    // (and hides when the cindy gateway is unavailable, e.g. remote SSH), so it must stay byte-identical to 0.5.0 and name no plugin tools.
+    expect(manifest.profile.identitySource, id).not.toMatch(/ghost_|connect_account|工具按能力类别/);
     expect(pkg.snapshot.source.kind).toBe('cindy');
     expect(pkg.snapshot.items.some(item => item.role === 'user' || item.role === 'instructions' || item.env || item.credential)).toBe(false);
     for (const item of pkg.snapshot.items) {
