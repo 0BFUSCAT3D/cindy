@@ -4946,6 +4946,7 @@ interface ElectronAPI {
         body: import('../shared/botCreation').BotCreationRequest,
       ) => Promise<import('../shared/botCreation').BotCreationDraft>;
       generateAvatar: (token: string) => Promise<{ avatarImageBase64: string }>;
+      chooseAvatarSource: () => Promise<{ canceled: boolean; previewDataUrl?: string }>;
       chooseAvatar: (body: { botId: string; avatarImageBase64?: string }) => Promise<{
         canceled: boolean;
         profile?: unknown;
