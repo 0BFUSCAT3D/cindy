@@ -14945,8 +14945,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (epoch !== getCurrentDbClientSnapshot()) throw new Error('account changed');
       // 仅"插件已卸载（任务归属确实撤销）"解除计划锁；停用 / 未批准可恢复，重新启用后
       // 计划仍会继续，保持锁定（fail closed）。
+      //
+      // 收据里存的是**存储 part**（带命名空间时形如 `_ns__acme__helper`），只按
+      // manifest.id 查会把它当成「不在册」，于是仍被计划引用的 Worker 被人改名，
+      // 收据续期也随之失效。先按实例标识解一次，再退回 manifest.id。
       const pluginInstalled =
-        receipt !== undefined && findAvailableGhostForAuthorization(receipt.pluginId) !== null;
+        receipt !== undefined &&
+        (findAvailableGhostForAuthorization(receipt.pluginId) !== null ||
+          findGhostForInstanceId(receipt.pluginId) !== null);
       return isTeamPlanLabelLockedByReceipt(receipt, pluginInstalled, labels);
     },
     markWorkerIdle: async (workerId) => {
