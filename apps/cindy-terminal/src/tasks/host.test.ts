@@ -6,7 +6,7 @@ import { createProviderProxy } from '../models/proxy.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as platform from '../platform.js';
 import { TerminalImBindings } from '../im/bindings.js';
-import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ClaudeCodeAgent, type AgentEvent, type AgentSessionHandle, type InteractionDecision, type InteractionResolver, type Logger, type StartSessionOptions } from '@cindy/maker-core';
@@ -40,6 +40,7 @@ function engine() {
   const starts: StartSessionOptions[] = [];
   const inputs: RuntimeInput[] = [];
   const decisions: InteractionDecision[] = [];
+  const permissionModes: import('@cindy/maker-core').PermissionMode[] = [];
   const sent: import('@cindy/maker-core').UserMessage[] = [];
   const create = async (input: RuntimeInput) => {
     inputs.push(input);
@@ -91,13 +92,14 @@ function engine() {
         },
         getUsageSnapshot: () => ({ tokenUsage: 0, contextTokens: 0, contextWindow: 200000, costUsd: 0 }),
         setInteractionResolver: value => { resolver = value; },
+        async setPermissionMode(mode) { permissionModes.push(mode); },
         isTurnRunning: () => running,
       };
       return handle;
     };
     return agent;
   };
-  return { create, starts, decisions, inputs, sent };
+  return { create, starts, decisions, inputs, sent, permissionModes };
 }
 
 async function setup(native = engine()) {
@@ -499,6 +501,92 @@ describe('terminal task host', () => {
     await expect(host.invoke('terminal:models:reset-default', [], { source: 'remote', deviceId: 'fixture' })).rejects.toThrow('LOCAL_CONFIGURATION_REQUIRED');
     await expect(host.invoke('terminal:models:set-default', [{ agentKind: 'claude-code', providerId: 'fixture', model: 'missing' }])).rejects.toThrow('MODEL_ROUTE_UNAVAILABLE');
     expect(await host.invoke('terminal:models:get')).toMatchObject({ defaultSelection: { model: 'test-model' } });
+  });
+
+  // Behavior: a disk failure must not leave a more permissive live task behind
+  // while GUI/IM settings still report the previous saved permission mode.
+  it('rolls back the live permission when its durable update fails', async () => {
+    const { host, native } = await setup();
+    const task = await host.invoke('maker:create-session', [{ permissionMode: 'ask' }]) as { id: string };
+    const update = vi.spyOn(host.storage, 'update').mockRejectedValueOnce(new Error('fixture disk failure'));
+    try { await expect(host.invoke('maker:set-permission-mode', [task.id, 'auto'])).rejects.toThrow('fixture disk failure'); }
+    finally { update.mockRestore(); }
+    expect(native.permissionModes).toEqual(['auto', 'ask']);
+    expect((await host.storage.get(task.id))!.permissionMode).toBe('ask');
+    expect(host.channelRuntime().getSession(task.id)!.stablePermissionModeState?.mode).toBe('ask');
+    expect(await host.invoke('maker:set-permission-mode', [task.id, 'acceptEdits'])).toEqual({ success: true });
+    expect((await host.storage.get(task.id))!.permissionMode).toBe('acceptEdits');
+  });
+
+  // Behavior: attaching a channel after the native permission is already open
+  // must retain one host decision, including cancellation of the old surface.
+  it.each(['terminal', 'channel', 'close'] as const)('transfers an existing approval without duplicating its %s decision', async winner => {
+    const { host, nextPush, native } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    const requested = nextPush('maker:interaction-request');
+    const running = host.invoke('maker:send', [task.id, { text: 'permission' }]);
+    await requested;
+    const [taken] = host.takeChannelInteractions(task.id);
+    expect(taken.sharedPermission).toBeDefined();
+    expect(host.takeChannelInteractions(task.id)).toEqual([]);
+    expect(await host.invoke('maker:get-pending-interactions', [task.id])).toHaveLength(1);
+    if (winner === 'terminal') await host.invoke('maker:resolve-interaction', [taken.requestId, { kind: 'permission', behavior: 'allow' }]);
+    else if (winner === 'channel') taken.resolve({ kind: 'permission', behavior: 'allow' });
+    else await host.invoke('maker:close-session', [task.id]);
+    await running;
+    expect(native.decisions).toHaveLength(1);
+    expect(native.decisions[0]).toMatchObject({ kind: 'permission', behavior: winner === 'close' ? 'deny' : 'allow' });
+    expect(await taken.sharedPermission!.result).toEqual(native.decisions[0]);
+    expect(taken.sharedPermission!.decide({ kind: 'permission', behavior: 'allow' })).toBe(false);
+    expect(await host.invoke('maker:get-pending-interactions', [task.id])).toEqual([]);
+  });
+
+  // Behavior: the shared IM runner enriches a pre-persisted triggering message
+  // after gathering group context. It must survive restart as one message and
+  // cannot recreate a missing or cleared row, or touch another task's message.
+  it('enriches the original channel message durably without copying its body', async () => {
+    const { host, create } = await setup();
+    const a = await host.invoke('maker:create-session', [{}]) as { id: string };
+    const b = await host.invoke('maker:create-session', [{}]) as { id: string };
+    const first = await host.persistChannelMessage({ sessionId: a.id, text: 'hello', source: { im: 'telegram', userText: 'hello' } });
+    const source = { im: 'telegram', userText: 'hello', contextSnapshot: { groupContext: 'Relevant group context', groupMessageCount: 1 } };
+    expect(await host.persistChannelMessage({ sessionId: a.id, text: 'must not replace', existingClientId: first!.clientId, source })).toEqual(first);
+    expect(await host.persistChannelMessage({ sessionId: b.id, text: 'must not copy', existingClientId: first!.clientId, source })).toBeNull();
+    await host.close();
+    const restarted = create(); await restarted.ready;
+    const rows = await restarted.invoke('local-db:messages:list', [a.id]) as Array<{ content: string; agentMeta: unknown }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ content: 'hello', agentMeta: { imSource: source } });
+    expect(await restarted.invoke('local-db:messages:list', [b.id])).toEqual([]);
+    await restarted.storage.update(a.id, { clearedAt: Date.now() });
+    expect(await restarted.persistChannelMessage({ sessionId: a.id, text: 'must not recreate', existingClientId: first!.clientId, source })).toBeNull();
+    expect(await restarted.invoke('local-db:messages:list', [a.id])).toEqual([]);
+  });
+
+  // Behavior: channel output must upload managed bytes, not expose server paths.
+  // Reading outside the task is rejected by the shared source policy; generated
+  // bytes retain tool provenance until the user actually attaches them.
+  it('delivers task images from the media ledger with scope and origin intact', async () => {
+    const { host, root, create } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string; workDir: string };
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ4sAAAAASUVORK5CYII=', 'base64');
+    const image = path.join(task.workDir, 'output.png');
+    const outside = path.join(root, 'outside.png');
+    await writeFile(image, png); await writeFile(outside, png);
+    const result = await host.materializeChannelImages({ sessionId: task.id, workingDir: task.workDir, text: `Done ![Result](${image})\n![Outside](${outside})` });
+    expect(result.absPaths).toHaveLength(1);
+    expect(result.absPaths[0]).toContain(`${path.sep}cindy-media${path.sep}blobs${path.sep}`);
+    expect(await readFile(result.absPaths[0])).toEqual(png);
+    expect(result.text).not.toContain(image);
+    expect(result.text).not.toContain(outside);
+    const url = `cindy-media://blobs/${path.basename(result.absPaths[0])}`;
+    expect((await host.media.preparePluginAttachment(url, task.id, () => {})).originKind).toBe('tool');
+    await host.persistChannelMessage({ sessionId: task.id, text: 'Use this', attachments: [{ kind: 'image', absPath: image, originalName: 'output.png', mimeType: 'image/png', url }] });
+    expect((await host.media.preparePluginAttachment(url, task.id, () => {})).originKind).toBe('user');
+    await host.close();
+    const restarted = create(); await restarted.ready;
+    expect(await realpath((await restarted.media.resolveManaged(url, task.id)).path)).toBe(result.absPaths[0]);
+    await expect(restarted.media.resolveManaged(url, 'another-task')).rejects.toThrow('MEDIA_SESSION_ACCESS_DENIED');
   });
 
   it('durably deduplicates asynchronous submissions while an approval remains answerable', async () => {

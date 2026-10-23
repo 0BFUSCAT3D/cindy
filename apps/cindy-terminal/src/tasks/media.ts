@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { open, lstat, realpath, chmod } from 'node:fs/promises';
+import { open, lstat, realpath, chmod, stat, readFile } from 'node:fs/promises';
 import { readBoundedFileNoFollow } from '@cindy/remote-agent/readBoundedFile';
 import { GHOST_FETCH_UPLOAD_MAX_BYTES_PER_FILE } from '@cindy/plugin-runtime/shared/ghost';
 import {ghostCards} from '@cindy/plugin-runtime/cardSchema';
@@ -7,7 +7,11 @@ import * as pluginCards from '@cindy/plugin-runtime/cardStoreDb';
 import type {GhostCardRow} from '@cindy/plugin-runtime/cardService';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { createBlobStore, sniffMediaMime, recordBlob, addRef, hasRef, removeRefs, sessionCanRead, ghostCanRead, getBlobInfo } from '@cindy/media-core';
+import { createBlobStore, sniffMediaMime, recordBlob, addRef, hasRef, removeRefs, removeRefById, sessionCanRead, ghostCanRead, getBlobInfo } from '@cindy/media-core';
+import { createLegacyImageCache } from '@cindy/media-core/legacy-image-cache';
+import { taskImageRoots, readTaskImage, type SessionImageScope } from '@cindy/media-core/task-image-source';
+import { hasLocalTaskImages, materializeTaskImageMarkdown } from '@cindy/media-core/task-image-markdown';
+import { materializeLocalMarkdownImages } from '@cindy/media-core/local-markdown-images';
 import * as schema from '@cindy/media-core/schema';
 import { privateDirectory } from '../platform.js';
 import type { AttachmentResolution } from './input.js';
@@ -16,11 +20,12 @@ import type { AttachmentResolution } from './input.js';
  * A terminal profile is already isolated to one authenticated owner. */
 export class TerminalTaskMedia {
   private readonly store;
+  private readonly legacyImages;
   private native?: Database.Database;
   private db?: ReturnType<typeof drizzle<typeof schema>>;
   private operations: Promise<unknown> = Promise.resolve();
   readonly ready: Promise<void>;
-  constructor(private readonly profileDir:string) { this.store=createBlobStore(()=>profileDir); this.ready=this.initialize(); }
+  constructor(private readonly profileDir:string) { this.store=createBlobStore(()=>profileDir); this.legacyImages=createLegacyImageCache(()=>profileDir); this.ready=this.initialize(); }
   private async initialize() {
     const directory=path.join(this.profileDir,'cindy-media'); await privateDirectory(directory);
     const file=path.join(directory,'ledger.sqlite');
@@ -43,7 +48,9 @@ CREATE INDEX IF NOT EXISTS ghost_cards_updated_at_idx ON ghost_cards(updated_at)
   }
   private run<T>(action:()=>Promise<T>):Promise<T> { const next=this.operations.then(async()=>{await this.ready;return action();});this.operations=next.catch(()=>{});return next; }
   ingest(input:{sessionId:string;bytes?:Buffer;path?:string;mimeType?:string;name?:string},guard:()=>void):Promise<AttachmentResolution> {
-    return this.run(async()=>{
+    return this.run(() => this.ingestOwned(input, guard));
+  }
+  private async ingestOwned(input:{sessionId:string;bytes?:Buffer;path?:string;mimeType?:string;name?:string;originKind?:'user'|'tool'},guard:()=>void,newRefs?:string[]):Promise<AttachmentResolution> {
       guard(); let probe:Buffer;
       if(input.bytes)probe=input.bytes.subarray(0,65536);
       else if(input.path){const handle=await open(input.path,'r');try{const info=await handle.stat();if(!info.isFile())throw new Error('INVALID_MEDIA_FILE');const bytes=Buffer.alloc(Math.min(info.size,65536));const read=await handle.read(bytes,0,bytes.length,0);probe=bytes.subarray(0,read.bytesRead);}finally{await handle.close();}}
@@ -53,13 +60,44 @@ CREATE INDEX IF NOT EXISTS ghost_cards_updated_at_idx ON ghost_cards(updated_at)
       // Local SQLite commit and acknowledgement are in-process. Reference insert
       // and owner recheck share one transaction, so rollback needs no remote ACK journal.
       this.native!.exec('BEGIN IMMEDIATE');
+      let addedRef: string | undefined;
       try {
         await recordBlob({...written,isCache:false},this.db!);guard();
-        if(!await hasRef({hash:written.hash,refKind:'session-attachment',refId:input.sessionId},this.db!))await addRef({hash:written.hash,refKind:'session-attachment',refId:input.sessionId,originSessionId:input.sessionId,originKind:'user',label:input.name},this.db!);
+        const originKind = input.originKind ?? 'user';
+        if(!await hasRef({hash:written.hash,refKind:'session-attachment',refId:input.sessionId,originKind},this.db!))addedRef=await addRef({hash:written.hash,refKind:'session-attachment',refId:input.sessionId,originSessionId:input.sessionId,originKind,label:input.name},this.db!);
         guard();this.native!.exec('COMMIT');
       }catch(error){this.native!.exec('ROLLBACK');throw error;}
+      if (addedRef) newRefs?.push(addedRef);
       const resolved=this.store.resolveSafe(written.url);return {path:resolved.absPath,managedUrl:written.url,mimeType};
+  }
+  resolveMediaUrl(url: string) { return this.store.resolveSafe(url); }
+  resolveLegacyImageUrl(url: string) { return this.legacyImages.resolveSafe(url); }
+  /** Import only this task's workdir/native scratchpad. New refs are recorded as
+   * tool output; a stale task rolls back only the pins created by this import. */
+  materializeTaskImages(scope: SessionImageScope, text: string, guard: () => void, assertTaskCurrent: () => Promise<void>): Promise<string> {
+    if (!hasLocalTaskImages(text)) return Promise.resolve(text);
+    return this.run(async () => {
+      const newRefs: string[] = [];
+      try {
+        guard(); await assertTaskCurrent();
+        const roots = await taskImageRoots(scope);
+        guard();
+        const result = await materializeTaskImageMarkdown(text, { importImage: async source => {
+          const image = await readTaskImage(source, roots);
+          guard(); await assertTaskCurrent(); guard();
+          const saved = await this.ingestOwned({ sessionId: scope.id, bytes: image.buffer, mimeType: image.mimeType, originKind: 'tool' }, guard, newRefs);
+          return saved.managedUrl!;
+        } });
+        await assertTaskCurrent(); guard();
+        return result.text;
+      } catch {
+        for (const id of newRefs) await removeRefById(id, this.db!);
+        return text;
+      }
     });
+  }
+  channelImages(params: Parameters<typeof materializeLocalMarkdownImages>[0], materialize: (sessionId: string, text: string) => Promise<string>) {
+    return materializeLocalMarkdownImages(params, { realpath, stat, readFile, materialize, resolveMediaUrl: url => url.startsWith('cindy-media://') ? this.resolveMediaUrl(url) : this.resolveLegacyImageUrl(url) });
   }
   async resolveManaged(url:string,sessionId?:string):Promise<AttachmentResolution> {
     await this.ready;await this.operations;const resolved=this.store.resolveSafe(url);

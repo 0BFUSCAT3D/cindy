@@ -25,6 +25,13 @@ Desktop 的原路径保留兼容导出或宿主接线。`ImTurnHost` / `ImComman
 当前账号的任务存储、运行实例、模型目录、媒体及生命周期服务，不能在宿主中另写一套
 排队、停止或终稿状态机。跨宿主的契约仍受下表的个人渠道／官方 hook 差异约束。
 
+终端任务宿主提供同一任务的渠道仓库、原子 `/new` 轮换、早到用户消息补充、
+运行中确认接管、有限次数的空响应续跑和媒体交付。补充群上下文只追加消息元信息，
+保留原消息 ID 与正文；已清空或不属于该任务的消息不得补写。渠道接管已显示的权限
+确认时，GUI/TUI 卡片仍使用同一个最终决定；非权限卡片可以转移呈现，暂停、取消和
+恢复的执行责任仍留在宿主。渠道适配器只有接入完整 `ImTurnHost` / `ImCommandHost` /
+`ImCardHost` 并通过实际收发验收后才算支持，单独抽出共用模块不算渠道交付。
+
 | 步骤 | 个人 IM 现状 | 官方 hook 现状 | 目标归属 |
 |---|---|---|---|
 | 入站 | 各渠道 adapter → `im/shared/messageHandler.ts`（微信经 `WechatTaskStore` 持久队列） | `hook-control/manager.ts` 收 `task.dispatch` → `dispatcher.handleDispatch` | 渠道适配（入站来源各自保留） |

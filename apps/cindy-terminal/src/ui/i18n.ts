@@ -7,6 +7,14 @@ const silentStopMessages: Record<Locale, string> = {
   ko: '모델이 반복해서 빈 응답을 반환하여 자동 재개를 중지했습니다. 메시지를 보내면 작업을 계속할 수 있습니다.',
 };
 export function silentStopMessage(locale: Locale) { return silentStopMessages[locale]; }
+const runtimeRecoveryMessages: Record<Locale, string> = {
+  "en": "Pi extensions could not be refreshed. Restart Cindy before using Pi again.",
+  "zh-CN": "Pi 扩展未能完成刷新。请重启 Cindy 后再使用 Pi。",
+  "zh-TW": "Pi 擴充功能未能完成重新整理。請重新啟動 Cindy 後再使用 Pi。",
+  "ja": "Pi 拡張機能を更新できませんでした。Pi を再び使用する前に Cindy を再起動してください。",
+  "ko": "Pi 확장을 새로 고치지 못했습니다. Pi를 다시 사용하기 전에 Cindy를 다시 시작하세요."
+};
+export function runtimeRecoveryMessage(locale: Locale) { return runtimeRecoveryMessages[locale]; }
 const en = {
   emptyResources:'Nothing here yet',
   protocol:'API protocol',engines:'Model engines',install:'Install',update:'Update',notInstalled:'Not installed',providerLogin:'Sign in to provider',you: 'You', tasks: 'Sessions', models: 'Models', connections: 'Connections', service: 'Service',

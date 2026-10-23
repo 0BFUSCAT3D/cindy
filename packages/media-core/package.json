@@ -9,12 +9,22 @@
     ".": "./src/index.ts",
     "./blob-store": "./src/blob-store.ts",
     "./ledger": "./src/ledger.ts",
-    "./schema": "./src/schema.ts"
+    "./schema": "./src/schema.ts",
+    "./task-image-markdown": "./src/task-image-markdown.ts",
+    "./task-image-source": "./src/task-image-source.ts",
+    "./local-markdown-images": "./src/local-markdown-images.ts",
+    "./legacy-image-cache": "./src/legacy-image-cache.ts",
+    "./attachment-safety": "./src/attachment-safety.ts"
   },
   "dependencies": {
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "unified": "11.0.5",
+    "remark-parse": "11.0.0",
+    "remark-gfm": "^4.0.1",
+    "unist-util-visit": "^5.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "@types/mdast": "^4.0.4"
   }
 }

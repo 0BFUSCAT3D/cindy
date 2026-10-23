@@ -38,6 +38,9 @@ import { TerminalTaskStorage, type TerminalTaskMeta, type Submission } from './s
 import { TerminalTaskChanges, TASK_CHANGE_CHANNELS } from './changes.js';
 import { TerminalTurnLifecycle } from './turn-lifecycle.js';
 import { createChannelTurnSignals } from '@cindy/im-runtime/channelTurnSignal';
+import { createRuntimeRecoveryNotices } from '@cindy/im-runtime/runtimeRecoveryNotice';
+import { createSessionPermissionChanges } from '@cindy/im-runtime/sessionPermissionChange';
+import { changeSessionPermissionMode } from '@cindy/im-runtime/permissionModeControl';
 import { redactToolInputForUntrustedBoundary } from '@cindy/remote-agent/host/toolInputRedaction';
 
 export const TERMINAL_TASK_CHANNELS = [
@@ -66,6 +69,7 @@ export interface TerminalTaskHostOptions extends InputHost {
   deferPendingTasks?:boolean;
   defaultTitle?: string | (() => string);
   silentStopMessage?: () => string;
+  runtimeRecoveryMessage?: () => string;
   protectedInput?: import('../protected-input.js').TerminalProtectedInput;
   beforeTaskUnavailable?: (sessionId:string)=>Promise<void>;
   authorizeHostedRequest?: (input: {sessionId:string;providerId:string;model:string}) => Promise<boolean>;
@@ -106,6 +110,8 @@ export class TerminalTaskHost {
   readonly changes: TerminalTaskChanges;
   readonly turnLifecycle: TerminalTurnLifecycle;
   readonly channelSignals: ReturnType<typeof createChannelTurnSignals>;
+  readonly channelRecovery: ReturnType<typeof createRuntimeRecoveryNotices>;
+  private readonly permissionChanges = createSessionPermissionChanges();
   private readonly storageReady: Promise<void>;
   readonly media: TerminalTaskMedia;
   readonly capabilities: TerminalCapabilities;
@@ -149,6 +155,7 @@ export class TerminalTaskHost {
 
   constructor(private readonly options: TerminalTaskHostOptions) {
     this.channelSignals = createChannelTurnSignals(options.logger);
+    this.channelRecovery = createRuntimeRecoveryNotices(options.runtimeRecoveryMessage ?? (() => 'Pi extensions could not be refreshed. Restart Cindy before using Pi again.'));
     this.channelFiles = createInboundFileStaging({
       createLogger: () => options.logger,
       ownerScopedImUserDataPath: (...segments) => {
@@ -177,6 +184,7 @@ export class TerminalTaskHost {
       hasQueuedWork: id => Boolean(this.queuedSubmissions.get(id)?.length),
       persistContinuation: async (session, text, origin) => {
         this.guard({ source: 'local' });
+        this.channelRecovery.advanceRuntimeRecoveryNotice(session);
         const agentMeta = { delivery: 'turn', autoResume: true, ...(origin ? { origin } : {}) };
         const stored = await this.storage.append(session.id, { kind: 'user', message: { type: 'user', content: text }, clientId: randomUUID(), agentMeta });
         this.emit('local-db:messages:created', { sessionId: session.id, message: { id: `${session.id}:${stored.sequence}`, clientId: stored.clientId, sessionId: session.id, role: 'user', content: text, agentMeta, createdAt: new Date(stored.timestamp).toISOString() } });
@@ -245,7 +253,7 @@ export class TerminalTaskHost {
   }
   private view(row: TerminalTaskMeta) {
     const live = this.live.get(row.id);
-    return { ...row, sessionId: row.id, status: live?.session.getStatus() ?? 'idle', isTurnRunning: this.isTurnRunning(row.id), pendingInteractions: [...this.pending.values()].filter(p => p.sessionId === row.id).map(p => p.request), ...(this.persistenceFaults.has(row.id) ? { persistenceError: true } : {}) };
+    return { ...row, sessionId: row.id, status: live?.session.getStatus() ?? 'idle', isTurnRunning: this.isTurnRunning(row.id), pendingInteractions: [...this.pending.values()].filter(p => p.sessionId === row.id && !p.migrated).map(p => p.request), ...(this.persistenceFaults.has(row.id) ? { persistenceError: true } : {}) };
   }
   private guiSession(row: TerminalTaskMeta) {
     return {
@@ -323,6 +331,59 @@ export class TerminalTaskHost {
         return (await this.ensureLive(input.id)).session;
       },
     };
+  }
+  async persistChannelMessage(args: Parameters<ImTurnHost['persistUserMessage']>[0]): ReturnType<ImTurnHost['persistUserMessage']> {
+    await this.ready;
+    const guard = () => this.guard({ source: 'local' });
+    const clientId = args.existingClientId ?? randomUUID();
+    try {
+      guard();
+      const row = await this.storage.get(args.sessionId);
+      if (!row || row.deleted) return null;
+      if (args.existingClientId) {
+        const patched = await this.storage.patchUserMeta(args.sessionId, clientId, args.source ? { imSource: args.source } : {}, guard);
+        if (!patched) return null;
+      } else {
+        const message = await this.message(args.sessionId, { text: args.text, files: (args.attachments ?? []).map(item => ({ type: item.kind, path: item.absPath, name: item.originalName, mimeType: item.mimeType })) }, { source: 'local' });
+        guard();
+        await this.storage.append(args.sessionId, { kind: 'user', message, clientId, ...(args.source ? { agentMeta: { imSource: args.source } } : {}) });
+      }
+      guard();
+      const message = (await this.messages(args.sessionId, { limit: Infinity }, true)).find(row => row.clientId === clientId);
+      guard();
+      if (message) this.emit('local-db:messages:created', { sessionId: args.sessionId, message });
+      return message ? { clientId } : null;
+    } catch {
+      if (this.closed) return null;
+      this.options.logger.warn('Channel message could not be saved');
+      return args.existingClientId ? { clientId } : null;
+    }
+  }
+  async materializeChannelImages(args: Parameters<ImTurnHost['materializeLocalMarkdownImages']>[0]): ReturnType<ImTurnHost['materializeLocalMarkdownImages']> {
+    await this.ready;
+    const guard = () => this.guard({ source: 'local' });
+    guard();
+    const row = await this.storage.get(args.sessionId);
+    if (!row || row.deleted) throw new Error('TASK_NOT_FOUND');
+    const assertTaskCurrent = async () => {
+      guard();
+      const current = await this.storage.get(row.id);
+      if (!current || current.deleted || current.workDir !== row.workDir || current.clearedAt !== row.clearedAt || current.sdkSessionId !== row.sdkSessionId || current.agentKind !== row.agentKind) throw new Error('TASK_IMAGE_SCOPE_CHANGED');
+      guard();
+    };
+    const scope = { id: row.id, workingDir: row.workDir, sdkSessionId: row.sdkSessionId ?? null, agentKind: row.agentKind === 'claude-code' ? 'cc' : row.agentKind, remoteHostId: null, status: row.archived ? 'archived' : 'active', clearedAt: row.clearedAt ?? null };
+    const result = await this.media.channelImages({ ...args, workingDir: row.workDir }, (id, text) => {
+      if (id !== row.id) throw new Error('TASK_SCOPE_MISMATCH');
+      return this.media.materializeTaskImages(scope, text, guard, assertTaskCurrent);
+    });
+    await assertTaskCurrent();
+    return result;
+  }
+  changeChannelPermission(args: Parameters<ImTurnHost['changeSessionPermissionMode']>[0]) {
+    return changeSessionPermissionMode(args, {
+      captureAccount: () => ({ assertCurrent: () => this.guard({ source: 'local' }), isCurrent: () => !this.closed }),
+      withSessionPermissionChange: (id, operation) => this.permissionChanges.withSessionPermissionChange(id, operation),
+    });
   }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
   async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<(import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot & {autoReviewOwner:'native'|'cindy'})|null>{
@@ -809,7 +870,7 @@ export class TerminalTaskHost {
       case 'maker:session:turn-active': return { inTurn: this.isTurnRunning(string(args[0])) };
       case 'maker:session-in-turn': return this.live.get(string(args[0]))?.session.isTurnRunning() ?? false;
       case 'maker:plugin-setup:submit-inline': {if(context.source!=='local')throw new Error('LOCAL_ONLY_COMMAND');const request=parseGhostSetupInlineSubmitRequest(args[0]);return {accepted:Boolean(request&&this.pluginSetup?.bridge.submitInline(request.requestId,request))};}
-      case 'maker:get-pending-interactions': return [...(!context.sharedTask?this.pluginSetup?.bridge.pendingSnapshots(string(args[0]))??[]:[]),...(!context.sharedTask ? this.options.protectedInput?.handoff.pendingSnapshots(string(args[0]))??[] : []), ...[...this.pending.values()].filter(p => p.sessionId === args[0] && (!context.sharedTask || ['permission','ask_user_question','plan_review'].includes(p.request.kind))).map(p => ({ request: p.request }))];
+      case 'maker:get-pending-interactions': return [...(!context.sharedTask?this.pluginSetup?.bridge.pendingSnapshots(string(args[0]))??[]:[]),...(!context.sharedTask ? this.options.protectedInput?.handoff.pendingSnapshots(string(args[0]))??[] : []), ...[...this.pending.values()].filter(p => p.sessionId === args[0] && !p.migrated && (!context.sharedTask || ['permission','ask_user_question','plan_review'].includes(p.request.kind))).map(p => ({ request: p.request }))];
       case 'maker:resolve-interaction': {if(!context.sharedTask&&this.pluginSetup?.bridge.pendingSnapshots().some(item=>item.request.requestId===args[0]))return {accepted:this.pluginSetup.bridge.resolve(string(args[0]),args[1])};if(!context.sharedTask&&this.options.protectedInput?.handoff.isCurrent(string(args[0])))return this.options.protectedInput.handoff.resolve(string(args[0]),args[1],context.source==='remote'?{deviceId:context.deviceId}:{local:true});if(context.sharedTask)this.assertSharedInteraction(string(args[0]),record(args[1]));return this.resolveInteraction(string(args[0]), args[1]);}
       case 'maker:close-session': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.closeTask(id); return { success: true }; }
       case 'maker:abort-session': { const id=string(args[0]);this.options.protectedInput?.handoff.cleanupForSession(id);this.pluginSetup?.bridge.cleanupForSession(id,'session_aborted');const task = this.live.get(id); if(task)await this.turnLifecycle.stop(task.session); return { success: true }; }
@@ -835,10 +896,10 @@ export class TerminalTaskHost {
           const payload = context.scheduler ? appendInputText(message, `[Scheduled run context]\nschedule: ${JSON.stringify(context.scheduler.scheduleName)} (schedule_id: ${context.scheduler.scheduleId})\nrun_id: ${context.scheduler.runId}\nfiredAtUtc: ${new Date(context.scheduler.firedAt??Date.now()).toISOString()}`) : agentMeta ? appendInputText(message, 'sourceDevice' in agentMeta && agentMeta.sourceDevice ? buildClientDeviceNote(agentMeta.sourceDevice) : buildMessageSourceNote(messageSourceSenderFromMeta(agentMeta)) ?? '') : message;
           let changeSetStarted = false;
           try {
-            const result = await task.session.send(payload, {
+            const result = await this.channelSignals.withChannelTurnSource(id, this.channelSignals.channelTurnSourceFor(agentMeta?.origin, false), () => task.session.send(payload, {
               ...(context.scheduler ? { origin: context.scheduler } : {}),
               onAccepted: async () => { this.guard(context); this.turnLifecycle.noteUserSend(id); await this.changes.begin(task.session, stored.clientId!); changeSetStarted = true; },
-            });
+            }));
             if (!result.accepted && changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id);
             return result;
           } catch (error) { if (changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id); throw error; }
@@ -854,7 +915,16 @@ export class TerminalTaskHost {
         await this.closeTask(id); await this.storage.setSelection(id, chosen.selection); await this.ensureLive(id, chosen); return { success: true };
       }
       case 'maker:set-effort': { const task = await this.ensureLive(string(args[0])); const selection = { ...task.selection, effort: args[1] }; const chosen = await this.models.select(selection); await task.session.setEffort(chosen.selection.effort!); task.selection = chosen.selection; await this.storage.setSelection(task.session.id, chosen.selection); return { success: true }; }
-      case 'maker:set-permission-mode': { const task = await this.ensureLive(string(args[0])); const mode = permission(args[1]); await task.session.setPermissionMode(mode); await this.storage.update(task.session.id, { permissionMode: mode }); return { success: true }; }
+      case 'maker:set-permission-mode': {
+        const task = await this.ensureLive(string(args[0])), mode = permission(args[1]);
+        const result = await this.changeChannelPermission({ sessionId: task.session.id, mode, modes: task.session.capabilities.permissionModes, confirmedFullAccess: true,
+          readPreviousMode: async () => { const row = await this.storage.get(task.session.id); return row ? permission(row.permissionMode === 'default' ? 'ask' : row.permissionMode ?? 'ask') : null; },
+          getLiveSession: () => this.live.get(task.session.id)?.session ?? null,
+          persist: async value => { this.guard(context); await this.storage.update(task.session.id, { permissionMode: value }); this.guard(context); },
+        });
+        if (result.kind !== 'changed') throw new Error(result.kind === 'failed' || result.kind === 'invalid' ? result.reason : 'PERMISSION_CONFIRMATION_REQUIRED');
+        return { success: true };
+      }
       case 'maker:set-plan-mode': { if (typeof args[1] !== 'boolean') throw new Error('INVALID_ARGUMENT'); const task = await this.ensureLive(string(args[0])); await task.session.setPlanMode(args[1]); await this.storage.update(task.session.id, { planMode: args[1] }); return { success: true }; }
       case 'maker:set-fast-mode': { if (typeof args[1] !== 'boolean' && args[1] !== 'ultrafast') throw new Error('INVALID_ARGUMENT'); const task = await this.ensureLive(string(args[0])); await task.session.setFastMode(args[1]); await this.storage.update(task.session.id, { fastMode: args[1] }); return { success: true }; }
       case 'maker:compact-session': return (await this.ensureLive(string(args[0]))).session.compactSession(typeof args[1] === 'string' ? args[1] : undefined);
@@ -1018,6 +1088,12 @@ export class TerminalTaskHost {
     do {
       const page = await this.storage.history(id, after, 1000);
       for (const row of page.records) {
+        if (row.timestamp <= (task.clearedAt ?? 0)) continue;
+        if (row.kind === 'user-meta') {
+          const message = result.find(message => message.clientId === row.clientId && message.role === 'user');
+          if (message) message.agentMeta = { ...message.agentMeta, ...row.agentMeta };
+          continue;
+        }
         if (row.kind === 'user' && row.message) {
           assistant = undefined;
           const content = persistedInput(row.message);

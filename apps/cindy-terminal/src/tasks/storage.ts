@@ -12,7 +12,7 @@ export type TerminalTaskMeta = SessionMeta & { providerId?: string; archived?: b
 export type NewTerminalTaskMeta = Omit<TerminalTaskMeta, 'createdAt' | 'updatedAt'>;
 type ChannelRotation = { version: 1; rows: TerminalTaskMeta[]; bindings: ImBindingRow[] };
 export type Submission = { requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
-export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string };
+export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user' | 'user-meta'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string };
 function taskId(value: string): string {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(value)) throw new Error('INVALID_TASK_ID');
   return value;
@@ -159,6 +159,28 @@ export class TerminalTaskStorage implements SessionStorage {
   append(id: string, input: Omit<HistoryRecord, 'sequence' | 'timestamp'>): Promise<HistoryRecord> {
     return this.enqueue(id, async () => {
       if (!this.rows.has(id)) throw new Error('TASK_NOT_FOUND');
+      return this.appendRecord(id, input);
+    });
+  }
+  /** Enrich an existing early IM row without duplicating its body. The lookup
+   * and append share the task write queue, including deletion and /clear. */
+  patchUserMeta(id: string, clientId: string, patch: Record<string, unknown>, guard: () => void): Promise<HistoryRecord | null> {
+    return this.enqueue(id, async () => {
+      guard();
+      const task = this.rows.get(id);
+      if (!task || task.deleted) return null;
+      let cursor = 0, found = false;
+      do {
+        const page = await this.readHistory(id, cursor, 1000);
+        found = page.records.some(row => row.kind === 'user' && row.clientId === clientId && row.timestamp > (task.clearedAt ?? 0));
+        if (found || !page.hasMore) break;
+        cursor = page.nextCursor;
+      } while (true);
+      guard();
+      return found ? this.appendRecord(id, { kind: 'user-meta', clientId, agentMeta: patch }) : null;
+    });
+  }
+  private async appendRecord(id: string, input: Omit<HistoryRecord, 'sequence' | 'timestamp'>): Promise<HistoryRecord> {
       let next = this.nextSequences.get(id);
       if (next === undefined) {
         const page = await this.readHistory(id, 0, 1, true);
@@ -170,7 +192,6 @@ export class TerminalTaskStorage implements SessionStorage {
       finally { await handle.close(); }
       this.nextSequences.set(id, record.sequence);
       return record;
-    });
   }
   /** Only an incomplete trailing record can arise from an interrupted append.
    * Drop those uncommitted bytes before reusing its sequence; never ignore a
