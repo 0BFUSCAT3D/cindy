@@ -19,7 +19,8 @@
     "./effort-resolution": "./src/effortResolution.ts",
     "./model-list": "./src/modelList.ts",
     "./classification": "./src/classification.ts",
-    "./invocation": "./src/invocation.ts"
+    "./invocation": "./src/invocation.ts",
+    "./model-route-guard": "./src/modelRouteGuard.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

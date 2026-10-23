@@ -81,7 +81,8 @@ export class TerminalServiceManager {
       const log = path.join(this.profileDir, 'service.log');
       await atomicPrivateWrite(file, `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${this.id}</string><key>ProgramArguments</key><array>${[this.node, ...args].map(value=>`<string>${xml(value)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>WorkingDirectory</key><string>${xml(this.profileDir)}</string><key>StandardOutPath</key><string>${xml(log)}</string><key>StandardErrorPath</key><string>${xml(log)}</string></dict></plist>\n`);
       await this.execute('plutil', ['-lint', file], { timeout: 10_000 });
-      await this.execute('launchctl', ['enable', this.launchdTarget()], { timeout: 10_000 });
+      const location = await this.launchdLocation();
+      await this.execute('launchctl', ['enable', location.target], { timeout: 10_000 });
     } else if (this.platform === 'linux') {
       const config = this.env.XDG_CONFIG_HOME || path.join(this.home, '.config');
       if (!path.isAbsolute(config) || /[\r\n\0]/.test(config)) throw new Error('INVALID_CONFIG_HOME');
@@ -128,10 +129,11 @@ export class TerminalServiceManager {
         result.starts = await this.lingers() ? 'boot' : 'login';
         if (result.starts === 'login') result.bootEnableCommand = ['loginctl', 'enable-linger', this.userId()];
       } else if (this.platform === 'darwin') {
-        const { stdout } = await this.execute('launchctl', ['print', this.launchdTarget(installation.scope)], { timeout: 10_000 });
-        result.managerAvailable = result.registered = true;
-        result.running = /\bstate = running\b/.test(stdout);
-        const pid = Number(stdout.match(/\bpid = (\d+)/)?.[1]);
+        const location = await this.launchdLocation(installation.scope);
+        result.managerAvailable = true;
+        result.registered = location.output !== undefined;
+        result.running = /\bstate = running\b/.test(location.output ?? '');
+        const pid = Number(location.output?.match(/\bpid = (\d+)/)?.[1]);
         if (Number.isSafeInteger(pid) && pid > 0) result.pid = pid;
         result.starts = installation.scope === 'system' ? 'boot' : 'login';
       } else if (this.platform === 'win32') {
@@ -176,6 +178,7 @@ export class TerminalServiceManager {
       const args = [this.node, this.entry, 'serve', '--state-dir', this.profileDir];
       await atomicPrivateWrite(temporary, `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${this.id}</string><key>UserName</key><string>${xml(this.userName)}</string><key>ProgramArguments</key><array>${args.map(value => `<string>${xml(value)}</string>`).join('')}</array><key>EnvironmentVariables</key><dict><key>HOME</key><string>${xml(this.home)}</string><key>USER</key><string>${xml(this.userName)}</string><key>LOGNAME</key><string>${xml(this.userName)}</string></dict><key>WorkingDirectory</key><string>${xml(this.profileDir)}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`);
       const previous = await this.inspect();
+      const previousLocation = await this.launchdLocation();
       let copied = false;
       let userDisabled = false;
       let systemStarted = false;
@@ -184,9 +187,9 @@ export class TerminalServiceManager {
         await this.execute('plutil', ['-lint', temporary], { timeout: 10_000 });
         await this.interactive('/usr/bin/sudo', ['/usr/bin/install', '-o', 'root', '-g', 'wheel', '-m', '644', temporary, target]);
         copied = true;
-        await this.execute('launchctl', ['disable', this.launchdTarget()], { timeout: 10_000 });
+        await this.execute('launchctl', ['disable', previousLocation.target], { timeout: 10_000 });
         userDisabled = true;
-        if (previous.registered) await this.execute('launchctl', ['bootout', this.launchdTarget()], { timeout: 15_000 });
+        if (previous.registered) await this.execute('launchctl', ['bootout', previousLocation.target], { timeout: 15_000 });
         await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'enable', `system/${this.id}`]);
         await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'bootstrap', 'system', target]);
         systemStarted = true;
@@ -200,9 +203,9 @@ export class TerminalServiceManager {
             if (systemStarted) await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'bootout', `system/${this.id}`]);
             await this.interactive('/usr/bin/sudo', ['/bin/rm', '-f', target]);
             if (userDisabled) {
-              await this.execute('launchctl', ['enable', this.launchdTarget()], { timeout: 10_000 });
+              await this.execute('launchctl', ['enable', previousLocation.target], { timeout: 10_000 });
               if (previous.registered && !(await this.inspect()).registered) {
-                await this.execute('launchctl', ['bootstrap', `gui/${this.userId()}`, installation.file], { timeout: 15_000 });
+                await this.execute('launchctl', ['bootstrap', previousLocation.domain, installation.file], { timeout: 15_000 });
               }
             }
           } catch (rollbackError) {
@@ -240,13 +243,13 @@ export class TerminalServiceManager {
     if (this.platform === 'linux') {
       await this.userSystemctl(['start', `${this.id}.service`], 30_000);
     } else if (this.platform === 'darwin') {
-      const loaded = await this.inspect();
+      const location = await this.launchdLocation(installation.scope);
       if (installation.scope === 'system') {
-        if (!loaded.registered) await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'bootstrap', 'system', installation.file]);
-        await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'kickstart', this.launchdTarget('system')]);
+        if (location.output === undefined) await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'bootstrap', 'system', installation.file]);
+        await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'kickstart', location.target]);
       } else {
-        if (!loaded.registered) await this.execute('launchctl', ['bootstrap', `gui/${this.userId()}`, installation.file], { timeout: 15_000 });
-        await this.execute('launchctl', ['kickstart', this.launchdTarget()], { timeout: 15_000 });
+        if (location.output === undefined) await this.execute('launchctl', ['bootstrap', location.domain, installation.file], { timeout: 15_000 });
+        await this.execute('launchctl', ['kickstart', location.target], { timeout: 15_000 });
       }
     } else if (this.platform === 'win32') {
       await this.execute(windowsSystemCommand('schtasks',this.env), ['/Run', '/TN', this.id], { timeout: 15_000, windowsHide: true });
@@ -294,7 +297,7 @@ export class TerminalServiceManager {
     if (this.platform === 'darwin') {
       // Disable restart before removing the descriptor, but do not kill this
       // process while it is returning an RPC result to the foreground CLI.
-      await this.execute('launchctl', ['disable', this.launchdTarget()], { timeout: 10_000 });
+      await this.execute('launchctl', ['disable', (await this.launchdLocation()).target], { timeout: 10_000 });
     } else if (this.platform === 'linux') {
       try { await this.userSystemctl(['disable', `${this.id}.service`]); }
       catch { throw new Error('SERVICE_UNREGISTRATION_FAILED'); }
@@ -318,11 +321,24 @@ export class TerminalServiceManager {
     return { removed: true };
   }
 
-  private launchdTarget(scope?: Installation['scope']): string {
-    if (scope === 'system') return `system/${this.id}`;
-    const uid = this.uid;
-    if (uid === undefined) throw new Error('SERVICE_USER_UNAVAILABLE');
-    return `gui/${uid}/${this.id}`;
+  private async launchdLocation(scope?: Installation['scope']): Promise<{ domain: string; target: string; output?: string }> {
+    const domains = scope === 'system' ? ['system'] : [`gui/${this.userId()}`, `user/${this.userId()}`];
+    // A missing job is normal before first activation. Probe the manager
+    // separately, and retain an existing background job when a GUI login has
+    // since appeared. SSH-only machines have a user domain without a GUI one.
+    for (const domain of domains) {
+      try {
+        const { stdout } = await this.execute('launchctl', ['print', `${domain}/${this.id}`], { timeout: 10_000 });
+        return { domain, target: `${domain}/${this.id}`, output: stdout };
+      } catch { /* The job may not have been bootstrapped yet. */ }
+    }
+    for (const domain of domains) {
+      try {
+        await this.execute('launchctl', ['print', domain], { timeout: 10_000 });
+        return { domain, target: `${domain}/${this.id}` };
+      } catch { /* Try the non-GUI domain of the same Unix account. */ }
+    }
+    throw new Error('SERVICE_MANAGER_UNAVAILABLE');
   }
 
   /** Foreground CLI only, after the uninstall RPC has returned and disconnected.
@@ -335,12 +351,12 @@ export class TerminalServiceManager {
     if (current.scope === 'system') {
       const expected = `/Library/LaunchDaemons/${this.id}.plist`;
       if (current.file !== expected) throw new Error('SERVICE_INSTALLATION_INVALID');
-      if ((await this.inspect()).registered) await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'bootout', this.launchdTarget('system')]);
+      if ((await this.inspect()).registered) await this.interactive('/usr/bin/sudo', ['/bin/launchctl', 'bootout', `system/${this.id}`]);
       await this.interactive('/usr/bin/sudo', ['/bin/rm', '-f', expected]);
       await fs.rm(this.metadata, { force: true });
       return { removed: true };
     }
-    const target = this.launchdTarget();
+    const target = (await this.launchdLocation()).target;
     try { await this.execute('launchctl', ['bootout', target], { timeout: 15_000 }); }
     catch {
       // An ordinary manually started daemon has no launchd job. Only the

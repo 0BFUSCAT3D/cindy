@@ -9,7 +9,7 @@ import { ClaudeCodeAgent, CodexAgent, PiAgent, Maker, type AgentEvent, type Agen
 import { buildClientDeviceNote, buildMessageSourceNote, messageSourceSenderFromMeta } from '@cindy/maker-shared/message-source';
 import { resolveRoute, type Catalog, type ResolvedRoute } from '@cindy/model-providers';
 import { type InvocationContext, type TerminalSecrets } from '../contracts.js';
-import { createDeviceAgentStarter, readDeviceProviderViews, hostedStartOptions, type HostedStartInput, type DeviceAgentServiceDeps } from '@cindy/remote-agent';
+import { createDeviceAgentStarter, readDeviceProviderViews, readRemoteProviderRoute, hostedStartOptions, type HostedStartInput, type DeviceAgentServiceDeps } from '@cindy/remote-agent';
 import { readTaskDelivery, validateTaskDelivery, type TaskDeliveryProof } from './handoff.js';
 import { TerminalTaskMedia } from './media.js';
 import { normalizeTaskInput, appendInputText, inputPlainText, persistedInput, type InputHost, type AttachmentLifecycle } from './input.js';
@@ -27,6 +27,8 @@ import type { SharedPermission } from '@cindy/im-runtime/sharedPermission';
 import type { ImTurnHost } from '@cindy/im-runtime/turnHost';
 import { createInboundFileStaging } from '@cindy/im-runtime/inboundFileStaging';
 import { TerminalImBindings } from '../im/bindings.js';
+import { TerminalImDefaults } from '../im/defaults.js';
+import { createImSessionDefaults } from '@cindy/im-runtime/defaultSessionSettings';
 import type { Capabilities, MakerEventListener } from '@cindy/maker-core';
 import { createHistoryViewReader } from '@cindy/remote-agent/host/historyViewReader';
 import type { HistoryWorkReference } from '@cindy/maker-shared/message-window';
@@ -97,6 +99,8 @@ export class TerminalTaskHost {
   readonly capabilities: TerminalCapabilities;
   readonly channelFiles: ReturnType<typeof createInboundFileStaging>;
   readonly channelBindings: TerminalImBindings;
+  readonly channelDefaults: TerminalImDefaults;
+  readonly channelSessionDefaults: ReturnType<typeof createImSessionDefaults>;
   private readonly live = new Map<string, LiveTask>();
   private readonly starts = new Map<string, Promise<LiveTask>>();
   private pluginFactory?: (context:PluginTaskContext)=>Promise<TerminalPluginTask>;
@@ -145,13 +149,27 @@ export class TerminalTaskHost {
     this.media = new TerminalTaskMedia(options.profileDir);
     this.storage = new TerminalTaskStorage(path.join(options.profileDir, 'tasks'));
     this.channelBindings = new TerminalImBindings({ root: options.profileDir, logger: options.logger, assertCurrent: () => { if (this.closed) throw new Error('TASK_HOST_CLOSED'); } });
+    this.channelDefaults = new TerminalImDefaults({ root: options.profileDir, assertCurrent: () => this.guard({ source: 'local' }), changed: channel => this.emit('maker:remote-resources:changed', { collectionId: 'channels', channel }) });
+    this.channelSessionDefaults = createImSessionDefaults({
+      getCapabilities: kind => this.channelRuntime().getCapabilities(kind),
+      listProviders: () => this.models.views(),
+      readImDefaultSettings: channel => this.channelDefaults.read(channel),
+      readImRemoteProviderRoute: route => readRemoteProviderRoute(route, async (deviceId, channel, args) => {
+        this.guard({ source: 'local' });
+        if (!options.remoteInvoke) throw new Error('REMOTE_TRANSPORT_UNAVAILABLE');
+        const result = await options.remoteInvoke(deviceId, channel, args);
+        this.guard({ source: 'local' });
+        return result;
+      }),
+      log: options.logger,
+    });
     this.capabilities = new TerminalCapabilities({root:options.profileDir,secrets:options.secretStore,assertCurrent:()=>{if(this.closed)throw new Error('TASK_HOST_CLOSED');},changed:()=>{this.emit('maker:mcp:changed',{});this.emit('maker:remote-resources:changed',{collectionId:'skills'});this.emit('maker:remote-resources:changed',{collectionId:'mcp'});},workingDirs:async()=>[...new Set((await this.storage.list()).filter(row=>!row.deleted).map(row=>row.workDir))]});
     this.models = new TerminalModelConfig(options.profileDir, options.secretStore, kind => this.authState(kind), options.catalog, options.createAgent ? undefined : async kind => { const binary = this.binaries.get(kind); return binary ? discoverNativeModels(kind, binary, options.profileDir, options.logger) : []; });
     this.ready = this.initialize();
   }
   private async initialize() {
     await privateDirectory(this.options.profileDir);
-    const initialized=await Promise.allSettled([this.storage.open(),this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
+    const initialized=await Promise.allSettled([this.storage.open(),this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,this.channelDefaults.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
     const failed=initialized.find((result):result is PromiseRejectedResult=>result.status==='rejected');if(failed)throw failed.reason;
     for (const id of this.channelBindings.store.listAttachedTargets()) {
       const row = await this.storage.get(id);
@@ -982,6 +1000,7 @@ export class TerminalTaskHost {
     this.makerObservers.clear();
     this.channelVendorOptions.clear();
     await this.channelBindings.close();
+    await this.channelDefaults.close();
     await this.capabilities.close();
     await Promise.allSettled([...this.hosted].map(handle => handle.close()));
     await Promise.all([this.storage.flush(), this.models.flush(), this.media.close()]);

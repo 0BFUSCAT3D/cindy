@@ -121,6 +121,36 @@ describe('terminal task host', () => {
     }
     expect(await host.invoke('terminal:tasks:list',[])).toEqual([]);
   });
+  // Integration: Desktop's settings tests do not cover the terminal's owner
+  // retirement, queued atomic writes, or resolution against its actual vault.
+  it('persists independent channel defaults and resolves only enabled model routes after restart', async () => {
+    const { host, root, create } = await setup();
+    const config = { agentKind: 'claude-code' as const, defaultModel: 'test-model', defaultPermissionMode: 'auto' as const };
+    const originalGlobal = host.channelDefaults.read();
+    await Promise.all([
+      host.channelDefaults.update({ permissionMode: 'plan', agents: { 'claude-code': { providerId: 'fixture', model: 'test-model', effort: 'high' } } }, 'discord'),
+      host.channelDefaults.update({ permissionMode: 'ask' }, 'feishu'),
+    ]);
+    expect(host.channelDefaults.read()).toEqual(originalGlobal);
+    expect(host.channelDefaults.read('feishu').permissionMode).toBe('ask');
+    expect(await host.channelSessionDefaults.resolveImSessionDefaults(config, undefined, 'discord')).toMatchObject({ model: 'test-model', providerId: 'fixture', permissionMode: 'plan' });
+    const persisted = JSON.parse(await readFile(path.join(root, 'im-default-settings.json'), 'utf8'));
+    expect(persisted.channels.discord.agents.pi).toBeUndefined();
+    expect(() => host.channelDefaults.update({ apiKey: 'must-not-persist' }, 'discord')).toThrow();
+    await host.close();
+    expect(() => host.channelDefaults.update({ permissionMode: 'auto' }, 'discord')).toThrow('IM_DEFAULTS_CLOSED');
+    const restarted = create(); await restarted.ready;
+    expect(restarted.channelDefaults.state('discord')).toMatchObject({ isCustomized: true, value: { permissionMode: 'plan' } });
+    expect(await restarted.channelSessionDefaults.resolveImSessionDefaults(config, undefined, 'discord')).toMatchObject({ model: 'test-model', providerId: 'fixture' });
+    const provider = restarted.models.snapshot().providers.find(value => value.id === 'fixture')!;
+    provider.runtimes['claude-code']!.models.push({ id: 'channel-fallback', name: 'Channel fallback' });
+    await restarted.models.saveProvider(provider);
+    await restarted.models.setDisabled({ kind: 'model', providerId: 'fixture', modelIds: ['test-model'], disabled: true }, () => {});
+    expect(await restarted.channelSessionDefaults.resolveImSessionDefaults(config, undefined, 'discord')).toMatchObject({ model: 'channel-fallback', providerId: 'fixture', permissionMode: 'plan' });
+    await restarted.channelDefaults.reset('discord');
+    expect(restarted.channelDefaults.state('discord').isCustomized).toBe(false);
+    expect(restarted.channelDefaults.read('feishu').permissionMode).toBe('ask');
+  });
   // Integration / im-turn-flow: Desktop's mocked SQL tests do not cover the
   // terminal owner's atomic file or daemon retirement. Two identities claiming
   // one real task must survive restart, and a stale card must not revoke the new

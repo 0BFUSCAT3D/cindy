@@ -301,7 +301,16 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         const raw = await call('maker:provider:list');
         const preference=at.device?record(await call('terminal:models:target-default',[at.device],false)):record(record(await call('terminal:models:get',[],false)).defaultSelection);
         nextItems = [];
-        if(!device)nextItems.push({ id:'add',title:`+ ${t.addProvider}`,run:addProvider },{id:'manage',title:modelText.manage,run:()=>navigate('providers')},{id:'engines',title:t.engines,run:()=>navigate('engines')});
+        let canConfigureModels=!at.device;
+        if(at.device){
+          try{
+            const manifest=record(await call('maker:remote-resources:manifest',[{client:{protocolVersion:1,primitives:['text','actions']}}]));
+            canConfigureModels=array(manifest.collections).some(item=>item.id==='providers');
+          }catch(error){if(!(error instanceof Error)||!['CHANNEL_NOT_ALLOWED','UNSUPPORTED_CHANNEL'].includes(error.message))throw error;}
+        }
+        if(canConfigureModels)nextItems.push({id:'add',title:`+ ${t.addProvider}`,run:addProvider},{id:'manage',title:modelText.manage,run:()=>navigate('providers')});
+        if(!at.device)nextItems.push({id:'engines',title:t.engines,run:()=>navigate('engines')});
+        const controlsCount=nextItems.length;
         for (const provider of array(record(raw).providers ?? raw)) {
           if (!provider.connected||provider.suspended) continue;
           for (const [agentKind, models] of Object.entries(record(provider.models))) for (const model of array(models)) {
@@ -310,11 +319,11 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
             const entry:Row={ id:`${provider.id}:${agentKind}:${model.id}`, title:label(model.name,label(model.id)), detail:`${label(provider.name,label(provider.id))} · ${agentKind}${current?` · ${t.defaultModel}`:''}`,run:async () => {
               await setDefaultModel(client,{providerId:label(provider.id),agentKind,model:label(model.id)},device); await load();
             } };
-            if(current)nextItems.splice(device?0:3,0,entry);else nextItems.push(entry);
+            if(current)nextItems.splice(controlsCount,0,entry);else nextItems.push(entry);
           }
         }
       } else if(at.page==='providers'){
-        const raw=await call('maker:provider:list',[],false);
+        const raw=await call('maker:provider:list');
         nextItems=array(record(raw).providers??raw).filter(p=>p.source==='user'||p.connected).map(provider=>({id:label(provider.id),title:label(provider.name,label(provider.id)),detail:provider.suspended?modelText.disable:provider.connected?t.connected:t.signedOut,run:()=>manageProvider(provider)}));
       } else if(at.page==='engines'){
         const statuses=array(await call('terminal:engines:list',[],false));

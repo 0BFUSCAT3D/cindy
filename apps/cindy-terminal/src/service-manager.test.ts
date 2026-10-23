@@ -21,11 +21,11 @@ it('disables restart in the RPC phase and bootouts only after foreground complet
   const installed = await manager.install();
   execute.mockClear();
   expect(await manager.uninstall()).toEqual({ removed: false, requiresLocalCompletion: true });
-  expect(execute.mock.calls.map(call => call[1][0])).toEqual(['disable']);
+  expect(execute.mock.calls.map(call => call[1][0]).filter(command => command !== 'print')).toEqual(['disable']);
   expect(await stat(installed.file).catch(() => null)).toBeNull();
   expect((await manager.status())?.uninstalling).toBe(true);
   expect(await manager.completeUninstall()).toEqual({ removed: true });
-  expect(execute.mock.calls.map(call => call[1][0])).toEqual(['disable', 'bootout']);
+  expect(execute.mock.calls.map(call => call[1][0]).filter(command => command !== 'print')).toEqual(['disable', 'bootout']);
   expect(await manager.status()).toBeNull();
 });
 
@@ -42,8 +42,41 @@ it('clears the pending registration when launchctl explicitly reports no loaded 
   await manager.install(); await manager.uninstall();
   execute.mockImplementation(async (_file, args) => {
     if (args[0] === 'bootout') throw new Error('test failure');
+    if (args[1] === 'gui/12345') return { stdout: 'domain', stderr: '' };
     throw Object.assign(new Error('no job'), { stderr: 'Could not find service in domain for user' });
   });
+  expect(await manager.completeUninstall()).toEqual({ removed: true });
+});
+
+// Native macOS first activation failed because an unloaded job was mistaken
+// for an unavailable launchd manager. SSH has no GUI domain; keep that loaded
+// user job when a desktop login appears later instead of starting a duplicate.
+it.each(['gui', 'user'] as const)('activates a new macOS service in the available %s domain', async initialDomain => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'cindy-service-command-test-')); directories.push(directory);
+  let guiAvailable = initialDomain === 'gui';
+  let loaded: string | undefined;
+  const execute = vi.fn(async (_file: string, args: string[]) => {
+    if (args[0] === 'print') {
+      if (args[1] === loaded) return { stdout: 'state = running\npid = 3456\n', stderr: '' };
+      if (args[1] === 'user/12345' || args[1] === 'gui/12345' && guiAvailable) return { stdout: 'domain', stderr: '' };
+      throw Object.assign(new Error('not loaded'), { stderr: 'Could not find service in domain for user' });
+    }
+    if (args[0] === 'bootstrap') {
+      expect(args[1]).toBe(`${initialDomain}/12345`);
+      loaded = `${args[1]}/${manager.id}`;
+    }
+    if (args[0] === 'kickstart' || args[0] === 'disable') expect(args[1]).toBe(loaded);
+    if (args[0] === 'bootout') { expect(args[1]).toBe(loaded); loaded = undefined; }
+    return { stdout: '', stderr: '' };
+  });
+  const manager = new TerminalServiceManager(path.join(directory, 'profile'), path.join(directory, 'cli.js'), process.execPath, { platform: 'darwin', home: directory, uid: 12345, execute });
+  await manager.install();
+  expect(await manager.inspect()).toMatchObject({ managerAvailable: true, registered: false, running: false });
+  expect(await manager.activate()).toMatchObject({ managerAvailable: true, registered: true, running: true, pid: 3456 });
+  guiAvailable = true;
+  expect(await manager.activate()).toMatchObject({ running: true, pid: 3456 });
+  expect(execute.mock.calls.filter(([, args]) => args[0] === 'bootstrap')).toHaveLength(1);
+  await manager.uninstall();
   expect(await manager.completeUninstall()).toEqual({ removed: true });
 });
 
@@ -139,7 +172,7 @@ it('restores the user registration after macOS boot migration fails', async () =
   const execute = vi.fn(async (_file: string, args: string[]) => {
     if (args[0] === 'bootout') loaded = false;
     if (args[0] === 'bootstrap') loaded = true;
-    if (args[0] === 'print' && !loaded) throw new Error('job not loaded');
+    if (args[0] === 'print' && args[1].split('/').length === 3 && !loaded) throw new Error('job not loaded');
     return { stdout: 'state = running\npid = 3456\n', stderr: '' };
   });
   const interactive = vi.fn(async (_file: string, args: string[]) => {
