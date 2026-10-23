@@ -12,6 +12,7 @@ import type { Definition } from 'mdast';
 import { messages, sessions } from '../localDb/schema.js';
 import { getCurrentDbClientSnapshot } from '../localDb/client/current.js';
 import { visibleMessageText } from '../localDb/conversationSearch.pure.js';
+import { safeDecodeHrefForLookup } from '../pathResolver.js';
 import { isPathWithin } from '../cindy-media/taskImageMarkdown.js';
 import { BOT_GROUP_ATTACHMENTS_MAX } from '../../shared/botGroupChat.js';
 import type { ChatUploadAttachment } from './chatServerMedia.js';
@@ -127,6 +128,11 @@ function localPath(url: string, workDir: string): string {
         value = literal;
         if (process.platform === 'win32' && /^\/[A-Za-z]:[\\/]/.test(value)) value = value.slice(1);
       }
+    } else {
+      // Match ordinary Markdown lookup without decoding protocol/query paths twice.
+      const decoded = safeDecodeHrefForLookup(url);
+      if (decoded === null) throw unavailable();
+      value = decoded;
     }
   } catch { throw unavailable(); }
   // Never resolve a network/device path, including on another host platform.

@@ -77,6 +77,20 @@ describe('group reply file delivery', () => {
     expect((await result.attachments[0]!.readBytes!()).toString()).toBe('percent report');
   });
 
+  it.each(['final report 中文.pdf', 'encoded%20.pdf', '100% done.pdf'])('decodes relative file hrefs once or preserves malformed percents: %s', async name => {
+    const dir = path.join(work, 'reports');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, name), 'relative report');
+    const href = `reports/${name.startsWith('100') ? name : encodeURIComponent(name)}`;
+    const result = await prepareChatReplyFiles(`[report](<${href}>)`, 'lane', () => {});
+    expect(result.attachments).toHaveLength(1);
+    expect((await result.attachments[0]!.readBytes!()).toString()).toBe('relative report');
+  });
+
+  it.each(['reports%2Ffinal.pdf', 'reports%5Cfinal.pdf', 'reports/%2e%2e/report.pdf', '%68ttps%3A%2F%2Fexample.test/a.pdf', '%2F%2Fserver/a.pdf', 'reports/%00.pdf'])('refuses path syntax introduced by href decoding: %s', async href => {
+    await expect(prepareChatReplyFiles(`[report](${href})`, 'lane', () => {})).rejects.toThrow('ATTACHMENT_UNAVAILABLE');
+  });
+
   it('leaves ordinary relative navigation targets unchanged without file authority', async () => {
     scope.snapshot = null;
     const text = '[help](about) [guide][nav]\n\n[nav]: getting-started';
