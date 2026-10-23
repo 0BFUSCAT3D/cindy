@@ -15308,7 +15308,7 @@
       "unread": "읽지 않은 업데이트",
       "worker": "Worker",
       "workersHeader": "Workers",
-      "workerCountSummary_other": "전체 Worker {{totalCount}} · 활성 {{activeCount}}",
+      "workerCountSummary_other": "전체 Worker {{totalCount}} · 실행 중 {{activeCount}}",
       "statusAria": "상태 {{status}}",
       "archiveWorkerAria": "Worker {{name}} 아카이브",
       "createWorker": "새 Worker 만들기",
