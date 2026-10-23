@@ -26,6 +26,14 @@ const SAVE_DEBOUNCE_MS = 800;
 
 type View =
   { kind: 'list' } | { kind: 'detail'; filename: string } | { kind: 'edit'; filename: string };
+export interface AboutMeField {
+  value: string;
+  readOnly?: boolean;
+  onChange: (next: string) => void;
+  onBlur: () => void;
+  /** IME composition handlers of the settings autosave. */
+  composition?: { onCompositionStart: () => void; onCompositionEnd: () => void };
+}
 type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict';
 
 /** The teammate's computer serves the memory; the pages never assume it is this one. */
@@ -74,6 +82,7 @@ export function BotMemorySettings({
   botName,
   memoryEnabled,
   onMemoryEnabledChange,
+  aboutMe,
   backRef,
   leaveRef,
 }: {
@@ -81,6 +90,8 @@ export function BotMemorySettings({
   botName: string;
   memoryEnabled: boolean;
   onMemoryEnabledChange: (enabled: boolean) => void;
+  /** What the teammate knows about its owner (`userContextSource`): saved with the rest of the settings. */
+  aboutMe: AboutMeField;
   backRef: MutableRefObject<(() => Promise<boolean>) | null>;
   leaveRef: MutableRefObject<(() => Promise<boolean>) | null>;
 }) {
@@ -119,6 +130,7 @@ export function BotMemorySettings({
         botId={botId}
         memoryEnabled={memoryEnabled}
         onMemoryEnabledChange={onMemoryEnabledChange}
+        aboutMe={aboutMe}
         onOpen={openDetail}
       />
     );
@@ -156,11 +168,13 @@ function MemoryList({
   botId,
   memoryEnabled,
   onMemoryEnabledChange,
+  aboutMe,
   onOpen,
 }: {
   botId: string;
   memoryEnabled: boolean;
   onMemoryEnabledChange: (enabled: boolean) => void;
+  aboutMe: AboutMeField;
   onOpen: (filename: string) => void;
 }) {
   const { t } = useBotTranslation();
@@ -218,6 +232,21 @@ function MemoryList({
           aria-label={t('bots.memory.enabled')}
         />
       </div>
+      <section aria-label={t('bots.memory.aboutMe')}>
+        <h3 className="px-1 pb-2 text-12 font-medium text-[var(--text-secondary)]">
+          {t('bots.memory.aboutMe')}
+        </h3>
+        <Textarea
+          aria-label={t('bots.memory.aboutMe')}
+          readOnly={aboutMe.readOnly}
+          value={aboutMe.value}
+          onChange={aboutMe.onChange}
+          onBlur={aboutMe.onBlur}
+          {...aboutMe.composition}
+          rows={4}
+          className="min-h-24 resize-none p-3 leading-6 [field-sizing:content]"
+        />
+      </section>
       {failed ? (
         <div
           className="flex flex-col items-center gap-3 py-10 text-13 text-[var(--text-secondary)]"

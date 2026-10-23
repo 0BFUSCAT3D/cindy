@@ -9192,6 +9192,7 @@
       "title": "记忆",
       "enabled": "开启记忆",
       "disabledHint": "已关闭，不会读取或保存记忆",
+      "aboutMe": "关于我的记忆",
       "search": "搜索记忆",
       "empty": "还没有记忆",
       "noResults": "没有找到相关记忆",

@@ -763,6 +763,16 @@ export function BotSettings({
             botName={name}
             memoryEnabled={capabilities.memory}
             onMemoryEnabledChange={(enabled) => updateCapability('memory', enabled)}
+            aboutMe={{
+              value: userContextSource,
+              readOnly: !!invitationPending,
+              onChange: (next) => {
+                setUserContextSource(next);
+                autosave.onEdit('text');
+              },
+              onBlur: () => void autosave.flush(),
+              composition: autosave.composition,
+            }}
             backRef={memoryBackRef}
             leaveRef={memoryLeaveRef}
           />

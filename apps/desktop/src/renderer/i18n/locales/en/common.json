@@ -9226,6 +9226,7 @@
       "title": "Memory",
       "enabled": "Use memory",
       "disabledHint": "Off. Memories aren't read or saved.",
+      "aboutMe": "What you know about me",
       "search": "Search memories",
       "empty": "No memories yet",
       "noResults": "No matching memories",

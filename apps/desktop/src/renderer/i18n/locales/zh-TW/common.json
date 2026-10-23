@@ -9192,6 +9192,7 @@
       "title": "記憶",
       "enabled": "開啟記憶",
       "disabledHint": "已關閉，不會讀取或儲存記憶",
+      "aboutMe": "關於我的記憶",
       "search": "搜尋記憶",
       "empty": "還沒有記憶",
       "noResults": "找不到相關記憶",
