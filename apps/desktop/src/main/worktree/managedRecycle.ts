@@ -3,13 +3,12 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { captureWorktreeContent, worktreeContentBaselineMatches } from './contentSnapshot';
+import { captureWorktreeContent, worktreeContentMatches } from './contentSnapshot';
 import { gitExec } from './gitExec';
 import { hasLiveSessionReference, loadLiveSessionPathKeys } from './liveSessionRefs';
 import {
   newRecycleRecord, readRecycleRecord, writeRecycleRecord, worktreeGeneration,
 } from './recycleJournal';
-import { createRecoveryArchive, inventoryWorktree, sameWorktreeFiles, verifyRecoveryArchive } from './recoveryArchive';
 import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import { isManagedWorktreePath } from './safety';
 import { assertManagedResourcePath, assertWorktreeGitIdentity } from './resourceSafety';
@@ -45,11 +44,9 @@ export async function checkpointWorktreeForReuse(meta: WorktreeMeta): Promise<vo
   }
   const gitLink = await fs.lstat(path.join(meta.path, '.git'));
   if (!gitLink.isFile() || gitLink.isSymbolicLink()) throw new Error('pooled worktree Git link is missing');
-  record.archive = await createRecoveryArchive(meta.path, record.id);
-  record.snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/${randomUUID()}`);
+  record.snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/${randomUUID()}`, { includeUntracked: true });
   if (hasLiveSessionReference(meta, await loadLiveSessionPathKeys({ contextPath: meta.path }))
-    || !(await worktreeContentBaselineMatches(meta.path, record.snapshot))
-    || !sameWorktreeFiles(await inventoryWorktree(meta.path), record.archive.files)) {
+    || !(await worktreeContentMatches(meta.path, record.snapshot))) {
     throw new Error('pooled worktree changed before reuse');
   }
   await assertManagedResourcePath(meta, store.getAllPaths());
@@ -66,6 +63,16 @@ async function directoryIdentity(value: string): Promise<string | null> {
     return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function hasGitLink(worktreePath: string): Promise<boolean> {
+  try {
+    await fs.lstat(path.join(worktreePath, '.git'));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
 }
@@ -113,11 +120,15 @@ async function recycleManagedWorktreeInSlot(meta: WorktreeMeta, options: Managed
       await writeRecycleRecord(record);
       return false;
     };
-    const canRemove = async (): Promise<boolean> => {
+    // The owner still wants this generation gone (task archived/deleted, no newer registration).
+    const ownerAllowsRemoval = async (): Promise<boolean> => {
       if (!legacyGuardHeld()) return false;
       if (!options.canRemove || !(await options.canRemove())) return false;
       const current = store.get(meta.sessionId);
-      if (current && worktreeGeneration(current) !== record.generation) return false;
+      return !current || worktreeGeneration(current) === record.generation;
+    };
+    const canRemove = async (): Promise<boolean> => {
+      if (!(await ownerAllowsRemoval())) return false;
       const refs = await loadLiveSessionPathKeys({
         contextPath: meta.path, excludeSessionId: meta.sessionId,
         isSessionRuntimeAlive: options.isSessionRuntimeAlive,
@@ -126,15 +137,20 @@ async function recycleManagedWorktreeInSlot(meta: WorktreeMeta, options: Managed
     };
     try {
       if (meta.quarantinePath) return defer('legacy-quarantine-needs-review');
-      if (!(await canRemove())) return defer('referenced-or-runtime-unavailable');
+      if (!(await ownerAllowsRemoval())) return defer('referenced-or-runtime-unavailable');
       const identity = await directoryIdentity(meta.path);
       if (identity === null) {
+        // Nothing left to delete, so other references cannot keep this request waiting.
         record.phase = 'removed';
+        record.reason = undefined;
         await writeRecycleRecord(record);
+        await gitExec(['worktree', 'prune'], meta.baseRepo).catch(() => undefined);
         await options.onRemoved?.();
-        await unregisterResource(meta);
+        if (await canRemove()) await unregisterResource(meta);
+        else await store.del(meta.sessionId);
         return true;
       }
+      if (!(await canRemove())) return defer('referenced-or-runtime-unavailable');
       if (record.directoryIdentity && identity !== record.directoryIdentity) return defer('directory-replaced');
       if (!isManagedWorktreePath(meta.path, meta.baseRepo, store.getAllPaths())) return defer('unmanaged-path');
       const realParent = await physicalWorktreeKey(path.dirname(meta.path));
@@ -148,78 +164,50 @@ async function recycleManagedWorktreeInSlot(meta: WorktreeMeta, options: Managed
       }
       record.directoryIdentity = identity;
       await assertManagedResourcePath(meta, store.getAllPaths());
-      const partialRemoval = record.phase === 'removing' && record.snapshot && record.archive;
-      if (!partialRemoval) {
+      // Git can delete .git before Windows reports EBUSY; such a resumed removal keeps the
+      // snapshot that was verified before deletion started.
+      const resumingRemoval = record.phase === 'removing' && Boolean(record.snapshot) && !(await hasGitLink(meta.path));
+      if (!resumingRemoval) {
         // A missing .git must never fall through to the parent repository.
         await assertWorktreeGitIdentity(meta);
-        // Save all bytes, including ignored files, before touching the live directory.
-        if (!record.archive || !sameWorktreeFiles(await inventoryWorktree(meta.path), record.archive.files)) {
-          record.archive = await createRecoveryArchive(meta.path, record.id);
-          record.snapshot = undefined;
-          await writeRecycleRecord(record);
-        }
-        if (!record.snapshot || !(await worktreeContentBaselineMatches(meta.path, record.snapshot))) {
-          record.snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/${randomUUID()}`);
+        // Git keeps tracked and new files; ignored files (dependencies, build output) are not saved.
+        if (!record.snapshot || !(await worktreeContentMatches(meta.path, record.snapshot))) {
+          record.snapshot = await captureWorktreeContent(
+            meta.path, `refs/cindy/worktree-recovery/${record.id}/${randomUUID()}`, { includeUntracked: true },
+          );
+          record.archive = undefined;
         }
         record.phase = 'snapshotted';
         await writeRecycleRecord(record);
       }
-      if (!record.archive || !record.snapshot) return defer('recovery-evidence-missing');
-      await verifyRecoveryArchive(record.archive);
-      if (!sameWorktreeFiles(await inventoryWorktree(meta.path), record.archive.files, Boolean(partialRemoval))) {
-        return defer('files-changed');
-      }
+      const snapshot = record.snapshot;
+      if (!snapshot) return defer('recovery-evidence-missing');
+      const contentUnchanged = async (): Promise<boolean> => {
+        if (!(await hasGitLink(meta.path))) return resumingRemoval;
+        await assertWorktreeGitIdentity(meta);
+        return worktreeContentMatches(meta.path, snapshot);
+      };
       if (!(await canRemove())) return defer('referenced-before-removal');
       if (await directoryIdentity(meta.path) !== identity) return defer('directory-replaced');
       await assertManagedResourcePath(meta, store.getAllPaths());
-      let gitLinkPresent = true;
-      try { await fs.lstat(path.join(meta.path, '.git')); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        gitLinkPresent = false;
-      }
-      if (!partialRemoval || gitLinkPresent) {
-        await assertWorktreeGitIdentity(meta);
-        if (!(await worktreeContentBaselineMatches(meta.path, record.snapshot))) return defer('git-baseline-changed');
-      }
+      if (!(await contentUnchanged())) return defer('git-baseline-changed');
       record.phase = 'removing';
       await writeRecycleRecord(record);
-      // Revalidate immediately before the destructive Git operation. The
-      // earlier inventory is only a snapshot; a late editor/IDE write or a
-      // newly live reference must keep this generation protected.
-      if (!record.archive || !record.snapshot) return defer('recovery-evidence-missing');
-      await verifyRecoveryArchive(record.archive);
-      if (!sameWorktreeFiles(await inventoryWorktree(meta.path), record.archive.files, Boolean(partialRemoval))) {
-        return defer('files-changed-before-removal');
-      }
+      // Revalidate immediately before the destructive Git operation: a late
+      // editor/IDE write or a newly live reference keeps this generation protected.
       if (!(await canRemove())) return defer('referenced-before-removal');
       if (await directoryIdentity(meta.path) !== identity) return defer('directory-replaced');
       await assertManagedResourcePath(meta, store.getAllPaths());
-      let finalGitLinkPresent = true;
-      try { await fs.lstat(path.join(meta.path, '.git')); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        finalGitLinkPresent = false;
-      }
-      if (!partialRemoval || finalGitLinkPresent) {
-        await assertWorktreeGitIdentity(meta);
-        if (!(await worktreeContentBaselineMatches(meta.path, record.snapshot))) return defer('git-baseline-changed-before-removal');
-      }
+      if (!(await contentUnchanged())) return defer('git-baseline-changed-before-removal');
       try {
         await gitExec(['-c', 'core.longpaths=true', 'worktree', 'remove', '--force', meta.path], meta.baseRepo);
       } catch {
-        // Git may remove .git before Windows reports EBUSY. Only delete surviving
-        // bytes still covered by this generation's authenticated recovery archive.
         if (await directoryIdentity(meta.path) !== identity) return defer('remove-unconfirmed');
         if (!(await canRemove())) return defer('referenced-before-fallback');
-        if (!sameWorktreeFiles(await inventoryWorktree(meta.path), record.archive.files, true)) return defer('residual-files-changed');
         await assertManagedResourcePath(meta, store.getAllPaths());
-        let hasGit = true;
-        try { await fs.lstat(path.join(meta.path, '.git')); } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-          hasGit = false;
-        }
-        if (hasGit) {
+        if (await hasGitLink(meta.path)) {
           await assertWorktreeGitIdentity(meta);
-          if (!(await worktreeContentBaselineMatches(meta.path, record.snapshot))) return defer('git-baseline-changed');
+          if (!(await worktreeContentMatches(meta.path, snapshot))) return defer('git-baseline-changed');
         }
         if (await directoryIdentity(meta.path) !== identity) return defer('directory-replaced');
         await fs.rm(meta.path, { recursive: true, force: true });

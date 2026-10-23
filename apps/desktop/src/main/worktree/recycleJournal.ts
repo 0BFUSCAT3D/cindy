@@ -27,11 +27,15 @@ export interface WorktreeRecycleRecord {
   retryPolicy?: WorktreeRecyclePolicy;
   /** null is a durable marker that recovery has reserved a previously absent directory. */
   directoryIdentity?: string | null;
-  snapshot?: { head: string; headRef?: string | null; tree: string; indexTree: string; commit: string; ref: string; indexHash: string };
+  /** `untracked` marks a tree that also holds new non-ignored files; older snapshots relied on `archive`. */
+  snapshot?: { head: string; headRef?: string | null; tree: string; indexTree: string; commit: string; ref: string; indexHash: string; untracked?: true };
   restoredGeneration?: string;
   /** Temporary checkout used to repair a partially removed worktree. */
   restoreCheckoutPath?: string;
+  /** Written only by older clients; still honoured when restoring their records. */
   archive?: WorktreeRecoveryArchive;
+  /** The one fresh retry budget for a request an older client paused over its archive. */
+  legacyArchiveRetry?: true;
 }
 
 export function recycleJournalRoot(): string {
@@ -106,7 +110,7 @@ export async function writeRecycleRecord(record: WorktreeRecycleRecord): Promise
   await fs.mkdir(root, { recursive: true });
   // Must be discoverable before committing an intent that permits destructive I/O.
   await publishJournalLocation(root);
-  if (record.archive && record.snapshot && record.phase === 'removed') {
+  if (record.snapshot && record.phase === 'removed') {
     const history = path.join(root, 'history');
     await fs.mkdir(history, { recursive: true });
     const key = createHash('sha256').update(`${record.generation}:${record.requestedAt}:${record.snapshot.commit}`).digest('hex');
@@ -151,6 +155,60 @@ export async function newRecycleRecord(meta: WorktreeMeta): Promise<WorktreeRecy
     generation: worktreeGeneration(meta), meta, requestedAt: new Date().toISOString(),
     phase: 'pending', attempts: 0, nextAttemptAt: 0,
   };
+}
+
+const archiveNamePattern = /^[a-f0-9-]+\.tar\.gz\.enc$/;
+/** Older clients may still be writing an archive in a shared profile; their writes finish well within this. */
+const ORPHAN_ARCHIVE_MIN_AGE_MS = 2 * 60 * 60_000;
+
+/**
+ * Delete recovery archives no record points to. Older clients left one per interrupted attempt;
+ * its key lived only in the unsaved record, so nothing can ever decrypt it. Any unreadable
+ * record skips the sweep, since it might reference an archive.
+ */
+export async function pruneUnreferencedRecoveryArchives(now = Date.now()): Promise<number> {
+  const root = recycleJournalRoot();
+  let names: string[];
+  try {
+    names = await fs.readdir(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  const archives = names.filter((name) => archiveNamePattern.test(name));
+  if (archives.length === 0) return 0;
+  const referenced = new Set<string>();
+  const history = path.join(root, 'history');
+  let historyNames: string[] = [];
+  try { historyNames = await fs.readdir(history); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const recordFiles = [
+    ...names.filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).map((name) => ({ file: path.join(root, name), id: name.slice(0, 64) })),
+    ...historyNames.filter((name) => /^[a-f0-9]{64}-[a-f0-9]{64}\.json$/.test(name)).map((name) => ({ file: path.join(history, name), id: name.slice(0, 64) })),
+  ];
+  for (const { file, id } of recordFiles) {
+    let record: WorktreeRecycleRecord;
+    try { record = parseRecord(await fs.readFile(file, 'utf8'), id); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      log.warn('recovery archive sweep skipped: unreadable record', { resourceId: id });
+      return 0;
+    }
+    if (record.archive?.file) referenced.add(record.archive.file);
+  }
+  let removed = 0;
+  for (const name of archives) {
+    if (referenced.has(name)) continue;
+    const file = path.join(root, name);
+    try {
+      if (now - (await fs.stat(file)).mtimeMs < ORPHAN_ARCHIVE_MIN_AGE_MS) continue;
+      await fs.rm(file, { force: true });
+      removed++;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return removed;
 }
 
 /** Fail closed for a malformed file; callers report the failure without discarding evidence. */

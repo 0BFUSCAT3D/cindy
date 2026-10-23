@@ -33,6 +33,72 @@ export async function worktreeContentBaselineMatches(
     && (snapshot.headRef === undefined || await readWorktreeHeadRef(worktreePath) === snapshot.headRef);
 }
 
+/** Run Git against a throwaway index so the live index is never locked or rewritten. */
+async function withTemporaryIndex<T>(run: (env: Record<string, string>) => Promise<T>): Promise<T> {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-worktree-index-'));
+  try {
+    return await run({ GIT_INDEX_FILE: path.join(temp, 'index'), GIT_OPTIONAL_LOCKS: '0' });
+  } finally {
+    await fs.rm(temp, { recursive: true, force: true });
+  }
+}
+
+/** Tracked and untracked content that `.gitignore` does not exclude, as a tree. */
+async function fullContentTree(worktreePath: string): Promise<string> {
+  return withTemporaryIndex(async (extraEnv) => {
+    const { stdout: indexPath } = await gitExec(['rev-parse', '--path-format=absolute', '--git-path', 'index'], worktreePath);
+    await fs.copyFile(indexPath.trim(), extraEnv.GIT_INDEX_FILE);
+    await gitExec(['add', '--all', '--', '.'], worktreePath, { extraEnv });
+    const { stdout } = await gitExec(['write-tree'], worktreePath, { extraEnv });
+    return stdout.trim();
+  });
+}
+
+/**
+ * Same HEAD, staged content and non-ignored files as a snapshot that includes untracked files.
+ * Compares content rather than index bytes, so a `git status` stat refresh by an editor does
+ * not keep an archived worktree waiting. Older snapshots saved untracked bytes only in the
+ * recovery archive, so they never match: callers take a new snapshot before deleting anything.
+ */
+export async function worktreeContentMatches(
+  worktreePath: string,
+  snapshot: NonNullable<WorktreeRecycleRecord['snapshot']>,
+): Promise<boolean> {
+  return snapshot.untracked === true
+    && await worktreeStagedContentMatches(worktreePath, snapshot)
+    && await fullContentTree(worktreePath) === snapshot.tree;
+}
+
+/**
+ * Files still present in a partially removed or reused checkout must be a subset of the
+ * snapshot: missing files are fine, while edited or new non-ignored files stop recovery.
+ */
+export async function presentFilesMatchSnapshotTree(worktreePath: string, tree: string): Promise<boolean> {
+  return withTemporaryIndex(async (extraEnv) => {
+    await gitExec(['read-tree', tree], worktreePath, { extraEnv });
+    await gitExec(['update-index', '-q', '--refresh'], worktreePath, { extraEnv }).catch(() => undefined);
+    const { stdout: changed } = await gitExec(['diff-files', '--name-status', '-z'], worktreePath, { extraEnv });
+    const fields = changed.split('\0').filter(Boolean);
+    for (let index = 0; index < fields.length; index += 2) {
+      if (fields[index] !== 'D') return false;
+    }
+    const { stdout: extra } = await gitExec(['ls-files', '--others', '--exclude-standard', '-z'], worktreePath, { extraEnv });
+    return extra.length === 0;
+  });
+}
+
+/** Write snapshot files that are missing; existing files are never overwritten. */
+export async function checkoutMissingSnapshotFiles(worktreePath: string, tree: string): Promise<void> {
+  await withTemporaryIndex(async (extraEnv) => {
+    await gitExec(['read-tree', tree], worktreePath, { extraEnv });
+    // Without --force Git skips existing paths and reports them as errors; completeness is checked below.
+    await gitExec(['checkout-index', '--all', '--quiet'], worktreePath, { extraEnv }).catch(() => undefined);
+    await gitExec(['update-index', '-q', '--refresh'], worktreePath, { extraEnv }).catch(() => undefined);
+    const { stdout } = await gitExec(['diff-files', '--name-status', '-z', '--diff-filter=D'], worktreePath, { extraEnv });
+    if (stdout.length > 0) throw new Error('snapshot files could not be restored');
+  });
+}
+
 /** Staged content of the live index, read from a copy so the live index is never locked or rewritten. */
 async function stagedTree(worktreePath: string): Promise<string | null> {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-worktree-index-'));
@@ -79,11 +145,13 @@ export class WorktreeChangedDuringSnapshotError extends Error {
  * Snapshot the actual HEAD, index and file tree without stashing or changing the live checkout.
  * `stagedContentOnly` checks consistency like {@link worktreeStagedContentMatches}, for callers
  * that only need the captured content; the default byte comparison suits destructive recycling.
+ * `includeUntracked` also saves new files that `.gitignore` does not exclude, so recycling can
+ * delete the directory without any other copy of its bytes.
  */
 export async function captureWorktreeContent(
   worktreePath: string,
   ref: string,
-  { stagedContentOnly = false }: { stagedContentOnly?: boolean } = {},
+  { stagedContentOnly = false, includeUntracked = false }: { stagedContentOnly?: boolean; includeUntracked?: boolean } = {},
 ): Promise<NonNullable<WorktreeRecycleRecord['snapshot']>> {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-worktree-index-'));
   const index = path.join(temp, 'index');
@@ -97,8 +165,8 @@ export async function captureWorktreeContent(
     const originalIndexHash = createHash('sha256').update(await fs.readFile(index)).digest('hex');
     const { stdout: staged } = await gitExec(['write-tree'], worktreePath, options);
     const indexTree = staged.trim();
-    // Untracked/ignored bytes go exclusively to the encrypted recovery archive.
-    await gitExec(['add', '--update', '--', '.'], worktreePath, options);
+    // Ignored files are regenerable (dependencies, build output) and are never saved.
+    await gitExec(['add', includeUntracked ? '--all' : '--update', '--', '.'], worktreePath, options);
     const { stdout: contents } = await gitExec(['write-tree'], worktreePath, options);
     const tree = contents.trim();
     // Retain both trees through the snapshot ref, including staged-only bytes.
@@ -116,8 +184,12 @@ export async function captureWorktreeContent(
     );
     const commit = commitOutput.trim();
     await gitExec(['update-ref', ref, commit], worktreePath);
-    const snapshot = { head, headRef, tree, indexTree, commit, ref, indexHash: originalIndexHash };
-    const unchanged = stagedContentOnly
+    const snapshot = {
+      head, headRef, tree, indexTree, commit, ref, indexHash: originalIndexHash,
+      ...(includeUntracked ? { untracked: true as const } : {}),
+    };
+    // Recycling rechecks the full tree before deleting; here only HEAD and staged content matter.
+    const unchanged = stagedContentOnly || includeUntracked
       ? await worktreeStagedContentMatches(worktreePath, snapshot)
       : await worktreeContentBaselineMatches(worktreePath, snapshot);
     if (!unchanged) throw new WorktreeChangedDuringSnapshotError();

@@ -28,6 +28,9 @@ import { physicalWorktreeKey, withWorktreeResourceLock } from '../worktree/resou
 import { createLinkedWorktreeMetadata } from './fixtures/linkedWorktree';
 import { seedLegacySharedRuntimeLease } from './fixtures/legacySharedRuntimeLease';
 
+// Registrations in identity tests start after boot, so only process identity decides.
+const t0 = Date.now();
+
 describe('worktree runtime evidence and physical locks', () => {
   let worktree: string;
   let gitLock: string;
@@ -293,10 +296,10 @@ describe('worktree runtime evidence and physical locks', () => {
   it('ignores a legacy registration whose PID was reused, but keeps its detached-child lease', async () => {
     const lease = (await acquireWorktreeRuntimeLease('one', worktree))!;
     const file = path.join(state.root, '.dev-instances', '4242.json');
-    const raw = JSON.stringify({ pid: 4242, startedAtMs: 10_000 });
+    const raw = JSON.stringify({ pid: 4242, startedAtMs: t0 + 10_000 });
     await fs.writeFile(file, raw);
     vi.spyOn(process, 'kill').mockReturnValue(true);
-    readIdentity.mockResolvedValue({ startedAtMs: 100_000, executablePath: path.join(state.root, 'chrome.exe') });
+    readIdentity.mockResolvedValue({ startedAtMs: t0 + 100_000, executablePath: path.join(state.root, 'chrome.exe') });
     expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
     expect(await fs.readFile(file, 'utf8')).toBe(raw);
     await releaseWorktreeRuntimeLease(lease);
@@ -305,15 +308,15 @@ describe('worktree runtime evidence and physical locks', () => {
 
   it('keeps a real legacy Cindy instance protective', async () => {
     await fs.writeFile(path.join(state.root, '.dev-instances', '4242.json'),
-      JSON.stringify({ pid: 4242, startedAtMs: 100_000 }));
+      JSON.stringify({ pid: 4242, startedAtMs: t0 + 100_000 }));
     vi.spyOn(process, 'kill').mockReturnValue(true);
-    readIdentity.mockResolvedValue({ startedAtMs: 99_000, executablePath: process.execPath });
+    readIdentity.mockResolvedValue({ startedAtMs: t0 + 99_000, executablePath: process.execPath });
     expect(await readWorktreeRuntimePaths()).toBeNull();
   });
 
   describe('POSIX SingletonLock PID reuse', () => {
-    const raw = JSON.stringify({ pid: 4242, startedAtMs: 10_000 });
-    const identity = { startedAtMs: 100_000, executablePath: '/usr/bin/other' };
+    const raw = JSON.stringify({ pid: 4242, startedAtMs: t0 + 10_000 });
+    const identity = { startedAtMs: t0 + 100_000, executablePath: '/usr/bin/other' };
     beforeEach(async () => {
       Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
       await fs.writeFile(path.join(state.root, '.dev-instances', '4242.json'), raw);
@@ -352,7 +355,7 @@ describe('worktree runtime evidence and physical locks', () => {
       readIdentity.mockResolvedValueOnce(identity).mockImplementationOnce(async () => {
         const file = path.join(state.root, '.dev-instances', '4242.json');
         if (change === 'remove') await fs.unlink(file);
-        else await fs.writeFile(file, JSON.stringify({ pid: 4242, startedAtMs: 200_000 }));
+        else await fs.writeFile(file, JSON.stringify({ pid: 4242, startedAtMs: t0 + 200_000 }));
         return identity;
       });
       expect(await readWorktreeRuntimePaths()).toBeNull();
@@ -361,15 +364,15 @@ describe('worktree runtime evidence and physical locks', () => {
 
   it('keeps a replacement Cindy protective before its new registration is published', async () => {
     await fs.writeFile(path.join(state.root, '.dev-instances', '4242.json'),
-      JSON.stringify({ pid: 4242, startedAtMs: 1 }));
+      JSON.stringify({ pid: 4242, startedAtMs: t0 + 1 }));
     vi.spyOn(process, 'kill').mockReturnValue(true);
-    readIdentity.mockResolvedValue({ startedAtMs: 100_000, executablePath: path.join(state.root, 'Cindy.exe') });
+    readIdentity.mockResolvedValue({ startedAtMs: t0 + 100_000, executablePath: path.join(state.root, 'Cindy.exe') });
     expect(await readWorktreeRuntimePaths()).toBeNull();
   });
 
   it('preserves when process identity is unavailable even for a very old registration', async () => {
     await fs.writeFile(path.join(state.root, '.dev-instances', '4242.json'),
-      JSON.stringify({ pid: 4242, startedAtMs: 1 }));
+      JSON.stringify({ pid: 4242, startedAtMs: t0 + 1 }));
     vi.spyOn(process, 'kill').mockReturnValue(true);
     expect(await readWorktreeRuntimePaths()).toBeNull();
   });
@@ -384,22 +387,22 @@ describe('worktree runtime evidence and physical locks', () => {
 
   it('does not apply stale evidence after another instance replaces the registry record', async () => {
     const file = path.join(state.root, '.dev-instances', '4242.json');
-    await fs.writeFile(file, JSON.stringify({ pid: 4242, startedAtMs: 10_000 }));
+    await fs.writeFile(file, JSON.stringify({ pid: 4242, startedAtMs: t0 + 10_000 }));
     vi.spyOn(process, 'kill').mockReturnValue(true);
     readIdentity.mockImplementation(async () => {
-      await fs.writeFile(file, JSON.stringify({ pid: 4242, startedAtMs: 200_000 }));
-      return { startedAtMs: 100_000, executablePath: path.join(state.root, 'chrome.exe') };
+      await fs.writeFile(file, JSON.stringify({ pid: 4242, startedAtMs: t0 + 200_000 }));
+      return { startedAtMs: t0 + 100_000, executablePath: path.join(state.root, 'chrome.exe') };
     });
     expect(await readWorktreeRuntimePaths()).toBeNull();
   });
 
   it('does not trust a backup after a new primary registration appears during the probe', async () => {
     const file = path.join(state.root, '.dev-instances', '4242.json');
-    await fs.writeFile(`${file}.bak`, JSON.stringify({ pid: 4242, startedAtMs: 10_000 }));
+    await fs.writeFile(`${file}.bak`, JSON.stringify({ pid: 4242, startedAtMs: t0 + 10_000 }));
     vi.spyOn(process, 'kill').mockReturnValue(true);
     readIdentity.mockImplementation(async () => {
-      await fs.writeFile(file, JSON.stringify({ pid: 4242, startedAtMs: 200_000 }));
-      return { startedAtMs: 100_000, executablePath: path.join(state.root, 'chrome.exe') };
+      await fs.writeFile(file, JSON.stringify({ pid: 4242, startedAtMs: t0 + 200_000 }));
+      return { startedAtMs: t0 + 100_000, executablePath: path.join(state.root, 'chrome.exe') };
     });
     expect(await readWorktreeRuntimePaths()).toBeNull();
   });
@@ -420,6 +423,49 @@ describe('worktree runtime evidence and physical locks', () => {
     expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
     await releaseWorktreeRuntimeLease(lease);
     expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+  });
+
+  describe('leases and registrations nothing will ever release', () => {
+    const hourMs = 60 * 60_000;
+    const ownedBy = async (lease: { file: string }, pid: number, ageMs: number, extra: Record<string, unknown> = {}) => {
+      const value = JSON.parse(await fs.readFile(lease.file, 'utf8')) as Record<string, unknown>;
+      await fs.writeFile(lease.file, JSON.stringify({ ...value, ...extra, pid }));
+      const at = new Date(Date.now() - ageMs);
+      await fs.utimes(lease.file, at, at);
+    };
+    const exitedOwner = (alive: (pid: number) => boolean = () => false) => vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (alive(Number(pid))) return true;
+      throw Object.assign(new Error('owner is gone'), { code: 'ESRCH' });
+    });
+
+    it('waives a lease written before this boot even when its PID now belongs to another process', async () => {
+      vi.spyOn(os, 'uptime').mockReturnValue(60);
+      const lease = (await acquireWorktreeRuntimeLease('one', worktree))!;
+      await ownedBy(lease, 4242, hourMs);
+      vi.spyOn(process, 'kill').mockReturnValue(true);
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+    });
+
+    it('waives an exited owner lease after the grace period while a recorded child keeps it protective', async () => {
+      vi.spyOn(os, 'uptime').mockReturnValue(30 * 24 * 60 * 60);
+      const lease = (await acquireWorktreeRuntimeLease('one', worktree))!;
+      await ownedBy(lease, 4242, 2 * hourMs);
+      exitedOwner();
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+
+      await ownedBy(lease, 4242, 2 * hourMs, { childPid: 4343 });
+      exitedOwner((pid) => pid === 4343);
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
+    });
+
+    it('ignores an unsupported instance registered before this boot without querying its PID', async () => {
+      vi.spyOn(os, 'uptime').mockReturnValue(60);
+      await fs.writeFile(path.join(state.root, '.dev-instances', '4242.json'),
+        JSON.stringify({ pid: 4242, startedAtMs: Date.now() - hourMs, state: 'failed' }));
+      vi.spyOn(process, 'kill').mockReturnValue(true);
+      expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+      expect(readIdentity).not.toHaveBeenCalled();
+    });
   });
 
   it('reclaims a dead-owner lease only through explicit orphan cancellation', async () => {

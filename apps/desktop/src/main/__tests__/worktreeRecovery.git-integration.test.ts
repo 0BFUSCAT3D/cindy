@@ -48,12 +48,13 @@ import { readRecycleRecord, writeRecycleRecord } from '../worktree/recycleJourna
 import { captureWorktreeContent } from '../worktree/contentSnapshot';
 import { GitExecError, gitExec } from '../worktree/gitExec';
 import { acquireWorktree, releaseWorktree, parkAll } from '../worktree/WorktreePool';
-import { extractRecoveryArchive } from '../worktree/recoveryArchive';
+import { createRecoveryArchive } from '../worktree/recoveryArchive';
+import { physicalWorktreeKey, worktreeResourceId } from '../worktree/resourceLock';
 import { releaseWorktreeRuntimeLease } from '../worktree/runtimeLeases';
 import { seedLegacySharedRuntimeLease } from './fixtures/legacySharedRuntimeLease';
 
 const exec = promisify(execFile);
-describe('worktree recovery with real Git and encrypted archives', () => {
+describe('worktree recovery with real Git', () => {
   let repo: string;
   const git = async (cwd: string, ...args: string[]) => (await exec('git', args, {
     cwd, windowsHide: true, env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(state.root, 'git-global'), GIT_CONFIG_NOSYSTEM: '1' },
@@ -99,7 +100,7 @@ describe('worktree recovery with real Git and encrypted archives', () => {
     } finally { await releaseWorktreeRuntimeLease(lease); }
   }, 30_000);
 
-  it('restores detached HEAD, staged-only bytes, unstaged files, ignored files and untracked files', async () => {
+  it('restores detached HEAD, staged-only bytes, unstaged and untracked files without keeping ignored files', async () => {
     const worktree = path.join(repo, '.cindy-worktrees', 'recover');
     await git(repo, 'worktree', 'add', '-b', 'cindy/recover', worktree, 'main');
     await git(worktree, 'checkout', '--detach');
@@ -119,18 +120,24 @@ describe('worktree recovery with real Git and encrypted archives', () => {
     await expect(fs.stat(worktree)).rejects.toMatchObject({ code: 'ENOENT' });
     const record = await readRecycleRecord(worktree);
     expect(record?.snapshot?.head).toBe(head);
-    const archivedTree = await git(repo, 'ls-tree', '-r', '--name-only', record!.snapshot!.commit);
-    expect(archivedTree).not.toContain('.env');
-    expect(archivedTree).not.toContain('untracked.txt');
+    expect(record?.archive).toBeUndefined();
+    expect((await fs.readdir(path.join(state.root, 'worktree-recycle'))).filter((name) => name.endsWith('.enc'))).toEqual([]);
+    const savedTree = await git(repo, 'ls-tree', '-r', '--name-only', record!.snapshot!.commit);
+    expect(savedTree).not.toContain('.env');
+    expect(savedTree).not.toContain('ignored/');
+    expect(savedTree).toContain('untracked.txt');
     expect(await restoreRecordedWorktree(meta.sessionId, worktree)).toBe(true);
     expect(await git(worktree, 'rev-parse', 'HEAD')).toBe(head);
     await expect(git(worktree, 'symbolic-ref', '--quiet', 'HEAD')).rejects.toThrow();
     expect(await git(worktree, 'show', ':tracked.txt')).toBe('staged');
     expect(await fs.readFile(path.join(worktree, 'tracked.txt'), 'utf8')).toBe('unstaged\n');
-    expect(await fs.readFile(path.join(worktree, '.env'), 'utf8')).toBe('INVALID_TEST_SECRET=keep-me\n');
     expect(await fs.readFile(path.join(worktree, 'untracked.txt'), 'utf8')).toBe('untracked content\n');
-    expect(await fs.readFile(path.join(worktree, 'ignored', 'data.bin'))).toEqual(Buffer.from([0, 255, 10, 48]));
-    expect(await git(worktree, 'status', '--porcelain')).toContain('MM tracked.txt');
+    // Ignored files are regenerable (dependencies, build output) and are not kept.
+    await expect(fs.stat(path.join(worktree, '.env'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.stat(path.join(worktree, 'ignored'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const status = await git(worktree, 'status', '--porcelain');
+    expect(status).toContain('MM tracked.txt');
+    expect(status).toContain('?? untracked.txt');
     expect((await readRecycleRecord(worktree))?.phase).toBe('restored');
   }, 60_000);
 
@@ -278,11 +285,16 @@ describe('worktree recovery with real Git and encrypted archives', () => {
     expect(registered).toHaveLength(1);
   }, 30_000);
 
-  it('rejects a corrupt encrypted archive before creating recovery files', async () => {
+  it('rejects a corrupt encrypted archive from an older client before creating recovery files', async () => {
     const meta = await createFixture('corrupt');
+    const legacyArchive = await createRecoveryArchive(meta.path, worktreeResourceId(await physicalWorktreeKey(meta.path)));
     expect(await recycleManagedWorktree(meta, { canRemove: async () => true })).toBe(true);
     const record = (await readRecycleRecord(meta.path))!;
-    const archive = path.join(state.root, 'worktree-recycle', record.archive!.file);
+    // Model the record shape older clients wrote: snapshot without untracked files, plus an archive.
+    delete record.snapshot!.untracked;
+    record.archive = legacyArchive;
+    await writeRecycleRecord(record);
+    const archive = path.join(state.root, 'worktree-recycle', record.archive.file);
     const bytes = await fs.readFile(archive);
     bytes[0] ^= 1;
     await fs.writeFile(archive, bytes);
@@ -352,11 +364,8 @@ describe('worktree recovery with real Git and encrypted archives', () => {
       expect(record.phase).toBe('removed');
       expect(record.generation).toBe(meta.generation);
       expect(await git(repo, 'rev-parse', record.snapshot!.ref)).toBe(record.snapshot!.commit);
-      const saved = path.join(state.root, 'copy-conflict-saved');
-      await fs.mkdir(saved);
-      await extractRecoveryArchive(record.archive!, saved);
-      expect(await fs.readFile(path.join(saved, '.claude', 'config.txt'), 'utf8')).toBe('original tracked config\n');
-      expect(await fs.readFile(path.join(saved, '.env'), 'utf8')).toBe('original ignored bytes\n');
+      expect(record.archive).toBeUndefined();
+      expect(await git(repo, 'show', `${record.snapshot!.commit}:.claude/config.txt`)).toBe('original tracked config');
       expect(await restoreRecordedWorktree(meta.sessionId, meta.path)).toBe(false);
       expect(await fs.readFile(conflictPath, 'utf8')).toBe('partial copy\n');
       expect(await fs.readFile(path.join(meta.path, 'late-user-edit.txt'), 'utf8')).toBe('new user bytes\n');

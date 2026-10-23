@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { app } from 'electron';
 
@@ -236,6 +237,37 @@ function pidMayBeAlive(pid: number): boolean {
   }
 }
 
+/** Generous margin for clock corrections after boot; only clearly older evidence is waived. */
+const BOOT_MARGIN_MS = 10 * 60_000;
+/**
+ * Once Main is gone, an agent it started gets no further input and settles well within this.
+ * Until then a crashed owner's lease stays protective, because its child may still be writing.
+ */
+const ABANDONED_LEASE_GRACE_MS = 60 * 60_000;
+
+function startedBeforeBoot(timestampMs: unknown): boolean {
+  return typeof timestampMs === 'number' && Number.isFinite(timestampMs)
+    && timestampMs < Date.now() - os.uptime() * 1000 - BOOT_MARGIN_MS;
+}
+
+/**
+ * A lease left by a Main process that never released it: written before this boot, or its
+ * owner (and any recorded child) has exited and the grace period has passed.
+ */
+async function isAbandonedLease(
+  file: string,
+  lease: { pid?: unknown; childPid?: unknown; childPids?: unknown },
+): Promise<boolean> {
+  const isPid = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+  if (!isPid(lease.pid) || lease.pid === process.pid) return false;
+  const { mtimeMs } = await fs.stat(file);
+  if (startedBeforeBoot(mtimeMs)) return true;
+  // Unknown child evidence stays protective, like the explicit orphan reclaim path.
+  const children = [lease.childPid, ...(Array.isArray(lease.childPids) ? lease.childPids : [])];
+  if (children.some((child) => child != null && (!isPid(child) || pidMayBeAlive(child)))) return false;
+  return !pidMayBeAlive(lease.pid) && Date.now() - mtimeMs > ABANDONED_LEASE_GRACE_MS;
+}
+
 /** Unknown/older live instances keep terminal task references protected. */
 export async function readWorktreeRuntimePaths(): Promise<Set<string> | null> {
   const registry = path.join(app.getPath('userData'), '.dev-instances');
@@ -260,6 +292,13 @@ export async function readWorktreeRuntimePaths(): Promise<Set<string> | null> {
       // Only unsupported instances can block the entire lease view. Do not add
       // an OS subprocess per compatible instance to the normal recycle path.
       if (record.worktreeLeaseProtocol !== 1) {
+        // An instance registered before this boot cannot still run: the PID now
+        // belongs to an unrelated process. The SingletonLock check below still
+        // revalidates the process identity before waiving that lock.
+        if (startedBeforeBoot(record.startedAtMs)) {
+          reusedInstanceRecords.set(pid, raw);
+          continue;
+        }
         const identity = await readDesktopProcessIdentity(pid);
         // A replacement instance may have registered while the OS query ran.
         if (await readRecord(name) !== raw) return null;
@@ -313,10 +352,13 @@ export async function readWorktreeRuntimePaths(): Promise<Set<string> | null> {
     for (const name of leases) {
       if (!leaseNamePattern.test(name)) continue;
       // Main may have crashed while a detached child still uses the directory.
-      // Only explicit release proves source I/O stopped, across every profile.
+      // Explicit release proves source I/O stopped; otherwise only a reboot or an
+      // exited owner past the grace period does, across every profile.
       try {
-        const lease = JSON.parse(await fs.readFile(path.join(directory, name), 'utf8'));
+        const file = path.join(directory, name);
+        const lease = JSON.parse(await fs.readFile(file, 'utf8'));
         if (lease.version !== 1 || typeof lease.path !== 'string') return null;
+        if (await isAbandonedLease(file, lease)) continue;
         paths.add(lease.path);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;

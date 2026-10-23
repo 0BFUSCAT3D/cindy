@@ -19,11 +19,18 @@ vi.mock('../localDb/client/current', () => ({ getDbClient: () => client }));
 vi.mock('../worktree/managedRecycle', () => ({ recycleManagedWorktree: remove }));
 vi.mock('../worktree/worktreeStore', () => ({ get: () => null, getAll: () => [] }));
 vi.mock('../worktree/liveSessionRefs', () => ({ loadLiveSessionPathKeys: async () => new Set(), hasLiveSessionReference: () => false, pathKey: (value: string) => value }));
+const write = vi.hoisted(() => vi.fn());
 vi.mock('../worktree/recycleJournal', () => ({
   listRecycleRecords: list,
   readRecycleRecord: read,
+  writeRecycleRecord: write,
+  pruneUnreferencedRecoveryArchives: vi.fn(async () => 0),
   worktreeGeneration: () => 'one',
   watchRecycleJournal: watch,
+}));
+vi.mock('../worktree/resourceLock', async (original) => ({
+  ...await original<typeof import('../worktree/resourceLock')>(),
+  withWorktreeResourceLock: async <T>(_value: string, task: () => Promise<T>) => task(),
 }));
 import { WorktreeRecycleMaintenance } from '../worktree/recycleMaintenance';
 import { notifyWorktreeRecycleOpportunity, notifyWorktreeRecycleRecordChanged } from '../worktree/recycleEvents';
@@ -53,6 +60,9 @@ describe('durable worktree maintenance', () => {
     remove.mockReset().mockResolvedValue(true);
     list.mockReset().mockImplementation(async () => [...state.records]);
     read.mockReset().mockImplementation(async (value: string) => state.records.find((item) => item.meta.path === value) ?? null);
+    write.mockReset().mockImplementation(async (next: WorktreeRecycleRecord) => {
+      state.records = state.records.map((item) => item.id === next.id ? next : item);
+    });
     closeWatch.mockReset();
     watch.mockReset().mockImplementation(async (changed, error) => {
       state.changed = changed; state.watchError = error; return closeWatch;
@@ -68,6 +78,31 @@ describe('durable worktree maintenance', () => {
     expect(closeAndRecycle).not.toHaveBeenCalled();
     ready = true; await maintenance.start();
     expect(closeAndRecycle).toHaveBeenCalledWith('owner', 'archived'); expect(watch).toHaveBeenCalledOnce();
+  });
+  it('retries a request an older client paused over its archive exactly once', async () => {
+    state.records = [{ ...record(), reason: 'recycle-failed', attempts: 3, retryPolicy: { state: 'paused', failures: 3, failedWorkMs: 1_800_000 } }];
+    closeAndRecycle.mockImplementation(async () => {
+      const [current] = state.records;
+      state.records = [{ ...current, reason: 'recycle-failed', retryPolicy: { state: 'paused', failures: 3, failedWorkMs: 0 } }];
+    });
+    await maintenance.start();
+    expect(closeAndRecycle).toHaveBeenCalledExactlyOnceWith('owner', 'archived');
+    expect(state.records[0].legacyArchiveRetry).toBe(true);
+
+    maintenance.stop();
+    maintenance = new WorktreeRecycleMaintenance({ isReady: () => ready, recycleCurrentSession: closeAndRecycle });
+    await maintenance.start();
+    expect(closeAndRecycle).toHaveBeenCalledOnce();
+  });
+  it('keeps a pause the user chose or a newer client recorded', async () => {
+    state.records = [
+      { ...record('kept'), reason: 'user-kept', retryPolicy: { state: 'kept', failures: 0, failedWorkMs: 0 } },
+      { ...record('identity'), reason: 'directory-replaced', retryPolicy: { state: 'paused', failures: 1, failedWorkMs: 0 } },
+    ];
+    state.rows = ['kept', 'identity'].map((id) => ({ id, status: 'archived', source: 'desktop', currentDatabase: true }));
+    await maintenance.start();
+    expect(write).not.toHaveBeenCalled();
+    expect(closeAndRecycle).not.toHaveBeenCalled();
   });
   it('does not infer deletion from a row missing in the local view', async () => {
     state.rows = []; await maintenance.start();

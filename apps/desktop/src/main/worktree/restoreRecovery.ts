@@ -12,7 +12,7 @@ import { hasLiveSessionReference, loadLiveSessionPathKeys } from './liveSessionR
 import { assertManagedResourceLocation, assertManagedResourcePath, assertWorktreeGitIdentity } from './resourceSafety';
 import * as store from './worktreeStore';
 import { withLegacyWorktreeRuntimeGuard } from './legacyRuntimeGuard';
-import { readWorktreeHeadRef } from './contentSnapshot';
+import { checkoutMissingSnapshotFiles, presentFilesMatchSnapshotTree, readWorktreeHeadRef } from './contentSnapshot';
 
 function restoreCheckoutPathIsSafe(value: string): boolean {
   if (!path.isAbsolute(value)) return false;
@@ -37,14 +37,39 @@ async function indexIsRestorable(worktreePath: string, indexTree: string): Promi
   } catch { return false; }
 }
 
-/** Restore new recovery records; return null to retain compatibility with older stash/branch recovery. */
+type RecycleRecord = NonNullable<Awaited<ReturnType<typeof readRecycleRecord>>>;
+
+/** Recovery evidence is complete: older snapshots without untracked files also need their archive. */
+export function hasRecordedRecovery(record: RecycleRecord | null | undefined): record is RecycleRecord {
+  return Boolean(record?.snapshot && (record.archive || record.snapshot.untracked));
+}
+
+function restorableRecord(record: RecycleRecord | null): record is RecycleRecord {
+  return hasRecordedRecovery(record) && record.phase !== 'restored' && record.phase !== 'pending';
+}
+
+async function pathExists(value: string): Promise<boolean> {
+  try {
+    await fs.lstat(value);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * Restore recorded recycles; return null to retain compatibility with older stash/branch recovery.
+ * Records from older clients carry an encrypted archive; newer ones rebuild files from the Git
+ * snapshot, which holds tracked and new files but not ignored ones.
+ */
 export async function restoreRecordedWorktree(sessionId: string, worktreePath: string): Promise<boolean | null> {
   // Keep ordinary present/legacy lookups free of Windows helper processes.
   const pending = await readRecycleRecord(worktreePath, sessionId);
-  if (!pending?.archive || !pending.snapshot || pending.phase === 'restored' || pending.phase === 'pending') return null;
+  if (!restorableRecord(pending)) return null;
   return withWorktreeResourceLock(worktreePath, () => withLegacyWorktreeRuntimeGuard(async (legacyGuardHeld) => {
     const record = await readRecycleRecord(worktreePath, sessionId);
-    if (!record?.snapshot || !record.archive || record.phase === 'restored' || record.phase === 'pending') return null;
+    if (!record?.snapshot || !restorableRecord(record)) return null;
     if ([record.snapshot.head, record.snapshot.tree, record.snapshot.indexTree, record.snapshot.commit]
       .some((value) => typeof value !== 'string' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value))) return false;
     const headRef = record.snapshot.headRef;
@@ -88,10 +113,15 @@ export async function restoreRecordedWorktree(sessionId: string, worktreePath: s
         return true;
       }
       await assertManagedResourcePath(record.meta, [worktreePath]);
-      if (!sameWorktreeFiles(await inventoryWorktree(worktreePath), record.archive.files, true)) return false;
+      if (record.archive) {
+        if (!sameWorktreeFiles(await inventoryWorktree(worktreePath), record.archive.files, true)) return false;
+      } else if (await pathExists(path.join(worktreePath, '.git'))
+        && !(await presentFilesMatchSnapshotTree(worktreePath, record.snapshot.tree))) {
+        return false;
+      }
     }
     if (hasLiveSessionReference(record.meta, await loadLiveSessionPathKeys({ excludeSessionId: sessionId }))) return false;
-    await verifyRecoveryArchive(record.archive);
+    if (record.archive) await verifyRecoveryArchive(record.archive);
     if (!legacyGuardHeld()) return false;
     if (headRef) {
       try {
@@ -175,7 +205,13 @@ export async function restoreRecordedWorktree(sessionId: string, worktreePath: s
     if (head.trim() !== record.snapshot.head) return false;
     if (headRef !== undefined && await readWorktreeHeadRef(worktreePath) !== headRef) return false;
     if (!(await indexIsRestorable(worktreePath, record.snapshot.indexTree))) return false;
-    await extractRecoveryArchive(record.archive, worktreePath, true);
+    if (record.archive) {
+      await extractRecoveryArchive(record.archive, worktreePath, true);
+    } else {
+      // Recheck after the Git link was repaired: surviving files must still be snapshot bytes.
+      if (!(await presentFilesMatchSnapshotTree(worktreePath, record.snapshot.tree))) return false;
+      await checkoutMissingSnapshotFiles(worktreePath, record.snapshot.tree);
+    }
     if (hasLiveSessionReference(record.meta, await loadLiveSessionPathKeys({ excludeSessionId: sessionId }))) return false;
     await assertManagedResourcePath(record.meta, [worktreePath]);
     await assertWorktreeGitIdentity(record.meta);

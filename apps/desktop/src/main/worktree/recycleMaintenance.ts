@@ -5,11 +5,14 @@ import { app } from 'electron';
 
 import { getDbClient } from '../localDb/client/current';
 import { createLogger } from '../logger';
-import { listRecycleRecords, readRecycleRecord, watchRecycleJournal, worktreeGeneration, type WorktreeRecycleRecord } from './recycleJournal';
+import {
+  listRecycleRecords, pruneUnreferencedRecoveryArchives, readRecycleRecord, watchRecycleJournal, worktreeGeneration, writeRecycleRecord,
+  type WorktreeRecycleRecord,
+} from './recycleJournal';
 import { recycleManagedWorktree } from './managedRecycle';
 import { hasLiveSessionReference, loadLiveSessionPathKeys, pathKey } from './liveSessionRefs';
 import * as store from './worktreeStore';
-import { physicalWorktreeKey } from './resourceLock';
+import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import { subscribeWorktreeRecycleEvents } from './recycleEvents';
 import { retryPendingWorktreeRuntimeLeaseReleases } from './runtimeLeases';
 
@@ -23,6 +26,13 @@ export interface WorktreeMaintenanceOptions {
   isReady(): boolean;
   recycleCurrentSession(sessionId: string, status: string): Promise<void>;
   onAttemptComplete?(): Promise<void>;
+}
+
+const legacyArchiveFailureReasons = new Set(['recycle-failed', 'ENOSPC']);
+
+function grantsLegacyArchiveRetry(record: WorktreeRecycleRecord): boolean {
+  return !record.legacyArchiveRetry && !record.snapshot?.untracked && record.phase === 'pending'
+    && recyclePolicy(record).state === 'paused' && legacyArchiveFailureReasons.has(record.reason ?? '');
 }
 
 /** Event-driven, single-flight maintenance with one timer for the earliest pending deadline. */
@@ -142,6 +152,37 @@ export class WorktreeRecycleMaintenance {
     return Math.max(record.nextAttemptAt, this.attempts.get(this.key(record))?.notBefore ?? 0);
   }
 
+  /**
+   * Recycling no longer builds recovery archives. Once per start, delete archives nothing can
+   * decrypt, and give requests that older clients paused (usually an archive timeout or a disk
+   * filled by archives) one fresh failure budget. Paused-by-user or identity faults stay put.
+   */
+  private async retireRecoveryArchives(records: readonly WorktreeRecycleRecord[]): Promise<boolean> {
+    let granted = false;
+    try {
+      const pruned = await pruneUnreferencedRecoveryArchives();
+      if (pruned > 0) log.info('removed unreferenced worktree recovery archives', { count: pruned });
+      for (const candidate of records) {
+        if (!grantsLegacyArchiveRetry(candidate)) continue;
+        await withWorktreeResourceLock(candidate.meta.path, async () => {
+          const record = await readRecycleRecord(candidate.meta.path);
+          if (!record || record.id !== candidate.id || record.generation !== candidate.generation
+            || !grantsLegacyArchiveRetry(record)) return;
+          record.retryPolicy = { state: 'retrying', failures: 0, failedWorkMs: 0 };
+          record.reason = undefined;
+          record.attempts = 0;
+          record.nextAttemptAt = 0;
+          record.legacyArchiveRetry = true;
+          await writeRecycleRecord(record);
+          granted = true;
+        });
+      }
+    } catch (error) {
+      log.warn('worktree recovery archive retirement postponed', { code: (error as NodeJS.ErrnoException).code ?? 'unavailable' });
+    }
+    return granted;
+  }
+
   private async runPass(): Promise<void> {
     if (!this.options.isReady()) return;
     await this.ensureWatcher();
@@ -150,7 +191,8 @@ export class WorktreeRecycleMaintenance {
     try { pendingLeaseReleases = await retryPendingWorktreeRuntimeLeaseReleases(); }
     catch (error) { log.warn('worktree runtime lease release retry postponed', { code: (error as NodeJS.ErrnoException).code ?? 'unavailable' }); pendingLeaseReleases = 1; }
     if (pendingLeaseReleases > 0) this.schedule(Date.now() + retryDelay(1));
-    const records = await listRecycleRecords();
+    let records = await listRecycleRecords();
+    if (this.initialPass && await this.retireRecoveryArchives(records)) records = await listRecycleRecords();
     const wakeIds = new Set(this.wakeIds);
     this.wakeIds.clear();
     // A resource may have been released while Cindy was closed: recheck waits
