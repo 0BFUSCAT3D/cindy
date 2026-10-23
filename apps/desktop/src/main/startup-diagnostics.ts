@@ -266,7 +266,8 @@ export class RunMarkerStore {
    * 该 PID 的进程若明显晚于它启动,就不可能是写标记的那个实例——按标记状态补出退出结论并清掉
    * 标记。读不到启动时刻或时刻对不上时保持 still-running,不臆断。
    *
-   * 核对发生在启动之后:期间旧实例可能已正常退出并写下 exited,所以按此刻重读的标记下结论;
+   * 核对发生在启动之后:期间旧实例可能已正常退出并写下 exited,所以按此刻重读的标记下结论——
+   * exited 由 process 'exit' 钩子写下,本身就证明该实例已结束,不必再看 PID 查询结果;
    * 标记已不在(被别的实例尸检清掉)就不再报。
    */
   async resolveReusedPids(
@@ -280,6 +281,10 @@ export class RunMarkerStore {
       if (!report.marker) return [report];
       const marker = this.readMarker(report.file);
       if (!marker || marker.pid !== report.marker.pid) return [];
+      if (marker.state === 'exited') {
+        this.remove(report.file);
+        return [{ kind: classifyEndedRun(marker), file: report.file, marker }];
+      }
       const ownerStartedAtMs = startTimes.get(marker.pid);
       const markerStartedAtMs = Date.parse(marker.startedAt);
       if (

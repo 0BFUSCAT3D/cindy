@@ -235,15 +235,23 @@ describe('resolveReusedPids', () => {
     expect(fs.existsSync(file)).toBe(false);
   });
 
-  it('核对前旧实例已正常退出 → 按重读的 exited 标记判 clean,不误判 abnormal', async () => {
+  it.each([
+    ['PID 已被复用', [[2186, reusedAt]] as Array<[number, number]>],
+    ['启动时刻读不到', [] as Array<[number, number]>],
+    [
+      '占用者仍是旧实例本身',
+      [[2186, Date.parse(markerStartedAt) - 1_000]] as Array<[number, number]>,
+    ],
+  ])('核对前旧实例已正常退出(%s)→ 按重读的 exited 标记判 clean 并清掉标记', async (_label, entries) => {
     writeMarker({ pid: 2186, state: 'running', startedAt: markerStartedAt });
     const store = makeStore({ alivePids: [2186] });
     const stillRunning = store.analyzePreviousRuns();
-    writeMarker({ pid: 2186, state: 'exited', exitCode: 0, startedAt: markerStartedAt });
+    const file = writeMarker({ pid: 2186, state: 'exited', exitCode: 0, startedAt: markerStartedAt });
 
-    const resolved = await store.resolveReusedPids(stillRunning, startTimesOf([[2186, reusedAt]]));
+    const resolved = await store.resolveReusedPids(stillRunning, startTimesOf(entries));
 
     expect(resolved).toEqual([expect.objectContaining({ kind: 'clean' })]);
+    expect(fs.existsSync(file)).toBe(false);
   });
 
   it.each([
