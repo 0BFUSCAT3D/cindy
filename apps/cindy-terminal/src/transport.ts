@@ -52,7 +52,9 @@ export class TerminalTransportServer {
   }
 
   async listen(): Promise<void> {
-    await privateDirectory(path.dirname(this.profileDir));
+    // The parent may be a user-selected shared folder (including /tmp). Never
+    // chmod it as though it were our private profile.
+    await fs.mkdir(path.dirname(this.profileDir), { recursive: true, mode: 0o700 });
     await withCrossProcessLock(profileLifecycleLockPath(this.profileDir), { label: 'terminal service startup' }, async status => {
     if (!status.held) throw new Error(status.reason === 'busy' ? 'SERVICE_ALREADY_STARTING' : 'SERVICE_LOCK_UNAVAILABLE');
     if (await readPrivateFile(`${profileLifecycleLockPath(this.profileDir)}.restore`)) throw new Error('PROFILE_RECOVERY_REQUIRED');
@@ -130,7 +132,9 @@ export class TerminalTransportServer {
         result => write(socket, { type: 'result', id: frame.id, result: result ?? null }),
         error => {
           // Exception messages may contain provider URLs or entered credentials.
-          const raw = error && typeof error === 'object' ? error.code ?? error.message : undefined;
+          const remoteCode = error?.code === 'IPC_ERROR' && typeof error.message === 'string'
+            ? /^\[([A-Z][A-Z0-9_]{1,79})\]/.exec(error.message)?.[1] : undefined;
+          const raw = remoteCode ?? (error && typeof error === 'object' ? error.code ?? error.message : undefined);
           const code = typeof raw === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(raw) ? raw : 'OPERATION_FAILED';
           write(socket, { type: 'result', id: frame.id, error: code });
         },

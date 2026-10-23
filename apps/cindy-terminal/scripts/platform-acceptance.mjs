@@ -49,7 +49,8 @@ try {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (server.exitCode !== null) throw new Error(`Service exited before ready: ${startupOutput}`);
-    try { await run(['status'], { timeout: 2000 }); available = true; break; } catch { await new Promise(resolve => setTimeout(resolve, 100)); }
+    try { const state = await run(['status'], { timeout: 2000 }); if (state.deviceId && state.version) { available = true; break; } } catch { /* Service is not ready yet. */ }
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(available, 'Local IPC service must start'); record('real daemon + authenticated local socket/pipe', 'PASS');
   await run(['vault', 'setup', '--passphrase-stdin'], { input: 'test-only-platform-passphrase\n' });
@@ -77,7 +78,7 @@ try {
     const timeout = setTimeout(() => { terminal.kill(); reject(new Error('Native TUI did not render in PTY')); }, 20_000);
     terminal.onData(data => {
       output += data;
-      if (!closing && /Cindy|Tasks|tasks|Service|service/.test(output)) { closing = true; terminal.write('\u0003'); }
+      if (!closing && /Cindy|Tasks|tasks|Service|service/.test(output)) { closing = true; terminal.write('\u0011'); }
     });
     terminal.onExit(() => { clearTimeout(timeout); if (closing) resolve(output); else reject(new Error('TUI exited before rendering')); });
   });
@@ -93,14 +94,17 @@ try {
   });
   try {
     const sender = left.createDataChannel('acceptance');
-    const received = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('RTC data channel timeout')), 20_000);
-      right.ondatachannel = event => { event.channel.onmessage = message => { clearTimeout(timeout); resolve(message.data); }; };
-    });
+    let resolveReceived;
+    const received = new Promise(resolve => { resolveReceived = resolve; right.ondatachannel = event => { event.channel.onmessage = message => resolveReceived(message.data); }; });
     const open = new Promise(resolve => { sender.onopen = resolve; });
-    await left.setLocalDescription(await left.createOffer()); await gathering(left); await right.setRemoteDescription(left.localDescription);
-    await right.setLocalDescription(await right.createAnswer()); await gathering(right); await left.setRemoteDescription(right.localDescription);
-    await open; sender.send('cindy-platform-test'); assert.equal(await received, 'cindy-platform-test'); record('real local WebRTC data channel', 'PASS');
+    let timeout;
+    try { await Promise.race([(async () => {
+      await left.setLocalDescription(await left.createOffer()); await gathering(left); await right.setRemoteDescription(left.localDescription);
+      await right.setLocalDescription(await right.createAnswer()); await gathering(right); await left.setRemoteDescription(right.localDescription);
+      await open; sender.send('cindy-platform-test'); assert.equal(await received, 'cindy-platform-test');
+    })(), new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('RTC data channel timeout')), 25_000); })]); }
+    finally { clearTimeout(timeout); }
+    record('real local WebRTC data channel', 'PASS');
   } finally { left.close(); right.close(); }
 
   const install = await run(['service', 'install'], { raw: true });
