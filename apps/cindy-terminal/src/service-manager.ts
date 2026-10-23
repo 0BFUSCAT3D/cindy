@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { promises as fs } from 'node:fs';
-import { atomicPrivateWrite, privateDirectory, readPrivateFile, windowsPowerShellEnv } from './platform.js';
+import { atomicPrivateWrite, privateDirectory, readPrivateFile, windowsPowerShellEnv, windowsSystemCommand } from './platform.js';
 
 const execute = promisify(execFile);
 const xml = (value: string) => value.replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;' })[char]!);
@@ -93,11 +93,11 @@ export class TerminalServiceManager {
       } catch { /* The descriptor remains valid for the next user login. */ }
     } else if (this.platform === 'win32') {
       file = path.join(this.profileDir, 'scheduled-service.xml');
-      const { stdout } = await this.execute('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 });
+      const { stdout } = await this.execute(windowsSystemCommand('whoami',this.env), ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 });
       const sid = stdout.match(/S-1-5-(?:\d+-)*\d+/)?.[0];
       if (!sid) throw new Error('SERVICE_USER_UNAVAILABLE');
       await atomicPrivateWrite(file, scheduledTaskXml(`<?xml version="1.0" encoding="UTF-8"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>Cindy terminal host</Description></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${sid}</UserId></LogonTrigger></Triggers><Principals><Principal id="Cindy"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context="Cindy"><Exec><Command>${xml(this.node)}</Command><Arguments>${xml(args.map(windowsArg).join(' '))}</Arguments><WorkingDirectory>${xml(this.profileDir)}</WorkingDirectory></Exec></Actions></Task>\n`));
-      try { await this.execute('schtasks.exe', ['/Create', '/TN', this.id, '/XML', file, '/F'], { windowsHide: true, timeout: 15_000 }); }
+      try { await this.execute(windowsSystemCommand('schtasks',this.env), ['/Create', '/TN', this.id, '/XML', file, '/F'], { windowsHide: true, timeout: 15_000 }); }
       catch (cause) { throw new Error('SERVICE_REGISTRATION_FAILED', { cause }); }
     } else throw new Error('PLATFORM_NOT_SUPPORTED');
     const installation: Installation = { version: 1, platform: this.platform, id: this.id, file, starts, activeAfter: starts === 'boot' ? 'next-boot' : 'next-login', registrationOnly: true };
@@ -132,7 +132,7 @@ export class TerminalServiceManager {
         // The COM state enum is locale-independent (4 = running). No password,
         // interactive PowerShell profile or command-shell interpolation.
         const script = `$s=New-Object -ComObject Schedule.Service;$s.Connect();$t=$s.GetFolder('\\').GetTask('${this.id}');[Console]::Write([int]$t.State)`;
-        const { stdout } = await this.execute('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 15_000, windowsHide: true, env: windowsPowerShellEnv(this.env) });
+        const { stdout } = await this.execute(windowsSystemCommand('powershell',this.env), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 15_000, windowsHide: true, env: windowsPowerShellEnv(this.env) });
         result.managerAvailable = result.registered = true;
         result.running = stdout.trim() === '4';
         result.starts = installation.starts;
@@ -206,7 +206,7 @@ export class TerminalServiceManager {
         throw error;
       } finally { await fs.rm(temporary, { force: true }); }
     } else {
-      const { stdout } = await this.execute('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 });
+      const { stdout } = await this.execute(windowsSystemCommand('whoami',this.env), ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10_000 });
       const sid = stdout.match(/S-1-5-(?:\d+-)*\d+/)?.[0];
       if (!sid) throw new Error('SERVICE_USER_UNAVAILABLE');
       const xmlText = readScheduledTaskXml(await fs.readFile(installation.file));
@@ -214,11 +214,11 @@ export class TerminalServiceManager {
       if (bootXml === xmlText || !bootXml.includes('<LogonType>Password</LogonType>')) throw new Error('SERVICE_INSTALLATION_INVALID');
       const temporary = path.join(this.profileDir, 'boot-service.xml');
       await atomicPrivateWrite(temporary, scheduledTaskXml(bootXml));
-      const user = await this.execute('whoami.exe', [], { windowsHide: true, timeout: 10_000 });
+      const user = await this.execute(windowsSystemCommand('whoami',this.env), [], { windowsHide: true, timeout: 10_000 });
       if (!user.stdout.trim() || /[\r\n\0]/.test(user.stdout.trim())) throw new Error('SERVICE_USER_UNAVAILABLE');
       const script = `$ErrorActionPreference='Stop';$secure=Read-Host 'Windows account password' -AsSecureString;$pointer=[IntPtr]::Zero;try{$pointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure);$password=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer);Register-ScheduledTask -TaskName $env:CINDY_BOOT_TASK -Xml ([IO.File]::ReadAllText($env:CINDY_BOOT_XML)) -User $env:CINDY_BOOT_USER -Password $password -Force | Out-Null}finally{if($pointer -ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)};$password=$null;$secure.Dispose()}`;
       try {
-        await this.interactive('powershell.exe', ['-NoLogo', '-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { ...windowsPowerShellEnv(this.env), CINDY_BOOT_XML: temporary, CINDY_BOOT_TASK: this.id, CINDY_BOOT_USER: user.stdout.trim() });
+        await this.interactive(windowsSystemCommand('powershell',this.env), ['-NoLogo', '-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { ...windowsPowerShellEnv(this.env), CINDY_BOOT_XML: temporary, CINDY_BOOT_TASK: this.id, CINDY_BOOT_USER: user.stdout.trim() });
         await atomicPrivateWrite(installation.file, scheduledTaskXml(bootXml));
         await atomicPrivateWrite(this.metadata, JSON.stringify({ ...installation, scope: 'system', starts: 'boot', activeAfter: 'next-boot', registrationOnly: true }));
       } finally { await fs.rm(temporary, { force: true }); }
@@ -243,7 +243,7 @@ export class TerminalServiceManager {
         await this.execute('launchctl', ['kickstart', this.launchdTarget()], { timeout: 15_000 });
       }
     } else if (this.platform === 'win32') {
-      await this.execute('schtasks.exe', ['/Run', '/TN', this.id], { timeout: 15_000, windowsHide: true });
+      await this.execute(windowsSystemCommand('schtasks',this.env), ['/Run', '/TN', this.id], { timeout: 15_000, windowsHide: true });
     } else throw new Error('PLATFORM_NOT_SUPPORTED');
     return this.inspect();
   }
@@ -279,7 +279,7 @@ export class TerminalServiceManager {
       try { await this.userSystemctl(['disable', `${this.id}.service`]); }
       catch { throw new Error('SERVICE_UNREGISTRATION_FAILED'); }
     } else if (this.platform === 'win32') {
-      try { await this.execute('schtasks.exe', ['/Delete', '/TN', this.id, '/F'], { windowsHide: true, timeout: 15_000 }); }
+      try { await this.execute(windowsSystemCommand('schtasks',this.env), ['/Delete', '/TN', this.id, '/F'], { windowsHide: true, timeout: 15_000 }); }
       catch { throw new Error('SERVICE_UNREGISTRATION_FAILED'); }
     }
     // The installation record is trusted only for its fixed profile-derived path.

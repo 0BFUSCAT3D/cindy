@@ -8,6 +8,14 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 export const VERSION = '0.1.0';
 
+/** Git Bash ships a different whoami.exe. OS management must not depend on
+ * whichever Unix compatibility utilities appear first in the interactive PATH. */
+export function windowsSystemCommand(name:'whoami'|'schtasks'|'powershell',env:NodeJS.ProcessEnv=process.env):string {
+  const root=env.SystemRoot||env.SYSTEMROOT||env.WINDIR||'C:\\Windows';
+  if(!path.win32.isAbsolute(root)||/[\r\n\0]/.test(root))throw new Error('WINDOWS_SYSTEM_ROOT_INVALID');
+  return path.win32.join(root,'System32',name==='powershell'?'WindowsPowerShell\\v1.0\\powershell.exe':`${name}.exe`);
+}
+
 /** Windows PowerShell 5 must rebuild its own module search path. Inheriting
  * PowerShell 7's PSModulePath can load incompatible Security module assemblies. */
 export function windowsPowerShellEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -63,7 +71,7 @@ export async function privateDirectory(directory: string): Promise<void> {
     // module auto-loading under a fresh service HOME, which can stall Set-Acl.
     '[System.IO.Directory]::SetAccessControl($env:CINDY_PRIVATE_DIRECTORY, $acl)',
   ].join('; ');
-  await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+  await execFileAsync(windowsSystemCommand('powershell'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
     windowsHide: true, timeout: 15_000, env: { ...windowsPowerShellEnv(), CINDY_PRIVATE_DIRECTORY: directory },
   });
 }

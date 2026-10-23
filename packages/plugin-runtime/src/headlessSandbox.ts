@@ -11,7 +11,7 @@ import type { SandboxHandle, SandboxHostAdapter } from './GhostRuntime.js';
 
 export interface HeadlessSandboxOptions {
   /** Managed or explicitly selected Chromium, never an Electron executable. */
-  executablePath: string;
+  executablePath: string | (() => Promise<string>);
   mailRuntimeSource: string;
   /** Captures owner generation, installation identity and approval revision. */
   capture(ghost: InstalledGhost): () => boolean;
@@ -36,10 +36,14 @@ export class HeadlessGhostSandbox implements SandboxHostAdapter {
   async getBrowser(): Promise<Browser> {
     if (this.closed) throw new Error('PLUGIN_HOST_CLOSED');
     if (!this.browser) {
-      const flight = chromium.launch({ executablePath: this.options.executablePath,
+      const flight = (async () => {
+        const executablePath = typeof this.options.executablePath === 'function' ? await this.options.executablePath() : this.options.executablePath;
+        if (this.closed) throw new Error('PLUGIN_HOST_CLOSED');
+        return chromium.launch({ executablePath,
         headless: true, chromiumSandbox: true, handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
         args: ['--site-per-process', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
-      });
+        });
+      })();
       this.browser = flight;
       flight.then(browser => {
         if (this.closed) void browser.close();

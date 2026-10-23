@@ -1,4 +1,4 @@
-import { GHOST_NODE_CHILD_MAX_ARGS, GHOST_NODE_CHILD_ARG_MAX_CHARS } from '@cindy/plugin-runtime/nodeProtocol';
+import { GHOST_NODE_CHILD_MAX_ARGS, GHOST_NODE_CHILD_ARG_MAX_CHARS } from '../nodeProtocol.js';
 import { parseGhostSecretCheck, type GhostSecretCheckDecl } from '@cindy/plugin-protocol';
 import { parseGhostRoutineEvents, type GhostRoutineEvents } from '@cindy/plugin-protocol';
 import { parseMailReader } from '@cindy/maker-shared/mail-message';
@@ -242,11 +242,11 @@ export interface GhostAgentNeeds {
   schedule?: boolean;
 }
 
-export { GHOST_NODE_PROTOCOLS, GhostNodeProtocol, GHOST_NODE_LIFECYCLES, GhostNodeLifecycle, GHOST_NODE_MAX_SECRET_BINDINGS, GHOST_NODE_MAX_SECRET_METHODS, isGhostNodeMcpReservedMethod, GhostNodeSecretBinding, GhostNodeNeeds, GHOST_NODE_MAX_EXTRA_ENTRIES } from '@cindy/plugin-runtime/nodeProtocol';
-import { GHOST_NODE_PROTOCOLS, GhostNodeProtocol, GHOST_NODE_LIFECYCLES, GhostNodeLifecycle, GHOST_NODE_MAX_SECRET_BINDINGS, GHOST_NODE_MAX_SECRET_METHODS, isGhostNodeMcpReservedMethod, GhostNodeSecretBinding, GhostNodeNeeds, GHOST_NODE_MAX_EXTRA_ENTRIES } from '@cindy/plugin-runtime/nodeProtocol';
+export { GHOST_NODE_PROTOCOLS, type GhostNodeProtocol, GHOST_NODE_LIFECYCLES, type GhostNodeLifecycle, GHOST_NODE_MAX_SECRET_BINDINGS, GHOST_NODE_MAX_SECRET_METHODS, isGhostNodeMcpReservedMethod, type GhostNodeSecretBinding, type GhostNodeNeeds, GHOST_NODE_MAX_EXTRA_ENTRIES } from '../nodeProtocol.js';
+import { GHOST_NODE_PROTOCOLS, type GhostNodeProtocol, GHOST_NODE_LIFECYCLES, type GhostNodeLifecycle, GHOST_NODE_MAX_SECRET_BINDINGS, GHOST_NODE_MAX_SECRET_METHODS, isGhostNodeMcpReservedMethod, type GhostNodeSecretBinding, type GhostNodeNeeds, GHOST_NODE_MAX_EXTRA_ENTRIES } from '../nodeProtocol.js';
 
-export { GHOST_NODE_MAX_CHILDREN_PER_GHOST, GHOST_NODE_CHILD_MAX_ARGS, GHOST_NODE_CHILD_ARG_MAX_CHARS, GHOST_NODE_CHILD_CHUNK_MAX_B64_CHARS, GHOST_NODE_CHILD_ID_RE, GHOST_NODE_CHILD_MODE_FLAG, parseGhostNodeChildToHostMessage } from '@cindy/plugin-runtime/nodeProtocol';
-export type { GhostNodeChildToHostMessage, GhostNodeChildToWorkerMessage } from '@cindy/plugin-runtime/nodeProtocol';
+export { GHOST_NODE_MAX_CHILDREN_PER_GHOST, GHOST_NODE_CHILD_MAX_ARGS, GHOST_NODE_CHILD_ARG_MAX_CHARS, GHOST_NODE_CHILD_CHUNK_MAX_B64_CHARS, GHOST_NODE_CHILD_ID_RE, GHOST_NODE_CHILD_MODE_FLAG, parseGhostNodeChildToHostMessage } from '../nodeProtocol.js';
+export type { GhostNodeChildToHostMessage, GhostNodeChildToWorkerMessage } from '../nodeProtocol.js';
 
 /**
  * 电子脑启动模式(2026-07-12):
@@ -6465,7 +6465,7 @@ export type GhostPipeAgentErrandResult =
  * 可以吊多久的天花板——盖住旧 Bridge 约 12 分钟的构建时长,又不给真死掉的
  * 进程永远吊着的机会。
  */
-export { GHOST_NODE_REQUEST_MAX_TOTAL_MS } from '@cindy/plugin-runtime/nodeProtocol';
+export { GHOST_NODE_REQUEST_MAX_TOTAL_MS } from '../nodeProtocol.js';
 
 /** Public artifact download; results deliberately exclude host filesystem paths. */
 export type GhostPipeDownloadRequest =
@@ -6527,7 +6527,7 @@ export interface GhostPipeNodeRequest {
 }
 
 /** Node / stdio MCP 请求的结构化返回。 */
-export type { GhostPipeNodeResult } from '@cindy/plugin-runtime/nodeProtocol';
+export type { GhostPipeNodeResult } from '../nodeProtocol.js';
 
 /**
  * session-context 槽注入到 tool-call args.session_context 的形态(主机铸造,

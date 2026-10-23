@@ -77,7 +77,7 @@ it('does not call a receipt an active service when the user manager is unavailab
 
 it.each(['darwin', 'win32'] as const)('registers explicit %s boot operation through the native foreground prompt', async platform => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'cindy-service-command-test-')); directories.push(directory);
-  const execute = vi.fn(async (file: string, args: string[]) => ({ stdout: file === 'whoami.exe' ? args.length ? '"test-user","S-1-5-21-1234"' : 'machine\\test-user' : file === 'launchctl' && args[0] === 'print' ? 'state = running\npid = 3456\n' : '', stderr: '' }));
+  const execute = vi.fn(async (file: string, args: string[]) => ({ stdout: path.win32.basename(file) === 'whoami.exe' ? args.length ? '"test-user","S-1-5-21-1234"' : 'machine\\test-user' : file === 'launchctl' && args[0] === 'print' ? 'state = running\npid = 3456\n' : '', stderr: '' }));
   const interactive = vi.fn(async (_file: string, _args: string[], _env?: NodeJS.ProcessEnv) => {});
   const manager = new TerminalServiceManager(path.join(directory, 'profile'), path.join(directory, 'cli.js'), process.execPath, { platform, home: directory, uid: 12345, userName: 'test-user', env: {}, execute, interactive });
   await manager.install();
@@ -112,8 +112,8 @@ it('registers and upgrades a Windows task with a decodable Unicode descriptor', 
   const manager = new TerminalServiceManager(profile, path.join(directory, '启动.js'), process.execPath, {
     platform: 'win32', home: directory, env: {},
     execute: async (file, args) => {
-      if (file === 'whoami.exe') return { stdout: args.length ? '"test-user","S-1-5-21-1234"' : 'machine\\test-user', stderr: '' };
-      if (file === 'schtasks.exe' && args[0] === '/Create') await readDescriptor(args[args.indexOf('/XML') + 1]);
+      if (path.win32.basename(file) === 'whoami.exe') { expect(path.win32.isAbsolute(file)).toBe(true); return { stdout: args.length ? '"test-user","S-1-5-21-1234"' : 'machine\\test-user', stderr: '' }; }
+      if (path.win32.basename(file) === 'schtasks.exe' && args[0] === '/Create') await readDescriptor(args[args.indexOf('/XML') + 1]);
       return { stdout: '', stderr: '' };
     },
     interactive: async (_file, _args, env) => { await readDescriptor(env!.CINDY_BOOT_XML!); },

@@ -93,7 +93,7 @@ try {
   };
   // Install the renderer's singleton peer first. A nested React copied while
   // traversing Ink/reconciler would cause real TUI hooks to use another runtime.
-  for (const name of ['react', 'ink', '@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2']) await copyPackage(name, app, path.join(output, 'app'));
+  for (const name of ['react', 'ink', '@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2', 'playwright-core']) await copyPackage(name, app, path.join(output, 'app'));
 
   const [suffix, digest] = runtimes[target];
   const archiveName = `node-v${nodeVersion}-${suffix}`;

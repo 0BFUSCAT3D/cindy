@@ -118,7 +118,31 @@ try {
   } finally { sender.onopen=null;sender.close();if(receiver){receiver.onmessage=null;receiver.close();}right.ondatachannel=null;left.close();right.close(); }
 
   const install = await run(['service', 'install'], { raw: true });
-  if (install.code === 0) { registered = true; await run(['service', 'uninstall']); registered = false; record('native user-service registration + removal', 'PASS'); }
+  if (install.code === 0) {
+    registered = true; record('native user-service registration', 'PASS');
+    const activated = await run(['service','activate'],{timeout:90_000});
+    assert.equal(activated.service.running,true); assert.ok(activated.status.deviceId);
+    record('native user-service activation + real IPC', 'PASS');
+    const previousStart=activated.status.startedAt;
+    const restarted=await run(['service','restart'],{timeout:90_000});
+    assert.ok(restarted.startedAt>previousStart); assert.equal(restarted.deviceId,activated.status.deviceId);
+    const running=await run(['service','status']);assert.equal(running.service.running,true);
+    record('native user-service restart preserves profile', 'PASS');
+    // Crash only the exact synthetic service, then observe the OS manager's
+    // recovery. status is passive and cannot create a substitute daemon.
+    const endpoint=JSON.parse(await readFile(path.join(profile,'service.json'),'utf8'));
+    assert.ok(Number.isSafeInteger(endpoint.pid)&&endpoint.pid>0);
+    process.kill(endpoint.pid,'SIGKILL');
+    const recoveryDeadline=Date.now()+100_000;let recovered=false;
+    while(Date.now()<recoveryDeadline){
+      try{const state=await run(['service','status'],{timeout:10_000});if(state.startedAt>restarted.startedAt&&state.service?.running){assert.equal(state.deviceId,restarted.deviceId);recovered=true;break;}}catch{}
+      await new Promise(resolve=>setTimeout(resolve,500));
+    }
+    assert.ok(recovered,'Native service manager must recover its crashed host');
+    record('OS-managed crash recovery without CLI auto-start', 'PASS');
+    await run(['service', 'uninstall']); registered = false;
+    record('native user-service removal', 'PASS');
+  }
   else if (process.platform === 'linux' && /USER_SERVICE_MANAGER_UNAVAILABLE/.test(install.output)) record('native user-service registration', 'UNAVAILABLE', 'Hosted runner has no systemd user manager; not claimed as tested');
   else throw new Error(`Service registration failed: ${install.output || install.error}`);
   await run(['service', 'stop']);

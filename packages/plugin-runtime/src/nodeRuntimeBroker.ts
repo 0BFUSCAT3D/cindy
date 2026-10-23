@@ -625,7 +625,8 @@ export class GhostNodeRuntimeBroker {
     try {
       if (signal && !needsSecretInput && this.deps.openSecretInput && this.deps.secretSaved) {
         for (const binding of manualBindings) {
-          const saved = await this.deps.secretSaved(ghostId, binding.key);
+          const status = this.deps.secretSaved(ghostId, binding.key);
+          const saved = typeof status === 'boolean' ? status : await status;
           if (!requestStillCurrent() || !this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
             return errorResult('PERMISSION_DENIED', 'Plugin owner boundary is not stable');
           }
@@ -698,7 +699,8 @@ export class GhostNodeRuntimeBroker {
             }
             value = resolved.accessToken;
           } else {
-            value = await this.deps.readSecret?.(ghostId, binding.key) ?? null;
+            const stored = this.deps.readSecret?.(ghostId, binding.key);
+            value = typeof stored === 'string' || stored == null ? stored ?? null : await stored;
             if (!requestStillCurrent() || !this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
               clearHostSecrets(hostSecrets);
               return errorResult('PERMISSION_DENIED', 'Plugin owner boundary is not stable');
