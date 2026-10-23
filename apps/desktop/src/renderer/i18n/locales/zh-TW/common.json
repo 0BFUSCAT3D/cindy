@@ -5,7 +5,9 @@
     "title": "郵件",
     "openMailbox": "在信箱中開啟",
     "loading": "正在讀取郵件…",
-    "failed": "未能讀取這封郵件。請檢查連接的信箱帳號後重試，或在信箱中開啟。",
+    "failed": "未能讀取這封郵件。可以重試，或在信箱中開啟。",
+    "unavailable": "目前沒有可用的郵件插件，可以在信箱中開啟這封郵件。",
+    "notReady": "郵件插件尚未完成設定。請先連接信箱，或直接開啟原連結。",
     "retry": "重試",
     "to": "收件人",
     "cc": "副本",
@@ -20,7 +22,9 @@
     "collapseMessage": "收起來自 {{from}} 的郵件",
     "conversationFailed": "暫時無法讀取前後郵件。",
     "messageCount": "共 {{count}} 封郵件",
-    "showMessages": "展開 {{count}} 封郵件"
+    "showMessages": "展開 {{count}} 封郵件",
+    "choosePlugin": "選擇用哪個插件開啟這封郵件。",
+    "personalPlugin": "個人插件"
   },
   "taskActionConfirmation": {
     "title": "確認任務操作",
@@ -6635,7 +6639,7 @@
         "installMeta": "版本 {{version}} · {{source}}",
         "updateMeta": "版本 {{from}} → {{to}} · {{source}}",
         "installDescription": "確認後才會安裝，安裝好後立即啟用，可隨時在插件頁停用或解除安裝。",
-        "updateDescription": "新版本需要更多權限，確認後才會更新；在此之前舊版本照常可用。",
+        "updateDescription": "確認後才會更新；在此之前舊版本照常可用。",
         "grantsTitle": "安裝後它將擁有：",
         "noPermissions": "這個插件沒有宣告額外權限。",
         "addedTitle": "新增或變更的權限：",
@@ -6652,7 +6656,11 @@
         "confirmInstall": "安裝",
         "confirmUpdate": "更新",
         "cancel": "取消",
-        "updateNeedsConsent": "需確認新權限"
+        "updateNeedsConsent": "需確認新權限",
+        "targetIdentity": "安裝位置：{{name}}",
+        "personalTarget": "個人",
+        "sourceChanged": "這次更新會改為本機來源。舊帳號和資料會隔離保留，需要重新連接帳號。",
+        "otherCopies": "已有 {{count}} 份同名插件；它們不會被覆蓋或停用。另裝的插件需要單獨連接帳號。"
       },
       "trust": {
         "official": "Cindy 官方插件",
