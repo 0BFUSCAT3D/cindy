@@ -133,9 +133,13 @@ export class TerminalService {
 
   async start(): Promise<void> {
     // Bind before opening mutable stores. A second process never reaches them.
-    await this.transport.listen();
-    this.init = this.initialize();
-    try { await this.init; } catch (error) { await this.transport.close();throw error; }
+    // Install the readiness barrier before listen publishes service.json.
+    // A fast client can authenticate while listen is still releasing its lock.
+    this.init = (async()=>{
+      await this.transport.listen();
+      try { await this.initialize(); } catch (error) { await this.transport.close();throw error; }
+    })();
+    await this.init;
   }
   private async initialize() {
     await this.settings.open(); await this.secrets.open();
@@ -349,7 +353,7 @@ export class TerminalService {
     const deposits=new DirDepositVault(),saves=new SaveDepositVault();
     this.plugins=new TerminalPlugins({root:ownerDir,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),
       executablePath:()=>this.pluginBrowser.resolve(),locale:()=>this.settings.snapshot().effective.language,assertCurrent:guardPlugin,log:logger,onClose:()=>pluginAbort.abort(),
-      secrets:{get:key=>this.secrets.get(`${owner}:${key}`),set:(key,value)=>this.secrets.set(`${owner}:${key}`,value),delete:key=>this.secrets.delete(`${owner}:${key}`)},
+      secrets:{get:key=>this.secrets.get(`${owner}:${key}`),set:(key,value)=>this.secrets.set(`${owner}:${key}`,value),delete:key=>this.secrets.delete(`${owner}:${key}`),getSync:key=>this.secrets.getSync(`${owner}:${key}`),setSync:(key,value)=>this.secrets.setSync(`${owner}:${key}`,value),deleteSync:key=>this.secrets.deleteSync(`${owner}:${key}`)},
       changed:()=>{if(this.ownerSuspended||this.closing)return;this.transport.publish('ghosts:changed',[]);void this.remote.publish('maker:remote-resources:changed',{collectionId:'plugins'}).catch(()=>{});},
       receive:async()=>({ok:false,errorCode:'UNSUPPORTED_CAPABILITY'}),
       cards:{persist:row=>this.tasks.media.savePluginCard(row,guardPlugin),broadcast:payload=>{guardPlugin();this.transport.publish('ghosts:card-updated',[payload]);void this.remote.publish('ghosts:card-updated',payload).catch(()=>{});}},

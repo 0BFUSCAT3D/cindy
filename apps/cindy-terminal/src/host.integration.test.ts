@@ -21,6 +21,7 @@ import type { Logger } from '@cindy/maker-core';
 import { TerminalMediaTransfer } from './media-transfer.js';
 import { TerminalSecretStore } from './secrets.js';
 import { TerminalTransportServer, connectTerminal } from './transport.js';
+import { TerminalService } from './service.js';
 import { socketPath, privateDirectory } from './platform.js';
 import { TerminalProtectedInput } from './protected-input.js';
 import { inputHandoffPresentation, type InputHandoffSnapshot } from '@cindy/device-link';
@@ -29,6 +30,33 @@ describe('terminal private host', () => {
   let directory: string;
   beforeAll(async () => { directory = await fs.mkdtemp(path.join(os.tmpdir(),'cindy-terminal-host-')); });
   afterAll(async () => { await fs.rm(directory,{recursive:true,force:true}); });
+
+  // Linux ARM64 native restart accepted IPC while listen() was still releasing
+  // its lock, before initialize() had assigned tasks. Hold that exact boundary;
+  // the real authenticated status request must wait and then return a full host.
+  it('holds early authenticated requests until the host is initialized', async () => {
+    const root=path.join(directory,'startup-barrier'),service=new TerminalService(root);
+    let publish!:()=>void,release!:()=>void,entered!:()=>void;
+    const published=new Promise<void>(resolve=>{publish=resolve;});
+    const releasing=new Promise<void>(resolve=>{release=resolve;});
+    const requested=new Promise<void>(resolve=>{entered=resolve;});
+    const listen=service.transport.listen.bind(service.transport);
+    service.transport.listen=async()=>{await listen();publish();await releasing;};
+    const boundary=service.transport as unknown as {invoke(channel:string,args:unknown[],device?:string):Promise<unknown>};
+    const invoke=boundary.invoke.bind(boundary);
+    boundary.invoke=(...args)=>{const pending=invoke(...args);entered();return pending;};
+    const starting=service.start();let client:Awaited<ReturnType<typeof connectTerminal>>|undefined;
+    try{
+      await published;client=await connectTerminal(root);
+      let settled=false;
+      const status=client.invoke('terminal:status').then(value=>{settled=true;return value;},error=>{settled=true;throw error;});
+      void status.catch(()=>{});
+      await requested;await new Promise<void>(resolve=>setImmediate(resolve));
+      expect(settled).toBe(false);
+      release();await starting;
+      expect(await status).toMatchObject({busy:false,deviceId:expect.any(String),version:expect.any(String)});
+    }finally{release();await starting.catch(()=>{});client?.close();await service.close();}
+  });
 
   // Existing GUI attachments use signed OSS URLs. A corrupt or cancelled
   // transfer must never be adopted, and account tokens belong only on the API.

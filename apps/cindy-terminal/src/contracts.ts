@@ -11,6 +11,14 @@ export interface TerminalSecrets {
   delete(key: string): Promise<void>;
 }
 
+/** Shared credential managers require a durable synchronous commit before
+ * returning success; these methods are available only after vault unlock. */
+export interface TerminalDurableSecrets extends TerminalSecrets {
+  getSync(key: string): string | null;
+  setSync(key: string, value: string): void;
+  deleteSync(key: string): void;
+}
+
 export interface InvocationContext {
   source: 'local' | 'remote';
   /** Verified from the relay's scoped source and an authoritative membership snapshot. */
