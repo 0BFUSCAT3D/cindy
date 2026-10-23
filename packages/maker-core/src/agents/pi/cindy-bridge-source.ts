@@ -2964,6 +2964,8 @@ class CindyMcpGateway {
   private readonly unavailableServers = new Map<string, string>();
   /** 已披露工具：键为 server + NUL + tool，值为该工具当前 schema 的指纹。 */
   private readonly disclosedSchemas = new Map<string, string>();
+  /** 本次调用跳过了权限询问（hook 未披露即放行）：按 toolCallId 记账，execute 见此标记一律回路标。 */
+  private readonly permissionSkippedCalls = new Set<string>();
   private botMemoryFacadeEnabled = false;
   private botHelperFacadeEnabled = false;
 
@@ -3199,6 +3201,32 @@ class CindyMcpGateway {
       + '. The current schema has already been recorded; re-send the same call to proceed.';
   }
 
+  /**
+   * 记录「这次调用没问过权限」。
+   *
+   * hook 判未披露时会跳过权限询问，execute 里再独立判一次披露状态 —— 这两次判断之间
+   * 有窗口：pi 并行模式下会先依次跑完同一轮的两个 tool_call hook，再依次执行。于是两个
+   * hook 都看到未披露、都跳过权限；第一个 execute 记账后回路标，第二个 execute 再判时
+   * 已经「已披露」，就会在没有问过用户的情况下直接执行。
+   *
+   * 记下 toolCallId，execute 见到标记就一律回路标（顺便记账），保证「没问过权限的调用
+   * 一定不执行」由同一个标记决定。
+   */
+  markPermissionSkipped(toolCallId: unknown): void {
+    if (typeof toolCallId !== 'string' || !toolCallId) return;
+    this.permissionSkippedCalls.add(toolCallId);
+    if (this.permissionSkippedCalls.size > 256) {
+      // 兜底：execute 未被调用时不让集合无限增长。
+      const oldest = this.permissionSkippedCalls.values().next().value;
+      if (typeof oldest === 'string') this.permissionSkippedCalls.delete(oldest);
+    }
+  }
+
+  /** 该次调用是否跳过过权限询问（标记一次性消费）。 */
+  consumePermissionSkipped(toolCallId: unknown): boolean {
+    return typeof toolCallId === 'string' && this.permissionSkippedCalls.delete(toolCallId);
+  }
+
   isSchemaDisclosed(call: ResolvedMcpGatewayCall): boolean {
     const key = mcpGatewayKey(call.tool.serverName, call.tool.name);
     return this.disclosedSchemas.get(key) === this.schemaFingerprint(call.tool);
@@ -3378,10 +3406,12 @@ class CindyMcpGateway {
     return { content, details: result?.structuredContent ?? {} };
   }
 
-  private async executeCall(params: unknown, signal?: AbortSignal): Promise<{
+  private async executeCall(params: unknown, signal?: AbortSignal, toolCallId?: string): Promise<{
     content: Array<Record<string, unknown>>;
     details: unknown;
   }> {
+    // 这次调用没问过权限（hook 判未披露时跳过）→ 一律回路标，不看披露状态。
+    const permissionSkipped = this.consumePermissionSkipped(toolCallId);
     const resolved = this.resolveCall(params);
     if (!resolved) throw new Error(this.unknownCallMessage(params));
     if (this.requiresNameEnvelope(resolved.tool) && typeof recordInput(resolved.args).name !== 'string') {
@@ -3398,7 +3428,7 @@ class CindyMcpGateway {
           : 'args.name is required.'),
       );
     }
-    if (!this.isSchemaDisclosed(resolved)) {
+    if (permissionSkipped || !this.isSchemaDisclosed(resolved)) {
       // 拦一次，把路标递到模型手上，同时记账。
       //
       // 记账解决的是披露整片失效：按 schema 指纹记账后，只有真正新增或 schema 真变动
@@ -3780,7 +3810,7 @@ class CindyMcpGateway {
         required: ['server', 'tool'],
         additionalProperties: false,
       },
-      execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => this.executeCall(params, signal),
+      execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => this.executeCall(params, signal, _toolCallId),
     });
   }
 }
@@ -4712,6 +4742,9 @@ export default async function cindyBridge(piApi: any) {
     // 未披露的首次调用在这里直接放行给 execute（execute 的门会记账并回路标），不弹框；
     // 模型照路标补完 list_tools 后重发时已披露，才正常过一次权限。
     if (event.toolName === CINDY_MCP_CALL_TOOL && gatewayCall && !mcpGateway.isSchemaDisclosed(gatewayCall)) {
+      // 记下 toolCallId：execute 见此标记一律回路标，避免并行两次调用时第二次
+      // 因为「此时已披露」而在没问过用户的情况下直接执行。
+      mcpGateway.markPermissionSkipped(event.toolCallId);
       return;
     }
     const permissionToolName = gatewayCall?.qualifiedName ?? event.toolName;

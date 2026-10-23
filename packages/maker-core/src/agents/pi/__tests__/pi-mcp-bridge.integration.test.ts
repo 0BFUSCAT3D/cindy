@@ -113,6 +113,37 @@ function anthropicToolTurn(
   );
 }
 
+function anthropicParallelToolTurn(
+  sequence: number,
+  calls: Array<{ name: string; input: Record<string, unknown> }>,
+): string {
+  const blocks = calls.map((call, index) =>
+    sseEvent('content_block_start', {
+      type: 'content_block_start', index,
+      content_block: { type: 'tool_use', id: `toolu_${sequence}_${index}`, name: call.name, input: {} },
+    }) +
+    sseEvent('content_block_delta', {
+      type: 'content_block_delta', index,
+      delta: { type: 'input_json_delta', partial_json: JSON.stringify(call.input) },
+    }) +
+    sseEvent('content_block_stop', { type: 'content_block_stop', index }),
+  ).join('');
+  return (
+    sseEvent('message_start', {
+      type: 'message_start',
+      message: {
+        id: `msg_${sequence}`, type: 'message', role: 'assistant', model: 'pi-test-model',
+        content: [], stop_reason: null, usage: { input_tokens: 20, output_tokens: 0 },
+      },
+    }) +
+    blocks +
+    sseEvent('message_delta', {
+      type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 5 },
+    }) +
+    sseEvent('message_stop', { type: 'message_stop' })
+  );
+}
+
 function anthropicTextTurn(sequence: number, text: string): string {
   return (
     sseEvent('message_start', {
@@ -283,6 +314,18 @@ function scriptedAnthropicTurn(requestBody: string): string {
     return toolResultCount === 0
       ? anthropicToolTurn(1, 'cindy_mcp_list_tools', {})
       : anthropicTextTurn(2, 'unavailable servers reported');
+  }
+  if (requestBody.includes('parallel uninspected double call')) {
+    // 同一轮 message 里并行发两个未披露调用：pi 会先依次跑完两个 tool_call hook
+    // （都看到未披露 → 都跳过权限），再依次执行两个 execute。回归 zqchris 指出的
+    // TOCTOU 口子：第二个 execute 不能因为「此时已披露」就在没问过用户的情况下执行。
+    if (toolResultCount === 0) {
+      return anthropicParallelToolTurn(1, [
+        { name: 'cindy_mcp_call_tool', input: { server: 'cindy_echo', tool: 'echo', args: { text: 'parallel-a' } } },
+        { name: 'cindy_mcp_call_tool', input: { server: 'cindy_echo', tool: 'echo', args: { text: 'parallel-b' } } },
+      ]);
+    }
+    return anthropicTextTurn(2, 'both parallel calls were gated safely');
   }
   if (requestBody.includes('call without schema inspection')) {
     if (toolResultCount === 0) {
@@ -1500,6 +1543,37 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
         sessionId,
         provider: 'pi',
       });
+    },
+  );
+
+  it(
+    'parallel uninspected calls are both gated: neither asks permission nor executes',
+    { timeout: 90_000 },
+    async () => {
+      echoCalls.length = 0;
+      opaqueTurnCaptures.length = 0;
+      let permissionCount = 0;
+      const sessionId = 'mcp-itest-parallel-uninspected';
+      const { requestBodies } = await runOneTurn(
+        'ask',
+        async (req) => {
+          // TOCTOU 回归：两个 hook 都看到未披露、都跳过权限；第二个 execute 不得
+          // 因为「此时已披露」而在没问过用户的情况下直接执行。
+          permissionCount += 1;
+          return { kind: 'permission', behavior: 'allow' };
+        },
+        'local',
+        'parallel uninspected double call',
+        false,
+        sessionId,
+      );
+
+      expect(permissionCount).toBe(0);
+      expect(echoCalls).toEqual([]);
+      // 两次 execute 都回同一条指名路标的错误。
+      const signposts = requestBodies.filter((body) => body.includes('Inspect this tool before execution'));
+      expect(signposts.length).toBeGreaterThanOrEqual(1);
+      await waitFor(() => opaqueTurnCaptures.length >= 1);
     },
   );
 
