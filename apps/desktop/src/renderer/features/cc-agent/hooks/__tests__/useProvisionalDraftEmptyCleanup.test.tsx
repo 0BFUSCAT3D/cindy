@@ -11,6 +11,11 @@ vi.mock('../../provisionalDraftTask', () => ({
 }));
 
 import { clearDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
+import {
+  armDetachedVoiceDraftPersist,
+  clearArmedDetachedVoiceDraft,
+  settleArmedDetachedVoiceDraft,
+} from '@/components/new-chat/composerSendOwnership';
 import { useProvisionalDraftEmptyCleanup } from '../useProvisionalDraftEmptyCleanup';
 
 const draftKey = 'provisional-cleanup-test';
@@ -35,6 +40,7 @@ describe('provisional draft empty cleanup', () => {
   });
   afterEach(() => {
     cleanup();
+    clearArmedDetachedVoiceDraft();
     clearDraft(draftKey);
     vi.useRealTimers();
   });
@@ -91,5 +97,23 @@ describe('provisional draft empty cleanup', () => {
     });
     unmount();
     expect(mocks.discard).toHaveBeenCalledTimes(busy ? 0 : 1);
+  });
+
+  // PR #6956 review: unmount stops the React subscriber, so exercise the real
+  // detached persistence completion too. Empty ASR must remove only its source
+  // task; text or a replacement task must survive (unit, fake timers).
+  it.each([
+    { text: '', replacement: false, discarded: 1 },
+    { text: 'Recognized words', replacement: false, discarded: 0 },
+    { text: '', replacement: true, discarded: 0 },
+  ])('settles detached voice: $text, replacement=$replacement', ({ text, replacement, discarded }) => {
+    const { result, unmount } = mount();
+    act(() => result.current.onVoiceBusyChange(true));
+    armDetachedVoiceDraftPersist(draftKey, '', result.current.onVoiceDetached());
+    unmount();
+    expect(mocks.discard).not.toHaveBeenCalled();
+    if (replacement) mocks.currentId = 'draft-2';
+    settleArmedDetachedVoiceDraft(text);
+    expect(mocks.discard).toHaveBeenCalledTimes(discarded);
   });
 });

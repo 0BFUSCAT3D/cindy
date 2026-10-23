@@ -2132,6 +2132,7 @@ export function NewMakerDraftRoute() {
   const {
     armEmptyCheck: armProvisionalEmptyCheck,
     onVoiceBusyChange: onProvisionalVoiceBusyChange,
+    onVoiceDetached: onProvisionalVoiceDetached,
   } = useProvisionalDraftEmptyCleanup(NEW_MAKER_DRAFT_KEY, refreshProvisionalTitle);
   /** 已为哪一次建出来的未发送任务做过一次性的初始化(按 key 区分重建)。 */
   const provisionalSeededKeyRef = useRef<string | null>(null);
@@ -5866,6 +5867,7 @@ export function NewMakerDraftRoute() {
                     onSend={handleSend}
                     onComposerTyping={openProvisionalDraftTask}
                     onComposerVoiceBusyChange={onProvisionalVoiceBusyChange}
+                    onComposerVoiceDetached={onProvisionalVoiceDetached}
                     // 创建在途期间锁住输入框:handleSend 立刻返回、真正的创建在后台跑,远程要经
                     // 几次隧道往返。锁定态即时告诉用户「已发出、处理中」,也免得这段时间补写的
                     // 内容在交接成功清空草稿时被一并丢掉;失败解锁后原文仍在。

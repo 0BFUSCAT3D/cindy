@@ -35,6 +35,17 @@ export function useProvisionalDraftEmptyCleanup(draftKey: string, refreshTitle: 
     },
     [armEmptyCheck, cancel],
   );
+  const onVoiceDetached = useCallback(() => {
+    const id = provisionalDraftTaskId();
+    if (!id) return undefined;
+    // The component will be gone when ASR settles. Bind cleanup to its source
+    // task, then recheck after the existing detached-persist path has finished.
+    return () => {
+      void discardProvisionalDraftTask(
+        () => provisionalDraftTaskId() === id && !getDraftPresence(draftKey),
+      );
+    };
+  }, [draftKey]);
 
   useEffect(() => {
     const unsubscribe = subscribeDraftContent(draftKey, () => {
@@ -53,5 +64,5 @@ export function useProvisionalDraftEmptyCleanup(draftKey: string, refreshTitle: 
     };
   }, [armEmptyCheck, cancel, discardIfEmpty, draftKey, isEmpty, refreshTitle]);
 
-  return { armEmptyCheck, onVoiceBusyChange };
+  return { armEmptyCheck, onVoiceBusyChange, onVoiceDetached };
 }
