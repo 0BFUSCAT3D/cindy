@@ -40,6 +40,9 @@ export function buildNightlyLearningRoutineInput(frequency: NightlyLearningFrequ
     prompt: 'Nightly learning runs inside the host: tidy this teammate\'s memories and Skills from conversations since the last run.',
     enabled: true,
     silentWhenIdle: true,
+    // 本版在 execute 里提前返回，不会执行这个前置检查；降级后的旧版不认识这条内置规则，
+    // 会把它当普通规则派给伙伴，前置检查以 exit 2 跳过，不调用模型。
+    preRunHook: { command: 'exit 2', timeoutMs: 10_000 },
     triggers: [{ id: `nightly-${frequency}`, kind: 'cron', expression: NIGHTLY_LEARNING_CRON[frequency], timezone }],
   };
 }
