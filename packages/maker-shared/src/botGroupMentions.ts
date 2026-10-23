@@ -168,6 +168,8 @@ export function splitBotGroupRelaySteps(
 ): BotGroupRelayStep[] | null {
   const tokens = scanMentionTokens(text, buildLabelEntries(input.members, input.allLabels, []));
   if (!tokens.length) return null;
+  // An @ that is not a teammate (renamed since it was picked) would drop or garble a step.
+  if (/@\S/.test(text.slice(0, tokens[0]!.start))) return null;
   const steps: BotGroupRelayStep[] = [];
   for (const [index, token] of tokens.entries()) {
     if (token.entry.all || token.entry.botIds.length !== 1) return null;
@@ -175,7 +177,7 @@ export function splitBotGroupRelaySteps(
     // A connector only leads into the next step; the last step keeps its words.
     const span = text.slice(token.end, tokens[index + 1]?.start ?? text.length);
     const task = (index + 1 < tokens.length ? span.replace(STEP_CONNECTOR, '') : span).replace(STEP_EDGE, '');
-    if (!task) return null;
+    if (!task || /@\S/.test(task)) return null;
     steps.push({ botId: token.entry.botIds[0]!, task });
   }
   return steps;

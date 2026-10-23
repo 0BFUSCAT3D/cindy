@@ -113,6 +113,7 @@
     "start": "开始",
     "dismiss": "不用了",
     "editHint": "想换人或改步骤，直接说",
+    "autoNote": "做完一步会自动交给下一位。",
     "pauseNote": "每做完一步会停下来，等你点「继续」。",
     "superseded": "已更新",
     "dismissed": "不用了",

@@ -202,6 +202,9 @@ describe('splitBotGroupRelaySteps', () => {
     ['a step without a task', '@阿布，@小满 实现'],
     ['everyone', '@所有人 出方案，@小满 实现'],
     ['no mention', '做一个登录页'],
+    // A teammate renamed after being picked no longer reads as one: its step must not vanish.
+    ['an @ that is no longer a teammate', '@Old 出方案，@小满 实现，@阿布 测一遍'],
+    ['an @ inside a task', '@小满 实现，@Old 测一遍'],
   ])('leaves %s to the organizer', (_label, text) => {
     expect(split(text)).toBeNull();
   });

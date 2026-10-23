@@ -240,6 +240,10 @@ describe('Chat Server result delivery and refresh', () => {
       await stepEnded('2');
       expect(continues()).toHaveLength(0);
     });
+    it('turning it off while the 分工 is read stops the handoff before the group is re-read', async () => {
+      await serve(division(), { autoContinue: true }, undefined, () => { void service.updateGroup({ groupId: roomId, autoContinue: false }); });
+      expect(continues()).toHaveLength(0);
+    });
     it('does not offer the switch on a server that cannot tell a 分工 from a queue', async () => {
       workspaceSettings.set(roomId, { projectDir: null, plans: {}, autoContinue: true });
       const result = await service.getGroup(roomId);
