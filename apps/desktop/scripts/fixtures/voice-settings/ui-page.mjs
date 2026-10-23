@@ -12,6 +12,30 @@ export default {
       'const empty = {}; export const EMPTY_LIGHT_STATE = empty; export const makerChatStore = { subscribeLight: () => () => {}, getLightSnapshot: () => empty };',
   },
   cases: {
+    'openrouter-auto-voice': {
+      about: 'Switching to Qwen chooses its first returned voice; an explicit choice survives refresh',
+      data: {
+        autoVoice: true, openRouter: true, protocol: 'openai',
+        modelId: 'elevenlabs/eleven-v3', voiceId: 'sarah',
+        nextModelId: 'qwen/qwen-audio-3.0-tts-plus',
+        nextVoices: [
+          { id: 'longanlingxin', name: 'longanlingxin' },
+          { id: 'longanlufeng', name: 'longanlufeng' },
+        ],
+      },
+    },
+    'minimax-auto-voice': {
+      about: 'Native BYOK model switching follows the same automatic voice selection rule',
+      viewport: { width: 320, height: 900 },
+      data: {
+        autoVoice: true, protocol: 'minimax', modelId: 'speech-2.8-turbo',
+        voiceId: 'English_Graceful_Lady', nextModelId: 'speech-2.8-hd',
+        nextVoices: [
+          { id: 'English_Graceful_Lady', name: 'Graceful Lady' },
+          { id: 'Chinese (Mandarin)_News_Anchor', name: 'News Anchor' },
+        ],
+      },
+    },
     openrouter: {
       about: 'OpenRouter provider voice IDs and no unsupported speed slider',
       data: { openRouter: true, protocol: 'openai', modelId: 'elevenlabs/eleven-v3', voiceId: 'sarah', speed: 1.5 },
@@ -182,6 +206,33 @@ export default {
     }
   },
   async check(page, ui) {
+    if (ui.data.autoVoice) {
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.saveCount), 0);
+      const modelLabel = await ui.t('bots.voiceMode.model');
+      await page.getByRole('combobox', { name: modelLabel, exact: true }).click();
+      await page.getByRole('option', {
+        name: `${ui.data.nextModelId} · ${ui.data.openRouter ? 'OpenRouter' : 'MiniMax'}`,
+        exact: true,
+      }).click();
+      await page.waitForFunction(() => window.__uiPage.ctx.data.savedModelId === window.__uiPage.ctx.data.nextModelId);
+      const voiceLabel = await ui.t('bots.voiceMode.voice');
+      const voicePicker = page.getByRole('button', { name: voiceLabel, exact: true });
+      assert.equal(await voicePicker.getAttribute('value'), `voice:${ui.data.nextVoices[0].id}`);
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.savedVoice), ui.data.nextVoices[0].id);
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.previewRequests.length), 0);
+      await ui.capture('automatic-voice');
+      await voicePicker.click();
+      await page.getByRole('dialog', { name: voiceLabel }).getByRole('button', { name: ui.data.nextVoices[1].name, exact: true }).click();
+      await page.waitForFunction(() => window.__uiPage.ctx.data.saveCount === 2);
+      const refreshButton = page.getByRole('button', { name: await ui.t('bots.voiceMode.refreshVoices'), exact: true });
+      await refreshButton.click();
+      await page.waitForFunction(label => !document.querySelector(`button[aria-label="${label}"]`)?.disabled, await ui.t('bots.voiceMode.refreshVoices'));
+      assert.equal(await voicePicker.getAttribute('value'), `voice:${ui.data.nextVoices[1].id}`);
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.savedVoice), ui.data.nextVoices[1].id);
+      assert.equal(await page.evaluate(() => window.__uiPage.ctx.data.saveCount), 2);
+      await ui.capture('explicit-voice-after-refresh');
+      return;
+    }
     if (ui.data.openRouter) {
       assert.equal(await page.getByRole('slider').count(), 0);
       await page.getByText(await ui.t('bots.voiceMode.speedUnavailable'), { exact: true }).waitFor();

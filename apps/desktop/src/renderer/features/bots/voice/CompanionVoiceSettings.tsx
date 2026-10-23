@@ -67,6 +67,9 @@ export function CompanionVoiceSettings(props: Props) {
   const [catalogError, setCatalogError] = useState(false);
   const [preference, setPreference] = useState<VoiceConversationSelection | null>(null);
   const [voice, setVoice] = useState<string>();
+  // Only an explicit model switch may fill an empty voice from its catalog.
+  // Opening, refreshing or resetting settings must not save inferred defaults.
+  const [autoSelectVoice, setAutoSelectVoice] = useState(false);
   const [speed, setSpeed] = useState<number>();
   const [speedNotice, setSpeedNotice] = useState<number>();
   const [customized, setCustomized] = useState(false);
@@ -130,6 +133,7 @@ export function CompanionVoiceSettings(props: Props) {
     setPreferenceError(false);
     setPreference(null);
     setVoice(undefined);
+    setAutoSelectVoice(false);
     setSpeed(undefined);
     setSpeedNotice(undefined);
     setCustomized(false);
@@ -171,6 +175,7 @@ export function CompanionVoiceSettings(props: Props) {
         ++refreshVersion.current;
         ++preferenceVersion.current;
         setPreferenceOwner(undefined);
+        setAutoSelectVoice(false);
         void preview.stop();
       }
     });
@@ -193,6 +198,7 @@ export function CompanionVoiceSettings(props: Props) {
       playback?: boolean | null,
     ): Promise<boolean> => {
       if (pendingSave.current) return pendingSave.current;
+      if (next !== undefined) setAutoSelectVoice(false);
       const version = preferenceVersion.current;
       setSaving(true);
       setPreferenceError(false);
@@ -257,7 +263,7 @@ export function CompanionVoiceSettings(props: Props) {
   };
   const chooseModel = (key: string) => {
     const model = models.find((item) => voiceModelKey(item) === key);
-    if (!model) return;
+    if (!model || (preference && voiceModelKey(preference) === key && selectedVoice)) return;
     const next = carrySpeed({
       providerId: model.providerId,
       agent: model.agent,
@@ -270,6 +276,7 @@ export function CompanionVoiceSettings(props: Props) {
     setCustomized(true);
     setPreference(next);
     setVoice(next.voice);
+    setAutoSelectVoice(!next.voice);
     if (
       normalizeVoiceConversationSelection(next) &&
       resolveVoiceConfiguration(models, next).protocol
@@ -435,11 +442,13 @@ export function CompanionVoiceSettings(props: Props) {
           }}
           protocol={protocol}
           voice={selectedVoice}
+          autoSelectFirstVoice={autoSelectVoice}
           speed={effectiveSpeed}
           disabled={!ready || saving || blocked}
           previewDisabled={!ready || saving || blocked || !props.sessionId}
           preview={preview}
           onChange={(value, save) => {
+            setAutoSelectVoice(false);
             dirty.current = true;
             setVoice(value);
             const next = normalizeVoiceConversationSelection({
