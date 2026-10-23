@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   onProgress: undefined as ((data: { bytesWritten: number; totalBytes: number }) => void) | undefined,
   file: '', resumeData: undefined as string | undefined,
   files: new Map<string, number>(),
+  modified: new Map<string, number>(),
   network: { type: 'WIFI', isConnected: true, isInternetReachable: true },
   networkListener: undefined as ((state: { type: string; isConnected: boolean; isInternetReachable: boolean }) => void) | undefined,
   networkUnsubscribe: vi.fn(),
@@ -38,11 +39,14 @@ vi.mock('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/', makeDirectoryAsync: vi.fn(async () => undefined),
   readDirectoryAsync: vi.fn(async () => [...mocks.files.keys()].map((file) => file.split('/').at(-1))),
   getInfoAsync: vi.fn(async (file: string) => mocks.files.has(file)
-    ? { exists: true, isDirectory: false, size: mocks.files.get(file), modificationTime: Date.now() / 1000 }
+    ? { exists: true, isDirectory: false, size: mocks.files.get(file), modificationTime: mocks.modified.get(file) ?? Date.now() / 1000 }
     : { exists: false }),
   deleteAsync: mocks.remove,
   moveAsync: vi.fn(async ({ from, to }: { from: string; to: string }) => {
     mocks.files.set(to, mocks.files.get(from) ?? 0); mocks.files.delete(from);
+  }),
+  copyAsync: vi.fn(async ({ from, to }: { from: string; to: string }) => {
+    mocks.files.set(to, mocks.files.get(from) ?? 0);
   }),
 }));
 vi.mock('expo-file-system', () => ({
@@ -67,7 +71,7 @@ const target = { installUrl: 'https://updates.example.invalid/app.apk', version:
 const settle = async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); };
 const pending = () => mocks.download.mockImplementation(() => new Promise((resolve, reject) => { mocks.resolveDownload = resolve; mocks.rejectDownload = reject; }));
 beforeEach(() => {
-  vi.useFakeTimers(); vi.clearAllMocks(); mocks.files.clear();
+  vi.useFakeTimers(); vi.clearAllMocks(); mocks.files.clear(); mocks.modified.clear();
   mocks.state.currentState = 'active'; mocks.rejectDownload = undefined; mocks.resolveDownload = undefined;
   mocks.network = { type: 'WIFI', isConnected: true, isInternetReachable: true };
   mocks.networkListener = undefined;
@@ -80,10 +84,23 @@ afterEach(async () => { androidInstaller.close(); await settle(); vi.useRealTime
 // Seed on-disk bytes (including a previous process's file) and observe the resume
 // offset and installation through start/retry, not just storage helper calls.
 describe('Android installer IO', () => {
+  // PR #6977: startActivity resolves before Android opens its URI. A new target
+  // must reclaim the old download cache while preserving that installer's bytes.
+  it('keeps a recent installer handoff readable while reclaiming an obsolete ready package', async () => {
+    androidInstaller.start(target); await settle();
+    const handedOff = mocks.native.install.mock.calls[0][0];
+    const cached = [...mocks.files.keys()].find((file) => file.includes('update-ready-'))!;
+    androidInstaller.start({ ...target, version: '3.0.1' }, { automatic: true }); await settle();
+    expect(mocks.files.has(cached)).toBe(false);
+    expect(mocks.files.has(handedOff)).toBe(true);
+    mocks.modified.set(handedOff, Date.now() / 1000 - 86401);
+    androidInstaller.start({ ...target, version: '3.0.2' }, { automatic: true }); await settle();
+    expect(mocks.files.has(handedOff)).toBe(false);
+  });
   // Unit: automatic start previously prompted before download and retained obsolete
   // APKs for 24h. Seed a fresh old package on cellular and drive real network events.
   it('cleans obsolete packages immediately on cellular, downloads on Wi-Fi, and only then offers installation', async () => {
-    const old = 'file:///cache/cindy-updates/update-123-abc.apk';
+    const old = `file:///cache/cindy-updates/update-ready-${'a'.repeat(64)}.apk`;
     const unrelated = 'file:///cache/cindy-updates/user.apk';
     mocks.files.set(old, 500); mocks.files.set(unrelated, 200);
     mocks.network.type = 'CELLULAR';
@@ -135,13 +152,14 @@ describe('Android installer IO', () => {
     mocks.network.type = 'CELLULAR';
     androidInstaller.start(next); await settle();
     expect(mocks.download).toHaveBeenCalledOnce();
-    expect(mocks.native.install).toHaveBeenCalledWith(cached, next.version);
+    expect(mocks.files.has(cached)).toBe(true);
+    expect(mocks.native.install).toHaveBeenCalledWith(expect.stringMatching(/\/update-[0-9]+-[a-z0-9]+\.apk$/), next.version);
   });
 
   it('retains the downloaded APK for the system installer', async () => {
     androidInstaller.start(target); await settle();
     expect(mocks.file).toMatch(/^file:\/\/\/cache\/cindy-updates\/update-resume-[a-f0-9]{64}\.apk$/);
-    expect(mocks.native.install).toHaveBeenCalledWith(expect.stringMatching(/\/update-ready-[a-f0-9]{64}\.apk$/), target.version);
+    expect(mocks.native.install).toHaveBeenCalledWith(expect.stringMatching(/\/update-[0-9]+-[a-z0-9]+\.apk$/), target.version);
     expect(androidInstaller.getSnapshot().phase).toBe('ready');
     expect(mocks.remove).not.toHaveBeenCalled();
     expect(mocks.release).toHaveBeenCalledOnce();
@@ -158,7 +176,7 @@ describe('Android installer IO', () => {
     androidInstaller.start(target); await settle();
     expect(mocks.resumeData).toBeUndefined();
     expect(mocks.files.has(handedOff)).toBe(true);
-    expect(mocks.native.install.mock.calls[1][0]).toBe(handedOff);
+    expect(mocks.native.install.mock.calls[1][0]).not.toBe(handedOff);
     expect(mocks.download).toHaveBeenCalledOnce();
   });
 
@@ -246,7 +264,8 @@ describe('Android installer IO', () => {
 
   it('waits for rejected APK deletion before a reopened update can reuse the cache', async () => {
     let finishRemoval!: () => void;
-    mocks.remove.mockImplementationOnce(async (file) => {
+    mocks.remove.mockImplementationOnce(async (file) => { mocks.files.delete(file); }); // Rejected handoff.
+    mocks.remove.mockImplementationOnce(async (file) => { // Invalid reusable cache.
       await new Promise<void>((resolve) => { finishRemoval = resolve; });
       mocks.files.delete(file);
     });

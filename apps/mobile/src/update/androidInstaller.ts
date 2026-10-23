@@ -67,6 +67,10 @@ async function runDownload(
     if (cached === file || cached === ready) continue;
     const info = await FileSystem.getInfoAsync(cached);
     if (info.exists && !info.isDirectory) {
+      // Timestamp-named files are immutable system-installer handoffs (including
+      // older clients' handoffs). Retain their existing 24-hour grace period.
+      if (/^update-[0-9]+-[a-z0-9]+\.apk$/.test(name)
+        && Date.now() / 1000 - info.modificationTime <= 86400) continue;
       await FileSystem.deleteAsync(cached, { idempotent: true }).catch(() => undefined);
     }
   }
@@ -193,8 +197,20 @@ export const androidInstaller = new AndroidInstallController({
   waitForForeground,
   install: async (file, version, signal) => {
     await waitForForeground(signal);
-    if (signal.aborted) throw abortError();
-    await native!.install(file, version);
+    await withDownloadCache(async () => {
+      if (signal.aborted) throw abortError();
+      // Android may open the URI after startActivity has returned. Give it a
+      // separate immutable handoff, so new-target cleanup can reclaim the cache.
+      const handoff = file.replace(/[^/]+$/, `update-${Date.now()}-${Math.random().toString(36).slice(2)}.apk`);
+      try {
+        await FileSystem.copyAsync({ from: file, to: handoff });
+        if (signal.aborted) throw abortError();
+        await native!.install(handoff, version);
+      } catch (error) {
+        await FileSystem.deleteAsync(handoff, { idempotent: true }).catch(() => undefined);
+        throw error;
+      }
+    });
   },
   // A rejected cached APK must finish deletion before an immediate retry can reuse it.
   remove: (file) => withDownloadCache(() => FileSystem.deleteAsync(file, { idempotent: true })),

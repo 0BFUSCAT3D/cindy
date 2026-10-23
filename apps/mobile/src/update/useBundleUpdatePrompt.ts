@@ -198,7 +198,14 @@ export function useBundleUpdatePrompt({
   }, [auto, bundleCheckEnabled, channel, notifyWhenUpToDate]);
 
   useEffect(() => {
-    if (auto && bundleCheckEnabled) void checkNow();
+    if (!auto || !bundleCheckEnabled) return;
+    void checkNow();
+    return () => {
+      // The root auto hook owns the shared installer's channel lifetime, including
+      // work started by resume checks. Settings' manual hook never owns cleanup.
+      channelEpochRef.current += 1;
+      androidInstaller.cancel();
+    };
     // auto hook 在登录/切账号导致 channel 变化时再检查一次，避免新的账号
     // 继续沿用旧账号的 release 指针；手动检查入口仍由调用方通过 checkNow 触发。
     // eslint-disable-next-line react-hooks/exhaustive-deps

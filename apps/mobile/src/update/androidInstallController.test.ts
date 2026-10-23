@@ -26,6 +26,20 @@ function setup(overrides: Partial<AndroidInstallIO> = {}) {
 }
 
 describe('Android in-app installation', () => {
+  // PR #6977: permission/denial cards also expose Later. Existing dismissal
+  // coverage only closed ready; the same target must stay suppressed here too.
+  it.each([false, true])('remembers Later from the permission card (denied=%s)', async (denied) => {
+    const { controller } = setup({ requestPermission: vi.fn(async () => false) });
+    controller.start(target, { automatic: true }); await settle();
+    controller.retry(); await settle();
+    if (denied) { controller.retry(); await settle(); }
+    expect(controller.getSnapshot().phase).toBe(denied ? 'permission-denied' : 'permission-required');
+    controller.close();
+    controller.start(target, { automatic: true }); await settle();
+    expect(controller.getSnapshot().phase).toBe('idle');
+    controller.start(target); await settle();
+    expect(controller.getSnapshot().phase).toBe('permission-required');
+  });
   // Unit: automatic discovery must download before prompting, without asking for
   // install permission. Existing manual-entry tests do not exercise this ordering.
   it('offers a completed automatic download only in the foreground, then asks for permission on tap', async () => {

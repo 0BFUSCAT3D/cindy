@@ -145,9 +145,14 @@ export class AndroidInstallController {
   }
 
   close = (): void => {
-    if (this.state.phase === 'ready' && this.state.target) {
+    if (!this.state.silent && this.state.target) {
       this.dismissedAutomaticTarget = JSON.stringify([this.state.target.installUrl, this.state.target.version]);
     }
+    this.cancel();
+  };
+
+  /** Channel-owner cleanup is cancellation, not the user's Later choice. */
+  cancel = (): void => {
     this.operation?.abort();
     this.operation = null;
     this.file = null;
