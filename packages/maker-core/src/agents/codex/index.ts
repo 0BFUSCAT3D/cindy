@@ -15098,6 +15098,8 @@ assertRouteCurrent();
     });
     try {
       const guestCodexHome = opts.hostedGuestHome ? path.join(opts.hostedGuestHome, 'codex') : undefined;
+      // 受邀者的 fork 只能走分享的供应商：没有供应商时不退回成普通 host(那会用上本机用户的登录)。
+      if (guestCodexHome && !opts.providerId) throw new Error('shared-provider Codex fork requires the shared provider');
       const forkStorage = guestCodexHome
         ? { historyHome: guestCodexHome, sqliteHome: guestCodexHome }
         : await this.deps.resolveCodexThreadStorage?.(opts.sourceSdkSessionId);
@@ -15131,7 +15133,14 @@ assertRouteCurrent();
               ...(forkAccountId ? { providerId: forkAccountId } : {}),
               ...(forkSqliteHome ? { sqliteHome: forkSqliteHome } : {}),
               ...(forkStorage ? { historyHome: forkStorage.historyHome } : {}),
-              ...(guestCodexHome && opts.providerId ? { deviceHostedGuestProviderId: opts.providerId } : {}),
+              // 受邀者的 fork 同样要有独占的、按会话收窄的 proxy。fork 只做 thread/fork 与 rollback、
+              // 不跑 turn：会话 id 用这次 fork 独有、不登记的 key，受邀者守门因此拒绝它经分享供应商发出的
+              // 任何请求，不会借到源任务或其他受邀者的授权。
+              ...(guestCodexHome && opts.providerId ? {
+                deviceHostedGuestProviderId: opts.providerId,
+                deviceHostedGuestSessionId: forkBaseHostKey,
+                deviceHostedGuestModelIds: opts.model ? [opts.model] : [],
+              } : {}),
               routeIsCurrent: selection.isCurrent,
               routeSignal: forkRouteSignal,
               ...(selection.policy === 'isolated' ? { localAuthPolicy: selection.policy } : {}),
