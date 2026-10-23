@@ -117,4 +117,6 @@ export interface CompanionHomeChoices {
   reason?: 'HOME_OUTDATED' | 'NOT_ENABLED' | 'NOT_FOUND';
   /** Computers it can move to (never the current home). */
   targets: CompanionTransferTarget[];
+  /** Why this computer is not among the targets of a remote home: it has not allowed same-account control. */
+  thisComputer?: 'REMOTE_CONTROL_OFF';
 }

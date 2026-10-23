@@ -720,7 +720,10 @@ export function startCompanionCloud(input: {
       const targets = await input.host.homeLink!.targets(home);
       return { homeDeviceId: home, homeName, mode: 'remote',
         targets: targets.filter(target => target.deviceId !== home).map(target => target.deviceId === self
-          ? { ...target, name: target.name || here.name, isSelf: true } : { ...target, isSelf: false }) };
+          ? { ...target, name: target.name || here.name, isSelf: true } : { ...target, isSelf: false }),
+        // The home only lists computers that allow its control, so this one is missing for that reason.
+        ...(selfDevice?.remoteControlEnabled === false && !targets.some(target => target.deviceId === self)
+          ? { thisComputer: 'REMOTE_CONTROL_OFF' as const } : {}) };
     },
 
     async switchHome(botId, targetDeviceId, options) {

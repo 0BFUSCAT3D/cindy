@@ -301,6 +301,15 @@ describe('BotHomeComputerSetting', () => {
     expect(await screen.findByText('bots.cloud.noTargets')).toBeTruthy();
   });
 
+  it('explains why this computer is missing from the choices of a remote home', async () => {
+    maker.getCompanionHomeChoices.mockResolvedValue({ homeDeviceId: 'laptop', mode: 'remote', thisComputer: 'REMOTE_CONTROL_OFF',
+      targets: [{ deviceId: 'tablet', name: 'Tablet', online: true, isSelf: false }] });
+    show(snapshot('laptop'));
+    openMenu();
+    expect(await screen.findByText('bots.cloud.hereControlOff')).toBeTruthy();
+    expect(screen.getByText('bots.cloud.switchTo:{"device":"Tablet"}')).toBeTruthy();
+  });
+
   it('counts a companion as arrived only once it is built here and no longer demoted', () => {
     const cloud = snapshot('desk');
     expect(companionArrivedHere(cloud, 'mia', [])).toBe(false);

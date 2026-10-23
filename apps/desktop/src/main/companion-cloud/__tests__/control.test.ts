@@ -332,6 +332,12 @@ describe('switch home from any computer', () => {
     handOver: vi.fn(async (): Promise<{ ok: true } | { ok: false; code: 'BUSY' }> => ({ ok: true })),
   });
 
+  it('says why this computer is not offered when it has not allowed same-account control', async () => {
+    const t = setup({ home: 'laptop', devices: [device('laptop'), device('desk', { isSelf: true, name: 'Desk', remoteControlEnabled: false })], homeLink: link(2, [{ deviceId: 'tablet', name: 'Tablet', online: true }]) });
+    expect(await t.runtime.homeChoices('bot_mia')).toMatchObject({ mode: 'remote', thisComputer: 'REMOTE_CONTROL_OFF',
+      targets: [{ deviceId: 'tablet', name: 'Tablet', online: true, isSelf: false }] });
+  });
+
   it('hands over from here when this computer is the home', async () => {
     const t = setup({ home: 'desk', devices: [device('laptop')] });
     expect(await t.runtime.homeChoices('bot_mia')).toEqual({ homeDeviceId: 'desk', homeName: '', mode: 'local', targets: [{ deviceId: 'laptop', name: 'laptop', online: true }] });

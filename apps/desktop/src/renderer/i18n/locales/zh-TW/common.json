@@ -9953,6 +9953,7 @@
       "loadingDevices": "正在讀取電腦清單…",
       "devicesFailed": "未能讀取電腦清單",
       "noTargets": "沒有可接手的電腦。另一台電腦需要上線、登入同一帳號，並開啟「允許同帳號裝置控制本機」",
+      "hereControlOff": "這台電腦還沒有開啟「允許同帳號裝置控制本機」，所以不能從這裡換過來。到 設定 → 裝置互聯 開啟後再試",
       "resumeToMove": "先恢復 {{name}}，再換到另一台電腦",
       "transferBusy": "{{name}} 還在回覆，等這一輪結束再換電腦",
       "targetUnavailable": "「{{device}}」現在無法使用，它需要上線並開啟遠端控制",
