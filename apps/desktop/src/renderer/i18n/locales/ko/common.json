@@ -1762,6 +1762,16 @@
           "description": "코드 블록, 변경 사항 비교, 편집기의 글자 크기만 조절합니다. 문장 안의 코드, 상태 숫자, 배지, 경로 라벨의 크기는 바뀌지 않습니다.",
           "aria": "코드 글꼴 크기 조정"
         },
+        "terminalFamily": {
+          "label": "터미널 글꼴",
+          "description": "내장 터미널에만 사용됩니다. 고정폭 글꼴을 권장합니다.",
+          "aria": "터미널 글꼴 선택"
+        },
+        "terminalSize": {
+          "label": "터미널 글꼴 크기",
+          "description": "내장 터미널의 글자 크기를 조정합니다.",
+          "aria": "터미널 글꼴 크기 조정"
+        },
         "presetsUi": {
           "default": "Inter(기본값)",
           "codexStyle": "Codex 스타일",
@@ -1771,8 +1781,12 @@
           "default": "Codex 스타일(기본값)",
           "jetbrainsMono": "JetBrains Mono"
         },
+        "presetsTerminal": {
+          "default": "고정폭 글꼴(기본값)"
+        },
         "previewSamples": {
-          "ui": "한글 글꼴은 또렷하고 읽기 쉬워요 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&"
+          "ui": "한글 글꼴은 또렷하고 읽기 쉬워요 ABC xyz · a/b/c/d · a,b · 0123456789 !?@&",
+          "terminal": "$ echo \"터미널 글꼴 미리보기\"\n터미널 글꼴 미리보기\n0123456789 0O 1lI"
         }
       },
       "singleVariant": {
