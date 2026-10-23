@@ -34,9 +34,10 @@ export function contributionOwnerKey(): string {
   if (
     isAppSessionBoundaryPending() ||
     !state.isAuthenticated ||
-    state.user?.membershipKind !== 'personal'
+    !state.user ||
+    (state.user.membershipKind !== 'personal' && state.user.membershipKind !== 'org')
   ) {
-    throwIpcError('PERMISSION_DENIED', 'Personal account required for community contributions');
+    throwIpcError('PERMISSION_DENIED', 'Signed-in account required for community contributions');
   }
   return JSON.stringify([activeOwnerScopeKey(), getActiveAuthRealm(), state.user.id]);
 }

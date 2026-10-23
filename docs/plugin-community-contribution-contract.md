@@ -6,13 +6,14 @@
 ## 1. 身份与包
 
 普通接口前缀 `/api/plugin-contributions`，沿 Host 当前配置的 Plugin Server。
-使用普通 Auth Access Token，经 `requireAuth` 验签，必须 `ctx=personal`。
+使用普通 Auth Access Token，经 `requireAuth` 验签，接受 `ctx=personal|org`。
 主体为可信 issuer authority + membershipId；请求体、包内 author、版本或本地安装均不是授权证据。
-不接受企业 JWT、GitHub OIDC 或 Platform token，不增加 scope，也不回退鉴权。
+公开投稿归当前提交账号本人管理；组织管理员身份不授予其他成员投稿的管理权，不合并个人与组织身份。
+组织内部发布和私域插件继续原流程，不通过此入口转为公开。此入口不接受 GitHub OIDC、Connection 或 Platform token，不增加 scope，也不回退鉴权。
 所有本人响应回显 `subject:{authority,membershipId}`；Host 在返回前核对 owner 和主体。
 AI 不接触 Bearer、PUT URL 或原包路径。
 
-运行批准和安装来源只代表本机使用事实，不证明作者身份，也不授予发布权。Host 核对可信安装来源；普通市场安装不能自动作为本人开发的新插件首发。已有 public 插件始终要求当前个人主体的精确提交授权。新标识受理是等待人工审核的发布申请，首发事务建立的初始提交权和固定作者关系不表示平台已认证代码作者；服务端不接受客户端自报来源或作者字段代替这些校验。
+运行批准和安装来源只代表本机使用事实，不证明作者身份，也不授予发布权。Host 核对可信安装来源；普通市场安装不能自动作为本人开发的新插件首发。已有 public 插件始终要求当前提交主体的精确提交授权。新标识受理是等待人工审核的发布申请，首发事务建立的初始提交权和固定作者关系不表示平台已认证代码作者；服务端不接受客户端自报来源或作者字段代替这些校验。
 
 `ghost.json.releaseNotes` 是可选字符串，缺此字段仍可安装。首次上架不要求更新说明，
 插件用途写在 `description`；从未上架的插件在退回或取消后再提审也不要求更新说明。
@@ -27,7 +28,7 @@ AI 不接触 Bearer、PUT URL 或原包路径。
 
 - 官方来源继续通过 GitHub Actions OIDC、精确官方仓库名与不变 repository_id 校验，固定署名 Cindy，不能通过个人匿名设置隐藏或变更官方身份。
 - 个人首发在同一事务绑定已验证的 authority + membershipId；作者归属不随后续提交授权变更。预检或仅上传不占用归属。
-- 原作者提审时，Plugin 使用该请求的用户 Token 调用原 Auth `GET /api/me`，核对返回的个人 Membership 与提交身份一致，将昵称保存至已有 `PluginRelease.displayAuthor` 和该次回执的 `manifestView.author`。只读本人资料，Token 不持久化，不新增 Auth 作者 API、公开作者映射或机器凭证。
+- 原作者提审时，Plugin 使用该请求的用户 Token 调用原 Auth `GET /api/me`，核对返回的 Membership id 和 kind 与当前提交身份一致，将昵称保存至已有 `PluginRelease.displayAuthor` 和该次回执的 `manifestView.author`。只读本人资料，Token 不持久化，不新增 Auth 作者 API、公开作者映射或机器凭证。
 - 改名不会自动同步旧版本；原作者下次提审保存新的昵称。其他维护者提审沿用已保存的原作者署名，不能改成维护者本人名字。绑定、昵称快照与审计信息继续完整记录。
 - 当前仅在生成响应时短路个人署名：公开列表、搜索、详情、本人管理详情及历史内容的展示署名统一返回 null，展示 manifest 不含作者；不受已保存的 anonymous 偏好影响，也不通过个人昵称搜索命中。读取投影不改写数据库中的作者绑定、版本昵称或回执内容。
 - `PATCH /api/plugin-contributions/plugins/:pluginId/author-settings` 保留原个人鉴权、写限流和固定作者归属校验，只接受 `{anonymous:boolean}`。保存偏好不改变当前个人署名统一隐藏的返回规则，客户端界面不提供开关。提交 ACL 不授予该设置权限，原作者失去提交权也不会因此失去固定归属。可选 `authorSettings:{anonymous,canEdit}|null` 仍表示服务端保存的事实，不接受客户端指定作者、Auth 来源或昵称。
@@ -160,7 +161,7 @@ Web / CLI 沿用原 approve/reject 请求及 `expectedReleaseUpdatedAt` 修订�
 `20261016010000_plugin_review_cancellation` 只扩 review enum cancelled 和审计索引；
 个人三表与旧审计修订触发器仍由前一 migration 提供。
 
-个人投稿接口部署后即可使用，沿普通个人登录及当前插件权限校验，不增加启用开关或开通资格。
+公开投稿接口部署后即可使用，个人或组织成员沿当前登录身份及当前插件权限校验，不增加启用开关或开通资格。
 不清理或迁移旧 GitHub/组织待审队列；旧渠道继续原流程。
 历史 migration 的开关注释已不适用，保留已应用迁移的校验和。
 新增 cancelled 的 reader 兼容须在合并部署前核实，不得让不支持该值的旧 reader 与新写入混跑；写入后回滚须保留兼容 reader。

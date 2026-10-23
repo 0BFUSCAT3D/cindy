@@ -18,7 +18,7 @@ export const usePluginReviewUpdates = () => useContext(PluginReviewUpdatesContex
 export function PluginReviewUpdatesProvider({ children }: { children: ReactNode }) {
   const { dataOwnerId, dataOwnerGeneration, user, mode } = useAuth();
   const owner = JSON.stringify([dataOwnerId, dataOwnerGeneration, user?.id, mode]);
-  const personal = mode === 'cloud' && user?.membershipKind === 'personal';
+  const contributor = mode === 'cloud' && (user?.membershipKind === 'personal' || user?.membershipKind === 'org');
   const current = useRef(owner);
   current.current = owner;
   const [snapshot, setSnapshot] = useState({ owner, updates: empty });
@@ -27,7 +27,7 @@ export function PluginReviewUpdatesProvider({ children }: { children: ReactNode 
   const marking = useRef(new Set<string>());
   const acknowledged = useRef({ owner, keys: new Set<string>() });
   const refresh = useCallback(async () => {
-    if (!personal || document.visibilityState !== 'visible') return;
+    if (!contributor || document.visibilityState !== 'visible') return;
     if (pending.current?.owner === owner) return pending.current.task;
     const generation = lifecycle.current;
     const task = (async () => {
@@ -41,10 +41,10 @@ export function PluginReviewUpdatesProvider({ children }: { children: ReactNode 
     pending.current = { owner, task };
     try { await task; }
     finally { if (pending.current?.task === task) pending.current = null; }
-  }, [owner, personal]);
+  }, [owner, contributor]);
   const markRead = useCallback(async (pluginId: string, key: string) => {
     const request = JSON.stringify([owner, pluginId, key]);
-    if (!personal || marking.current.has(request)) return;
+    if (!contributor || marking.current.has(request)) return;
     marking.current.add(request);
     const generation = lifecycle.current;
     try {
@@ -57,7 +57,7 @@ export function PluginReviewUpdatesProvider({ children }: { children: ReactNode 
       });
     } catch { /* A failed read receipt must leave the dot visible. */ }
     finally { marking.current.delete(request); }
-  }, [owner, personal]);
+  }, [owner, contributor]);
   useEffect(() => {
     lifecycle.current++;
     pending.current = null;
@@ -75,7 +75,7 @@ export function PluginReviewUpdatesProvider({ children }: { children: ReactNode 
       document.removeEventListener('visibilitychange', sync);
     };
   }, [refresh]);
-  return <PluginReviewUpdatesContext.Provider value={{ updates: personal && snapshot.owner === owner ? snapshot.updates : empty, refresh, markRead }}>
+  return <PluginReviewUpdatesContext.Provider value={{ updates: contributor && snapshot.owner === owner ? snapshot.updates : empty, refresh, markRead }}>
     {children}
   </PluginReviewUpdatesContext.Provider>;
 }

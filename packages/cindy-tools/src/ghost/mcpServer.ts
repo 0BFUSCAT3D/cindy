@@ -1536,7 +1536,7 @@ export function createCindyGhostsMcpServer(
     inputSchema: z.object({ plugin_id: contributionId, release_id: contributionId, sha256: z.string().regex(/^[a-f0-9]{64}$/), revision: z.string().datetime() }).strict() },
     async ({ plugin_id, release_id, sha256, revision }) => contribute({ action: 'cancel-review', pluginId: plugin_id, release: { releaseId: release_id, sha256, revision } }));
   server.registerTool('ghost_my_plugins', {
-    description: '读取当前个人账号的我的插件列表或精确详情。搜索/筛选/分页由服务端执行；详情分当前市场、最近提交、已留存内容和独立处理历史，退回原因完整返回。只查询本人，不审核、不代修、不发通知。修改作者源码后重新安装并使用，再从当前实例准备发布更新，不直接修改 Host 管理的安装目录。历史内容和 releaseNotes 取对应版本提审快照。个人投稿的展示署名暂由服务端返回为空，作者绑定和提审昵称仍完整记录。不从 ghost.json.author 或当前账号昵称补齐。客户端界面与本工具不提供匿名设置；官方 Cindy 与组织规则不变。',
+    description: '读取当前登录账号本人向公开市场提交的插件列表或精确详情。个人和组织成员均可使用，组织管理员不因此获得其他成员投稿的管理权。搜索/筛选/分页由服务端执行；详情分当前市场、最近提交、已留存内容和独立处理历史，退回原因完整返回。只查询本人，不审核、不代修、不发通知。修改作者源码后重新安装并使用，再从当前实例准备发布更新，不直接修改 Host 管理的安装目录。历史内容和 releaseNotes 取对应版本提审快照。个人投稿的展示署名暂由服务端返回为空，作者绑定和提审昵称仍完整记录。不从 ghost.json.author 或当前账号昵称补齐。客户端界面与本工具不提供匿名设置；官方 Cindy 与组织规则不变。',
     inputSchema: z.object({ plugin_id: contributionId.optional(), submission_id: contributionId.optional(), query: z.string().max(200).optional(), filter: z.enum(['all', 'pending', 'needs_action', 'published']).optional(), cursor: z.string().max(4096).optional() }).strict() },
     async ({ plugin_id, submission_id, ...input }) => {
       if (submission_id && !plugin_id) return textResult({ ok: false, errorCode: 'INVALID_ARGUMENT' }, true);

@@ -173,8 +173,8 @@ export function MyPluginsPage({
   const pageKey = useRef(JSON.stringify([query, filter]));
   const scrollFrame = useRef<HTMLElement>(null);
   const { scrolled, onScroll } = usePluginDetailScrolled();
-  const personal = mode === 'cloud' && user?.membershipKind === 'personal';
-  const pickerOpen = personal && ownerMatches && pickerOwner === ownerKey && !selectedId;
+  const contributor = mode === 'cloud' && (user?.membershipKind === 'personal' || user?.membershipKind === 'org');
+  const pickerOpen = contributor && ownerMatches && pickerOwner === ownerKey && !selectedId;
   const pickerReadKey = JSON.stringify([ownerKey, installedRevision, submissionRevision]);
   const pickerRead = pickerPlugins?.key === pickerReadKey ? pickerPlugins : null;
   const pickerReady = Boolean(pickerRead && !pickerRead.failure);
@@ -292,7 +292,7 @@ export function MyPluginsPage({
 
   const refresh = useCallback(
     async (cursor?: string) => {
-      if (!personal || !ownerMatches) return;
+      if (!contributor || !ownerMatches) return;
       const id = ++request.current;
       const owner = ownerKey;
       setLoading(true);
@@ -345,7 +345,7 @@ export function MyPluginsPage({
           setLoading(false);
       }
     },
-    [reader, selectedId, query, filter, ownerKey, personal, ownerMatches, reviewUpdates.refresh, installedRevision],
+    [reader, selectedId, query, filter, ownerKey, contributor, ownerMatches, reviewUpdates.refresh, installedRevision],
   );
 
   useEffect(() => {
@@ -369,7 +369,7 @@ export function MyPluginsPage({
   }, [refresh, selectedId, query, filter, submissionRevision]);
   const loadVersions = useCallback(
     async (cursor?: string) => {
-      if (!selectedId || !personal || !ownerMatches) return;
+      if (!selectedId || !contributor || !ownerMatches) return;
       const sequence = ++versionRequest.current,
         owner = ownerKey,
         pluginId = selectedId;
@@ -412,7 +412,7 @@ export function MyPluginsPage({
           setVersionsLoading(false);
       }
     },
-    [selectedId, personal, ownerMatches, ownerKey, reader],
+    [selectedId, contributor, ownerMatches, ownerKey, reader],
   );
   useEffect(() => {
     setVersionFailure(null);
@@ -809,7 +809,7 @@ export function MyPluginsPage({
         className="size-7 p-0"
         aria-label={t(`${copy}.${isDetail ? 'refreshDetail' : 'refreshList'}`)}
         loading={loading || versionsLoading}
-        disabled={!personal}
+        disabled={!contributor}
         onClick={() => void refreshAll()}
       >
         <RotateCw size={16} />
@@ -1175,7 +1175,7 @@ export function MyPluginsPage({
             {!isDetail ? (
               <Button
                 variant="cta"
-                disabled={!personal || !ownerMatches}
+                disabled={!contributor || !ownerMatches}
                 onClick={() => { setPickerPlugins(null); setPickerSelection(null); setPickerOwner(ownerKey); }}
               >
                 <Plus size={16} />
@@ -1185,10 +1185,10 @@ export function MyPluginsPage({
               refreshButton
             )}
           </header>
-          {!personal ? (
+          {!contributor ? (
             <div className="space-y-4">
               <p role="status" className="text-14 leading-6 text-[var(--text-secondary)]">
-                {t(`${copy}.personalRequired`)}
+                {t(`${copy}.signInRequired`)}
               </p>
               <Button
                 ref={accountTrigger}

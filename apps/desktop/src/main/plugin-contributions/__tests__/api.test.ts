@@ -4,6 +4,7 @@ import { ServerApiError } from '../../serverApiClient';
 const harness = vi.hoisted(() => ({
   owner: 'A:1',
   token: '',
+  membershipKind: 'personal' as 'personal' | 'org',
   fetch: vi.fn(),
   discover: vi.fn(),
   refresh: vi.fn(),
@@ -15,7 +16,7 @@ vi.mock('electron', () => ({
 vi.mock('../../authManager', () => ({
   getAccessToken: () => harness.token,
   getActiveAuthRealm: () => 'cn',
-  getAuthState: () => ({ user: { id: 'member-A' } }),
+  getAuthState: () => ({ user: { id: 'member-A', membershipKind: harness.membershipKind } }),
   refresh: harness.refresh,
 }));
 vi.mock('../../clientEndpointsService', () => ({
@@ -57,6 +58,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 21) + ++testClock * 360_000);
   harness.owner = 'A:1';
+  harness.membershipKind = 'personal';
   harness.token = `unused.${Buffer.from(JSON.stringify({ iss: issuer, sub: 'member-A', ctx: 'personal' })).toString('base64url')}.unused`;
   harness.discover.mockResolvedValue({ ok: true, json: async () => ({ issuer }) });
   harness.fetch.mockResolvedValue(page());
@@ -64,6 +66,17 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('personal contribution authority', () => {
+  it('uses the organization member’s current token for their own public contributions', async () => {
+    harness.membershipKind = 'org';
+    harness.token = `unused.${Buffer.from(JSON.stringify({ iss: issuer, sub: 'member-A', ctx: 'org' })).toString('base64url')}.unused`;
+    await expect(new Api().list(listInput)).resolves.toEqual(page());
+    expect(harness.fetch.mock.calls[0][1].token).toBe(harness.token);
+  });
+  it('rejects a token for another membership kind before HTTP dispatch', async () => {
+    harness.membershipKind = 'org';
+    await expect(new Api().list(listInput)).rejects.toThrow('ACCOUNT_REAUTH_REQUIRED');
+    expect(harness.fetch).not.toHaveBeenCalled();
+  });
   it('rechecks a write guard after awaited discovery, before dispatching the original commit', async () => {
     let allowed = true;
     harness.discover.mockImplementationOnce(async () => {

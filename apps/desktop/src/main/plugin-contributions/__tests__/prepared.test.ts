@@ -9,6 +9,7 @@ import { ghostInstallApprovalToken } from '../../../shared/ghost';
 const harness = vi.hoisted(() => ({
   root: '',
   generation: 1,
+  membershipKind: 'personal' as 'personal' | 'org',
   ghosts: [] as InstalledGhost[],
   ledger: null as { scope: string; organizationId: string | null; source?: string; installed?: boolean } | null,
   quit: null as (() => void | Promise<void>) | null,
@@ -28,7 +29,7 @@ vi.mock('../../appSessionState', () => ({
 vi.mock('../../authManager', () => ({
   getAuthState: () => ({
     isAuthenticated: true,
-    user: { id: 'member', membershipKind: 'personal' },
+    user: { id: 'member', membershipKind: harness.membershipKind },
   }),
   getActiveAuthRealm: () => 'global',
 }));
@@ -51,6 +52,7 @@ let testGeneration = 0;
 beforeEach(async () => {
   vi.resetAllMocks();
   harness.generation = ++testGeneration * 1000;
+  harness.membershipKind = 'personal';
   harness.ledger = null;
   harness.root = await fsp.mkdtemp(path.join(os.tmpdir(), 'cindy-contribution-prepare-test-'));
   harness.ghosts = [
@@ -89,7 +91,8 @@ describe('current installation contribution preparation', () => {
     expect(harness.snapshot).not.toHaveBeenCalled();
     expect(harness.inspect).not.toHaveBeenCalled();
   });
-  it('does not infer official identity from a package author or display name', async () => {
+  it.each(['personal', 'org'] as const)('prepares a local plugin for the %s member without inferring official identity from package text', async membershipKind => {
+    harness.membershipKind = membershipKind;
     harness.ghosts[0].manifest.name = 'Cindy community tool';
     harness.ghosts[0].manifest.author = 'Cindy';
     expect(await prepared.prepareInstalledContribution('hello')).toMatchObject({ ghostId: 'hello' });
@@ -115,8 +118,9 @@ describe('current installation contribution preparation', () => {
     expect(harness.snapshot).not.toHaveBeenCalled();
     expect(harness.inspect).not.toHaveBeenCalled();
   });
-  it('refuses private ledger resources before creating a public snapshot', async () => {
-    harness.ledger = { scope: 'personal', organizationId: null };
+  it.each(['personal', 'organization'])('refuses %s ledger resources even for an organization member before creating a public snapshot', async scope => {
+    harness.membershipKind = 'org';
+    harness.ledger = { scope, organizationId: scope === 'organization' ? 'org' : null };
     await expect(prepared.prepareInstalledContribution('hello')).rejects.toThrow(
       'Private plugin resources',
     );

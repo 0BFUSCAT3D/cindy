@@ -4,10 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PluginReviewUpdate } from '../../../shared/pluginContributions';
 import { PluginReviewUpdatesProvider, usePluginReviewUpdates } from '../PluginReviewUpdatesContext';
 
-const harness = vi.hoisted(() => ({ owner: 'A', generation: 1, read: vi.fn(), mark: vi.fn() }));
+const harness = vi.hoisted(() => ({ owner: 'A', generation: 1, membershipKind: 'personal', read: vi.fn(), mark: vi.fn() }));
 vi.mock('../AuthContext', () => ({ useAuth: () => ({
   dataOwnerId: harness.owner, dataOwnerGeneration: harness.generation,
-  user: { id: harness.owner, membershipKind: 'personal' }, mode: 'cloud',
+  user: { id: harness.owner, membershipKind: harness.membershipKind }, mode: 'cloud',
 }) }));
 const update: PluginReviewUpdate = { pluginId: 'plugin', key: 'approval', releaseId: 'release',
   version: '1.0.0', sha256: 'a'.repeat(64), revision: 'revision', status: 'approved', decidedAt: 'time', unread: true };
@@ -19,14 +19,15 @@ function Probe() {
 }
 const app = () => <PluginReviewUpdatesProvider><Probe /></PluginReviewUpdatesProvider>;
 beforeEach(() => {
-  harness.owner = 'A'; harness.generation = 1;
+  harness.owner = 'A'; harness.generation = 1; harness.membershipKind = 'personal';
   harness.read.mockReset().mockResolvedValue([update]); harness.mark.mockReset().mockResolvedValue(undefined);
   Object.defineProperty(window, 'electronAPI', { configurable: true, value: { pluginContributions: { reviewUpdates: harness.read, markReviewRead: harness.mark } } });
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 describe('in-app review result indicators', () => {
-  it('preserves unread results offline and after failed acknowledgement, then only clears the exact result', async () => {
+  it.each(['personal', 'org'])('preserves unread %s results offline and after failed acknowledgement, then only clears the exact result', async membershipKind => {
+    harness.membershipKind = membershipKind;
     render(app());
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('approval'));
     expect(harness.mark).not.toHaveBeenCalled();

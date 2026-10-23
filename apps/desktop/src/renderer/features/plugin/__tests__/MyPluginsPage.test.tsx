@@ -23,12 +23,12 @@ vi.mock('react-i18next', () => ({
 }));
 const confirmation = vi.hoisted(() => ({ confirm: vi.fn(async () => true) }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({ useConfirmDialog: () => confirmation }));
-const auth = vi.hoisted(() => ({ owner: 'A', generation: 1 }));
+const auth = vi.hoisted(() => ({ owner: 'A', generation: 1, membershipKind: 'personal' }));
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({
     dataOwnerId: `owner-${auth.owner}`,
     dataOwnerGeneration: auth.generation,
-    user: { id: `member-${auth.owner}`, membershipKind: 'personal' },
+    user: { id: `member-${auth.owner}`, membershipKind: auth.membershipKind },
     mode: 'cloud',
   }),
 }));
@@ -156,11 +156,13 @@ beforeEach(() => {
   reviews.updates = []; reviews.refresh.mockReset(); reviews.markRead.mockReset();
   auth.owner = 'A';
   auth.generation = 1;
+  auth.membershipKind = 'personal';
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('My Plugins facts', () => {
-  it('shows the actual new package notes before submitting the same prepared package', async () => {
+  it.each(['personal', 'org'])('shows the actual new package notes to a %s member before submitting the same prepared package', async membershipKind => {
+    auth.membershipKind = membershipKind;
     const api = reader();
     const preview = { ...packagePreview('exact-instance', '1.2.0'), releaseNotes: 'Not yet submitted: new package changes' };
     vi.mocked(api.prepare).mockResolvedValue(preview);

@@ -538,7 +538,7 @@ function LocalGhostPluginPage({
     </div>
   ) : null;
   const showEnterprise = user?.membershipKind === 'org';
-  const personalContributor = mode === 'cloud' && user?.membershipKind === 'personal';
+  const contributor = mode === 'cloud' && (user?.membershipKind === 'personal' || user?.membershipKind === 'org');
   const ghosts = useInstalledGhosts();
   useMainViewVisibilityRevision();
   const installedGhostMarketKey = useMemo(
@@ -1703,7 +1703,7 @@ function LocalGhostPluginPage({
   useEffect(() => {
     let disposed = false;
     setLocalContribution(null);
-    if (!personalContributor || !selectedGhost || !selectedGhost.publishingSource || selectedGhost.publishingSource.kind !== 'local' || selectedGhost.namespace !== null || selectedGhost.namespaceState !== 'confirmed' || selectedGhost.approval.state !== 'approved' || showMyPlugins) return;
+    if (!contributor || !selectedGhost || !selectedGhost.publishingSource || selectedGhost.publishingSource.kind !== 'local' || selectedGhost.namespace !== null || selectedGhost.namespaceState !== 'confirmed' || selectedGhost.approval.state !== 'approved' || showMyPlugins) return;
     const owner = contributionOwner;
     const instanceId = installedGhostStoragePart(selectedGhost);
     const read = async () => {
@@ -1745,8 +1745,8 @@ function LocalGhostPluginPage({
       if (!disposed && contributionOwnerRef.current === owner) setLocalContribution({ key: localContributionKey, plugin: null, versionUsed: false, error: contributionErrorKey(error) });
     });
     return () => { disposed = true; };
-  }, [personalContributor, localContributionKey, showMyPlugins]);
-  const canPreparePublication = personalContributor && selectedGhost?.publishingSource?.kind === 'local' &&
+  }, [contributor, localContributionKey, showMyPlugins]);
+  const canPreparePublication = contributor && selectedGhost?.publishingSource?.kind === 'local' &&
     !contributionUnavailableKey && !showMyPlugins && localContributionResult &&
     !localContributionResult.error && !localPublishBlocker;
   const currentPublicationDraft = useContributionPreview(localContributionKey,
@@ -1780,7 +1780,7 @@ function LocalGhostPluginPage({
   };
   const contribute = async (instanceId: string, options?: PluginSubmitOptions): Promise<boolean> => {
     if (contributing.current) return false;
-    if (!personalContributor) {
+    if (!contributor) {
       const ghost = findInstalledGhostByInstanceId(ghosts, instanceId);
       if (!ghost || localPublishingUnavailableKey(ghost) || ghost.publishingSource?.kind !== 'local') return false;
       const nonce = rememberContributionIntent(ghost);
@@ -1846,7 +1846,7 @@ function LocalGhostPluginPage({
 
   useEffect(() => {
     const nonce = searchParams.get('contributionIntent');
-    if (!nonce || !personalContributor) return;
+    if (!nonce || !contributor) return;
     const target = consumeContributionIntent(nonce);
     const next = new URLSearchParams(searchParams); next.delete('contributionIntent');
     setSearchParams(next, { replace: true });
@@ -1860,7 +1860,7 @@ function LocalGhostPluginPage({
       setSearchParams(next, { replace: true });
     }
     else toast.error(t('settings.ghosts.contribution.installForAccount'));
-  }, [searchParams, personalContributor, contributionOwner, ghosts]);
+  }, [searchParams, contributor, contributionOwner, ghosts]);
 
   // 面板收束:aside 只挂在插件页语境里(列表/详情/市场详情共用),
   // 路由离开本页组件整体卸载 → webview 一并回收,绝不残留到别的界面。
@@ -1914,7 +1914,7 @@ function LocalGhostPluginPage({
                   : undefined
               }
               onContribute={!showLocalPublishing || contributionUnavailableKey || localPublishBlocker ? undefined : () => void contribute(selectedDetail.id)}
-              contributionUnavailableReason={contributionUnavailableKey === 'officialGithubRequired' || (contributionUnavailableKey === 'reservedId' && selectedGhost?.publishingSource?.kind === 'public-market') ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : !showLocalPublishing ? undefined : contributionUnavailableKey ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : localContributionResult?.error ? t(localContributionResult.error) : localPublishBlocker ? t(`settings.ghosts.contribution.errors.${localPublishBlocker}`) : currentPublicationDraft?.error ? t(currentPublicationDraft.error, { defaultValue: t('settings.ghosts.contribution.loadFailed') }) : currentPublicationDraft?.prepared?.preflight?.blockers[0] ? currentPublicationDraft.prepared.preflight.blockers[0].message : personalContributor && !currentPublicationDraft?.prepared ? t('settings.ghosts.contribution.preparing') : undefined}
+              contributionUnavailableReason={contributionUnavailableKey === 'officialGithubRequired' || (contributionUnavailableKey === 'reservedId' && selectedGhost?.publishingSource?.kind === 'public-market') ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : !showLocalPublishing ? undefined : contributionUnavailableKey ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : localContributionResult?.error ? t(localContributionResult.error) : localPublishBlocker ? t(`settings.ghosts.contribution.errors.${localPublishBlocker}`) : currentPublicationDraft?.error ? t(currentPublicationDraft.error, { defaultValue: t('settings.ghosts.contribution.loadFailed') }) : currentPublicationDraft?.prepared?.preflight?.blockers[0] ? currentPublicationDraft.prepared.preflight.blockers[0].message : contributor && !currentPublicationDraft?.prepared ? t('settings.ghosts.contribution.preparing') : undefined}
               publishingPreview={currentPublicationDraft?.prepared}
               onRefreshPublishing={() => setPublicationRefresh(value => value + 1)}
               contributionUpdate={Boolean(localContributionResult?.plugin || (selectedGhost?.manifest.id && marketItems.some((item) => marketItemMatchesInstalledGhost(item, selectedGhost))))}

@@ -40,7 +40,7 @@ export class ContributionApi {
   private async token(): Promise<string> {
     assertContributionOwner(this.owner);
     const token = getAccessToken();
-    if (!token) throwIpcError('ACCOUNT_REAUTH_REQUIRED', 'Personal login required');
+    if (!token) throwIpcError('ACCOUNT_REAUTH_REQUIRED', 'Login required');
     const issuer = await trustedIssuer(this.authEndpoint);
     assertContributionOwner(this.owner);
     // Claims here only bind the response to the Host session. Plugin Server
@@ -49,15 +49,15 @@ export class ContributionApi {
     try {
       claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
     } catch {
-      throwIpcError('ACCOUNT_REAUTH_REQUIRED', 'Invalid personal session');
+      throwIpcError('ACCOUNT_REAUTH_REQUIRED', 'Invalid account session');
     }
     if (
       claims.iss !== issuer ||
       typeof claims.sub !== 'string' ||
       claims.sub !== getAuthState().user?.id ||
-      claims.ctx !== 'personal'
+      claims.ctx !== getAuthState().user?.membershipKind
     ) {
-      throwIpcError('ACCOUNT_REAUTH_REQUIRED', 'Personal session issuer mismatch');
+      throwIpcError('ACCOUNT_REAUTH_REQUIRED', 'Account session issuer or identity mismatch');
     }
     this.subject = { authority: issuer, membershipId: claims.sub };
     return token;

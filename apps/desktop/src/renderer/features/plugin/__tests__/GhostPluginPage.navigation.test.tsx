@@ -967,8 +967,9 @@ describe('plugin use details and independent author management', () => {
 
   // An unused version can still fail preflight (for example, missing update notes).
   // Exercise the installed-detail action: it must use the same preview as first publication.
-  it.each([true, false])('preflights an unused installed update before submission (allowed=%s)', async allowed => {
+  it.each([{ allowed: true, membershipKind: 'personal' }, { allowed: false, membershipKind: 'personal' }, { allowed: true, membershipKind: 'org' }])('preflights an unused installed update for $membershipKind before submission (allowed=$allowed)', async ({ allowed, membershipKind }) => {
     auth.mode = 'cloud';
+    auth.user.membershipKind = membershipKind;
     const installed = localAuthorInstallation('2.0.0');
     window.electronAPI.ghosts.listSync = () => ({ ghosts: [installed] });
     const api = authorApi();
