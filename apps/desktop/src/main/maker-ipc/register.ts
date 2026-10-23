@@ -48,6 +48,7 @@ import { configureBotAutonomyHost, getBotAutonomyGlance, noteBotAutonomyInputPro
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
+import { cancelPendingRemoteStart } from '../remote-agent/controller/startRemote.js';
 import { forgetCredentialGrants } from '../remote-agent/executor/credentialGrants.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
 import {
@@ -6471,6 +6472,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     });
   });
   setSessionRuntimeCleanup((sessionId) => {
+    // 任务在另一台电脑上还没启动完：让那台停下，不再迟到地启动、跑完这一轮。
+    cancelPendingRemoteStart(sessionId);
     workingDirectoryRecovery.discard(sessionId);
     clearSessionRuntimeControlState(sessionId);
     clearSessionProvider(sessionId);
@@ -10938,6 +10941,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     isBusy: () => isSessionInTurn(sessionId) || !!maker.getSession(sessionId)?.isTurnRunning(),
     resolveSelection: async (route) => {
+      // Agent 在另一台电脑运行的任务:自动化的选择按那台的已授权目录解析,本机停用轴不适用。
+      const row = await agentSwitchDeps.getSessionRow(sessionId);
+      if (row?.agentDeviceId && !row.remoteHostId) {
+        return resolveScheduledModelSelectionLive(route, { agentDeviceId: row.agentDeviceId });
+      }
       const reroute = await assertModelRouteUsable(route.agentKind, route.model, route.providerId);
       return resolveScheduledModelSelectionLive({ ...route,
         providerId: reroute && shouldApplyExclusiveProviderRerouteLive(route.providerId)
