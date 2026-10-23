@@ -8821,6 +8821,23 @@
       "preparingAria": "新しいバージョンを準備中、お待ちください",
       "confirmTitle": "実行中のタスクがあります",
       "confirmBusyHint": "再起動すると中断されます",
+      "confirmBusyActivities": "再起動すると、{{activities}}が中断されます。",
+      "activityJoiner": "、",
+      "activityJoinerPair": "、",
+      "activityJoinerLast": "、",
+      "activityNameJoiner": "、",
+      "activityNameJoinerPair": "と",
+      "activityNameJoinerLast": "、",
+      "activity": {
+        "companion": "仲間の返信",
+        "companionOne": "仲間 {{names}}の返信",
+        "companionOther": "仲間 {{names}}の返信",
+        "conversation": "進行中のチャット",
+        "backgroundCommand": "バックグラウンドコマンド",
+        "scheduledTask": "スケジュールタスク",
+        "generation": "生成タスク",
+        "subtask": "サブタスク"
+      },
       "confirmButton": "それでもアプリを再起動",
       "cancel": "キャンセル",
       "confirmTooltip": "実行中のタスクがあります — 再起動すると中断されます",
@@ -10243,7 +10260,6 @@
       "openSettings": "音声設定",
       "startConversation": "音声会話を開始",
       "settingsHint": "このパートナーの読み上げモデルと声を選択し、入力欄から音声会話を開始できます。",
-      "incompleteSettings": "音声 API と声を選択すると自動で保存されます。",
       "previewNeedsChat": "パートナーとの会話を開始すると試聴できます。",
       "voiceId": "音声 ID",
       "manualVoice": "音声 ID を手動入力",
@@ -11692,6 +11708,7 @@
       "imageCopied": "画像をコピーしました",
       "copyFailed": "コピーに失敗しました",
       "openFolderFailed": "フォルダを開けませんでした",
+      "longImagePreview": "縦長画像 · クリックで全体を表示",
       "copyImage": "画像をコピー",
       "revealImage": "画像のフォルダを開く",
       "revealImageSidebar": "ファイルブラウザで表示",
@@ -17076,5 +17093,12 @@
     "taskSource": "[タスクの出典] このタスクはパートナーが開始しました。",
     "taskId": "タスク ID：",
     "contextReferences": "参考資料："
+  },
+  "subscriptionFastPolicy": {
+    "label": "Fast を許可",
+    "providerHint": "オフにすると、このサブスクリプションの自分用・共有タスクは通常速度になります。Ultrafast も対象です。",
+    "groupHint": "オフにすると、このグループ経由のすべてのタスクは通常速度になります。Ultrafast も対象です。",
+    "pending": "一部のコンピューターが設定を確認していません。接続を維持し、この設定に対応していないグループ内のコンピューターを更新してください。",
+    "saveFailed": "設定は保存された可能性がありますが、一部の実行中タスクが通常速度への切り替えを確認していません。接続を確認して再試行してください。"
   }
 }

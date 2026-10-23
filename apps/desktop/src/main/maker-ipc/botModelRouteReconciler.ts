@@ -28,6 +28,9 @@ function configuredRoute(
 ): RuntimeRoute | null {
   const key = JSON.stringify(chain);
   const isDraftChange = key !== JSON.stringify(state.chain);
+  // An automation owns its temporary route until ordinary input restores it.
+  // This also applies to companions following Cindy defaults and after restart.
+  if (!isDraftChange && parseScheduledModelBaseline(state.scheduledModelBaseline) && (previous === undefined || previous === key)) return null;
   if (!state.followsCindyDefault && !isDraftChange && state.hasRuntimeOverride && (previous === undefined || previous === key)) return null;
   const primary = chain[0];
   if (!primary) return null;
@@ -38,6 +41,15 @@ function configuredRoute(
     providerId: primary.providerId,
     effort: primary.effort || null,
     fastMode: primary.fastMode,
+  };
+}
+
+function savedRuntimeRoute(state: BotRouteState): RuntimeRoute | null {
+  const baseline = parseScheduledModelBaseline(state.scheduledModelBaseline);
+  if (!baseline || baseline.pendingBotProfileVersion) return null;
+  const { agentKind, model, providerId, effort, fastMode } = baseline;
+  return { agentKind, model, providerId, effort, fastMode,
+    ...(state.current.agentDeviceId ? { agentDeviceId: state.current.agentDeviceId } : {}),
   };
 }
 
@@ -135,13 +147,17 @@ export function createBotModelRouteReconciler(deps: {
       if (inFlight.get(sessionId) === operation) inFlight.delete(sessionId);
     }
   };
+  const invalidate = (sessionId: string): void => {
+    syncOwner();
+    revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
+    configured.set(sessionId, '');
+  };
   return Object.assign(reconcile, {
+    invalidate,
     /** Explicit saves invalidate fallback even before the first send. A newer
      * save during an in-flight switch is reread before this promise settles. */
     profileChanged(sessionId: string): Promise<void> {
-      syncOwner();
-      revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
-      configured.set(sessionId, '');
+      invalidate(sessionId);
       return reconcile(sessionId);
     },
     /** Read-only preview: sharing the send decision must not consume a profile change. */
@@ -159,6 +175,7 @@ export function createBotModelRouteReconciler(deps: {
           draftChain ? normalizeBotModelChain(draftChain) : undefined,
         ) ??
         state.next ??
+        savedRuntimeRoute(state) ??
         state.current
       );
     },
