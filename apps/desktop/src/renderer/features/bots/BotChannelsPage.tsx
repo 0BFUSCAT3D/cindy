@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import { ChromeIconButton } from '@/components/title-bar/ChromeIconButton';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
 import { Button } from '@/components/ui/button';
+import { Collapse } from '@/components/ui/collapse';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { FormField } from '@/components/ui/form-field';
 import { Input } from '@/components/ui/input';
@@ -365,7 +366,7 @@ function ConnectionLanes({ connectionId, botId, botName, platform }: { connectio
   const { t } = useBotTranslation();
   const navigate = useNavigate();
   const { confirm } = useConfirmDialog();
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const contentId = useId();
   const [lanes, setLanes] = useState<BotImConnectionLane[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -456,7 +457,7 @@ function ConnectionLanes({ connectionId, botId, botName, platform }: { connectio
           {expanded ? <ChevronUp size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
         </ChromeIconButton>
       </div>
-      <div id={contentId} hidden={!expanded} className={expanded ? 'flex flex-col gap-2' : 'hidden'}>
+      <Collapse open={expanded} id={contentId} inert={!expanded} innerClassName="flex flex-col gap-2">
       <p className="text-11 leading-[1.5] text-[var(--text-tertiary)]">
         {t('bots.channels.lanes.hint', { name: botName })}
       </p>
@@ -554,7 +555,7 @@ function ConnectionLanes({ connectionId, botId, botName, platform }: { connectio
           {notice.text}
         </p>
       ) : null}
-      </div>
+      </Collapse>
     </div>
   );
 }

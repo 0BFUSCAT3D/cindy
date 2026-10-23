@@ -99,10 +99,14 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+async function expandTaskList() {
+  fireEvent.click(await screen.findByRole('button', { name: /^bots\.channels\.lanes\.expand:/ }));
+}
+
 describe('BotChannelsPage', () => {
   // 用户确认的飞书任务折叠合同；既有测试只覆盖打开与重启。
   // 最小输入：一条连接和一条专线。unit：真实组件点击后列表隐藏，展开保留原记录，无业务写入。
-  it('collapses only this connection task list and restores it without changing sessions', async () => {
+  it('starts collapsed, expands and restores only this connection task list without changing sessions', async () => {
     lanesApi = {
       listLanes: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes: [
         { sessionId: 'lane', kind: 'topic', chatId: 'group', threadId: 'topic', name: 'Release room', state: 'idle', lastActivityAt: null, contextMessageCount: 0 },
@@ -113,12 +117,14 @@ describe('BotChannelsPage', () => {
     render(<BotChannelsPage bot={mia} />);
     const label = { platform: 'bots.channels.platform.feishu' };
     expect(await screen.findByText(`bots.channels.lanes.title:${JSON.stringify(label)}`)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Release room/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull();
+    await expandTaskList();
+    expect(await screen.findByRole('button', { name: /^Release room/ })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: `bots.channels.lanes.collapse:${JSON.stringify(label)}` }));
     expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull();
     expect(screen.getByText('bots.channels.platform.feishu')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: `bots.channels.lanes.expand:${JSON.stringify(label)}` }));
-    expect(screen.getByRole('button', { name: /^Release room/ })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^Release room/ })).toBeTruthy();
     expect(lanesApi.resetLane).not.toHaveBeenCalled();
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
@@ -136,6 +142,7 @@ describe('BotChannelsPage', () => {
     };
     installApi({ connections: [connection({ channel: 'feishu', botId: 'bot/1' })] });
     render(<BotChannelsPage bot={{ ...mia, id: 'bot/1' }} />);
+    await expandTaskList();
     for (const lane of lanes) {
       const name = lane.kind === 'owner-dm' ? 'bots.channels.lanes.ownerName' : lane.name;
       const open = await screen.findByRole('button', { name: new RegExp(`^${name}`) });
@@ -194,17 +201,18 @@ describe('BotChannelsPage', () => {
     };
     installApi({ connections: [connection({ channel: 'feishu' })] });
     render(<BotChannelsPage bot={mia} />);
+    await expandTaskList();
     fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.lanes.archiveAria:{"lane":"Release room"}' }));
     if (outcome === 'cancel') {
       await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
       expect(lanesApi.archiveLane).not.toHaveBeenCalled();
-      expect(screen.getByRole('button', { name: /^Release room/ })).toBeTruthy();
+      expect(await screen.findByRole('button', { name: /^Release room/ })).toBeTruthy();
     } else {
       await waitFor(() => expect(lanesApi.archiveLane).toHaveBeenCalledWith({ id: 'a1b2c3d4e5f6', sessionId: 's-topic' }));
       if (outcome === 'done') await waitFor(() => expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull());
       else {
         expect(await screen.findByText('bots.channels.lanes.archiveFailed')).toBeTruthy();
-        expect(screen.getByRole('button', { name: /^Release room/ })).toBeTruthy();
+        expect(await screen.findByRole('button', { name: /^Release room/ })).toBeTruthy();
       }
     }
     expect(lanesApi.resetLane).not.toHaveBeenCalled();
@@ -226,6 +234,8 @@ describe('BotChannelsPage', () => {
     vi.useFakeTimers();
     try {
       await act(async () => { render(<BotChannelsPage bot={mia} />); });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^bots\.channels\.lanes\.expand:/ })); });
+      await act(async () => { vi.advanceTimersByTime(16); });
       const archive = screen.getByRole('button', { name: 'bots.channels.lanes.archiveAria:{"lane":"Release room"}' });
       await act(async () => { vi.advanceTimersByTime(20_000); });
       await act(async () => { fireEvent.click(archive); });
@@ -249,6 +259,7 @@ describe('BotChannelsPage', () => {
     };
     installApi({ connections: [connection()] });
     render(<BotChannelsPage bot={mia} />);
+    await expandTaskList();
 
     fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.lanes.resetAria:{"lane":"Hulu Report"}' }));
     await waitFor(() =>
@@ -273,6 +284,7 @@ describe('BotChannelsPage', () => {
     };
     installApi({ connections: [connection()] });
     render(<BotChannelsPage bot={mia} />);
+    await expandTaskList();
 
     fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.lanes.resetAria:{"lane":"bots.channels.lanes.ownerName"}' }));
     await waitFor(() =>

@@ -653,7 +653,9 @@ action remains the registered compact secondary Button and is outside this exemp
 This records the accepted quiet list, not a general exemption for settings actions.
 
 The section title uses the connection platform (for example, “飞书任务”). A 28px
-shared quiet icon action at the right toggles only the hint and task list; its 14px
+shared quiet icon action at the right toggles only the hint and task list, which
+start collapsed whenever the panel mounts. Reuse the shared `Collapse` container
+for the existing expansion motion and unmounting; its 14px
 chevron and localized Tip name the next action. Each listed conversation, including the owner DM, adds a 28px
 quiet archive action immediately before the unchanged restart Button, with a 4px
 action gap. Reuse the sidebar task archive glyph (`Archive`, 14px, stroke width 2).
