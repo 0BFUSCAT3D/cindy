@@ -1,24 +1,16 @@
 import { mailTextParagraphs, safeMailDocument, type MailInlineImage } from '@cindy/maker-shared/mail-text-edit';
+import { restoreMailPreviewPaint } from './mailPreviewAppearance';
 
-/** Capture authored paint before the preview theme changes it. Only sanitized
+/** Restore authored paint on a clone before saving. Only sanitized
  * markup is saved; local image URLs and editor attributes never leave the UI. */
 export function mailBodySerializer(doc: Document, source: string, images: () => readonly MailInlineImage[] = () => []) {
-  const styles = new WeakMap<Element, string | null>();
-  for (const el of [doc.body, ...doc.body.querySelectorAll('*')]) {
-    styles.set(el, el.getAttribute('style'));
-  }
   const head = safeMailDocument(source).match(/<head>([\s\S]*?)<\/head>/)?.[1] ?? '';
   return () => {
     const inert = doc.createElement('template').content.ownerDocument;
     const body = inert.importNode(doc.body, true) as HTMLElement;
-    const live = [doc.body, ...doc.body.querySelectorAll('*')];
+    restoreMailPreviewPaint(body);
     const copies = [body, ...body.querySelectorAll('*')];
-    copies.forEach((copy, i) => {
-      if (styles.has(live[i])) {
-        const style = styles.get(live[i]);
-        if (style == null) copy.removeAttribute('style');
-        else copy.setAttribute('style', style);
-      }
+    copies.forEach(copy => {
       // Restore only an attachment supplied by the Host, never a reference
       // taken straight from mutable editor DOM. Unresolved original cid: URLs
       // already survive cloning; local preview URLs are stripped below.

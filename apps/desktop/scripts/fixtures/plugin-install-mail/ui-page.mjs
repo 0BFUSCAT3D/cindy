@@ -66,6 +66,13 @@ export default {
     if (selected === 'edit-mail-body') {
       await page.locator('iframe[aria-busy="false"]').waitFor();
       const body = page.frameLocator('iframe');
+      await body.getByText('Last paragraph', {exact: true}).click();
+      await page.keyboard.press('End');
+      await page.keyboard.press('Enter');
+      await page.keyboard.type('New paragraph');
+      await page.waitForFunction(() => document.querySelector('[data-testid="saved-body"]').textContent.includes('New paragraph'));
+      const split = await page.getByTestId('saved-body').textContent();
+      if (split.includes('color-mix') || split.includes('data-cindy') || split.includes('!important')) throw new Error('Native paragraph insertion saved preview paint');
       await body.getByText('formatted', {exact: true}).click();
       const selectAll = async () => {
         await page.keyboard.press('ControlOrMeta+a');
@@ -85,7 +92,10 @@ export default {
       await page.keyboard.press('ControlOrMeta+z');
       await page.waitForFunction(() => document.querySelector('[data-testid="saved-body"]').textContent.includes('Last paragraph'));
       saved = await page.getByTestId('saved-body').textContent();
-      if (!saved.includes('cid:logo') || saved.includes('data:image') || saved.includes('data-cindy') || !saved.includes('#123456')) throw new Error(`Saved HTML leaked preview state or lost authored styles/CID: ${saved}`);
+      // Native paragraph insertion may normalize #123456 to rgb(18, 52, 86).
+      // Verify the authored color rather than its equivalent CSS spelling.
+      const savedColor = await page.evaluate(html => new DOMParser().parseFromString(html, 'text/html').body.style.color, saved);
+      if (!saved.includes('cid:logo') || saved.includes('data:image') || saved.includes('data-cindy') || savedColor !== 'rgb(18, 52, 86)') throw new Error(`Saved HTML leaked preview state or lost authored styles/CID: ${saved}`);
       await page.getByRole('button', {name:'Reopen saved'}).click();
       await page.locator('iframe[aria-busy="false"]').waitFor();
       await body.getByText('formatted', {exact:true}).waitFor();

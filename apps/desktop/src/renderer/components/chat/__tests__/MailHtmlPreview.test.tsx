@@ -137,6 +137,44 @@ it('adapts authored mail colors to the app theme and restores them without chang
     if (oldStyle === null) root.removeAttribute('style'); else root.setAttribute('style', oldStyle);
   }
 });
+// Unit regression for #6878 review r4355813972: native paragraph/inline splits
+// clone preview paint after the serializer's initial snapshot. Existing theme
+// tests only edited text in pre-existing nodes. Saving and theme cleanup must
+// both preserve authored styles on these new nodes without reloading the frame.
+it('restores authored paint on cloned paragraphs and inline nodes before saving and when changing theme', async () => {
+  const root = document.documentElement, oldClass = root.className, oldStyle = root.getAttribute('style');
+  try {
+    root.classList.add('dark');
+    root.style.setProperty('--surface', '#181818');
+    root.style.setProperty('--text-primary', '#eeeeee');
+    const change = vi.fn();
+    render(<MailHtmlPreview value='<p style="background:white;color:black"><strong style="color:#123456">Original</strong></p>' onChange={change} />);
+    const frame = screen.getByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement, doc = frame.contentDocument!;
+    doc.open(); doc.write(frame.srcdoc); doc.close(); fireEvent.load(frame);
+    const paragraph = doc.querySelector('p')!.cloneNode(true) as HTMLElement;
+    doc.body.append(paragraph);
+    paragraph.querySelector('strong')!.textContent = 'New paragraph';
+    fireEvent.input(paragraph);
+    const saved = change.mock.calls.at(-1)![0];
+    const parsed = new DOMParser().parseFromString(saved, 'text/html');
+    const next = parsed.querySelectorAll('p')[1];
+    expect(next.style.backgroundColor).toBe('white');
+    expect(next.style.color).toBe('black');
+    expect(next.querySelector('strong')!.style.color).toBe('rgb(18, 52, 86)');
+    expect(saved).not.toMatch(/color-mix|data-cindy|!important/);
+    await act(async () => { root.classList.remove('dark'); });
+    expect(paragraph.style.backgroundColor).toBe('white');
+    expect(paragraph.style.color).toBe('black');
+    expect(paragraph.querySelector('strong')!.style.color).toBe('rgb(18, 52, 86)');
+    await act(async () => { root.classList.add('dark'); });
+    fireEvent.input(paragraph);
+    expect(change.mock.calls.at(-1)![0]).toBe(saved);
+    expect(frame.contentDocument).toBe(doc);
+  } finally {
+    cleanup(); root.className = oldClass;
+    if (oldStyle === null) root.removeAttribute('style'); else root.setAttribute('style', oldStyle);
+  }
+});
 // Initial paint is hidden until themed; updates from the other editor must
 // change the existing document before paint, without a blank loading frame.
 it('themes the first load and updates other-view content without reloading or hiding', () => {
