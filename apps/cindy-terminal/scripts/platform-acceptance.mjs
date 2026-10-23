@@ -74,7 +74,9 @@ try {
   assert.equal(typeof require('ssh2').Client, 'function'); record('SSH runtime dependency loads', 'PASS');
   const pty = require('node-pty');
   const screen = await new Promise((resolve, reject) => {
-    const terminal = pty.spawn(node, [cli, '--state-dir', profile, '--lang', 'en'], { name: 'xterm-256color', cols: 100, rows: 32, cwd: home, env });
+    // Exercise a real interactive terminal. Ink intentionally buffers frames
+    // until exit under CI=true, even when it receives an actual PTY.
+    const terminal = pty.spawn(node, [cli, '--state-dir', profile, '--lang', 'en'], { name: 'xterm-256color', cols: 100, rows: 32, cwd: home, env: { ...env, CI: 'false' } });
     let output = '', closing = false;
     const timeout = setTimeout(() => { terminal.kill(); reject(new Error('Native TUI did not render in PTY')); }, 20_000);
     terminal.onData(data => {
