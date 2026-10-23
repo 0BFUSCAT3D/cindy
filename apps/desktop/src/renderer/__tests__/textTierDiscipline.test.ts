@@ -11,7 +11,7 @@
  * 就算中性文字档,不维护手写名单。
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -80,7 +80,8 @@ interface ClassLiteral {
 function classLiterals(): ClassLiteral[] {
   const out: ClassLiteral[] = [];
   for (const file of sourceFiles(RENDERER)) {
-    const rel = relative(RENDERER, file);
+    // 豁免表和诊断使用 `/` 分隔的仓库逻辑路径;实际文件读取仍保留宿主路径。
+    const rel = relative(RENDERER, file).split(sep).join('/');
     readFileSync(file, 'utf8')
       .split('\n')
       .forEach((text, index) => {
