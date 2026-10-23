@@ -383,6 +383,7 @@ export class TerminalService {
     });
     this.im = im;
     this.configuration=new TerminalConfiguration(this.tasks.capabilities,{revision:()=>this.tasks.models.revision(),save:(action,provider,keys,context)=>this.tasks.configureProvider(action,provider,keys,context)}, {
+      registration: im.registration,
       revision: () => im.version(), save: async (id, input, context) => {
         context.assertCurrent?.(); guardIm();
         await im.saveConfiguration(id, input);
@@ -479,6 +480,12 @@ export class TerminalService {
     const local=context.source==='local';
     if(this.closing)throw new Error('SERVICE_STOPPING');
     context.assertCurrent?.();
+    if(channel==='terminal:channel-registration'){
+      if(!local || context.sharedTask)throw new Error('LOCAL_ONLY_COMMAND');
+      await this.ownerChange; context.assertCurrent?.();
+      if(this.ownerSuspended)throw new Error('ACCOUNT_CHANGE_IN_PROGRESS');
+      return this.protectedInput!.channelRegistration(args[0]);
+    }
     if(channel==='terminal:configuration'){
       if(!local)throw new Error('LOCAL_ONLY_COMMAND');
       const operation=configurationOperation(args[0]),value=args[0] as Record<string,unknown>;
@@ -644,6 +651,7 @@ export class TerminalService {
       const errors:unknown[]=[];
       const cleanup=async(action:()=>unknown)=>{try{await action();}catch(error){errors.push(error);}};
       clearInterval(this.refreshTimer);
+      await cleanup(()=>this.im?.close());
       await cleanup(()=>this.terminals.close());await cleanup(()=>this.remote?.stop());
       await cleanup(()=>this.files?.stop());await cleanup(()=>this.browser?.stop());await cleanup(()=>this.resources?.close());await cleanup(()=>this.membership?.close());
       await cleanup(()=>this.sharedTasks?.close());await cleanup(()=>this.crossShares?.close());await cleanup(()=>this.groupReshare?.stop());await cleanup(()=>this.reshares?.close());

@@ -18,6 +18,7 @@ import { INPUT_HANDOFF_GHOST_ID, INPUT_HANDOFF_ACTION_ID, PLUGIN_OAUTH_CHANNEL, 
 import type { TerminalSecrets } from './contracts.js';
 import { privateDirectory } from './platform.js';
 import { CONFIGURATION_ID, type TerminalConfiguration, configurationOperation } from './configuration.js';
+import type { ChannelRegistrationState } from './im/registration.js';
 
 export interface ProtectedInputOptions {
   root: string;
@@ -46,6 +47,7 @@ export class TerminalProtectedInput {
   private readonly unsubscribeClosed:()=>void;
   private plugins?:Pick<OauthTransactionDeps,'bind'|'run'|'settingsRequest'>;
   private configuration?:TerminalConfiguration;
+  private readonly channelRegistrations = new Map<string, { invoke: OauthControllerDeps['invoke']; current(): void; timer: NodeJS.Timeout }>();
 
   constructor(private readonly options: ProtectedInputOptions) {
     this.handoff = new InputHandoffService({
@@ -166,17 +168,36 @@ export class TerminalProtectedInput {
   }
 
   async saveRemoteConfiguration(device:string,rawOperation:unknown,input:unknown){
-    this.guard();const operation=configurationOperation(rawOperation),scope=this.options.scope();if(!scope)throw new Error('AUTH_REQUIRED');
-    const owner=JSON.stringify(scope);
-    const assertCurrent=()=>{this.guard();if(JSON.stringify(this.options.scope())!==owner)throw new Error('OWNER_CHANGED');};
+    this.guard();const operation=configurationOperation(rawOperation);
     // Validate the size locally before opening a lease. Nothing from input goes
     // into the capability request, diagnostics, or task history.
     const body=JSON.stringify(input);
     if(typeof body!=='string'||Buffer.byteLength(body)>65_536)throw new Error('INVALID_CONFIGURATION');
+    const { id, invoke, assertCurrent } = await this.openConfiguration(operation, device);
+    try{
+      const saved=await invoke({op:'settings',id,command:{kind:'fetch',path:'/configuration',method:'PUT',body}}) as {status?:number};
+      assertCurrent();if(saved?.status!==204)throw new Error('CONFIGURATION_SAVE_FAILED');
+    }finally{await invoke({op:'settings',id,command:{kind:'close'}}).catch(()=>{});}
+  }
+
+  private async openConfiguration(operation: ReturnType<typeof configurationOperation>, device?: string) {
+    this.guard(); const scope = this.options.scope(), owner = JSON.stringify(scope);
+    const assertCurrent=()=>{this.guard();if(JSON.stringify(this.options.scope())!==owner)throw new Error('OWNER_CHANGED');};
+    if (!device) {
+      if (!this.configuration) throw new Error('PROTECTED_CONFIGURATION_UNAVAILABLE');
+      const configuration = this.configuration;
+      const { id } = configuration.open(operation, { source: 'local', assertCurrent });
+      const invoke: OauthControllerDeps['invoke'] = async request => {
+        assertCurrent(); if (request.op !== 'settings') throw new Error('INVALID_CONFIGURATION');
+        return configuration.request('terminal-local', request);
+      };
+      return { id, invoke, assertCurrent };
+    }
+    if (!scope) throw new Error('AUTH_REQUIRED');
     const target=await resolveOauthPeerIdentity({scope:this.options.scope,invoke:this.options.invoke},device,assertCurrent);
     const opened=await this.options.invoke(device,'maker:remote-resources:invoke',[{
       client:{protocolVersion:1,primitives:['text','actions']},collectionId:operation.collectionId,actionId:'configuration:open',
-      ...(operation.resourceId?{resourceRef:{collectionId:operation.collectionId,kind:operation.collectionId==='mcp'?'mcp-server':'provider',id:operation.resourceId}}:{}),
+      ...(operation.resourceId?{resourceRef:{collectionId:operation.collectionId,kind:operation.collectionId==='mcp'?'mcp-server':operation.collectionId==='channels'?'im-channel':'provider',id:operation.resourceId}}:{}),
       input:{actionId:operation.actionId},
     }]);
     assertCurrent();
@@ -187,10 +208,41 @@ export class TerminalProtectedInput {
       trustIdentity:(identity,check)=>store.trustPeer(scope,identity.deviceId,identity.publicKey,check),
       invoke:async request=>{const response=await this.options.invoke(device,PLUGIN_OAUTH_CHANNEL,[request]);if(!response.ok)throw new Error('OAUTH_BRIDGE_UNAVAILABLE');return response.result;},
     });
-    try{
-      const saved=await invoke({op:'settings',id,command:{kind:'fetch',path:'/configuration',method:'PUT',body}}) as {status?:number};
-      assertCurrent();if(saved?.status!==204)throw new Error('CONFIGURATION_SAVE_FAILED');
-    }finally{await invoke({op:'settings',id,command:{kind:'close'}}).catch(()=>{});}
+    return { id, invoke, assertCurrent };
+  }
+
+  async channelRegistration(raw: unknown): Promise<{ id: string; state?: ChannelRegistrationState }> {
+    this.guard();
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('INVALID_CONFIGURATION');
+    const value = raw as Record<string, unknown>;
+    if (value.command === 'begin') {
+      if (!['feishu', 'lark'].includes(String(value.service)) || value.deviceId !== undefined && (typeof value.deviceId !== 'string' || !value.deviceId)) throw new Error('INVALID_CONFIGURATION');
+      const { id, invoke, assertCurrent } = await this.openConfiguration({ collectionId: 'channels', resourceId: 'feishu', actionId: 'connect' }, value.deviceId as string | undefined);
+      const timer = setTimeout(() => { void this.closeChannelRegistration(id); }, 5 * 60_000); timer.unref();
+      this.channelRegistrations.set(id, { invoke, current: assertCurrent, timer });
+      try {
+        const response = await invoke({ op: 'settings', id, command: { kind: 'fetch', path: '/connection', method: 'POST', body: JSON.stringify({ service: value.service }) } }) as { status?: number; body?: ChannelRegistrationState };
+        assertCurrent();
+        if (response.status !== 200 || !response.body) throw new Error('REGISTRATION_FAILED');
+        return { id, state: response.body };
+      } catch { await this.closeChannelRegistration(id); throw new Error('REGISTRATION_FAILED'); }
+    }
+    if (typeof value.id !== 'string') throw new Error('INVALID_CONFIGURATION');
+    const entry = this.channelRegistrations.get(value.id);
+    if (value.command === 'cancel') { await this.closeChannelRegistration(value.id); return { id: value.id }; }
+    if (!entry || value.command !== 'read') throw new Error('REGISTRATION_STALE');
+    entry.current();
+    const response = await entry.invoke({ op: 'settings', id: value.id, command: { kind: 'fetch', path: '/connection', method: 'GET' } }) as { status?: number; body?: ChannelRegistrationState };
+    entry.current();
+    if (response.status !== 200 || !response.body) throw new Error('REGISTRATION_FAILED');
+    return { id: value.id, state: response.body };
+  }
+
+  private async closeChannelRegistration(id: string) {
+    const entry = this.channelRegistrations.get(id);
+    if (!entry) return;
+    this.channelRegistrations.delete(id); clearTimeout(entry.timer);
+    await entry.invoke({ op: 'settings', id, command: { kind: 'close' } }).catch(() => {});
   }
 
   private identityStore(): Promise<OauthIdentityStore> {
@@ -212,6 +264,7 @@ export class TerminalProtectedInput {
     return this.preparing;
   }
   async close() {
+    await Promise.allSettled([...this.channelRegistrations.keys()].map(id => this.closeChannelRegistration(id)));
     this.unsubscribeClosed();
     this.handoff.cleanupAll(); this.closed = true;this.plugins=undefined;this.configuration?.close();this.configuration=undefined;
     this.authenticated.invalidate(); this.transactions.cancelPeer();

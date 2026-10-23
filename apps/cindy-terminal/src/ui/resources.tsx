@@ -10,6 +10,7 @@ import { getMessages, type Locale } from './i18n.js';
 import { Input, terminalText } from './input.js';
 import { useInputState } from './state.js';
 import { invokeResourceAction } from '../resource-commands.js';
+import { ChannelRegistration } from './channel-registration.js';
 
 /** Portable resource controller; business actions remain on the selected host. */
 export function Resources({ client, device, locale, initialCollection, initialRef, onTask }: { client: TerminalClient; device?: string; locale: Locale;initialCollection?:string;initialRef?:RemoteResourceRef; onTask(id: string,device?:string): void }) {
@@ -30,6 +31,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
   const [bodyOffset,setBodyOffset]=useState(0);
   const [input,setInput]=useState('');
   const [cursor,setCursor]=useState<string>();
+  const [registration,setRegistration]=useState<string>();
   const epoch=useRef(0);
   const descriptor={protocolVersion:1,primitives:['text','form','actions','session-controls'],locale};
   const txt=(value?:RemoteText)=>terminalText(typeof value==='string'?value:value?.translations?.[locale]??value?.fallback??'');
@@ -55,6 +57,10 @@ export function Resources({ client, device, locale, initialCollection, initialRe
   }
   async function submit(chosen:RemoteActionDescriptor,inputValues:Record<string,unknown>){
     if(!collection)return;
+    if(collection.id==='channels'&&resource?.ref.id==='feishu'&&chosen.id==='connect'){
+      if(inputValues.service!=='feishu'&&inputValues.service!=='lark')throw new Error('INVALID_CONFIGURATION');
+      setAction(undefined);setValues({});setInput('');setRegistration(inputValues.service);return;
+    }
     const result=await invokeResourceAction(client,{client:descriptor,collectionId:resource?.ref.collectionId??collection.id,actionId:chosen.id,...(resource?{resourceRef:resource.ref}:{}),input:inputValues},device);
     setAction(undefined);setInput('');setValues({});
     const target=result.result as {sessionId?:unknown;deviceId?:unknown}|undefined;
@@ -81,7 +87,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     if(!chosen.confirmation&&!chosen.fields?.length)void run(()=>submit(chosen,defaults));
   }
   useEffect(()=>{
-    epoch.current++;const at=epoch.current;setCollection(undefined);setResource(undefined);setAction(undefined);setSelected(0);
+    epoch.current++;const at=epoch.current;setCollection(undefined);setResource(undefined);setAction(undefined);setRegistration(undefined);setSelected(0);
     void run(async()=>{const result=await call<{collections:RemoteCollectionDescriptor[]}>('manifest',{});if(epoch.current!==at)return;setCollections(result.collections);const collectionId=initialRef?.collectionId??initialCollection;if(collectionId){const target=result.collections.find(item=>item.id===collectionId);if(!target)throw new Error('CAPABILITY_NOT_AVAILABLE_ON_TARGET');await list(target);if(initialRef)await open(initialRef);}});
     return()=>{epoch.current++;};
   },[device,client,initialCollection,initialRef]);
@@ -128,12 +134,13 @@ export function Resources({ client, device, locale, initialCollection, initialRe
       else if(currentField)nextField(currentField.kind==='toggle'?selectedNow.current===1:currentField.options?.[selectedNow.current]?.value);
       else lines[selectedNow.current]?.run();
     }
-  });
+  },{isActive:!registration});
   const bodyRows=Math.max(3,Math.floor(rows/3));
   const bodyLines=wrapAnsi((resource?.blocks??[]).filter(block=>block.primitive!=='form').map(block=>terminalText(block.fallbackMarkdown)).filter(Boolean).join('\n\n'),Math.max(10,columns-4),{hard:true,trim:false}).split('\n');
   const visibleBody=resource&&!action&&bodyLines.some(line=>line.trim())?Math.min(bodyRows,bodyLines.length)+(bodyLines.length>bodyRows?1:0)+1:0;
   const pageSize=Math.max(1,Math.floor((rows-12-visibleBody)/2));
   const start=Math.max(0,selected-pageSize+1);
+  if(registration)return <ChannelRegistration client={client} device={device} service={registration} locale={locale} onDone={()=>{setRegistration(undefined);if(resource)void run(()=>open(resource.ref));}}/>;
   return <Box flexDirection="column" gap={1}>
     <Text bold>{resource?txt(resource.display.title):collection?txt(collection.title):t.resources}{resource?.display.status?` · ${txt(resource.display.status.label)}`:''}{busy?` · ${t.loading}`:''}</Text>
     {visibleBody>0&&<Box flexDirection="column"><Text>{bodyLines.slice(bodyOffset,bodyOffset+bodyRows).join('\n')}</Text>{bodyLines.length>bodyRows&&<Text dimColor>{bodyOffset+1}–{Math.min(bodyOffset+bodyRows,bodyLines.length)} / {bodyLines.length} · PgUp / PgDn</Text>}</Box>}

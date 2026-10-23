@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { TerminalFeishuRegistration } from './registration.js';
 import type { Schedule, ScheduleRun } from '@cindy/maker-scheduler';
 import { WecomGroupNotificationService } from '@cindy/im-runtime/wecomGroupNotification';
 import { renderExternalMessage } from '@cindy/im-runtime/scheduleNotification';
@@ -38,6 +39,7 @@ const configurationChannels = {
  * task runtime. No transport module imports Electron or starts a renderer. */
 export class TerminalImConnections {
   readonly transport: TerminalImTransportHost;
+  readonly registration: TerminalFeishuRegistration;
   readonly feishu;
   readonly notifications;
   readonly wecomGroup;
@@ -53,7 +55,11 @@ export class TerminalImConnections {
   private closing?: Promise<void>;
   private starting?: Promise<void>;
   constructor(private readonly options: ConstructorParameters<typeof TerminalImTransportHost>[0] & { knowledge?: TerminalKnowledge; language?: () => Locale }, native: { discord?: DiscordIMOptions; telegram?: TelegramIMOptions; wecomGroupFetch?: typeof fetch } = {}) {
-    this.transport = new TerminalImTransportHost(options);
+    this.transport = new TerminalImTransportHost({ ...options, emit: (channel, payload) => {
+      if (channel === 'feishuBot:registration-status') { this.registration?.receive(payload); return; }
+      options.emit(channel, payload);
+    } });
+    this.registration = new TerminalFeishuRegistration((channel, input) => this.transport.invoke(channel, input));
     this.wecomGroup = new WecomGroupNotificationService(native.wecomGroupFetch ?? fetch, this.transport.host.secrets, { account: options.tasks.channelControl.account, log: options.logger });
     this.groups = new TerminalGroupWindows(options.root, options.assertCurrent, options.logger);
     this.notifications = createFeishuNotifications({ account: options.tasks.channelControl.account, log: options.logger,
@@ -249,12 +255,14 @@ export class TerminalImConnections {
   }
   close(): Promise<void> {
     if (this.closing) return this.closing;
+    const registration = this.registration.close();
     // Close event admission before awaiting gateway shutdown. Active requests
     // keep their old task owner, and all listeners are detached by the runtime.
     const handlers = this.options.tasks.channelControl.close();
     for (const stop of this.subscriptions.splice(0)) stop();
     return this.closing = (async () => {
       const results = await Promise.allSettled([
+        registration,
         this.options.tasks.channelOrchestrators.close(),
         ...this.connections.map(connection => this.transport.disposeConnection(() => connection.dispose())),
       ]);

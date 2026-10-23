@@ -74,8 +74,11 @@ export function registerImResources(registry: RemoteResourceRegistry, connection
         ...(behavior ? [{ id: 'behavior', primitive: 'form', data: { actionId: 'behavior', values: behavior }, fallbackMarkdown: '' }] : []),
         ...(persona ? [{ id: 'persona', primitive: 'form', data: { actionId: 'persona', values: persona }, fallbackMarkdown: '' }] : []),
         ...(id === 'telegram' ? [{ id: 'online', primitive: 'form', data: { actionId: 'online', values: { online: connections.telegram.getStatus().kind === 'connected' } }, fallbackMarkdown: '' }] : []),
+        ...(id === 'feishu' ? [{ id: 'announcement', primitive: 'form', data: { actionId: 'announcement', values: { enabled: status.lifecycleAnnouncement !== false } }, fallbackMarkdown: '' }] : []),
       ], actions: [
         { id: 'edit', label: label('Configure', '配置', '設定', '設定', '설정'), fields: credentialFields[id] },
+        ...(id === 'feishu' ? [{ id: 'connect', label: label('Create and connect', '创建并连接', '建立並連線', '作成して接続', '만들고 연결'), fields: [credentialFields.feishu[0]!] },
+          { id: 'announcement', label: label('Online notifications', '上下线通知', '上下線通知', 'オンライン通知', '온라인 알림'), fields: [{ id: 'enabled', kind: 'toggle' as const, label: label('Enabled', '开启', '開啟', '有効', '사용') }] }] : []),
         { id: 'model', label: label('Default model', '默认模型', '預設模型', '既定モデル', '기본 모델'), disabled: routes.length === 0,
           fields: [{ id: 'route', kind: 'select', label: label('Model', '模型', '模型', 'モデル', '모델'), required: true, options: routes }] },
         { id: 'permissions', label: label('Permissions', '权限', '權限', '権限', '권한'), fields: [
@@ -95,9 +98,10 @@ export function registerImResources(registry: RemoteResourceRegistry, connection
         return { effects: [{ kind: 'refresh-resource', ref: notificationRef }, { kind: 'refresh-collection', collectionId: 'channels' }] };
       }
       const id = connections.channel(request.resourceRef?.id ?? '');
-      if (request.actionId === 'edit') throw new Error('PROTECTED_INPUT_REQUIRED');
+      if (request.actionId === 'edit' || request.actionId === 'connect') throw new Error('PROTECTED_INPUT_REQUIRED');
       if (request.actionId === 'configuration:open') {
-        return { effects: [], result: configuration.open({ collectionId: 'channels', resourceId: id, actionId: 'edit' }, { source: 'local', deviceId: context.controllerDeviceId, assertCurrent: context.assertCurrent }) };
+        const action = (request.input as { actionId?: unknown } | undefined)?.actionId === 'connect' ? 'connect' : 'edit';
+        return { effects: [], result: configuration.open({ collectionId: 'channels', resourceId: id, actionId: action }, { source: 'local', deviceId: context.controllerDeviceId, assertCurrent: context.assertCurrent }) };
       }
       if (request.actionId === 'model') {
         const input = request.input as { route?: unknown } | undefined;
@@ -111,7 +115,8 @@ export function registerImResources(registry: RemoteResourceRegistry, connection
       } else if (request.actionId === 'permissions') {
         const input = request.input as Record<string, unknown> | undefined;
         await tasks.channelDefaults.update({ permissionMode: input?.permissionMode, groupPermissionMode: input?.groupPermissionMode }, id);
-      } else if (id === 'telegram' && request.actionId === 'behavior') await connections.invoke('telegramBot:set-behavior', request.input);
+      } else if (id === 'feishu' && request.actionId === 'announcement') await connections.invoke('feishuBot:set-lifecycle-announcement', request.input);
+      else if (id === 'telegram' && request.actionId === 'behavior') await connections.invoke('telegramBot:set-behavior', request.input);
       else if (id === 'telegram' && request.actionId === 'persona') await connections.invoke('telegramBot:set-persona', request.input);
       else if (id === 'telegram' && request.actionId === 'participation') await connections.invoke('telegramBot:set-group-activation', request.input);
       else if (id === 'telegram' && request.actionId === 'online') await connections.invoke('telegramBot:set-online', request.input);

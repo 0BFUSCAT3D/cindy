@@ -12,6 +12,7 @@ import { TerminalGroupWindows } from '../im/group-window.js';
 import Database from 'better-sqlite3';
 import { GROUP_WINDOW_SCHEMA_SQL } from '../im/group-window-schema.js';
 import { TerminalConfiguration } from '../configuration.js';
+import { TerminalProtectedInput } from '../protected-input.js';
 import { TerminalSecretStore } from '../secrets.js';
 import { access, appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -149,6 +150,62 @@ async function setup(native = engine(), overrides: Partial<ConstructorParameters
 }
 
 describe('terminal task host', () => {
+  // Integration: real Feishu device flow, resource lease and encrypted v3
+  // controller. Only external HTTP is replaced. A raw authorization code in
+  // resource traffic, a wrong controller, or a late cancelled poll is a bug.
+  it('keeps Feishu registration on the initiating encrypted controller through expiry and cancellation', async () => {
+    const { host: tasks, root, vault } = await setup();
+    let active = true, wrongPeer = false;
+    const guard = () => { if (!active) throw new Error('OWNER_CHANGED'); };
+    const events: unknown[] = [], wire: unknown[] = [];
+    const connections = new TerminalImConnections({ tasks, root, logger, assertCurrent: guard, emit: (channel, payload) => events.push({ channel, payload }), secrets: {
+      getSync: key => vault.get(key) ?? null, setSync: (key, value) => { vault.set(key, value); }, deleteSync: key => { vault.delete(key); }, available: () => true,
+    } });
+    const configuration = new TerminalConfiguration(tasks.capabilities, undefined, { revision: () => connections.version(), registration: connections.registration, save: (id, value) => connections.saveConfiguration(id, value) });
+    const registry = new RemoteResourceRegistry(); registerImResources(registry, connections, tasks, configuration);
+    const secrets = { get: async (key: string) => vault.get(key) ?? null, set: async (key: string, value: string) => { vault.set(key, value); }, delete: async (key: string) => { vault.delete(key); } };
+    const make = (deviceId: string): TerminalProtectedInput => new TerminalProtectedInput({ root: path.join(root, deviceId), secrets,
+      scope: () => ({ realm: 'global', membershipId: 'owner', deviceId }), assertCurrent: guard, remoteEnabled: () => true, taskExists: async () => true, emit: (channel, payload) => events.push({ channel, payload }),
+      invoke: async (_device, channel, args) => {
+        wire.push({ channel, args });
+        const result = channel === 'maker:remote-resources:invoke'
+          ? await registry.invoke({ controllerDeviceId: deviceId, assertCurrent: guard }, args[0] as Parameters<typeof registry.invoke>[1])
+          : await host.request(wrongPeer ? 'another-controller' : deviceId, args[0]);
+        wire.push({ result }); return { ok: true, result };
+      },
+    });
+    const host = make('host'), controller = make('controller'); host.configureSettings(configuration);
+    const http = vi.spyOn(connections.transport.host, 'httpPostForm').mockImplementation(async (_url, form) => ({ status: 200, body: form.get('action') === 'begin'
+      ? { device_code: 'private-device-token', user_code: 'ABCD-EFGH', expires_in: 300, interval: 1 }
+      : { error: 'expired_token', error_description: 'private-device-token' } }));
+    try {
+      await Promise.all([connections.groups.ready, connections.telegramSettings.ready]);
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      wrongPeer = true;
+      await expect(controller.channelRegistration({ command: 'begin', service: 'feishu', deviceId: 'host' })).rejects.toThrow();
+      expect(http).not.toHaveBeenCalled(); wrongPeer = false;
+      const begun = await controller.channelRegistration({ command: 'begin', service: 'lark', deviceId: 'host' });
+      expect(begun.state).toMatchObject({ status: 'pending', userCode: 'ABCD-EFGH', verificationUrl: expect.stringContaining('https://open.larksuite.com/') });
+      expect(JSON.stringify(begun)).not.toContain('private-device-token');
+      await connections.invoke('feishuBot:set-lifecycle-announcement', { enabled: false });
+      expect(await controller.channelRegistration({ command: 'read', id: begun.id })).toMatchObject({ state: { status: 'pending' } });
+      await expect(host.channelRegistration({ command: 'read', id: begun.id })).rejects.toThrow('REGISTRATION_STALE');
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(await controller.channelRegistration({ command: 'read', id: begun.id })).toEqual({ id: begun.id, state: { status: 'expired' } });
+      const next = await controller.channelRegistration({ command: 'begin', service: 'feishu', deviceId: 'host' });
+      await controller.channelRegistration({ command: 'cancel', id: next.id });
+      const calls = http.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(http).toHaveBeenCalledTimes(calls);
+      await expect(controller.channelRegistration({ command: 'read', id: next.id })).rejects.toThrow('REGISTRATION_STALE');
+      const pending = await controller.channelRegistration({ command: 'begin', service: 'feishu', deviceId: 'host' });
+      active = false;
+      await expect(controller.channelRegistration({ command: 'read', id: pending.id })).rejects.toThrow('OWNER_CHANGED');
+      for (const secret of ['private-device-token', 'ABCD-EFGH']) expect(JSON.stringify({ wire, events })).not.toContain(secret);
+    } finally {
+      active = true; await controller.close(); await host.close(); await connections.close(); configuration.close(); http.mockRestore(); vi.useRealTimers();
+    }
+  });
   // The terminal SQLite schema must preserve the shared cursor receipt and
   // bot namespace rules, including a daemon restart between inbound turns.
   it('persists group history and compensated cursors without mixing bot identities', async () => {

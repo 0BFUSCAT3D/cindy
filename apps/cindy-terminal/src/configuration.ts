@@ -7,6 +7,7 @@ import {
 import type { OauthCardBinding } from "@cindy/plugin-runtime/authorization/transactions";
 import type { InvocationContext, TerminalClient } from "./contracts.js";
 import type { TerminalCapabilities } from "./tasks/capabilities.js";
+import type { TerminalFeishuRegistration } from './im/registration.js';
 
 // Host-owned settings use the same authenticated exchange as input handoff and
 // plugin settings. This identifier cannot be supplied by a plugin or a client.
@@ -14,7 +15,7 @@ export const CONFIGURATION_ID = "__cindy_configuration__";
 const LIFETIME_MS = 5 * 60_000;
 type Operation = {
   collectionId: "mcp" | "providers" | "channels";
-  actionId: "create" | "edit";
+  actionId: "create" | "edit" | "connect";
   resourceId?: string;
 };
 type Lease = {
@@ -31,14 +32,15 @@ export function configurationOperation(raw: unknown): Operation {
   const value = raw as Record<string, unknown>;
   if (
     !["mcp", "providers", "channels"].includes(String(value.collectionId)) ||
-    !["create", "edit"].includes(String(value.actionId)) ||
+    !["create", "edit", "connect"].includes(String(value.actionId)) ||
     (value.resourceId !== undefined &&
       (typeof value.resourceId !== "string" ||
         !value.resourceId ||
         value.resourceId.length > 256)) ||
     (value.actionId === "edit" && !value.resourceId) ||
     (value.actionId === "create" && value.resourceId !== undefined) ||
-    (value.collectionId === "channels" && value.actionId !== "edit")
+    (value.collectionId === "channels" && value.actionId !== "edit" && value.actionId !== "connect") ||
+    (value.actionId === "connect" && (value.collectionId !== "channels" || value.resourceId !== "feishu"))
   )
     throw new Error("INVALID_CONFIGURATION");
   return {
@@ -67,6 +69,7 @@ export class TerminalConfiguration {
     private readonly channels?: {
       revision(): number;
       save(id: string, value: Record<string, unknown>, context: InvocationContext): Promise<void>;
+      registration?: TerminalFeishuRegistration;
     },
   ) {}
 
@@ -107,6 +110,7 @@ export class TerminalConfiguration {
       return false;
     }
     return (
+      lease.operation.actionId === "connect" ||
       lease.state === "saved" ||
       lease.state === "failed" ||
       lease.revision === this.revision(lease.operation)
@@ -146,7 +150,21 @@ export class TerminalConfiguration {
     if (command.kind === "close") {
       // The authenticated envelope still needs to seal its final response.
       this.leases.delete(request.id);
+      if (lease.operation.actionId === 'connect') await this.channels?.registration?.cancel(request.id);
       return { status: 204 };
+    }
+    if (lease.operation.actionId === 'connect') {
+      const registration = this.channels?.registration;
+      if (!registration || command.kind !== 'fetch' || command.path !== '/connection') throw new Error('INVALID_CONFIGURATION');
+      if (command.method === 'GET') return { status: 200, body: registration.read(request.id) };
+      if (command.method !== 'POST' || typeof command.body !== 'string') throw new Error('INVALID_CONFIGURATION');
+      try {
+        const input = JSON.parse(command.body) as { service?: unknown };
+        const body = await registration.begin(request.id, input?.service, () => {
+          if (!this.current(lease)) throw new Error('CONFIGURATION_STALE');
+        }, lease.expiresAt);
+        return { status: 200, body };
+      } catch { return { status: 400, code: 'REGISTRATION_FAILED' }; }
     }
     if (
       command.kind !== "fetch" ||
@@ -175,6 +193,7 @@ export class TerminalConfiguration {
 
   async save(operation: Operation, input: unknown, context: InvocationContext) {
     if (this.closed || context.sharedTask) throw new Error("OWNER_REQUIRED");
+    if (operation.actionId === 'connect') throw new Error('PROTECTED_INPUT_REQUIRED');
     context.assertCurrent?.();
     if (!input || typeof input !== "object" || Array.isArray(input))
       throw new Error("INVALID_CONFIGURATION");

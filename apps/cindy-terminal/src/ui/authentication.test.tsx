@@ -241,6 +241,31 @@ describe('terminal authentication surface',()=>{
 });
 
 
+// Unit: actual resource keyboard navigation must create a protected local
+// controller for the selected remote host, then cancel a late begin on Esc.
+it('opens remote channel registration locally and cancels a late authorization after leaving', async () => {
+  const calls: Array<{ channel: string; args: unknown[]; device?: string }> = [];
+  let finish!: (value: unknown) => void;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const ref = { collectionId: 'channels', kind: 'im-channel', id: 'feishu' };
+  const client: TerminalClient = { subscribe: () => () => {}, close() {}, invoke: (async (channel: string, args: unknown[] = [], device?: string) => {
+    calls.push({ channel, args, device });
+    if (channel === 'maker:remote-resources:manifest') return { collections: [{ id: 'channels', resourceKind: 'im-channel', title: 'Channels' }] };
+    if (channel === 'maker:remote-resources:list') return { items: [{ ref, revision: '1', links: [], display: { title: 'Feishu' } }] };
+    if (channel === 'maker:remote-resources:get') return { ref, revision: '1', links: [], display: { title: 'Feishu' }, blocks: [], actions: [{ id: 'connect', label: 'Create and connect', fields: [{ id: 'service', kind: 'select', label: 'Service', options: [{ value: 'lark', label: 'Lark' }] }] }] };
+    if (channel === 'terminal:channel-registration') return (args[0] as { command: string }).command === 'begin' ? pending : {};
+    throw new Error('UNEXPECTED_CHANNEL');
+  }) as TerminalClient['invoke'] };
+  const screen = await mount(client, { node: <Resources client={client} device="remote-host" locale="en" initialCollection="channels" onTask={() => {}} /> });
+  await screen.press('\r'); await screen.press('\r'); await screen.press('\r');
+  expect(calls.find(call => call.channel === 'terminal:channel-registration')).toEqual({ channel: 'terminal:channel-registration', args: [{ command: 'begin', service: 'lark', deviceId: 'remote-host' }], device: undefined });
+  await screen.press('\x1b[27u');
+  await screen.update(() => finish({ id: 'private-request', state: { status: 'pending', userCode: 'ABCD-EFGH', verificationUrl: 'https://open.larksuite.com/page/cli?user_code=ABCD-EFGH' } }));
+  expect(calls.some(call => call.channel === 'terminal:channel-registration' && (call.args[0] as { command: string; id: string }).command === 'cancel' && (call.args[0] as { id: string }).id === 'private-request')).toBe(true);
+  expect(screen.all()).not.toContain('ABCD-EFGH');
+  expect(calls.filter(call => call.device).every(call => call.channel !== 'terminal:channel-registration')).toBe(true);
+});
+
 // The production resource controller must retain server form defaults and its
 // revision token. Deletion must leave the stale detail screen (unit tier).
 it('edits resource defaults and returns to the collection after deletion',async()=>{
