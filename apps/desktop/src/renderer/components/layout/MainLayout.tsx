@@ -705,6 +705,7 @@ export function MainLayout() {
         | { type: 'chat-invite'; token: string }
         | { type: 'chat-invite-malformed' }
         | { type: 'provider-share-join'; link: string }
+        | { type: 'plugin'; pluginId: string }
         | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => {
       if (payload.type === 'chat-invite') {
@@ -721,6 +722,10 @@ export function MainLayout() {
       }
       if (payload.type === 'shared-task-join') {
         setSharedTaskInvitation({ link: buildSharedTaskInvitationLink(payload.invitation, payload.server), id: ++invitationSequence.current });
+        return;
+      }
+      if (payload.type === 'plugin') {
+        navigate(`/plugins?market=${encodeURIComponent(payload.pluginId)}`);
         return;
       }
       if (payload.type === 'session') {

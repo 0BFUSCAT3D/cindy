@@ -41,6 +41,7 @@
  *   发布前仍需用 packaged build 做最终跨平台验证。
  */
 
+import { isValidPluginResourceId } from '@cindy/plugin-protocol';
 import { app, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import path from 'node:path';
 import { parseProviderShareInvitationIntent, parseSharedTaskInvitationIntent } from '@cindy/device-link';
@@ -73,6 +74,7 @@ export type DeepLinkPayload =
   | { type: 'shared-task-join'; invitation: string; server: string }
   /** 供应商分享链接：原样交给 Renderer 的申请弹窗，由主进程命令再解析与核对区域。 */
   | { type: 'provider-share-join'; link: string }
+  | { type: 'plugin'; pluginId: string }
   /**
    * islandEntryId 只由主进程的灵动岛点击写入(URL 解析从不产生它),标识这一次点击,
    * 供 renderer 在导航落地后申请处置被点的那张卡。
@@ -117,6 +119,10 @@ export function parseDeepLink(url: string): DeepLinkPayload | null {
   const invitation = parseSharedTaskInvitationIntent(url);
   if (invitation) return { type: 'shared-task-join', ...invitation };
   if (parseProviderShareInvitationIntent(url)) return { type: 'provider-share-join', link: url };
+  if (/^(?:cindy|xdt-maker):\/\/plugin(?:[/?#]|$)/i.test(url)) {
+    const match = /^(?:cindy|xdt-maker):\/\/plugin\/(c[a-z0-9]{24})$/.exec(url);
+    return match && isValidPluginResourceId(match[1]) ? { type: 'plugin', pluginId: match[1] } : null;
+  }
   const prefix = matchDeepLinkPrefix(url);
   if (prefix === null) return null;
   const rest = url.slice(prefix.length);
