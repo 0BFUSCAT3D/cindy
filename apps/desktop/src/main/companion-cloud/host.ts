@@ -36,7 +36,8 @@ import type { CompanionMaterializeHost } from './materialize.js';
 import { companionHomes } from './homes.js';
 import { companionCapabilitiesPatch, portableCompanionCapabilities, type CompanionArrivalNotice } from './capabilities.js';
 import { MIRROR_ATTACHMENT_MAX_BYTES, type CompanionMirrorCursor, type CompanionMirrorRow } from './mirror.js';
-import { replyArtifactAttachments, replyTextWithFiles, toolResultImageUrls } from './replyArtifacts.js';
+import { replyArtifactAttachments, replyTextWithFiles } from './replyArtifacts.js';
+import { mirrorColumns, readTurnImageUrls, visibleRows } from './turnImages.js';
 import type { CompanionCloudHost } from './runtime.js';
 import { createCompanionCloudState } from './state.js';
 import type { CompanionLog } from './types.js';
@@ -299,22 +300,6 @@ async function readTaskFileRoots(sessionId: string): Promise<string[]> {
   return session ? taskImageRoots(session) : [];
 }
 
-/**
- * Stored images the tools produced since the row before this reply (the previous user or assistant
- * row): what the chat shows as images of the turn. Each lands on the first reply after it.
- */
-async function readTurnImageUrls(sessionId: string, row: { id: string; createdAt: number }): Promise<string[]> {
-  const { drizzle } = getDbClient();
-  const [previous] = await drizzle.select({ createdAt: messages.createdAt }).from(messages)
-    .where(and(visibleRows(sessionId), lt(messages.createdAt, row.createdAt)))
-    .orderBy(desc(messages.createdAt)).limit(1);
-  const results = await drizzle.select({ content: messages.content }).from(messages)
-    .where(and(eq(messages.sessionId, sessionId), isNull(messages.rewindAt), eq(messages.role, 'tool_result'),
-      gt(messages.createdAt, previous?.createdAt ?? 0), lte(messages.createdAt, row.createdAt)))
-    .orderBy(asc(messages.createdAt)).limit(50);
-  return [...new Set(results.flatMap(result => toolResultImageUrls(result.content)))];
-}
-
 /** A media blob this task may read and this computer still has (the reply only names its address). */
 async function readReplyBlob(url: string, sessionId: string): Promise<{ mimeType: string; size: number } | null> {
   const blob = parseBlobUrl(url);
@@ -323,13 +308,6 @@ async function readReplyBlob(url: string, sessionId: string): Promise<{ mimeType
   const stat = await fs.stat(absPath);
   return stat.isFile() ? { mimeType, size: stat.size } : null;
 }
-
-const mirrorColumns = {
-  id: messages.id, clientId: messages.clientId, role: messages.role, content: messages.content,
-  agentMeta: messages.agentMeta, createdAt: messages.createdAt,
-};
-const visibleRows = (sessionId: string) => and(eq(messages.sessionId, sessionId), isNull(messages.rewindAt),
-  inArray(messages.role, ['user', 'assistant']));
 
 export async function readMirrorRowsAfter(sessionId: string, cursor: CompanionMirrorCursor, limit: number): Promise<CompanionMirrorRow[]> {
   return getDbClient().drizzle.select(mirrorColumns).from(messages)
@@ -417,7 +395,7 @@ export function createCompanionCloudHost(input: {
     replyAttachments: (_botId, sessionId, row, text) => replyArtifactAttachments(row, text, sessionId, {
       roots: readTaskFileRoots,
       blob: readReplyBlob,
-      turnImages: readTurnImageUrls,
+      turnImages: (sessionId, row) => readTurnImageUrls(getDbClient().drizzle, sessionId, row),
       maxBytes: MIRROR_ATTACHMENT_MAX_BYTES,
       ...(input.log ? { log: input.log } : {}),
     }),
