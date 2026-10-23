@@ -474,7 +474,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   // The retained page and its visible sidebar must never release each other's subscriptions.
   const HOME_LIST_SUBSCRIPTION_OWNER = `device-list:${useId()}`;
   const embedded = width !== undefined;
-  const residentList = useResidentHomeList();
+  const residentList = useResidentHomeList(embedded);
   const activeHomeSession = useContext(ActiveHomeSession);
   const rememberTask = rememberRecentTask;
   const viewSession = getHomeViewSession();
