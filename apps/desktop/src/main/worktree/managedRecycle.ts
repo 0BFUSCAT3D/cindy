@@ -9,7 +9,7 @@ import {
 } from './contentSnapshot';
 import { gitExec } from './gitExec';
 import { hasLiveSessionReference, loadLiveSessionPathKeys } from './liveSessionRefs';
-import { inventoryWorktree, sameWorktreeFiles } from './recoveryArchive';
+import { inventoryWorktree, sameWorktreeFiles, verifyRecoveryArchive } from './recoveryArchive';
 import {
   newRecycleRecord, readRecycleRecord, writeRecycleRecord, worktreeGeneration, type WorktreeRecycleRecord,
 } from './recycleJournal';
@@ -152,7 +152,8 @@ async function residualFilesAllowed(
  * A partially removed directory may only lose bytes that existed when removal began. The full
  * tree was verified against the snapshot after `removingSince` was taken and before it was
  * recorded, so every file written before that moment was saved, ignored or nested. Older
- * clients' records compare their archive inventory instead.
+ * clients' records compare their archive inventory instead, and the archive must still be
+ * readable: an integrity failure throws and pauses the request with the directory kept.
  */
 async function residualFilesCovered(
   meta: WorktreeMeta,
@@ -160,6 +161,7 @@ async function residualFilesCovered(
   snapshot: NonNullable<WorktreeRecycleRecord['snapshot']>,
 ): Promise<boolean> {
   if (record.archive) {
+    await verifyRecoveryArchive(record.archive);
     if (!sameWorktreeFiles(await inventoryWorktree(meta.path), record.archive.files, true)) return false;
   } else {
     const since = record.removingSince;

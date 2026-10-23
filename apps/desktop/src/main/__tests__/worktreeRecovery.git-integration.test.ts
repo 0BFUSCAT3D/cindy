@@ -409,6 +409,25 @@ describe('worktree recovery with real Git', () => {
     expect((await readRecycleRecord(meta.path))?.phase).toBe('removed');
   }, 30_000);
 
+  it('keeps a partially removed directory when an older client\'s archive no longer verifies', async () => {
+    const meta = await createFixture('legacy-removing');
+    const record = await newRecycleRecord(meta);
+    record.snapshot = await captureWorktreeContent(meta.path, `refs/cindy/worktree-recovery/${record.id}/legacy`);
+    record.archive = await createRecoveryArchive(meta.path, record.id);
+    record.phase = 'removing';
+    await writeRecycleRecord(record);
+    await fs.rm(path.join(meta.path, 'draft.txt'));
+    const archive = path.join(state.root, 'worktree-recycle', record.archive.file);
+    const bytes = await fs.readFile(archive);
+    bytes[0] ^= 1;
+    await fs.writeFile(archive, bytes);
+
+    expect(await recycleManagedWorktree(meta, { canRemove: async () => true })).toBe(false);
+    // Decryption fails, so the request keeps waiting and the surviving bytes stay on disk.
+    expect((await readRecycleRecord(meta.path))?.phase).toBe('removing');
+    expect(await fs.readFile(path.join(meta.path, 'tracked.txt'), 'utf8')).toBe('base\n');
+  }, 30_000);
+
   it('preserves earlier recovery history across reuse and never overwrites a newer occupant', async () => {
     const previous = await createFixture('history');
     expect(await recycleManagedWorktree(previous, { canRemove: async () => true })).toBe(true);
