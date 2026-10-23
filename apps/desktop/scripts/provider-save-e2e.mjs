@@ -96,6 +96,12 @@ try {
     await page.getByPlaceholder('Header-Name').first().fill('X-E2E-Marker');
     await page.getByPlaceholder('value', { exact: true }).first().fill('preserved-through-wizard');
     await page.getByPlaceholder('https://api.myprovider.com/v1').fill(origin + item.prefix + '/v1');
+    const configure = page.getByRole('button', { name: '前往配置', exact: true });
+    await configure.waitFor();
+    await page.waitForTimeout(1500);
+    assert.equal(await page.getByPlaceholder('https://api.myprovider.com/v1').inputValue(), origin + item.prefix + '/v1');
+    assert.equal(await page.getByRole('button', { name: '下一步', exact: true }).count(), 0, 'Recognition must wait for a click');
+    await configure.click();
     const next = page.getByRole('button', { name: '下一步', exact: true });
     await next.waitFor();
     await page.screenshot({ path: path.join(out, `${results.length}-handoff.png`) });

@@ -969,7 +969,6 @@ export function ProviderConnectionDialog({
     [i18n.language, setRtSynced],
   );
 
-  const detectionSuppressed = useRef(!!draft);
   const [detection, setDetection] = useState<{ signature: string; preset?: ProviderPreset; pending?: boolean; ambiguous?: boolean; code?: string } | null>(null);
   const discoveryCache = useRef(new Map<DialogAgentKind, { signature: string; promise: Promise<DetectionCatalog> }>(
     draft?.catalog ? [[draft.agent, { signature: `${draft.agent}:${providerModelFetchRequestSignature(rt[draft.agent], authMode)}`,
@@ -1040,7 +1039,6 @@ export function ProviderConnectionDialog({
   useEffect(() => {
     if (editing || !onDetected || authMode === 'oauth' || saving || !dialog.open) return;
     let live = true;
-    let jump: ReturnType<typeof setTimeout> | undefined;
     // Correlation only, scoped to this renderer; randomUUID requires a secure context.
     const requestId = `detect-${Date.now()}-${++detectionRequestSequence}`;
     const agent = activeTab;
@@ -1109,19 +1107,15 @@ export function ProviderConnectionDialog({
         if (preset && !AGENTS.some(a => preset!.runtimes[a] &&
             (a === agent || followsDefaultConnection(a, rtRef.current[a], rtRef.current[agent])))) preset = undefined;
         setDetection({ signature, preset, ambiguous, code: catalog && !catalog.ok ? (catalog.code ?? 'UNKNOWN') : undefined });
-        if (preset && !detectionSuppressed.current) jump = setTimeout(() => {
-          if (live && !detectionSuppressed.current && detectionContext.current.signature === signature) enterDetectedProvider(preset);
-        }, 1200);
       });
     }, 400);
     return () => {
       live = false;
       clearTimeout(timer);
-      clearTimeout(jump);
       void window.electronAPI.maker.detectProvider?.({ requestId, cancel: true }).catch(() => undefined);
     };
     // A model selection/name change is not a new connection or a reason to restart detection.
-  }, [detectionSignature, presets, editing, authMode, saving, dialog.open, !!onDetected, enterDetectedProvider, setRtSynced]);
+  }, [detectionSignature, presets, editing, authMode, saving, dialog.open, !!onDetected, setRtSynced]);
 
   // 编辑态：回填各已配置 runtime 的已存明文密钥（用户本机自己的 key）——
   // 让密钥框「能看」(eye 显形 / 可核对)，而非空白遮罩；据此点亮「已保存」徽标。
@@ -2708,7 +2702,7 @@ export function ProviderConnectionDialog({
               {detection.code && !detectionAuthFailed && <span className="text-[var(--error-fg)]">{t(`providerError.${detection.code}`)}</span>}
               {detection.preset && <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="secondary" onClick={() => enterDetectedProvider(detection.preset!)}>{t('settings.providers.detection.configure')}</Button>
-                <Button type="button" variant="secondary" tone="quiet" onClick={() => { detectionSuppressed.current = true; setDetection(null); }}>{t('settings.providers.detection.keepCustom')}</Button>
+                <Button type="button" variant="secondary" tone="quiet" onClick={() => setDetection(null)}>{t('settings.providers.detection.keepCustom')}</Button>
               </div>}
             </div>
           )}

@@ -26,6 +26,11 @@ export default {
         await ui.capture('ambiguous-stayed-custom');
         return;
       }
+      const configure = page.getByRole('button', { name: await ui.t('settings.providers.detection.configure'), exact: true });
+      await configure.waitFor();
+      await page.waitForTimeout(1500);
+      assert.equal(await page.evaluate(() => window.templateEvidence.handoff), undefined, 'Recognition alone must not navigate');
+      await configure.click();
       await page.getByRole('button', { name: await ui.t('settings.providers.wizard.next'), exact: true }).waitFor();
       assert.equal(await page.evaluate(() => window.templateEvidence.handoff.preset.id), item.providerId);
     }

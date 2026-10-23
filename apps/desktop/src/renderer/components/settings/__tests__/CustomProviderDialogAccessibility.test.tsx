@@ -2230,6 +2230,9 @@ describe('new-connection identification', () => {
     fetchProviderModels.mockResolvedValue({ ok: false, code: 'AUTH_INVALID' } as any);
     fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: url } });
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onDetected).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
     expect(onDetected).toHaveBeenCalledOnce();
     expect(onDetected.mock.calls[0][0]).toMatchObject({ apiKey: '', preset: { id }, agent: 'pi' });
     expect(fetchProviderModels).toHaveBeenCalledWith(expect.objectContaining({ apiKey: null }));
@@ -2265,12 +2268,13 @@ describe('new-connection identification', () => {
     expect(screen.queryByText('settings.providers.detection.keyRequired')).toBeNull();
     expect(screen.getByText('settings.providers.detection.custom')).toBeTruthy();
   });
-  it('waits 1.2 seconds and hands off the URL, key and selected models without saving', async () => {
+  it('only hands off after an explicit click, even long after identification succeeds', async () => {
     const { onDetected, fetchProviderModels } = await openIdentification();
     expect(onDetected).not.toHaveBeenCalled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1199); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     expect(onDetected).not.toHaveBeenCalled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
     expect(onDetected).toHaveBeenCalledOnce();
     expect(onDetected.mock.calls[0][0]).toMatchObject({ apiKey: 'fake-key', agent: 'pi', config: { runtimes: { pi: { baseUrl: 'https://api.deepseek.com', models: [{ id: 'private-model' }] } } } });
     expect(fetchProviderModels).toHaveBeenCalledOnce();
@@ -2355,7 +2359,9 @@ describe('new-connection identification', () => {
       codex: { baseUrl: 'https://api.deepseek.com', wireProtocol: 'openai-chat', models: [] },
     } };
     const { onDetected } = await openIdentification(available);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    expect(onDetected).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
     const value = onDetected.mock.calls[0][0];
     expect(value.preset.runtimes['claude-code']).toMatchObject({ baseUrl: 'https://api.deepseek.com/anthropic', wireProtocol: 'anthropic-messages' });
     expect(value.preset.runtimes.codex.wireProtocol).toBe('openai-chat');
@@ -2376,6 +2382,9 @@ describe('new-connection identification', () => {
     fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://api.deepseek.com' } });
     fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'fake-key' } });
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onDetected).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
     expect(onDetected).toHaveBeenCalledOnce();
     const draft = onDetected.mock.calls[0][0];
     expect(draft.agent).toBe('claude-code');
@@ -2529,7 +2538,8 @@ describe('new-connection identification', () => {
   });
   it('reuses the directory after returning to custom without restarting detection', async () => {
     const { onDetected, fetchProviderModels } = await openIdentification();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
     const draft = onDetected.mock.calls[0][0];
     cleanup();
     fetchProviderModels.mockClear();
@@ -2562,16 +2572,18 @@ describe('new-connection identification', () => {
     expect(onDetected).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'settings.providers.detection.configure' })).toBeNull();
   });
-  it('does not navigate after unmount with a scheduled official handoff', async () => {
+  it('does not navigate after unmount with an identified provider', async () => {
     const { onDetected } = await openIdentification();
     cleanup();
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(onDetected).not.toHaveBeenCalled();
   });
-  it('uses the current name when the user edits it during the jump delay', async () => {
+  it('uses the current name when the user edits it before clicking configure', async () => {
     const { onDetected } = await openIdentification();
     fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.namePlaceholder'), { target: { value: 'Latest name' } });
-    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    expect(onDetected).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
     expect(onDetected).toHaveBeenCalledOnce();
     expect(onDetected.mock.calls[0][0].config.name).toBe('Latest name');
   });
@@ -2585,6 +2597,9 @@ describe('new-connection identification', () => {
     fireEvent.change(key, { target: { value: 'new-fake-key' } });
     await act(async () => { finish({ ok: true, models: [{ id: 'obsolete-model', name: 'Obsolete' }] }); });
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onDetected).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.configure' }));
+    await act(async () => {});
     expect(onDetected).toHaveBeenCalledOnce();
     expect(onDetected.mock.calls[0][0].apiKey).toBe('new-fake-key');
     expect(onDetected.mock.calls[0][0].config.runtimes.pi.models.map((m: { id: string }) => m.id)).not.toContain('obsolete-model');

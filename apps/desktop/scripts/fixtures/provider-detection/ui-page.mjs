@@ -45,6 +45,7 @@ export default {
       await page.getByPlaceholder(await ui.t('settings.providers.custom.fields.namePlaceholder')).fill('Cloudflare review');
       await page.getByPlaceholder(await ui.t('settings.providers.custom.fields.apiKeyPlaceholder')).fill('fake-ui-key');
       await page.getByPlaceholder(await ui.t('settings.providers.custom.fields.baseUrlPlaceholder')).fill(input);
+      await page.getByRole('button', { name: await ui.t('settings.providers.detection.configure'), exact: true }).click();
       await page.getByRole('button', { name: await ui.t('settings.providers.wizard.next'), exact: true }).waitFor();
       await ui.capture('normalized-handoff');
       await page.getByRole('button', { name: await ui.t('settings.providers.wizard.next'), exact: true }).click();
@@ -129,6 +130,9 @@ export default {
     if (['default', 'return', 'relay', 'litellm'].includes(ui.case)) {
       await page.getByRole('button', { name: await ui.t('settings.providers.detection.keepCustom') }).waitFor();
       await ui.capture('identified', { locator: page.getByRole('dialog') });
+      await page.waitForTimeout(1500);
+      assert.equal(await page.getByPlaceholder(await ui.t('settings.providers.custom.fields.baseUrlPlaceholder')).inputValue(), address);
+      await page.getByRole('button', { name: await ui.t('settings.providers.detection.configure'), exact: true }).click();
       await page.getByText(await ui.t('settings.providers.wizard.nameLabel'), { exact: true }).waitFor();
       assert.equal(await page.getByPlaceholder('sk-…').inputValue(), 'fake-ui-key');
       await ui.capture('provider-connection', { locator: page.getByRole('dialog') });
