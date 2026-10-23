@@ -3938,6 +3938,7 @@ export function getGhostTaskViewSlot(): GhostTaskViewSlot {
     taskViewSlotSingleton = new GhostTaskViewSlot({
       getGhost: findGhostForInstanceId,
       focusedSessionId: () => ghostSessionFocusTracker.current(),
+      consumeUserGesture: (id) => getGhostErrandSlot().consumeUserGesture(id),
       broadcast: (payload) => broadcastTaskViewOpen(
         BrowserWindow.getAllWindows(), payload,
         (window, push) => sendGhostWindowPush(window, GHOST_TASK_VIEW_OPEN_CHANNEL, push),

@@ -57,6 +57,8 @@ export interface TaskViewSlotDeps {
   broadcast(payload: GhostTaskViewOpenPush): boolean;
   /** 台前任务快照(请求缺省 sessionId 时的落点;非任务页为 null)。 */
   focusedSessionId(): string | null;
+  /** 消费 Host 观察到的该实例真实点击，不信任插件自报 focus。 */
+  consumeUserGesture(ghostId: string): boolean;
   log?: { info: (msg: string, meta?: Record<string, unknown>) => void };
 }
 
@@ -104,6 +106,8 @@ export class GhostTaskViewSlot {
     if (request.peek === true) return { ok: true, sessionId };
     if (request.focus === true && !this.revealSession)
       return fail('HOST_NOT_READY', '任务导航尚未就绪');
+    if (request.focus === true && !this.deps.consumeUserGesture(ghostId))
+      return fail('PERMISSION_DENIED', '切换任务需要用户当次点击');
     const delivered = this.deps.broadcast({
       instanceId: installedGhostStoragePart(ghost),
       sessionId,
