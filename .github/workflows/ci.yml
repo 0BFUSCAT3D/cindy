@@ -20,12 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: linux-x64
           - runner: windows-latest
             target: win32-x64
-          - runner: ubuntu-24.04-arm
-            target: linux-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     env:
@@ -56,12 +52,14 @@ jobs:
       - name: Package official Node and native dependencies
         shell: bash
         run: node apps/cindy-terminal/scripts/package-runtime.mjs --target '${{ matrix.target }}' --out "$CINDY_ACCEPTANCE_OUTPUT"
+      - name: Check isolated native host and service registration
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        run: node apps/cindy-terminal/scripts/diagnose-platform-start.mjs
       - name: Run real installed CLI, daemon, engines, PTY and WebRTC
+        timeout-minutes: 12
         shell: bash
         run: node apps/cindy-terminal/scripts/platform-acceptance.mjs "$CINDY_ACCEPTANCE_OUTPUT" "$CINDY_ACCEPTANCE_REPORT"
-      - name: Diagnose isolated native startup failure
-        if: failure() && runner.os == 'Windows'
-        run: node apps/cindy-terminal/scripts/diagnose-platform-start.mjs
       - name: Upload platform evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

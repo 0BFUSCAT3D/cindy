@@ -3,7 +3,7 @@ import type { TerminalClient } from './contracts.js';
 import type { Locale } from './ui/i18n.js';
 
 export const resourceCollections:Record<string,string>={
-  teammates:'teammates',schedules:'schedules',projects:'projects',plugins:'plugins',skills:'skills',
+  teammates:'teammates',routines:'routines',schedules:'schedules',projects:'projects',plugins:'plugins',skills:'skills',
   mcp:'mcp',channels:'channels',memory:'memory',contacts:'contacts',shares:'provider-shares','provider-groups':'provider-groups',
 };
 

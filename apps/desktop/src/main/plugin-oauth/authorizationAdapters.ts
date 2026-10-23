@@ -12,28 +12,9 @@ import type {
 } from '../../shared/pluginOauthDeviceCode.js';
 import { listenForOauthCallback } from './loopbackListener.js';
 
-/** Transport-independent UI adapters. Only a validated Host transaction supplies an offer. */
-export interface AuthorizationAdapterDeps {
-  openExternal(url: string): Promise<void>;
-  copyDeviceCode?(code: string): () => void;
-  presentBrowserAuthorization?(
-    expiresAt: number,
-    reopen: () => Promise<void>,
-  ): PluginOauthDeviceCodeClose;
-  presentDeviceCode?(
-    prompt: PluginOauthDeviceCodePrompt,
-    clear: () => void,
-  ): PluginOauthDeviceCodeClose;
-  deliver(callback: PluginOauthCallback | PluginDeviceOpened): Promise<void>;
-  assertCurrent(): void;
-  failed(): void;
-  deadline: number;
-  now?: () => number;
-  signal?: AbortSignal;
-}
-export interface AuthorizationAdapterHandle {
-  close(phase?: 'completed' | 'expired' | 'ended'): void;
-}
+import type { AuthorizationAdapterDeps, AuthorizationAdapterHandle } from '@cindy/plugin-runtime/authorization/authorizationAdapterTypes';
+export type { AuthorizationAdapterDeps, AuthorizationAdapterHandle } from '@cindy/plugin-runtime/authorization/authorizationAdapterTypes';
+
 type Adapter = (
   offer: PluginAuthorizationOffer,
   deps: AuthorizationAdapterDeps,

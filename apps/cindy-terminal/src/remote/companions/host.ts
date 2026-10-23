@@ -1,3 +1,4 @@
+import type { TerminalCompanionRoutines } from './routines.js';
 import path from 'node:path';
 import { buildClientDeviceNote } from '@cindy/maker-shared/message-source';
 import { createHash, randomUUID } from 'node:crypto';
@@ -5,6 +6,8 @@ import Database from 'better-sqlite3';
 import { Maker, MakerMemoryManager, buildBotMemoryScopeKey, type AgentEvent, type BaseAgent, type InteractionRequest, type InteractionDecision, type Logger, type Session, type UserMessage } from '@cindy/maker-core';
 import { buildBotSystemPrompt } from '@cindy/companion-core/prompt';
 import { buildTeammateGuide } from '@cindy/companion-core/guide';
+import { createBotTodoStore, type BotTodoStore } from '@cindy/companion-core/todoStore';
+import { createBotWorkbenchStore } from '@cindy/companion-core/workbench';
 import { createCindyMemoryMcpServer } from '../../../../../packages/lizi-mcps/src/cindy_memoryMcpServer.js';
 import type { XdtHelperMcpDeps } from '../../../../../packages/lizi-mcps/src/lizi_xdtHelperMcpServer.js';
 import { createTaskTools } from '../../tasks/mcp.js';
@@ -16,6 +19,8 @@ import type { InvocationContext } from '../../contracts.js';
 import { TerminalCompanionProfiles, type TerminalCompanionProfile } from './profiles.js';
 
 type Live = { maker:Maker; session:Session; tools:Awaited<ReturnType<typeof createTaskTools>>; memory:MakerMemoryManager; revision:number; off:()=>void };
+type CompanionSchedule = NonNullable<Submission['scheduler']>;
+type CompanionContext = InvocationContext & { scheduler?: CompanionSchedule };
 type Pending = { sessionId:string; request:InteractionRequest; resolve:(value:InteractionDecision)=>void };
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('INVALID_ARGUMENT');return value as Record<string,unknown>;};
 const string=(value:unknown)=>{if(typeof value!=='string'||!value.trim())throw new Error('INVALID_ARGUMENT');return value;};
@@ -25,7 +30,10 @@ const textOf=(event:AgentEvent)=>{const data=typeof event.data==='string'?{text:
  * Orca orchestration, global skill shelf, or GUI singleton is inherited. */
 export class TerminalCompanionHost {
   readonly profiles:TerminalCompanionProfiles;
+  routines?:TerminalCompanionRoutines;
   readonly storage:TerminalTaskStorage;
+  readonly workbench:ReturnType<typeof createBotWorkbenchStore>;
+  private readonly todoStores=new Map<string,BotTodoStore>();
   private readonly live=new Map<string,Live>();
   private readonly starts=new Map<string,Promise<Live>>();
   private readonly pending=new Map<string,Pending>();
@@ -35,11 +43,13 @@ export class TerminalCompanionHost {
   private closed=false;
   private readonly generations=new Map<string,number>();
   private readonly deliveries=new Map<string,Promise<string>>();
+  async assertMayRun(id:string){this.guard();await this.executionGuard?.(id);this.guard();}
   private executionGuard?:(id:string)=>Promise<void>;
   setExecutionGuard(guard:(id:string)=>Promise<void>){this.executionGuard=guard;}
   readonly ready:Promise<void>;
   constructor(readonly options:{root:string;profileDir:string;models:TerminalModelConfig;logger:Logger;guard():void;emit(channel:string,args:unknown[]):void;binary(kind:ModelSelection['agentKind']):Promise<string|null>;helper?(input:{sessionId:string;workingDir:string;agentKind:ModelSelection['agentKind'];setTitle?:(title:string)=>Promise<void>}):XdtHelperMcpDeps;attachments?:Pick<InputHost,'ingestAttachment'|'resolveAttachment'>;createAgent?:(input:RuntimeInput)=>Promise<BaseAgent>}) {
     this.profiles=new TerminalCompanionProfiles(options.root,()=>this.guard());
+    this.workbench=createBotWorkbenchStore({profileDir:(_root,id)=>this.profiles.home(id),directoryKey:directory=>process.platform==='win32'?path.win32.normalize(directory).toLowerCase():path.normalize(directory),logger:options.logger,changed:id=>this.changed(id)});
     this.storage=new TerminalTaskStorage(path.join(options.root,'history'));
     this.ready=this.storage.open();
   }
@@ -49,17 +59,19 @@ export class TerminalCompanionHost {
   onChange(listener:(id:string)=>void){this.listeners.add(listener);return ()=>{this.listeners.delete(listener);};}
   private changed(id:string){for(const listener of this.listeners)listener(id);this.emit('maker:remote-resources:changed',{collectionId:'teammates'});}
   async owns(sessionId:string){return (await this.profiles.list()).some(profile=>profile.sessionId===sessionId);}
+  async todos(id:string){this.guard();const profile=await this.profiles.get(id);if(!profile)throw new Error('COMPANION_NOT_FOUND');let store=this.todoStores.get(id);if(!store){store=createBotTodoStore(path.join(this.profiles.home(id),'todos.v1.json'),()=>this.workbench.readLegacyWorkbenchJudgments(this.options.root,id),()=>this.guard(),()=>{const active=this.active.get(profile.sessionId);return !active?.clientId.startsWith('schedule_');});this.todoStores.set(id,store);}return store;}
   async profileForSession(sessionId:string){const profile=(await this.profiles.list()).find(profile=>profile.sessionId===sessionId);if(!profile)throw new Error('COMPANION_NOT_FOUND');return profile;}
   async ensureCanonical(profile:TerminalCompanionProfile){await this.ready;this.guard();if(!await this.storage.get(profile.sessionId)){let selection:ModelSelection|undefined;let error:unknown;for(const choice of profile.models.length?profile.models:[undefined]){try{selection=(await this.options.models.select(choice)).selection;break;}catch(value){error=value;}}if(!selection)throw error??new Error('COMPANION_MODEL_UNAVAILABLE');this.guard();await this.storage.create({id:profile.sessionId,agentKind:selection.agentKind,model:selection.model,workDir:path.join(this.profiles.home(profile.id),'workspace'),title:profile.name,permissionMode:'default'});await this.storage.setSelection(profile.sessionId,selection);}return profile.sessionId;}
   async create(input:Parameters<TerminalCompanionProfiles['create']>[0]){const profile=await this.profiles.create(input);this.changed(profile.id);return profile;}
-  async change(id:string,patch:Parameters<TerminalCompanionProfiles['change']>[1]){const profile=await this.profiles.change(id,patch);if(patch.status==='paused')await this.stop(id);this.changed(id);return profile;}
-  async remove(id:string){await this.stop(id);await this.profiles.remove(id);this.changed(id);}
+  async change(id:string,patch:Parameters<TerminalCompanionProfiles['change']>[1]){const profile=await this.profiles.change(id,patch);if(patch.status){await this.routines?.lifecycle(id,patch.status==='paused'?'pause':'resume');if(patch.status==='paused')await this.stop(id);}this.changed(id);return profile;}
+  async remove(id:string){await this.routines?.lifecycle(id,'delete');await this.stop(id);await this.profiles.remove(id);this.changed(id);}
   async isBusy(id:string){const profile=await this.profiles.get(id);return !!profile&&(this.active.has(profile.sessionId)||this.queues.has(profile.sessionId));}
   private async skillEntries(profile:TerminalCompanionProfile,includeDisabled=false){const result:Array<{name:string;description:string;slug:string;path:string;filePath:string}>=[];for(const slug of await this.profiles.files(profile.id,'skills')){if(!/^[A-Za-z0-9_-]{1,100}$/.test(slug))continue;if(!includeDisabled&&!await this.profiles.skillEnabled(profile.id,slug))continue;const body=await this.profiles.readSkill(profile.id,slug);if(!body)continue;const scalar=(value:string)=>{try{return JSON.parse(value);}catch{return value;}};const name=scalar(/^name:\s*(.*)$/m.exec(body)?.[1]??slug);const description=scalar(/^description:\s*(.*)$/m.exec(body)?.[1]??'');result.push({name,description,slug,path:path.join(this.profiles.home(profile.id),'skills',slug),filePath:path.join(this.profiles.home(profile.id),'skills',slug,'SKILL.md')});}return result;}
   private helper(profile:TerminalCompanionProfile,selection:ModelSelection):XdtHelperMcpDeps {
     const caller=(id:string)=>{this.guard();if(id!==profile.sessionId)throw new Error('COMPANION_SCOPE_MISMATCH');};
     return {...this.options.helper?.({sessionId:profile.sessionId,workingDir:path.join(this.profiles.home(profile.id),'workspace'),agentKind:selection.agentKind,setTitle:async title=>{await this.change(profile.id,{name:title});}}),resolveSurface:async()=> 'bot-main',
       runtimeCapabilities:async()=>({terminal:true,companion:true,memory:true,skills:true,plugins:false}),
+      ...(this.routines?{botRoutines:{resolveBotId:async(id:string)=>{caller(id);return profile.id;},service:this.routines.service}}:{}),
       botSkills:{
         list:async input=>{caller(input.callerSessionId);const all=(await this.skillEntries(profile,true)).filter(skill=>!input.query||input.query.toLowerCase().split(/\s+/).every(word=>(skill.name+' '+skill.description).toLowerCase().includes(word)));const offset=input.offset??0,limit=Math.min(input.limit??50,200);return {ok:true,skills:all.slice(offset,offset+limit).map(skill=>({...skill,updatedAt:new Date(profile.updatedAt).toISOString(),enabled:true})),total:all.length,...(offset+limit<all.length?{nextOffset:offset+limit}:{})};},
         save:async input=>{caller(input.callerSessionId);const slug=input.slug??input.name.toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'');if(!slug)throw new Error('SKILL_SLUG_REQUIRED');const created=!(await this.profiles.readSkill(profile.id,slug));await this.profiles.writeSkill(profile.id,slug,`---\nname: ${JSON.stringify(input.name)}\ndescription: ${JSON.stringify(input.description)}\n---\n\n${input.body}`);await this.profiles.change(profile.id,{});this.changed(profile.id);return {ok:true,created,effective:'next-turn',skill:{slug,name:input.name,description:input.description,updatedAt:new Date().toISOString(),filePath:path.join(this.profiles.home(profile.id),'skills',slug,'SKILL.md'),enabled:true}};}
@@ -100,20 +112,23 @@ export class TerminalCompanionHost {
       this.pending.set(requestId,{sessionId,request:publicRequest,resolve:done});signal?.addEventListener('abort',abort,{once:true});this.emit('maker:interaction-request',{sessionId,request:publicRequest});if(signal?.aborted||this.closed)abort();});
   }
   async prepareInput(sessionId:string,input:unknown){const profile=await this.profileForSession(sessionId);return normalizeTaskInput({profileDir:this.options.root,...this.options.attachments},sessionId,input,{source:'local'},path.join(this.profiles.home(profile.id),'workspace'),()=>this.guard());}
-  async send(id:string,input:unknown,clientId:string=randomUUID(),context?:InvocationContext):Promise<{accepted:true;clientId:string;completion:Promise<string>}>{
+  async send(id:string,input:unknown,clientId:string=randomUUID(),context?:CompanionContext):Promise<{accepted:true;clientId:string;completion:Promise<string>}>{
     this.guard();context?.assertCurrent?.();await this.executionGuard?.(id);if(!/^[A-Za-z0-9_-]{1,100}$/.test(clientId))throw new Error('INVALID_CLIENT_ID');
     const profile=await this.profiles.get(id);if(!profile)throw new Error('COMPANION_NOT_FOUND');if(profile.status!=='active')throw new Error('COMPANION_PAUSED');await this.ensureCanonical(profile);
     const lifecycle:AttachmentLifecycle={accepted:[],cleanup:[]};
     try {
       const message=await normalizeTaskInput({profileDir:this.options.root,...this.options.attachments},profile.sessionId,input,context??{source:'local'},path.join(this.profiles.home(id),'workspace'),()=>{this.guard();context?.assertCurrent?.();},lifecycle);
       if(inputPlainText(message).length>200_000)throw new Error('INVALID_COMPANION_MESSAGE');
-      const hash=createHash('sha256').update(JSON.stringify(message)).digest('hex');const claim=await this.storage.claimSubmission(profile.sessionId,clientId,hash,()=>{this.guard();context?.assertCurrent?.();},{message,source:context?.source??'local',deviceId:context?.deviceId,sourceDevice:context?.sourceDevice});
+      const hash=createHash('sha256').update(JSON.stringify(message)).digest('hex');const claim=await this.storage.claimSubmission(profile.sessionId,clientId,hash,()=>{this.guard();context?.assertCurrent?.();},{message,source:context?.source??'local',deviceId:context?.deviceId,sourceDevice:context?.sourceDevice,...(context?.scheduler?{scheduler:context.scheduler}:{})});
       if(!claim.created){if(claim.receipt.status==='completed')return {accepted:true,clientId,completion:Promise.resolve(claim.receipt.finalText??'')};const running=this.deliveries.get(profile.sessionId+':'+clientId);if(running)return {accepted:true,clientId,completion:running};if(claim.receipt.status!=='queued')throw new Error('COMPANION_DELIVERY_'+claim.receipt.status.toUpperCase());}
       for(const accept of lifecycle.accepted)await accept();
       return {accepted:true,clientId,completion:this.queue(profile,claim.receipt,context)};
     } finally {await Promise.allSettled(lifecycle.cleanup.map(cleanup=>cleanup()));}
   }
-  private queue(profile:TerminalCompanionProfile,receipt:Submission,context?:InvocationContext):Promise<string>{
+  async submitScheduled(id:string,text:string,origin:CompanionSchedule,assertCurrent:()=>void){
+    return this.send(id,text,`schedule_${origin.runId}`,{source:'local',scheduler:origin,assertCurrent});
+  }
+  private queue(profile:TerminalCompanionProfile,receipt:Submission,context?:CompanionContext):Promise<string>{
     const key=profile.sessionId+':'+receipt.requestId;const current=this.deliveries.get(key);if(current)return current;
     const generation=this.generations.get(profile.id)??0;
     let resolve!:(value:string)=>void,reject!:(reason:Error)=>void;const completion=new Promise<string>((yes,no)=>{resolve=yes;reject=no;});void completion.catch(()=>{});this.deliveries.set(key,completion);
@@ -121,9 +136,10 @@ export class TerminalCompanionHost {
     const previous=this.queues.get(profile.sessionId)??Promise.resolve();const queued=previous.catch(()=>{}).then(async()=>{
       assertCurrent();await this.executionGuard?.(profile.id);const fresh=await this.profiles.get(profile.id);if(!fresh||fresh.status!=='active')throw new Error('COMPANION_PAUSED');if(!receipt.message)throw new Error('COMPANION_MESSAGE_MISSING');const live=await this.ensureLive(fresh);assertCurrent();await this.executionGuard?.(profile.id);
       const sourceDevice=receipt.source==='remote'?receipt.sourceDevice??null:null;
-      await this.storage.append(profile.sessionId,{kind:'user',message:receipt.message,clientId:receipt.requestId,origin:receipt.source??'local',...(sourceDevice?{agentMeta:{sourceDevice}}:{})});
+      await this.storage.append(profile.sessionId,{kind:'user',message:receipt.message,clientId:receipt.requestId,origin:receipt.source??'local',...(receipt.scheduler?{agentMeta:{origin:receipt.scheduler}}:sourceDevice?{agentMeta:{sourceDevice}}:{})});
       assertCurrent();this.active.set(profile.sessionId,{clientId:receipt.requestId,text:'',finished:resolve,failed:reject});await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'sending');assertCurrent();
-      const result=await live.session.send(sourceDevice?appendInputText(receipt.message,buildClientDeviceNote(sourceDevice)):receipt.message);if(!result.accepted)throw new Error(result.reason);await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'running');await completion;
+      const message=receipt.scheduler?appendInputText(receipt.message,`[Scheduled run context]\nschedule: ${JSON.stringify(receipt.scheduler.scheduleName)} (schedule_id: ${receipt.scheduler.scheduleId})\nrun_id: ${receipt.scheduler.runId}\nfiredAtUtc: ${new Date(receipt.scheduler.firedAt??Date.now()).toISOString()}`):sourceDevice?appendInputText(receipt.message,buildClientDeviceNote(sourceDevice)):receipt.message;
+      const result=await live.session.send(message,...(receipt.scheduler?[{origin:receipt.scheduler}]:[]));if(!result.accepted)throw new Error(result.reason);await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'running');await completion;
     }).catch(async error=>{const active=this.active.get(profile.sessionId);if(active?.clientId===receipt.requestId)this.active.delete(profile.sessionId);await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'failed',error instanceof Error?error.message:'COMPANION_TURN_FAILED');reject(error);});
     this.queues.set(profile.sessionId,queued);void queued.finally(()=>{if(this.queues.get(profile.sessionId)===queued)this.queues.delete(profile.sessionId);this.deliveries.delete(key);});this.changed(profile.id);return completion;
   }

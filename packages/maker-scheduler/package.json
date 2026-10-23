@@ -10,6 +10,7 @@
     ".": "./src/index.ts",
     "./cron": "./src/engine/cron.ts",
     "./types": "./src/types.ts",
+    "./routine-store": "./src/routine-store.ts",
     "./templates": "./src/builtin-templates.ts",
     "./template-engine": "./src/engine/template.ts"
   },

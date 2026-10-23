@@ -7,6 +7,7 @@ import type { InvocationContext } from '../contracts.js';
 import { privateDirectory } from '../platform.js';
 import { TerminalScheduleStorage } from './schedule-storage.js';
 import { preRun, runScript } from './schedule-process.js';
+import type { TerminalCompanionHost } from '../remote/companions/host.js';
 import type { TerminalTaskHost } from './host.js';
 import { scheduleForm, scheduleFormInput, scheduleText } from './schedule-resources.js';
 
@@ -14,6 +15,7 @@ export const TERMINAL_SCHEDULE_CHANNELS = ['list','get','create','update','delet
 export interface TerminalSchedulerOptions {
   profileDir: string;
   tasks: TerminalTaskHost;
+  companions?(): TerminalCompanionHost | undefined;
   logger: Logger;
   emit(channel: string, args: unknown[]): void;
   /** Host closure invalidated on owner switch, including while a script awaits. */
@@ -29,11 +31,11 @@ export class TerminalSchedulerHost {
   readonly channels = TERMINAL_SCHEDULE_CHANNELS;
   readonly storage: TerminalScheduleStorage;
   readonly engine: Scheduler;
-  private readonly ready: Promise<void>;
+  readonly ready: Promise<void>;
   private closed=false;
   constructor(private readonly options: TerminalSchedulerOptions) {
     this.storage=new TerminalScheduleStorage(options.profileDir);
-    this.engine=new Scheduler({storage:this.storage,runner:{fire:(schedule,ctx)=>this.fire(schedule,ctx)},generateId:randomUUID,maxConcurrentRuns:2,processId:process.pid,instanceId:randomUUID(),logger:{debug(){},info(){},warn:()=>options.logger.warn('SCHEDULER_WARNING'),error:()=>options.logger.error('SCHEDULER_ERROR')},validateTargetSession:async id=>{const row=await options.tasks.storage.get(id);if(!row||row.deleted)throw new Error('SCHEDULE_TARGET_UNAVAILABLE');}});
+    this.engine=new Scheduler({storage:this.storage,runner:{fire:(schedule,ctx)=>this.fire(schedule,ctx)},generateId:randomUUID,maxConcurrentRuns:2,processId:process.pid,instanceId:randomUUID(),logger:{debug(){},info(){},warn:()=>options.logger.warn('SCHEDULER_WARNING'),error:()=>options.logger.error('SCHEDULER_ERROR')},validateTargetSession:async id=>{if(await options.companions?.()?.owns(id))return;const row=await options.tasks.storage.get(id);if(!row||row.deleted)throw new Error('SCHEDULE_TARGET_UNAVAILABLE');}});
     for(const name of ['fired','completed','failed','skipped','deferred','session-bound','changed','runtime-state','silenced','notified'] as const) this.engine.on(name as 'changed', (event)=>{
       if(this.closed)return;
       options.emit('maker:schedule:event',[event]);
@@ -58,6 +60,8 @@ export class TerminalSchedulerHost {
   }
   private async fire(schedule:Schedule,ctx:FireContext){
     this.guard();ctx.signal.throwIfAborted();
+    const companion=this.options.companions?.();
+    if(schedule.targetSessionId&&companion&&await companion.owns(schedule.targetSessionId))return this.fireCompanion(companion,schedule,ctx);
     let sessionId=schedule.targetSessionId;
     let row=sessionId?await this.options.tasks.storage.get(sessionId):null;
     if(sessionId&&(!row||row.deleted)){if(!schedule.persistentSession)throw new Error('SCHEDULE_TARGET_UNAVAILABLE');sessionId=undefined;row=null;}
@@ -87,6 +91,23 @@ export class TerminalSchedulerHost {
         if(receipt.status==='failed'||receipt.status==='interrupted')throw new Error(receipt.error??'SCHEDULE_TURN_FAILED');
       }
     } finally {unobserve();ctx.signal.removeEventListener('abort',abort);if(!schedule.targetSessionId&&!schedule.persistentSession)await this.options.tasks.invoke('maker:close-session',[id]).catch(()=>{});}
+  }
+  private async fireCompanion(host:TerminalCompanionHost,schedule:Schedule,ctx:FireContext){
+    const profile=await host.profileForSession(schedule.targetSessionId!);
+    await host.assertMayRun(profile.id);
+    if(await host.isBusy(profile.id))return {sessionId:profile.sessionId,deferred:true,deferRetryMs:15_000};
+    const current=()=>{this.guard();ctx.signal.throwIfAborted();if(ctx.canDispatch?.()===false)throw new Error('ROUTINE_CANCELLED');};
+    current();
+    const hook=await preRun(schedule,ctx,path.join(host.profiles.home(profile.id),'workspace'));
+    current();await host.assertMayRun(profile.id);
+    if(hook){await ctx.onPreRunHookCompleted?.(hook);if(hook.decision==='skip')return {sessionId:profile.sessionId,skipped:true,resultText:hook.stdout};if(hook.decision!=='run')throw new Error('PRE_RUN_HOOK_FAILED');}
+    const abort=()=>{void host.stop(profile.id).catch(()=>{});};ctx.signal.addEventListener('abort',abort,{once:true});
+    try{
+      current();await ctx.onSessionBound?.(profile.sessionId);
+      const sent=await host.submitScheduled(profile.id,schedule.prompt,{kind:'scheduler',scheduleId:schedule.id,scheduleName:schedule.name,runId:ctx.runId,firedAt:ctx.firedAt},current);
+      await ctx.onTurnActive?.(profile.sessionId);
+      const resultText=await sent.completion;current();return {sessionId:profile.sessionId,resultText};
+    }finally{ctx.signal.removeEventListener('abort',abort);}
   }
   private async scriptCall(schedule:Schedule,ctx:FireContext,method:string,params:Record<string,unknown>){
     this.guard();ctx.signal.throwIfAborted();

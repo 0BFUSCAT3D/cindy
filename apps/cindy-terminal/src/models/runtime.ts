@@ -54,6 +54,7 @@ export interface RuntimeInput {
   models: TerminalModelConfig;
   logger: Logger;
   remote?: boolean;
+  taskShellEnv?: () => Record<string,string>;
   guestHome?: string;
   authorizeRequest?: (model: string) => Promise<boolean>;
   tools?: Awaited<ReturnType<typeof createTaskTools>>;
@@ -104,7 +105,7 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
     prepareCodexSkills: input.capabilities?.prepareCodexSkills,
     getContactsPromptState: input.getContactsPromptState ?? (() => input.contactsEnabled ? 'enabled' : 'disabled'),
     mcpProviders: input.tools?.providers,
-    runtimeConfig: { userDataPath: input.guestHome ?? profileDir, ...(input.memory ? { makerMemoryEnabled: input.memory.isEnabled() } : {}), ...(custom && selection.agentKind === 'claude-code' ? { endpoint } : {}) },
+    runtimeConfig: { taskShellEnv: input.taskShellEnv, userDataPath: input.guestHome ?? profileDir, ...(input.memory ? { makerMemoryEnabled: input.memory.isEnabled() } : {}), ...(custom && selection.agentKind === 'claude-code' ? { endpoint } : {}) },
     capabilityAdditions: { availableModels: catalogModels.map(model => ({
       id: model.id, displayName: model.name, contextWindow: model.contextWindow,
       efforts: model.efforts ?? [], defaultEffort: model.defaultEffort ?? null,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { inputHandoffPresentation, INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, type InputHandoffSnapshot } from '@cindy/device-link';
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
@@ -130,7 +131,7 @@ async function main() {
   if(timeoutMs!==undefined&&(!Number.isFinite(timeoutMs)||timeoutMs<=0))throw new Error('INVALID_TIMEOUT');
   if(str('device')&&['service','status','auth','vault','login','logs'].includes(command))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
   if(values.help||command==='help'){
-    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch|refresh\n  cindy auth begin|cancel|memberships|authorization\n  cindy auth email|organization|select|membership|binding-code <id>\n  cindy auth realm accept|cancel\n  cindy auth request-code|captcha-start email|phone <identifier>\n  cindy auth verify|binding-verify|sso-verify --stdin\n  cindy auth captcha-complete <challengeId> --stdin\n  cindy auth authorize sso|social <provider>\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy files download <url> --device <id> --output <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy requests list|show|approve|deny|resolve|answer\n  cindy requests answer <taskId> <requestId> --stdin\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|activate|boot|uninstall|logs\n  cindy logs [--follow]\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
+    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch|refresh\n  cindy auth begin|cancel|memberships|authorization\n  cindy auth email|organization|select|membership|binding-code <id>\n  cindy auth realm accept|cancel\n  cindy auth request-code|captcha-start email|phone <identifier>\n  cindy auth verify|binding-verify|sso-verify --stdin\n  cindy auth captcha-complete <challengeId> --stdin\n  cindy auth authorize sso|social <provider>\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy files download <url> --device <id> --output <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy requests list|show|approve|deny|resolve|answer|fill\n  cindy requests answer <taskId> <requestId> --stdin\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|activate|boot|uninstall|logs\n  cindy logs [--follow]\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
   }
   if(values.version||command==='version'){print(VERSION);return;}
   if(command==='profiles'){
@@ -403,12 +404,19 @@ async function main() {
     }
     if(command==='requests'){
       if(subcommand==='list')print(await call('maker:get-pending-interactions',[required(rest[0],'TASK_ID_REQUIRED')]));
-      else if(['approve','deny','show','answer'].includes(subcommand)){
+      else if(['approve','deny','show','answer','fill'].includes(subcommand)){
         const pending=unwrap(await call('maker:get-pending-interactions',[required(rest[0],'TASK_ID_REQUIRED')]));
         if(!Array.isArray(pending))throw new Error('INVALID_RESPONSE');
         const request=pending.map(p=>p.request??p).find(p=>p.requestId===required(rest[1],'REQUEST_ID_REQUIRED'));
         if(!request)throw new Error('REQUEST_ALREADY_RESOLVED');
         if(subcommand==='show')print(request);
+        else if(subcommand==='fill'){
+          if(request.kind!=='input_handoff')throw new Error('REQUEST_IS_NOT_PROTECTED_INPUT');
+          if(!values.stdin)throw new Error('PROTECTED_INPUT_STDIN_REQUIRED');
+          let input:unknown;try{input=JSON.parse(await stdin(64*1024));}catch{throw new Error('INVALID_INPUT_HANDOFF');}
+          const submission={expectedRevision:request.revision,values:input,action:{kind:'submit'}};
+          print(await client.invoke(device?INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL:INPUT_HANDOFF_LOCAL_CHANNEL,[device?{deviceId:device,presentation:inputHandoffPresentation(request as InputHandoffSnapshot),submission}:{requestId:request.requestId,submission}]));
+        }
         else if(subcommand==='answer'){
           if(request.kind!=='ask_user_question')throw new Error('REQUEST_IS_NOT_A_QUESTION');
           if(!values.stdin)throw new Error('ANSWER_STDIN_REQUIRED');
@@ -416,7 +424,7 @@ async function main() {
           if(!answers||typeof answers!=='object'||Array.isArray(answers)||!request.questions.every((question:{question:string})=>typeof (answers as Record<string,unknown>)[question.question]==='string'))throw new Error('INVALID_ANSWERS');
           print(await call('maker:resolve-interaction',[request.requestId,{kind:'ask_user_question',answers}]));
         }
-        else{if(request.kind==='ask_user_question')throw new Error('QUESTION_REQUIRES_ANSWER');print(await call('maker:resolve-interaction',[request.requestId,{kind:request.kind,behavior:subcommand==='approve'?'allow':'deny'}]));}
+        else{if(request.kind==='input_handoff')throw new Error('PROTECTED_INPUT_REQUIRED');if(request.kind==='ask_user_question')throw new Error('QUESTION_REQUIRES_ANSWER');print(await call('maker:resolve-interaction',[request.requestId,{kind:request.kind,behavior:subcommand==='approve'?'allow':'deny'}]));}
       }
       else if(subcommand==='resolve'){
         if(!values.stdin)throw new Error('DECISION_STDIN_REQUIRED');

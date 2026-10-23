@@ -44,6 +44,7 @@ export interface TerminalTaskHostOptions extends InputHost {
   secretStore: TerminalSecrets;
   emit(channel: string, args: unknown[]): void;
   defaultTitle?: string | (() => string);
+  protectedInput?: import('../protected-input.js').TerminalProtectedInput;
   beforeTaskUnavailable?: (sessionId:string)=>Promise<void>;
   authorizeHostedRequest?: (input: {sessionId:string;providerId:string;model:string}) => Promise<boolean>;
   authorizeGuestRequest?: (input: {sessionId:string;providerId:string;routeToken:string;model:string}) => Promise<boolean>;
@@ -330,7 +331,7 @@ export class TerminalTaskHost {
       helper: this.helperDeps({sessionId:id,workingDir:row.workDir,agentKind:chosen.selection.agentKind,title:()=>row.title}),
     }); } catch(error) { await knowledge?.close(); await capability.close(); throw error; }
     let agent;
-    try { agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, remote: Boolean(row.agentDeviceId), capabilities:capability, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
+    try { agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, taskShellEnv:()=>this.options.protectedInput?.envFor(id)??{}, remote: Boolean(row.agentDeviceId), capabilities:capability, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
     const startDeviceAgentSession = row.agentDeviceId && this.options.remoteInvoke ? createDeviceAgentStarter({ remoteInvoke: this.options.remoteInvoke, rgPath: () => 'rg', codexPath: () => this.binaries.get('codex') ?? undefined, mcpProviders: () => tools.providers, prepareMcpBridge: async () => tools.pi(), makerMemory: () => knowledge?.memory, logger: this.options.logger }) : undefined;
     const maker = new Maker({ agents: { [chosen.selection.agentKind]: agent }, storage: this.storage, logger: this.options.logger, ...(knowledge ? {makerMemory:knowledge.memory} : {}), ...(startDeviceAgentSession ? { startDeviceAgentSession } : {}) });
     try {
@@ -431,6 +432,7 @@ export class TerminalTaskHost {
     return { success: true };
   }
   private async closeTask(id: string) {
+    this.options.protectedInput?.handoff.cleanupForSession(id);
     const task = this.live.get(id);
     if (!task) return;
     for (const pending of [...this.pending.values()]) if (pending.sessionId === id) pending.settle(decisionForDismissal(pending.request));
@@ -554,10 +556,10 @@ export class TerminalTaskHost {
       case 'maker:list-active': { const sessions = [...this.live.values()].map(({ session }) => ({ sessionId: session.id, agentKind: session.agentKind, workDir: session.workDir, capabilities: session.capabilities, isTurnRunning: session.isTurnRunning() })); return args[0] && record(args[0]).snapshotVersion === 2 ? { format: 'active-sessions-v2', sessions } : sessions; }
       case 'maker:any-session-in-turn': return [...this.live.values()].some(task => task.session.isTurnRunning());
       case 'maker:session-in-turn': return this.live.get(string(args[0]))?.session.isTurnRunning() ?? false;
-      case 'maker:get-pending-interactions': return [...this.pending.values()].filter(p => p.sessionId === args[0] && (!context.sharedTask || ['permission','ask_user_question','plan_review'].includes(p.request.kind))).map(p => ({ request: p.request }));
-      case 'maker:resolve-interaction': {if(context.sharedTask)this.assertSharedInteraction(string(args[0]),record(args[1]));return this.resolveInteraction(string(args[0]), args[1]);}
+      case 'maker:get-pending-interactions': return [...(!context.sharedTask ? this.options.protectedInput?.handoff.pendingSnapshots(string(args[0]))??[] : []), ...[...this.pending.values()].filter(p => p.sessionId === args[0] && (!context.sharedTask || ['permission','ask_user_question','plan_review'].includes(p.request.kind))).map(p => ({ request: p.request }))];
+      case 'maker:resolve-interaction': {if(!context.sharedTask&&this.options.protectedInput?.handoff.isCurrent(string(args[0])))return this.options.protectedInput.handoff.resolve(string(args[0]),args[1],context.source==='remote'?{deviceId:context.deviceId}:{local:true});if(context.sharedTask)this.assertSharedInteraction(string(args[0]),record(args[1]));return this.resolveInteraction(string(args[0]), args[1]);}
       case 'maker:close-session': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.closeTask(id); return { success: true }; }
-      case 'maker:abort-session': { const task = this.live.get(string(args[0])); await task?.session.abort(); return { success: true }; }
+      case 'maker:abort-session': { const id=string(args[0]);this.options.protectedInput?.handoff.cleanupForSession(id);const task = this.live.get(id); await task?.session.abort(); return { success: true }; }
       case 'maker:send': {
         if (args[1] && typeof args[1] === 'object' && typeof (args[1] as Record<string, unknown>).clientId === 'string') {
           const receipt = await this.submit(string(args[0]), args[1], { requestId: (args[1] as Record<string, unknown>).clientId }, context);

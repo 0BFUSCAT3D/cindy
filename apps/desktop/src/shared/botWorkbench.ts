@@ -16,12 +16,7 @@ export interface BotWorkbench {
 }
 
 /** Project references provide context, never task responsibility or execution permission. */
-export interface BotLinkedProject {
-  path: string;
-  addedAt: string;
-  /** Missing means this computer; a foreign path must never be opened locally. */
-  deviceId?: string;
-}
+export type { BotLinkedProject } from '@cindy/companion-core/workbench';
 
 export interface BotProjectOption {
   id: string;

@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
+import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 const [runtimeArg, reportArg] = process.argv.slice(2);
@@ -20,7 +21,7 @@ const cli = path.join(runtime, 'app/dist/cli.js');
 const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'CI', 'TERM'].filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
 const env = { ...inherited, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.local/state'), LOCALAPPDATA: path.join(home, 'AppData/Local'), APPDATA: path.join(home, 'AppData/Roaming'), CODEX_HOME: path.join(home, '.codex'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent'), NODE_PATH: '', NODE_OPTIONS: '' };
 const results = [];
-const record = (name, status, details) => { results.push({ name, status, ...(details ? { details } : {}) }); console.log(`${status}: ${name}${details ? ` (${details})` : ''}`); };
+const record = (name, status, details) => { results.push({ name, status, ...(details ? { details } : {}) }); console.log(`${status}: ${name}${details ? ` (${details})` : ''}`); writeFileSync(path.join(report,'results.json'),JSON.stringify({platform:process.platform,arch:process.arch,node:process.version,results},null,2)); };
 async function run(args, { input = '', timeout = 30_000, raw = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(node, [cli, ...args, '--state-dir', profile, '--json'], { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -100,10 +101,11 @@ try {
     const timeout = setTimeout(() => reject(new Error('ICE gathering timeout')), 10_000);
     peer.addEventListener('icegatheringstatechange', () => { if (peer.iceGatheringState === 'complete') { clearTimeout(timeout); resolve(); } });
   });
+  const sender = left.createDataChannel('acceptance');
+  let receiver;
   try {
-    const sender = left.createDataChannel('acceptance');
     let resolveReceived;
-    const received = new Promise(resolve => { resolveReceived = resolve; right.ondatachannel = event => { event.channel.onmessage = message => resolveReceived(message.data); }; });
+    const received = new Promise(resolve => { resolveReceived = resolve; right.ondatachannel = event => { receiver=event.channel; receiver.onmessage = message => resolveReceived(message.data); }; });
     const open = new Promise(resolve => { sender.onopen = resolve; });
     let timeout;
     try { await Promise.race([(async () => {
@@ -113,7 +115,7 @@ try {
     })(), new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('RTC data channel timeout')), 25_000); })]); }
     finally { clearTimeout(timeout); }
     record('real local WebRTC data channel', 'PASS');
-  } finally { left.close(); right.close(); }
+  } finally { sender.onopen=null;sender.close();if(receiver){receiver.onmessage=null;receiver.close();}right.ondatachannel=null;left.close();right.close(); }
 
   const install = await run(['service', 'install'], { raw: true });
   if (install.code === 0) { registered = true; await run(['service', 'uninstall']); registered = false; record('native user-service registration + removal', 'PASS'); }
@@ -130,4 +132,5 @@ try {
   await writeFile(path.join(report, 'results.json'), JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, results }, null, 2));
   await writeFile(path.join(report, 'runtime-manifest.json'), await readFile(path.join(runtime, 'runtime-manifest.json')));
   await rm(temporary, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  console.log('NATIVE_ACCEPTANCE_CLEANUP_COMPLETE',JSON.stringify(process.getActiveResourcesInfo()));
 }

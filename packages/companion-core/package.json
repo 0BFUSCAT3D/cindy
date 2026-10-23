@@ -14,7 +14,10 @@
   },
   "dependencies": {
     "@cindy/maker-shared": "workspace:*",
-    "zod": "^4.1.5"
+    "zod": "^4.1.5",
+    "@cindy/remote-agent": "workspace:*",
+    "@cindy/maker-scheduler": "workspace:*",
+    "@cindy/device-link": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "*",

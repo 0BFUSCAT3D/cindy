@@ -1129,9 +1129,18 @@ importers:
 
   packages/companion-core:
     dependencies:
+      '@cindy/device-link':
+        specifier: workspace:*
+        version: link:../device-link
+      '@cindy/maker-scheduler':
+        specifier: workspace:*
+        version: link:../maker-scheduler
       '@cindy/maker-shared':
         specifier: workspace:*
         version: link:../maker-shared
+      '@cindy/remote-agent':
+        specifier: workspace:*
+        version: link:../remote-agent
       zod:
         specifier: 4.3.6
         version: 4.3.6

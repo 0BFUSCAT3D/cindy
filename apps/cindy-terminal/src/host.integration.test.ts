@@ -22,6 +22,8 @@ import { TerminalMediaTransfer } from './media-transfer.js';
 import { TerminalSecretStore } from './secrets.js';
 import { TerminalTransportServer, connectTerminal } from './transport.js';
 import { socketPath, privateDirectory } from './platform.js';
+import { TerminalProtectedInput } from './protected-input.js';
+import { inputHandoffPresentation, type InputHandoffSnapshot } from '@cindy/device-link';
 
 describe('terminal private host', () => {
   let directory: string;
@@ -137,6 +139,37 @@ describe('terminal private host', () => {
     } finally { await first.close(); await second.close(); }
     if (process.platform !== 'win32') await fs.rm(path.dirname(socketPath(dir)), { recursive: true, force: true });
   });
+});
+
+// Integration: a terminal controller must use the existing signed GUI protocol.
+// The entered value reaches the program once, never the plain wire or snapshots;
+// an old step cannot be replayed after completion or an owner change.
+it('delivers protected input through the signed exchange without recording its value', async () => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'cindy-protected-input-'));
+  const wire:unknown[]=[],events:unknown[]=[],answers:Array<string|null>=[];
+  let active=true;
+  const make=(id:string):TerminalProtectedInput=>{
+    const secrets=new Map<string,string>();
+    return new TerminalProtectedInput({root:path.join(root,id),
+      secrets:{get:async key=>secrets.get(key)??null,set:async(key,value)=>{secrets.set(key,value);},delete:async key=>{secrets.delete(key);}},
+      scope:()=>({realm:'global',membershipId:'test-owner',deviceId:id}),
+      assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},remoteEnabled:()=>true,taskExists:async()=>true,
+      emit:(channel,payload)=>events.push({channel,payload}),
+      invoke:async(_device,_channel,args)=>{wire.push(args);return {ok:true,result:await host.request(id,args[0])};},
+    });
+  };
+  const host=make('host-device'),controller=make('controller-device');
+  try {
+    host.handoff.startTerminalPrompt({sessionId:'test-task',program:'sudo',command:'sudo -A true',prompt:'Password:',answer:value=>answers.push(value)});
+    const snapshot=host.handoff.pendingSnapshots()[0].request as InputHandoffSnapshot;
+    const submission={expectedRevision:snapshot.revision,values:{[snapshot.controls.find(control=>control.kind==='text')!.id]:'synthetic-private-value'},action:{kind:'submit' as const}};
+    expect(await controller.submitRemote('host-device',inputHandoffPresentation(snapshot),submission)).toEqual({accepted:true});
+    expect(answers).toEqual(['synthetic-private-value']);
+    expect(JSON.stringify({wire,events})).not.toContain('synthetic-private-value');
+    await expect(controller.submitRemote('host-device',inputHandoffPresentation(snapshot),submission)).rejects.toThrow();
+    active=false;
+    await expect(controller.submitRemote('host-device',inputHandoffPresentation(snapshot),submission)).rejects.toThrow('OWNER_CHANGED');
+  } finally {active=true;await controller.close();await host.close();await fs.rm(root,{recursive:true,force:true});}
 });
 
 

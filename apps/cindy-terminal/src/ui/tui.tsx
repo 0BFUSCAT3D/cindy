@@ -1,3 +1,5 @@
+import { ProtectedInputView } from './protected-input.js';
+import { inputHandoffPresentation, INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, type InputHandoffSnapshot } from '@cindy/device-link';
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, render, useApp, useInput, useWindowSize } from 'ink';
 import wrapAnsi from 'wrap-ansi';
@@ -90,7 +92,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   const [error, setError] = useState('');
   const [status, setStatus] = useState<Data>({});
   const [auth, setAuth] = useState<TerminalAuthSnapshot | null>(null);
-  const [pending, setPending] = useState<InteractionRequest[]>([]);
+  const [pending, setPending] = useState<Array<InteractionRequest|InputHandoffSnapshot>>([]);
   const [reviewRequest, setReviewRequest] = useState(false);
   const [running, setRunning] = useState(false);
   const [device, setDevice] = useState(initialDevice);
@@ -281,7 +283,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
             return overlap<0?latest:[...previous.slice(0,overlap),...latest];
           });
           if(latest.length<200)setHistoryExhausted(true);
-          setPending(array(requests).map(value => (value.request ?? value) as InteractionRequest));
+          setPending(array(requests).map(value => (value.request ?? value) as InteractionRequest|InputHandoffSnapshot));
           setRunning(inTurn === true);setTaskInfo(info);
           if(at.device)setTargetOnline(true);
         }
@@ -377,7 +379,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   useEffect(() => { if (!pending.length) setReviewRequest(false); }, [pending.length]);
   useEffect(() => client.subscribe((channel,args) => {
     if (channel === 'terminal:connection-lost') { setConnected(false);setError(t.connectionLost); }
-    else if (channel === 'terminal:connection-ready') {setConnected(true);setConnectionEpoch(value=>value+1);void loadCurrent.current().catch(()=>{});}
+    else if (channel === 'terminal:connection-ready') {setConnected(true);setError(previous=>previous===t.connectionLost?'':previous);setConnectionEpoch(value=>value+1);void loadCurrent.current().catch(()=>{});}
     else if (channel === 'terminal:remote-status') {if(current.current.device){if(args[0]!=='online')setTargetOnline(false);else void loadCurrent.current().catch(()=>{});}}
     else if (channel === 'terminal:devices:changed') {const changed=record(args[0]);if(changed.deviceId===current.current.device)setTargetOnline(changed.online===true);if(current.current.page==='connections')void loadCurrent.current().catch(()=>{});}
     else if (channel === 'terminal:auth:changed') setAuth(args[0] as TerminalAuthSnapshot);
@@ -446,7 +448,10 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
       {page === 'login' ? <Authentication client={client} locale={locale} sso={initialSso} onDone={()=>navigate('tasks')} onNeedsVault={()=>navigate('service')} />
         : form ? <FormView key={form.id} form={form} busy={busy} error={error} cancel={() => setForm(null)} submit={values => void action(() => form.submit(values))} />
         : page === 'resources' ? <Resources client={client} device={device} locale={locale} initialCollection={initialCollection} onTask={(id,target)=>{if(target)setDevice(target);setTask(id);setPage('tasks');}} />
-        : task && reviewRequest && pending[0] ? <InteractionView key={pending[0].requestId} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)} resolve={decision=>void action(async()=>{ await call('maker:resolve-interaction',[pending[0].requestId,decision]); setReviewRequest(false); await load(); })} />
+        : task && reviewRequest && pending[0]?.kind==='input_handoff' ? <ProtectedInputView key={`${pending[0].requestId}:${pending[0].revision}`} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)}
+          submit={submission=>{const request=pending[0] as InputHandoffSnapshot;void action(async()=>{const result=unwrap(await client.invoke(device?INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL:INPUT_HANDOFF_LOCAL_CHANNEL,[device?{deviceId:device,presentation:inputHandoffPresentation(request),submission}:{requestId:request.requestId,submission}]));if(record(result).accepted!==true)throw new Error('INPUT_HANDOFF_STALE');setReviewRequest(false);await load();});}}
+          decide={decision=>void action(async()=>{await call('maker:resolve-interaction',[pending[0].requestId,decision]);setReviewRequest(false);await load();})}/>
+        : task && reviewRequest && pending[0] && pending[0].kind!=='input_handoff' ? <InteractionView key={pending[0].requestId} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)} resolve={decision=>void action(async()=>{ await call('maker:resolve-interaction',[pending[0].requestId,decision]); setReviewRequest(false); await load(); })} />
         : task ? <>
           <Text bold>{label(taskInfo.title,t.newTask)}</Text>
           <Text dimColor>{label(taskInfo.model)} · {label(taskInfo.agentKind)} · {running ? t.working : t.ready}{pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}</Text>
