@@ -109,8 +109,9 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    6b. **发送前上下文体检同源**：个人 IM 的 `dispatchQueuedSend` 在伙伴守卫（`companion.prepareSend`）
    之后、拿发送锁（`acquirePendingAgentSwitch`）之前调用 `deps.prepareUnhealthySession`（orchestrator 接
    `register.prepareUnhealthySessionForSend`），与桌面直发、官方 hook 走同一个
-   `contextOverflowRollover.prepareUnhealthySession`：伙伴对话（主任务 + channel / group 专线）的空闲
-   间隔刷新（≥12h）、90% 到线换窗、坏历史重建都在这里发生，IM 不另设换窗 / 换任务规则
+   `contextOverflowRollover.prepareUnhealthySession`：伙伴对话（主任务 + channel / group 专线）沿用
+   普通 Session 的真实满窗、明确压缩失败和坏历史恢复；健康上下文交给原生压缩，不按空闲时长
+   或 70%/90% 伙伴阈值提前换窗，正常压缩也不重启伙伴实例。IM 不另设换窗 / 换任务规则
    （[`cindy-bots-runtime.md` §3.2](../product-rules/cindy-bots-runtime.md)）。体检关闭 live handle 的原因是
    `runtime-refresh`，close 监听在有 `acquirePendingAgentSwitch` 时保住任务，新 handle 由
    `refreshSessionAfterPendingAgentSwitch` 按最新 DB 行重建；体检抛错按直发口径让这条消息失败。
