@@ -34,6 +34,7 @@ import type { TeammateTodo } from '@cindy/maker-shared/teammate-todo';
 import { portableTodo, travellingTodos } from './travel.js';
 import type { CompanionMaterializeHost } from './materialize.js';
 import { companionHomes } from './homes.js';
+import { createMcpServerNamesReader } from './mcpServerNames.js';
 import { companionCapabilitiesPatch, portableCompanionCapabilities, type CompanionArrivalNotice } from './capabilities.js';
 import { MIRROR_ATTACHMENT_MAX_BYTES, type CompanionMirrorCursor, type CompanionMirrorRow } from './mirror.js';
 import { replyArtifactAttachments, replyTextWithFiles } from './replyArtifacts.js';
@@ -63,6 +64,8 @@ function profileTemplateId(capabilitiesJson: string | null, identitySource: stri
   return inferBotTemplatePresetId(identitySource);
 }
 
+const readMcpServerNames = createMcpServerNamesReader(listCustomMcpServers, activeOwnerScopeKey);
+
 export async function readCompanionValues(botId: string, selfDeviceId: string | null = null): Promise<CompanionPreferenceValue[]> {
   const userDataDir = ownerScopedUserDataPath();
   const [row] = await getDbClient().drizzle
@@ -86,7 +89,7 @@ export async function readCompanionValues(botId: string, selfDeviceId: string | 
     const config = JSON.parse(row.capabilities ?? '{}') as unknown;
     if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('CAPABILITIES_UNREADABLE');
     // Names of this computer's own MCP servers, so a computer without them can still say which one it is.
-    const mcpNames = Object.fromEntries((await listCustomMcpServers().catch(() => [])).map(server => [server.id, server.name]));
+    const mcpNames = await readMcpServerNames();
     values.push({ key: COMPANION_CAPABILITIES_KEY, value: portableCompanionCapabilities(
       config as Record<string, unknown>, readExplicitBotModelChain(config as Record<string, unknown>), mcpNames) });
   } catch { values.push({ key: COMPANION_CAPABILITIES_KEY, value: null, unread: true }); }
