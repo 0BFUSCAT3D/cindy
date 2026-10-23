@@ -2890,15 +2890,30 @@ function acquireDisclosureLock(lockPath: string): boolean {
       if (attempt === 1) return false;
       const owner = readLockOwner(lockPath);
       if (owner === undefined || owner === process.pid || isProcessAlive(owner)) return false;
-      // 回收：把残留锁**原子地挪走**，只有 rename 成功的那个实例才有权回收。否则两个
-      // 实例会先各自读到旧 owner，然后都执行 rmSync——A 删掉旧锁并重新加锁后，B 仍然
-      // 会把 A 的新锁删掉，两边同时进入写入路径，后一次替换覆盖前一次刚存的披露记录。
+      // 回收：把残留锁**原子地挪走**，再验证挪走的确实是自己刚读到的那个死锁。
+      // 只靠 rename 成功不够：两个实例可能先后读到同一个旧 owner，A 先回收旧锁并重建，
+      // B 随后的 rename 仍会成功——掣走的是 A 的新锁（活锁）。所以挪走后必须校验
+      // stale 内容：不是那个死 pid 就说明掣了别人的锁，立即放回并放弃本次落盘。
+      // 「只有 wx 成功才算拿到锁」的不变量保证 B 全程不会进入写入路径。
       const stale = lockPath + '.stale-' + process.pid;
       try { rmSync(stale, { force: true }); } catch { /* 上次没清掉的回收槽 */ }
       try {
         renameSync(lockPath, stale);
       } catch {
         return false; // 已被另一个实例回收或重建：不争，跳过本次落盘。
+      }
+      let stolen: number | undefined;
+      try {
+        const parsed = Number.parseInt(readFileSync(stale, 'utf8').trim(), 10);
+        stolen = Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+      } catch {
+        stolen = undefined;
+      }
+      if (stolen !== owner) {
+        // 掣走的是别的实例刚建的活锁：放回去（若路径已被占用则丢弃掣走的副本——
+        // 路径上那个新锁才是有效的），本次不落盘。
+        try { renameSync(stale, lockPath); } catch { try { rmSync(stale, { force: true }); } catch { /* 忽略 */ } }
+        return false;
       }
       try { rmSync(stale, { force: true }); } catch { /* 残留回收槽不影响正确性 */ }
     }
@@ -2989,7 +3004,7 @@ class CindyMcpGateway {
     }
   }
 
-  private persistDisclosures(): void {
+  private persistDisclosures(changedKey: string): void {
     const file = this.disclosureFile();
     if (!file) return;
     const temp = file + '.' + process.pid + '.tmp';
@@ -2997,7 +3012,11 @@ class CindyMcpGateway {
       const lockPath = file + '.lock';
       if (!acquireDisclosureLock(lockPath)) return;
       try {
-        const merged = new Map<string, string>(this.disclosedSchemas);
+        // 以**锁内读到的磁盘记录为基础**，只覆盖本次实际披露的那个键。整份内存记录
+        // 优先会把另一个实例刚保存的新指纹改回本进程启动时载入的旧值：A 载入 X=f1，
+        // B 更新 X 落盘 f2，A 之后只为 Y 落盘时会把 X 回退成 f1——B 那边对 X 的披露
+        // 就被作废了。内存里的旧值不写回；本进程对 X 的认知只影响下次启动载入。
+        const merged: Record<string, string> = {};
         try {
           const existing = JSON.parse(readFileSync(file, 'utf8')) as {
             version?: unknown; entries?: unknown;
@@ -3005,14 +3024,16 @@ class CindyMcpGateway {
           if (existing?.version === 1 && existing.entries && typeof existing.entries === 'object') {
             for (const [key, fingerprint] of Object.entries(existing.entries as Record<string, unknown>)) {
               if (typeof fingerprint === 'string' && /^[a-f0-9]{64}$/.test(fingerprint)) {
-                if (!merged.has(key)) merged.set(key, fingerprint);
+                merged[key] = fingerprint;
               }
             }
           }
         } catch {
-          // 磁盘记录缺失/损坏：按只有本进程记录处理。
+          // 磁盘记录缺失/损坏：按只有本次变更处理。
         }
-        writeFileSync(temp, JSON.stringify({ version: 1, entries: Object.fromEntries(merged) }), { mode: 0o600 });
+        const current = this.disclosedSchemas.get(changedKey);
+        if (current) merged[changedKey] = current;
+        writeFileSync(temp, JSON.stringify({ version: 1, entries: merged }), { mode: 0o600 });
         renameSync(temp, file);
       } finally {
         try { rmSync(lockPath, { force: true }); } catch { /* 残留锁由下次写入回收 */ }
@@ -3182,7 +3203,7 @@ class CindyMcpGateway {
     const fingerprint = this.schemaFingerprint(call.tool);
     if (this.disclosedSchemas.get(key) === fingerprint) return false;
     this.disclosedSchemas.set(key, fingerprint);
-    this.persistDisclosures();
+    this.persistDisclosures(key);
     return true;
   }
 

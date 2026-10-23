@@ -53,6 +53,8 @@ function loadGateway(options: {
   killErrorCode?: string;
   /** 模拟回收残留锁时被另一个实例抢先（rename 失败）。 */
   reclaimLostRace?: boolean;
+  /** 模拟挪走的残留锁内容其实是另一个实例重建的活锁（pid）。 */
+  reclaimReplacesWith?: number;
 } = {}) {
   const writes: DisclosedFile[] = [];
   const renames: string[] = [];
@@ -64,6 +66,9 @@ function loadGateway(options: {
   // 锁文件独立于披露文件，由外部（另一实例或崩溃残留）直接写入；null = 不存在。
   const lockFile: { value: string | null } = { value: null };
   if (options.lockOwner !== undefined) lockFile.value = String(options.lockOwner);
+  // stale 回收槽：rename(lock→stale) 时锁内容搬到这里；内容可为外部预置（模拟
+  // 「旧锁已被另一个实例换成活进程的新锁，但本实例的 rename 仍成功」）。
+  const staleFile: { value: string | null } = { value: options.staleContent ?? null };
   const externalWrite = (value: DisclosedFile) => { disk.value = value; };
   const reclaimed: string[] = [];
 
@@ -93,6 +98,10 @@ function loadGateway(options: {
       dirname: (file: string) => file.slice(0, file.lastIndexOf('/')),
     },
     readFileSync: (file: string) => {
+      if (file.includes('.stale-')) {
+        if (staleFile.value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return staleFile.value;
+      }
       if (file.endsWith('.lock')) {
         if (lockFile.value === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
         return lockFile.value;
@@ -114,11 +123,21 @@ function loadGateway(options: {
         // 模拟另一个实例先把残留锁回收并重建了新锁：本实例的 rename 失败。
         throw Object.assign(new Error('lock gone'), { code: 'ENOENT' });
       }
-      if (from.endsWith('.lock')) lockFile.value = null;
+      if (from.endsWith('.lock') && to.includes('.stale-')) {
+        // 回收挪动：锁内容搬进回收槽；外部可同时预置 reclaimReplacesWith，模拟
+        // 「挪走的其实是另一个实例刚重建的活锁」（内容与读到的死 pid 不一致）。
+        staleFile.value = options.reclaimReplacesWith ?? lockFile.value;
+        lockFile.value = null;
+      } else if (from.endsWith('.stale-') && to.endsWith('.lock')) {
+        // 放回：回收槽内容回到锁路径。
+        lockFile.value = staleFile.value;
+        staleFile.value = null;
+      }
       renames.push(`${from} -> ${to}`);
     },
     rmSync: (file: string) => {
-      if (file.endsWith('.lock') && !file.includes('.stale-')) lockFile.value = null;
+      if (file.includes('.stale-')) staleFile.value = null;
+      else if (file.endsWith('.lock')) lockFile.value = null;
       reclaimed.push(file);
     },
     openSync: (file: string, flags: string) => {
@@ -313,15 +332,38 @@ describe('MCP gateway schema disclosure', () => {
       .isSchemaDisclosed(gateway.resolveCall({ server: 'cindy_orca', tool: 'send_to_worker' }))).toBe(true);
   });
 
-  it('skips persisting when another instance reclaimed the stale lock first', async () => {
-    // 回收必须与重新加锁互斥：rename 失败说明锁已被别人收走/重建，本实例直接放弃，
-    // 不能继续 rmSync（那会删掉对方刚建的锁，两边都进写入路径互相覆盖记录）。
-    const { call, requests, disk, reclaimed } = loadGateway({ lockOwner: 999, reclaimLostRace: true });
+  it('restores the lock and skips persisting when the reclaimed lock was actually a live one', async () => {
+    // 两个实例同时读到死 pid：A 先回收旧锁并重建；B 的 rename 仍会成功，但掣走的是
+    // A 的新锁（内容 777，活进程）。校验内容不一致后必须放回并放弃本次落盘，
+    // 否则 B 会在 A 持锁写披露的同时进入写入路径，后写方覆盖先写方的记录。
+    const { call, requests, disk, renames } = loadGateway({ lockOwner: 999, reclaimReplacesWith: 777 });
     await call();
     expect(requests).toHaveLength(1);
     expect(disk.value).toBeNull();
-    expect(reclaimed.some((file) => file.endsWith('.lock') && !file.includes('.stale-'))).toBe(false);
+    // 放回：回收槽内容回到锁路径（放回 rename + 原写入 rename 都有记录）
+    expect(renames.some((r) => r.includes('.stale-4242 -> /runtime/mcp-disclosure-s1.json.lock'))).toBe(true);
   });
+
+  it('keeps another instance newer fingerprint when persisting a different tool', async () => {
+    // A 启动时载入 X 的旧指纹；另一实例随后更新 X 并落盘新指纹（外部写入磁盘）；
+    // A 之后只为 Y 落盘。磁盘优先 + 只覆盖本次键：X 必须保持新指纹，不能被 A 内存
+    // 里的旧值回退——否则下次启动 A 会把 X 判为未披露。
+    const { gateway, disk, externalWrite } = loadGateway({
+      stored: { version: 1, entries: { 'cindy_orca send_to_worker': fingerprint(TOOL) } },
+    });
+    const newer = fingerprint(TOOL_CHANGED);
+    externalWrite({ version: 1, entries: { 'cindy_orca send_to_worker': newer } });
+
+    // A 为另一个工具 Y 显式披露（list_tools 单工具查询的生产路径）。
+    const other = { name: 'list_workers', description: '列出 workers', inputSchema: { type: 'object' } };
+    gateway.add('cindy_orca', { request: async () => ({ content: [] }) }, [other]);
+    await (gateway as unknown as { listResult: (params: unknown) => Promise<unknown> })
+      .listResult({ server: 'cindy_orca', tool: 'list_workers' });
+
+    expect(disk.value?.entries['cindy_orca send_to_worker']).toBe(newer);
+    expect(disk.value?.entries['cindy_orca list_workers']).toBe(fingerprint(other));
+  });
+
 
   it('treats a missing or corrupt disclosure file as undisclosed and still executes', async () => {
     for (const stored of [
