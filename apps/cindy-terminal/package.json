@@ -1,0 +1,52 @@
+{
+  "name": "cindy-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "cindy": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "tsx src/cli.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --maxWorkers=1 --fileParallelism=false"
+  },
+  "dependencies": {
+    "@roamhq/wrtc": "0.10.0",
+    "@cindy/auth-client": "workspace:*",
+    "@cindy/device-link": "workspace:*",
+    "@cindy/maker-core": "workspace:*",
+    "@cindy/maker-scheduler": "workspace:*",
+    "@cindy/maker-shared": "workspace:*",
+    "@cindy/mcps": "workspace:*",
+    "@cindy/model-providers": "workspace:*",
+    "ink": "7.0.0",
+    "react": "19.2.3",
+    "node-pty": "^1.0.0",
+    "ssh2": "^1.17.0",
+    "wrap-ansi": "8.1.0",
+    "ws": "^8.18.3",
+    "zod": "^4.0.0",
+    "@cindy/file-browser-core": "workspace:*",
+    "chokidar": "^4.0.3",
+    "@cindy/remote-agent": "workspace:*",
+    "tar": "^7.5.22",
+    "yauzl": "^2.10.0",
+    "@cindy/maker-remote-ssh": "workspace:*",
+    "@cindy/anthropic-compat-proxy": "workspace:*",
+    "@cindy/anthropic-responses-bridge": "workspace:*",
+    "@cindy/responses-anthropic-bridge": "workspace:*",
+    "@cindy/responses-chat-bridge": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4",
+    "@types/yauzl": "^2.10.3"
+  }
+}

@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+// Executes the installed artifact, not tsx/source imports. All user state and
+// synthetic secrets live in a fresh temporary directory, never the CI account.
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { createRequire } from 'node:module';
+import assert from 'node:assert/strict';
+
+const [runtimeArg, reportArg] = process.argv.slice(2);
+if (!runtimeArg || !reportArg) throw new Error('Usage: platform-acceptance.mjs <runtime-directory> <report-directory>');
+const runtime = path.resolve(runtimeArg), report = path.resolve(reportArg);
+await mkdir(report, { recursive: true });
+const temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-platform-'));
+const home = path.join(temporary, 'home'), profile = path.join(temporary, 'profile');
+await mkdir(home);
+const node = path.join(runtime, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
+const cli = path.join(runtime, 'app/dist/cli.js');
+const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'CI', 'TERM'].filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+const env = { ...inherited, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.local/state'), LOCALAPPDATA: path.join(home, 'AppData/Local'), APPDATA: path.join(home, 'AppData/Roaming'), CODEX_HOME: path.join(home, '.codex'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent'), NODE_PATH: '', NODE_OPTIONS: '' };
+const results = [];
+const record = (name, status, details) => { results.push({ name, status, ...(details ? { details } : {}) }); console.log(`${status}: ${name}${details ? ` (${details})` : ''}`); };
+async function run(args, { input = '', timeout = 30_000, raw = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(node, [cli, ...args, '--state-dir', profile, '--json'], { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    let output = '', error = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`Timeout: ${args.slice(0, 2).join(' ')}`)); }, timeout);
+    child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { error += chunk; });
+    child.on('error', reject); child.on('close', code => {
+      clearTimeout(timer);
+      if (raw) { resolve({ code, output, error }); return; }
+      if (code !== 0) { reject(new Error(`CLI ${args.slice(0, 2).join(' ')}: ${output || error}`)); return; }
+      try { resolve(JSON.parse(output)); } catch { reject(new Error(`Non-JSON CLI result: ${args.slice(0, 2).join(' ')}`)); }
+    });
+    child.stdin.end(input);
+  });
+}
+
+let server;
+let registered = false;
+try {
+  const version = await run(['--version']); assert.equal(typeof version, 'string'); record('bundled Node + CLI version', 'PASS', version);
+  const help = await run(['--help']); assert.match(help, /Cindy/); record('bundled CLI help', 'PASS');
+  server = spawn(node, [cli, 'serve', '--state-dir', profile], { env, cwd: home, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let startupOutput = '';
+  server.stdout.on('data', chunk => { startupOutput += chunk; }); server.stderr.on('data', chunk => { startupOutput += chunk; });
+  let available = false;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (server.exitCode !== null) throw new Error(`Service exited before ready: ${startupOutput}`);
+    try { await run(['status'], { timeout: 2000 }); available = true; break; } catch { await new Promise(resolve => setTimeout(resolve, 100)); }
+  }
+  assert.ok(available, 'Local IPC service must start'); record('real daemon + authenticated local socket/pipe', 'PASS');
+  await run(['vault', 'setup', '--passphrase-stdin'], { input: 'test-only-platform-passphrase\n' });
+  record('passphrase vault setup', 'PASS');
+  const tasks = await run(['tasks', 'list']); assert.ok(tasks); record('daemon command through authenticated IPC', 'PASS');
+  const second = await run(['serve'], { raw: true, timeout: 10_000 }); assert.equal(second.code, 0); record('duplicate host does not replace original owner', 'PASS');
+  await run(['status']);
+  await run(['service', 'stop']);
+  await new Promise(resolve => { if (server.exitCode !== null) resolve(); else server.once('exit', resolve); }); server = undefined;
+  const wrong = await run(['vault', 'unlock', '--passphrase-stdin'], { input: 'wrong-test-passphrase\n', raw: true });
+  assert.notEqual(wrong.code, 0); record('vault rejects wrong passphrase after daemon restart', 'PASS');
+  await run(['vault', 'unlock', '--passphrase-stdin'], { input: 'test-only-platform-passphrase\n' }); record('vault survives real process restart', 'PASS');
+  for (const kind of ['claude-code', 'codex', 'pi']) {
+    const state = await run(['engines', 'install', kind], { timeout: 10 * 60_000 });
+    assert.equal(state.source, 'managed'); assert.ok(state.version); record(`official ${kind} download + native --version`, 'PASS', state.version);
+  }
+
+  // Native PTY integration also captures an actual TUI frame; no mock streams.
+  const require = createRequire(path.join(runtime, 'app/package.json'));
+  assert.equal(typeof require('ssh2').Client, 'function'); record('SSH runtime dependency loads', 'PASS');
+  const pty = require('node-pty');
+  const screen = await new Promise((resolve, reject) => {
+    const terminal = pty.spawn(node, [cli, '--state-dir', profile, '--lang', 'en'], { name: 'xterm-256color', cols: 100, rows: 32, cwd: home, env });
+    let output = '', closing = false;
+    const timeout = setTimeout(() => { terminal.kill(); reject(new Error('Native TUI did not render in PTY')); }, 20_000);
+    terminal.onData(data => {
+      output += data;
+      if (!closing && /Cindy|Tasks|tasks|Service|service/.test(output)) { closing = true; terminal.write('\u0003'); }
+    });
+    terminal.onExit(() => { clearTimeout(timeout); if (closing) resolve(output); else reject(new Error('TUI exited before rendering')); });
+  });
+  await writeFile(path.join(report, 'tui.ansi'), screen);
+  record('native PTY + rendered TUI frame', 'PASS');
+
+  // Actual local WebRTC data channel; no TURN/STUN service or account required.
+  const { RTCPeerConnection } = require('@roamhq/wrtc');
+  const left = new RTCPeerConnection(), right = new RTCPeerConnection();
+  const gathering = peer => peer.iceGatheringState === 'complete' ? Promise.resolve() : new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('ICE gathering timeout')), 10_000);
+    peer.addEventListener('icegatheringstatechange', () => { if (peer.iceGatheringState === 'complete') { clearTimeout(timeout); resolve(); } });
+  });
+  try {
+    const sender = left.createDataChannel('acceptance');
+    const received = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('RTC data channel timeout')), 20_000);
+      right.ondatachannel = event => { event.channel.onmessage = message => { clearTimeout(timeout); resolve(message.data); }; };
+    });
+    const open = new Promise(resolve => { sender.onopen = resolve; });
+    await left.setLocalDescription(await left.createOffer()); await gathering(left); await right.setRemoteDescription(left.localDescription);
+    await right.setLocalDescription(await right.createAnswer()); await gathering(right); await left.setRemoteDescription(right.localDescription);
+    await open; sender.send('cindy-platform-test'); assert.equal(await received, 'cindy-platform-test'); record('real local WebRTC data channel', 'PASS');
+  } finally { left.close(); right.close(); }
+
+  const install = await run(['service', 'install'], { raw: true });
+  if (install.code === 0) { registered = true; await run(['service', 'uninstall']); registered = false; record('native user-service registration + removal', 'PASS'); }
+  else if (process.platform === 'linux' && /USER_SERVICE_MANAGER_UNAVAILABLE/.test(install.output)) record('native user-service registration', 'UNAVAILABLE', 'Hosted runner has no systemd user manager; not claimed as tested');
+  else throw new Error(`Service registration failed: ${install.output || install.error}`);
+  await run(['service', 'stop']);
+} catch (error) {
+  record('platform acceptance', 'FAIL', String(error.message)); process.exitCode = 1;
+} finally {
+  if (registered) await run(['service', 'uninstall'], { raw: true }).catch(() => {});
+  await run(['service', 'stop'], { raw: true, timeout: 5000 }).catch(() => {});
+  server?.kill();
+  await writeFile(path.join(report, 'results.json'), JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version, results }, null, 2));
+  await writeFile(path.join(report, 'runtime-manifest.json'), await readFile(path.join(runtime, 'runtime-manifest.json')));
+  await rm(temporary, { recursive: true, force: true });
+}

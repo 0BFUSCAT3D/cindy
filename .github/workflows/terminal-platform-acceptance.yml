@@ -1,0 +1,66 @@
+name: Terminal native platform acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'terminal-platform-acceptance/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terminal-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    # Explicit acceptance branches can validate native runtimes before a PR.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x64
+          - runner: windows-latest
+            target: win32-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      XDT_SKIP_AGENT_BIN_INSTALL: '1'
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      ELECTRON_OVERRIDE_DIST_PATH: '${{ github.workspace }}/.electron-stub-dist'
+      CINDY_ACCEPTANCE_OUTPUT: '${{ runner.temp }}/cindy-${{ matrix.target }}'
+      CINDY_ACCEPTANCE_REPORT: '${{ runner.temp }}/cindy-report-${{ matrix.target }}'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install target-native dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Targeted authentication, vault, transport and engine tests
+        run: pnpm --filter cindy-terminal exec vitest run src/host.integration.test.ts src/engines/engines.test.ts src/ui/authentication.test.tsx --maxWorkers=1 --minWorkers=1
+      - name: Typecheck terminal
+        run: pnpm --filter cindy-terminal typecheck
+      - name: Build terminal bundle
+        run: pnpm --filter cindy-terminal build
+      - name: Package official Node and native dependencies
+        shell: bash
+        run: node apps/cindy-terminal/scripts/package-runtime.mjs --target '${{ matrix.target }}' --out "$CINDY_ACCEPTANCE_OUTPUT"
+      - name: Run real installed CLI, daemon, engines, PTY and WebRTC
+        shell: bash
+        run: node apps/cindy-terminal/scripts/platform-acceptance.mjs "$CINDY_ACCEPTANCE_OUTPUT" "$CINDY_ACCEPTANCE_REPORT"
+      - name: Upload platform evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: terminal-evidence-${{ matrix.target }}
+          path: ${{ env.CINDY_ACCEPTANCE_REPORT }}
+          if-no-files-found: warn
