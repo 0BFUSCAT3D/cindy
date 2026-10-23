@@ -65,6 +65,23 @@ pnpm mobile:sim:start -- --region=cn
 `--region=cn`，或使用名称已明确限定区域的 `mobile:sim:start:cn`。发布构建继续要求显式
 指定 region。
 
+Global / CN 在全新 worktree 中不需要 `config/endpoint.dev.json`；Metro 会将该私有清单
+排除出它们的 bundle，即使本机已有该文件也不打入。显式 `--region=dev` 仍读取 dev 正本，
+缺失或非法时应修复配置，不得回落到 Global / CN，也不要从其他 checkout 复制私有配置。
+
+复现或验收时，将现有身份检查保存在该任务的产物目录。先安装依赖、创建产物目录，再把
+下例 UDID 和区域换成实际目标；直接调用同一脚本，避免 pnpm 与依赖检查日志混进 JSON：
+
+```bash
+node apps/mobile/scripts/sim-whoami.mjs --region=global --udid <UDID> --json > outputs/<任务>/mobile-identity.json
+```
+
+JSON 已包含 `worktree` / `expectedSource`、`region` / `bundleId`、目标设备 UDID、安装版本、
+`native` 指纹检查和 `metros` 运行归属，无需再维护一份手工版本台账。保留退出码：非零或
+`healthy: false` 表示身份链未通过；`healthy: true` 仍不证明 App 已加载新 bundle，
+`pageVerified: false` 明确保留这个边界。页面／bundle 验证与截图按模拟器调试手册另外完成，
+证据放在同一任务目录。
+
 不要用临时 Metro、端口探测或手工修改 `.env` 代替这些脚本。多 worktree、原生构建、
 登录态和日志排查见 `apps/mobile/docs/simulator-debugging.md`。
 
@@ -295,14 +312,14 @@ prebuild 时将 Expo 模板默认的 `proguard-android.txt` 换成
 
 SDK 规则随依赖一起进入应用的最终 R8 配置，不在应用侧重复保留全部依赖：
 
-| Android SDK / 桥接 | 保留规则来源与边界 |
-| --- | --- |
-| React Native、Reanimated / Worklets | 使用依赖自带的 consumer rules，保留 JNI / TurboModule / Fabric 入口。 |
-| Expo 原生模块 | 使用 `expo-modules-core` 的 consumer rules，保留模块构造与 `definition()`、Record、视图等动态入口。自定义模块的函数名通过 `ModuleDefinition` 字符串注册。 |
-| 微信 OpenSDK 6.8.38 | Maven AAR 自带 `com.tencent.mm.opensdk` / `com.tencent.wxop` 规则；微信回调 Activity 由 config plugin 写入 manifest，由 Android 构建规则保留。 |
-| TapSDK 4.10.5 | `modules/xdt-tapdb/android/consumer-rules.pro` 按[官方接入要求](https://developer.taptap.io/docs/sdk/access/quickstart/#android-code-obfuscation)保留 `com.taptap` / `com.tapsdk`，覆盖服务发现及反射调用。 |
-| ONNX Runtime Android 1.30.0 | `modules/cindy-speaker-onnx/android/consumer-rules.pro` 保留 `ai.onnxruntime` 的类与成员，覆盖 JNI 按原名查找的 `TensorInfo` 等类型及构造方法。声纹录入与过滤须用开启 R8 的 release 包验证，mock 原生桥的 JS 单测不能替代。 |
-| Nimbus JOSE JWT 10.9.1 | 远控凭证模块直接调用 JOSE API，协议 JSON 使用显式键名的 `JSONObject` / Map，不依赖业务类字段名反射序列化。`cindy-remote-credentials/android/consumer-rules.pro` 仅忽略未启用的 XC20P 算法所需的可选 Tink 类；当前协议创建和接收均限制为 `ECDH-ES + A256GCM`。若扩展算法，须重新核对可选依赖。 |
+| Android SDK / 桥接                  | 保留规则来源与边界                                                                                                                                                                                                                                                                            |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| React Native、Reanimated / Worklets | 使用依赖自带的 consumer rules，保留 JNI / TurboModule / Fabric 入口。                                                                                                                                                                                                                         |
+| Expo 原生模块                       | 使用 `expo-modules-core` 的 consumer rules，保留模块构造与 `definition()`、Record、视图等动态入口。自定义模块的函数名通过 `ModuleDefinition` 字符串注册。                                                                                                                                     |
+| 微信 OpenSDK 6.8.38                 | Maven AAR 自带 `com.tencent.mm.opensdk` / `com.tencent.wxop` 规则；微信回调 Activity 由 config plugin 写入 manifest，由 Android 构建规则保留。                                                                                                                                                |
+| TapSDK 4.10.5                       | `modules/xdt-tapdb/android/consumer-rules.pro` 按[官方接入要求](https://developer.taptap.io/docs/sdk/access/quickstart/#android-code-obfuscation)保留 `com.taptap` / `com.tapsdk`，覆盖服务发现及反射调用。                                                                                   |
+| ONNX Runtime Android 1.30.0         | `modules/cindy-speaker-onnx/android/consumer-rules.pro` 保留 `ai.onnxruntime` 的类与成员，覆盖 JNI 按原名查找的 `TensorInfo` 等类型及构造方法。声纹录入与过滤须用开启 R8 的 release 包验证，mock 原生桥的 JS 单测不能替代。                                                                   |
+| Nimbus JOSE JWT 10.9.1              | 远控凭证模块直接调用 JOSE API，协议 JSON 使用显式键名的 `JSONObject` / Map，不依赖业务类字段名反射序列化。`cindy-remote-credentials/android/consumer-rules.pro` 仅忽略未启用的 XC20P 算法所需的可选 Tink 类；当前协议创建和接收均限制为 `ECDH-ES + A256GCM`。若扩展算法，须重新核对可选依赖。 |
 
 升级 SDK 时核对其 AAR/JAR 的 consumer rules、应用的最终 `configuration.txt` 和 release
 运行结果。共享的 Expo 配置也可能改变 iOS 指纹，冷更范围以指纹比对为准。
