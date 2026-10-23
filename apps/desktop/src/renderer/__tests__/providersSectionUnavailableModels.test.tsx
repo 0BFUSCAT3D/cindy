@@ -12,7 +12,7 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CustomProviderConfig, ProviderView } from '@cindy/model-providers';
+import type { CustomProviderConfig, ModelRegistry, ProviderView } from '@cindy/model-providers';
 import { createIpcError } from '../../shared/ipc-errors';
 import { toast } from '@/lib/toast';
 
@@ -245,8 +245,11 @@ describe('ProvidersSection — 双栏管理', () => {
         models: [{ id: 'MiniMax-M3', name: 'My chat', defaultEnabled: false }] },
     },
   });
-  function selectSpeechProvider(config: CustomProviderConfig = miniMaxConfig()) {
-    const provider = buildUserProvider(config, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+  function selectSpeechProvider(
+    config: CustomProviderConfig = miniMaxConfig(),
+    modelRegistry = BUNDLED_CATALOG.modelRegistry,
+  ) {
+    const provider = buildUserProvider(config, { modelRegistry });
     providerSnapshotState.customOverride = { ...provider, connected: true,
       availableMediaModelIds: provider.audioModels?.map(model => model.id) ?? [] };
     providerSnapshotState.order = [provider.id, 'xd'];
@@ -290,6 +293,38 @@ describe('ProvidersSection — 双栏管理', () => {
       }
     },
   );
+  // Unit regression for #6928: the real refresh/save path must recognize a saved
+  // model classified only by the current Server Registry. Bundled/explicit-mode
+  // cases above cannot catch an extra enabled reference beside a hidden model.
+  it.each([
+    ['codex', true, 'audio_speech'],
+    ['codex', false, 'audio_speech'],
+    ['pi', false, 'audio_speech'],
+    ['codex', false, 'audio_transcription'],
+  ] as const)('respects current Registry audio on %s (enabled=%s, mode=%s)', async (agent, defaultEnabled, mode) => {
+    const config: CustomProviderConfig = miniMaxConfig();
+    const savedAudio = { id: 'server-only-audio', name: 'My saved audio', defaultEnabled };
+    const runtime = config.runtimes[agent] ??= { baseUrl: 'https://proxy.example/v1', models: [] };
+    runtime.models.push(savedAudio);
+    const modelRegistry: ModelRegistry = {
+      schemaVersion: 5, updatedAt: '2026-10-23T00:00:00Z', models: [],
+      baseModels: [{ id: savedAudio.id, aliases: [], defaults: { mode } }],
+    };
+    selectSpeechProvider(config, modelRegistry);
+    expect(providerSnapshotState.customOverride!.audioModels).toEqual([
+      expect.objectContaining({ id: savedAudio.id, mode, defaultEnabled, sourceAgent: agent }),
+    ]);
+    window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: true, models: [] }));
+    render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+    const saved = vi.mocked(updateCustomProvider).mock.lastCall![0];
+    expect(saved.runtimes[agent]!.models.find(model => model.id === savedAudio.id)).toEqual(savedAudio);
+    expect(saved.runtimes.codex!.models.some(model => model.id === 'speech-2.8-turbo'))
+      .toBe(mode !== 'audio_speech');
+    expect(buildUserProvider(saved, { modelRegistry }).audioModels)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ id: savedAudio.id, mode, defaultEnabled })]));
+    expect(setModelVisibilities).not.toHaveBeenCalled();
+  });
   it.each(['proxy', 'oauth', 'disabled-route'] as const)(
     'does not offer or auto-add speech for an unconfirmed %s connection', async kind => {
       const config = miniMaxConfig();

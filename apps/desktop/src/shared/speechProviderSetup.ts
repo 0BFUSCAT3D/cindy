@@ -196,7 +196,8 @@ export function missingSpeechReference(
   const models = Object.values(config.runtimes).flatMap(runtime => runtime?.models ?? []);
   // Hidden speech is still a saved choice. Never fill a different runtime or
   // override discovery/user classification of an existing reference ID.
-  if (models.some(isSpeechModel)) return;
+  // Current Server-only classifications live in the projection, not userModelConfig.
+  if (provider.audioModels?.some(model => model.mode === 'audio_speech') || models.some(isSpeechModel)) return;
   const runtime = config.runtimes[target.agent];
   if (!runtime) return;
   const model = speechReferenceModels(runtime.baseUrl).find(reference => reference.defaultEnabled);
