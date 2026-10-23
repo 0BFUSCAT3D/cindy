@@ -181,9 +181,10 @@ describe.skipIf(!available)('a shared user forks a real Claude Code task through
       const anchor = events.filter((event) => event.type === 'text').map((event) => event.agentMeta?.uuid)
         .find((uuid): uuid is string => typeof uuid === 'string');
       expect(anchor).toBeDefined();
-      const fork = (upToMessageId: string, newSessionId: string) => owner.handle(GUEST, roundTrip({
+      const fork = (upToMessageId: string, newSessionId: string, acceptsForkFailed = true) => owner.handle(GUEST, roundTrip({
         op: 'fork', sourceSessionId: 'guest-task', newSessionId, agentKind: 'claude-code',
         sourceSdkSessionId: started.id, model: MODEL, upToMessageId,
+        ...(acceptsForkFailed ? { acceptsForkFailed: true } : {}),
       }));
 
       await expect(fork(anchor!, 'guest-child')).resolves.toMatchObject({ newSdkSessionId: expect.any(String) });
@@ -200,6 +201,10 @@ describe.skipIf(!available)('a shared user forks a real Claude Code task through
         msg: 'remote agent: a computer in the provider group could not fork the shared task',
         data: expect.objectContaining({ error: expect.objectContaining({ code: 'REMOTE_AGENT_FORK_FAILED' }) }),
       })]);
+
+      // 不认识新错误码的旧受邀者(分叉请求不带 acceptsForkFailed)照旧收到「暂时不可用」。
+      const legacy = await fork(missing, 'guest-child-3', false).then(() => null, (error: unknown) => error as Error);
+      expect(legacy?.message).toMatch(/^\[REMOTE_AGENT_UNAVAILABLE\]/);
     } finally {
       for (const host of [owner, member]) { await host.abortAll(); host.dispose(); }
     }
