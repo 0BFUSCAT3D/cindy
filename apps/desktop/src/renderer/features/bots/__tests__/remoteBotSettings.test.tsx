@@ -627,7 +627,8 @@ it.each(['gallery', 'file'])(
     const decodes: Array<() => void> = [];
     await openAvatar(() => new Promise<void>((resolve) => decodes.push(resolve)));
     let finishChoose!: (result: { canceled: boolean; previewDataUrl: string }) => void;
-    window.electronAPI.profileChooseAvatar = vi.fn(() =>
+    Object.assign(window.electronAPI, { localDb: { bots: {} } });
+    window.electronAPI.localDb.bots.chooseAvatarSource = vi.fn(() =>
       new Promise<{ canceled: boolean; previewDataUrl: string }>((resolve) => {
         finishChoose = resolve;
       }),

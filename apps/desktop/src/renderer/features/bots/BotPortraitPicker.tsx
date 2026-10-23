@@ -146,10 +146,9 @@ export function BotPortraitPicker({
     setError(false);
     setOpen(false);
     try {
-      // Account avatars use this same host chooser: validate and tone-map HDR
-      // before the renderer's sRGB canvas discards the original HDR metadata.
-      // Choosing prepares bytes only; it never saves or updates the account.
-      const result = await window.electronAPI.profileChooseAvatar();
+      // Bot source preparation shares account avatars' HDR conversion but is
+      // local-only: local-mode users do not need a Cindy account to pick a file.
+      const result = await window.electronAPI.localDb.bots.chooseAvatarSource();
       if (request !== generation.current || result.canceled || !result.previewDataUrl) return;
       const source = await loadAvatarSource(result.previewDataUrl);
       if (request !== generation.current) {

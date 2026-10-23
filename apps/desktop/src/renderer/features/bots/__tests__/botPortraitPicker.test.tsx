@@ -14,7 +14,10 @@ const drawImage = vi.fn();
 const decode = vi.fn(async () => {});
 beforeEach(() => {
   chooseAvatar.mockReset().mockResolvedValue({ canceled: true });
-  vi.stubGlobal('electronAPI', { profileChooseAvatar: chooseAvatar });
+  vi.stubGlobal('electronAPI', {
+    profileChooseAvatar: vi.fn(() => { throw new Error('Account service is unavailable in local mode'); }),
+    localDb: { bots: { chooseAvatarSource: chooseAvatar } },
+  });
   drawImage.mockClear();
   decode.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal(

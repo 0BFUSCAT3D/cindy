@@ -67,14 +67,29 @@ export default {
     const result = await page.getByTestId('avatar-result').textContent();
     assert.notEqual(result, initial);
     assert.notEqual(result, dataUrl);
-    const size = await page.evaluate(async (src) => {
+    const pixels = await page.evaluate(async (src) => {
       const image = new Image();
       image.src = src;
       await image.decode();
-      return [image.naturalWidth, image.naturalHeight];
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext('2d');
+      context.drawImage(image, 0, 0);
+      const row = context.getImageData(0, Math.floor(canvas.height / 2), canvas.width, 1).data;
+      let green = 0;
+      for (let x = 0; x < canvas.width; x++) if (row[x * 4 + 1] > row[x * 4]) green++;
+      return { width: canvas.width, height: canvas.height, greenFraction: green / canvas.width };
     }, result);
-    assert.equal(size[0], size[1]);
-    assert.ok(size[0] > 0 && size[0] < 400);
+    assert.equal(pixels.width, pixels.height);
+    assert.ok(pixels.width > 0 && pixels.width < 400);
+    // At a centered crop the split is 50%. A 45px rightward image drag must
+    // move the split right by 45 / viewport diameter in the exported pixels.
+    const diameter = Math.min(240, box.width - 48, box.height - 48);
+    assert.ok(
+      Math.abs(pixels.greenFraction - (0.5 + 45 / diameter)) < 0.04,
+      `Drag did not reach exported pixels: green fraction ${pixels.greenFraction}`,
+    );
     await ui.capture('confirmed');
     await upload();
     await stage.waitFor();
