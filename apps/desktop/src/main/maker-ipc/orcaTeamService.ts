@@ -113,6 +113,8 @@ export type DispatchWorkerMessageResult =
 export interface DispatchWorkerTaskParams {
   targetSessionId: string;
   message: string;
+  /** 可选, 随首条任务发给 worker 的本机图片绝对路径; 仅本机 worker。 */
+  imagePaths?: string[];
   dispatchMeta: {
     source: string;
     context: string;
@@ -293,6 +295,8 @@ export interface OrcaTeamServiceDeps {
     leadSessionId: string;
     labels: ReadonlyArray<string | null>;
   }) => Promise<boolean>;
+  /** 取消该 worker session 尚未落地的后台唤醒（focus 预热）；释放 runtime 前调用。 */
+  cancelWorkerResume?(sessionId: string): void;
   updateWorkerStatus(workerId: string, status: OrcaWorkerStatus): Promise<void>;
   markWorkerIdle(workerId: string): Promise<void>;
   markWorkerIdleIfStatus(workerId: string, expectedStatus: 'done'): Promise<boolean>;
@@ -319,6 +323,7 @@ export interface OrcaTeamServiceDeps {
     message: string;
     workerId: string;
     delivery?: 'queue' | 'steer';
+    imagePaths?: string[];
     dispatchMeta: {
       source: string;
       context: string;
@@ -898,6 +903,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       resolved: { worker: target, link },
       message: params.message,
       mode: 'normal',
+      ...(params.imagePaths ? { imagePaths: params.imagePaths } : {}),
       dispatchMeta: params.dispatchMeta,
       assertCurrent,
     });
@@ -958,6 +964,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     message: string;
     mode: 'normal' | 'interrupt';
     delivery?: 'queue' | 'steer';
+    imagePaths?: string[];
     dispatchMeta: DispatchWorkerTaskParams['dispatchMeta'];
     assertCurrent?: () => Promise<void>;
   }): Promise<ResolvedWorkerDispatchExecution> {
@@ -1091,6 +1098,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
             message: params.message,
             workerId: link.workerId,
             ...(params.delivery ? { delivery: params.delivery } : {}),
+            ...(params.imagePaths ? { imagePaths: params.imagePaths } : {}),
             dispatchMeta: params.dispatchMeta,
             onAccepted,
             onAcceptedRollback: rollbackAccepted,
@@ -1173,6 +1181,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     targetSessionId: string;
     message: string;
     delivery?: 'queue' | 'steer';
+    imagePaths?: string[];
   }, assertCurrent?: () => Promise<void>): Promise<SendToWorkerResult> {
     return dispatchToWorker({ ...params, mode: 'normal' }, assertCurrent) as Promise<SendToWorkerResult>;
   }
@@ -1192,7 +1201,16 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     message: string;
     mode: 'normal' | 'interrupt';
     delivery?: 'queue' | 'steer';
+    imagePaths?: string[];
   }, captured?: () => Promise<void>): Promise<SendToWorkerResult | InterruptWorkerResult> {
+    // interrupt 预留路径只支持纯文本; 内部误传图片宁拒勿静默丢。
+    if (params.mode === 'interrupt' && params.imagePaths?.length) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_ARGS',
+        message: 'image attachments are not supported for interrupt_worker',
+      };
+    }
     const assertCurrent = captured ?? await deps.captureControlAuthority?.(params.callerLeadSessionId);
     const resolved = await resolveWorkerRef(params.callerLeadSessionId, params.targetSessionId);
     if (!resolved.ok) {
@@ -1210,6 +1228,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       message: params.message,
       mode: params.mode,
       ...(params.delivery ? { delivery: params.delivery } : {}),
+      ...(params.imagePaths ? { imagePaths: params.imagePaths } : {}),
       assertCurrent,
       dispatchMeta: {
         source: 'maker-ipc/collab',
@@ -1361,6 +1380,8 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
           };
         }
       }
+      // 显式 idle 会释放 runtime；先取消未落地的后台预热，避免释放后被重新拉起。
+      deps.cancelWorkerResume?.(worker.sessionId);
       await assertAfterIdle();
       clearRuntimeState(worker.sessionId);
       if (!params.expectedStatus) {
@@ -1408,6 +1429,8 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     clearRuntimeState(worker.sessionId);
     deps.forgetWorkerSession?.(worker.sessionId);
     deferredDoneAcknowledgements.delete(worker.id);
+    // 归档会释放 runtime；先取消未落地的后台预热，避免归档后被重新拉起（review P1）。
+    deps.cancelWorkerResume?.(worker.sessionId);
     await params.beforeArchive?.();
     await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive);
     await params.beforeArchive?.();
@@ -1796,7 +1819,18 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
           targets.some((item) => item.origin?.kind !== 'orca' || item.origin.senderLabel !== 'Lead')
         )
           return null;
-        return rebuildQueuedOrcaLeadMessage(targets[0]!, params.message, found.worker.id);
+        // 合并后条目代表全部被合并消息: 其余条目的图片按队列顺序并入保留条目,
+        // 避免"只改文本"语义静默丢图。
+        const survivor = targets[0]!;
+        const mergedFiles = [
+          ...(survivor.files ?? []),
+          ...targets.slice(1).flatMap((item) => item.files ?? []),
+        ];
+        return rebuildQueuedOrcaLeadMessage(
+          mergedFiles.length > 0 ? { ...survivor, files: mergedFiles } : survivor,
+          params.message,
+          found.worker.id,
+        );
       },
     );
     const latest = await listWorkerQueuedMessages({
