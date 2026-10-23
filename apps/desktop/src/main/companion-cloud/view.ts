@@ -18,7 +18,8 @@ export async function companionCloudView(
       if (!actor.homeDeviceId) return { ...actor, homeDevice: null };
       const isSelf = actor.homeDeviceId === snapshot.selfDeviceId;
       const device = devices.find(candidate => candidate.deviceId === actor.homeDeviceId);
-      return { ...actor, homeDevice: { deviceId: actor.homeDeviceId, name: device?.name ?? '', online: isSelf || device?.online === true, isSelf } };
+      return { ...actor, homeDevice: { deviceId: actor.homeDeviceId, name: device?.name ?? '', online: isSelf || device?.online === true,
+        ...(device ? { remoteControlEnabled: device.remoteControlEnabled } : {}), isSelf } };
     }),
   };
 }

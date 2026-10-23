@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   merge: vi.fn(),
   view: vi.fn(),
   online: true,
+  listed: true,
   lastReplyAt: 0,
   cloud: { enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: [] } as import('../../../../shared/companionCloud').CompanionCloudSnapshot,
   cloudView: vi.fn(),
@@ -23,7 +24,7 @@ vi.mock('react-router-dom', () => ({ useParams: () => ({ deviceId: 'home', botId
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../useRemoteBots', () => ({
   markRemoteBotRead: h.markRead,
-  useRemoteBots: () => [
+  useRemoteBots: () => !h.listed ? [] : [
     {
       id: 'writer',
       deviceId: 'home',
@@ -56,6 +57,7 @@ import { CLOUD_HOME_GRACE_MS, RemoteBotSessionView } from '../RemoteBotSessionVi
 beforeEach(() => {
   h.markRead.mockClear();
   h.online = true;
+  h.listed = true;
   h.lastReplyAt = 0;
   h.cloud = { enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: [] };
   h.cloudView.mockReset();
@@ -152,4 +154,21 @@ it('keeps the open chat through a brief drop, then shows the cloud conversation 
   h.cloud = { ...h.cloud, actors: [{ ...h.cloud.actors[0]!, homeDeviceId: 'elsewhere' }] };
   rerender(<RemoteBotSessionView />);
   await waitFor(() => expect(h.view).toHaveBeenLastCalledWith(expect.objectContaining({ readOnly: true })));
+});
+
+it('calls a main computer that is not listed offline, and "control off" only when it reports remote control off', async () => {
+  h.listed = false;
+  const home = { deviceId: 'home', name: 'Home', online: true, isSelf: false };
+  const actor = { id: 'a-writer', externalId: 'writer', name: 'Writer', avatar: null, homeDeviceId: 'home', homeDevice: home };
+  h.cloud = { enabled: true, selfDeviceId: 'desk', humanActorId: 'human', demotedBotIds: [], actors: [actor] };
+  const { rerender } = render(<RemoteBotSessionView />);
+  await screen.findByText('cloud-offline-view');
+  // Online in the device list but not answering (a stale presence): same as offline.
+  expect(h.cloudView).toHaveBeenLastCalledWith(expect.objectContaining({ controlOff: false }));
+  h.cloud = { ...h.cloud, actors: [{ ...actor, homeDevice: { ...home, remoteControlEnabled: true } }] };
+  rerender(<RemoteBotSessionView />);
+  expect(h.cloudView).toHaveBeenLastCalledWith(expect.objectContaining({ controlOff: false }));
+  h.cloud = { ...h.cloud, actors: [{ ...actor, homeDevice: { ...home, remoteControlEnabled: false } }] };
+  rerender(<RemoteBotSessionView />);
+  expect(h.cloudView).toHaveBeenLastCalledWith(expect.objectContaining({ controlOff: true }));
 });

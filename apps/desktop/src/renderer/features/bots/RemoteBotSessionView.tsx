@@ -119,7 +119,7 @@ export function RemoteBotSessionView() {
         avatar={bot?.avatar || cloudActor.avatar}
         avatarColor={bot?.avatarColor}
         deviceName={bot?.deviceName || cloudActor.homeDevice?.name || ''}
-        reachable={!bot && cloudActor.homeDevice?.online === true}
+        controlOff={!bot && cloudActor.homeDevice?.online === true && cloudActor.homeDevice.remoteControlEnabled === false}
       />
       </Suspense>
     );

@@ -4,6 +4,8 @@ export interface CompanionCloudHomeDevice {
   /** Device-link name; empty when the device is not in this account's device list. */
   name: string;
   online: boolean;
+  /** The device list says this computer allows remote control; absent when the list had no entry for it. */
+  remoteControlEnabled?: boolean;
   isSelf: boolean;
 }
 

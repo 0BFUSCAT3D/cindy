@@ -9936,7 +9936,7 @@
       "homeLabel": "主力電腦",
       "thisComputer": "這台電腦",
       "homeOffline": "主力電腦「{{device}}」離線",
-      "homeUnreachable": "主力電腦「{{device}}」沒有開放遠端控制",
+      "homeControlOff": "主力電腦「{{device}}」沒有開放遠端控制",
       "continueHere": "在這台電腦繼續",
       "takeOverHint": "在這台電腦繼續後，{{name}} 改在這裡執行，下面的對話一起帶過來。",
       "takingOver": "正在這台電腦上準備 {{name}}…",

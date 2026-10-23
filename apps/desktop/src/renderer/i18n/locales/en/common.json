@@ -9970,7 +9970,7 @@
       "homeLabel": "Main Computer",
       "thisComputer": "This computer",
       "homeOffline": "Main computer “{{device}}” is offline",
-      "homeUnreachable": "Main computer “{{device}}” doesn’t allow remote control",
+      "homeControlOff": "Main computer “{{device}}” doesn’t allow remote control",
       "continueHere": "Continue on This Computer",
       "takeOverHint": "{{name}} will run here from now on, and the conversation below comes along.",
       "takingOver": "Getting {{name}} ready on this computer…",
