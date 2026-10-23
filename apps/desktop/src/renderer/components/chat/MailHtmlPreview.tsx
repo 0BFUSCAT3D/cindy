@@ -61,7 +61,7 @@ function PreviewFrame({ value, images = [], enlarged = false, reading = false, d
       doc.head.replaceChildren(...[...next.head.childNodes].map(node => doc.importNode(node, true)));
       doc.body.replaceChildren(...[...next.body.childNodes].map(node => doc.importNode(node, true)));
     }
-    serialize.current = mailBodySerializer(doc, model.current.emitted);
+    serialize.current = mailBodySerializer(doc, model.current.emitted, () => current.current.images);
     stopTheme.current = followMailPreviewTheme(doc, document);
     bodyResize.current?.disconnect();
     if (!enlarged && typeof ResizeObserver !== 'undefined') {

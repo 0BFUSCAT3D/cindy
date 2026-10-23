@@ -18,6 +18,19 @@ import { readMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { ingestCardPush } from '@/cindy-brain/ghostCardStore';
 const ctx = { tabId: 'tab', sessionId: 'a', workdir: '', remoteHostId: null, deviceLinkDeviceId: null, patchState() {}, onVisibilityChange() {}, setCloseInterceptor: () => () => {} };
 const mail = (bodyText: string) => ({ accountId: 'account', messageId: bodyText, from: 'sender', to: 'to', cc: '', bcc: '', subject: 'Subject', date: '', bodyText, bodyHtml: '', attachments: [] });
+// Unit regression: a remote draft binding must not replace the readable mail
+// with the local-only editor. Existing link tests only exercised local tasks.
+it('keeps remote drafts readable and preserves the mailbox link', async () => {
+  const openExternal = vi.fn(async () => ({ success: true }));
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { openExternal } });
+  h.read.mockResolvedValue({ message: mail('Remote draft body'), draftCallId: 'remote-draft' });
+  render(<MailPreviewBody state={{ url: 'https://mail.example/draft' }} ctx={{ ...ctx, deviceLinkDeviceId: 'peer' }} />);
+  await act(async () => {});
+  expect(screen.getByText('Remote draft body')).toBeTruthy();
+  expect(screen.queryByTestId('editor')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'mailReader.openMailbox' }));
+  expect(openExternal).toHaveBeenCalledWith('https://mail.example/draft');
+});
 it.each(['inactive', 'hidden'])('does not mark a restored %s tab read until it is visible', async kind => {
   h.read.mockResolvedValue({ message: mail('Selected') });
   const view = render(<MailPreviewBody state={{ url: 'https://mail.example/a' }} ctx={ctx} active={kind !== 'inactive'} shellVisible={kind !== 'hidden'} />);

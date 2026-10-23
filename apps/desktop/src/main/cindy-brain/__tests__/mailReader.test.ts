@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMailReader, mailReaderRemoteProvider, type MailReaderPlugin } from '../mailReader.js';
 import type { MailReaderDeclaration } from '@cindy/maker-shared/mail-message';
 import { createGhostProductionCallbacks } from './ghostProductionCallbacksFixture.js';
+import { GhostCardService } from '../cardService.js';
 import { installedGhostLogicalIdentity, pluginStoragePart, resolvePluginInstanceQuery } from '../../../shared/pluginIdentity.js';
 
 const productionReader = createGhostProductionCallbacks<{ readMail: ReturnType<typeof createMailReader> }>({ variables: ['readMail'] });
@@ -17,6 +18,37 @@ function setup(markRead: unknown = undefined) {
   return { reader, call, authorize, expire: () => { current = false; } };
 }
 describe('common mailbox reader', () => {
+  // Unit: the production native-open callback must close its call-bound Host
+  // capability even if scope/approval changes or dispatch rejects. Previous
+  // tests mocked card lifecycle away and only covered a successful current read.
+  it.each(['owner', 'disabled', 'approval', 'dispatch-error', 'resolve-error'])('finalizes the native call after %s invalidation', async boundary => {
+    let ownerCurrent = true, approval = 'v1';
+    const ghost = { manifest: { id: plugin.id, mail: true, mailReader: plugin.reader, tools: [{ name: 'read_mail' }] },
+      instanceKey: '_root__test-mail', namespace: null, enabled: true, approval: { state: 'approved' } };
+    const cards = new GhostCardService({ hasCardSlot: () => true, sanitize: html => ({ ok: true, html }), persist: async () => {}, broadcast: () => {} });
+    const { readMail } = productionReader({
+      createMailReader, availableGhosts: () => [ghost], getGhostSetupAssessment: () => ({ state: 'ready' }),
+      getDeviceLinkInvokeContext: () => null, getSessionRowSnapshot: async () => ({}), assertRemoteBotInvocationAllowed: async () => {},
+      captureDataOwnerBroadcastScope: () => ({}), isDataOwnerBroadcastScopeCurrent: () => ownerCurrent,
+      findGhostForInstanceId: () => ghost, ghostInstallApprovalToken: () => approval, randomUUID: () => 'native-read',
+      pluginStoragePart, installedGhostLogicalIdentity, getGhostCardService: () => cards,
+      getMailCardService: () => ({ resolveLink: async () => { throw new Error('resolve failed'); } }),
+      getGhostPipeDispatcher: () => ({ callGhostTool: async () => {
+        expect(cards.inFlightCallInfoOf('native-read')?.sessionId).toBe('session');
+        if (boundary === 'owner') ownerCurrent = false;
+        if (boundary === 'disabled') ghost.enabled = false;
+        if (boundary === 'approval') approval = 'v2';
+        if (boundary === 'dispatch-error') throw new Error('dispatch failed');
+        return { ok: true, result: message };
+      } }),
+    });
+    const result = readMail('session', 'https://mail.example.com/m', true, true);
+    if (boundary === 'owner') await expect(result).rejects.toThrow('Mail unavailable');
+    else if (boundary === 'dispatch-error') await expect(result).rejects.toThrow('dispatch failed');
+    else if (boundary === 'resolve-error') await expect(result).rejects.toThrow('resolve failed');
+    else expect((await result).message).toEqual(message);
+    expect(cards.inFlightCallInfoOf('native-read')).toBeNull();
+  });
   // Regression: native reads mixed an exact installation key with a logical
   // namespace query, so new root/organization installs never reached the tool.
   // Exercise the production host adapter; previous tests mocked its call away.

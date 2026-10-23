@@ -81,9 +81,9 @@ export default function MailPreviewScreen() {
 /** Reuse the chat card's controls, subscriptions and send confirmation. */
 function DraftEditor({ deviceId, sessionId, callId }: { deviceId: string; sessionId: string; callId: string }) {
   const { t } = useTranslation(), styles = useThemedStyles(makeStyles);
-  const { blocks, error, retry, hidden } = usePluginResultCard(deviceId, sessionId, callId);
+  const { blocks, error, retry, hidden, callId: resolvedCallId } = usePluginResultCard(deviceId, sessionId, callId, true);
   const actions = !hidden && blocks?.find(block => block.primitive === 'plugin-card-actions');
-  return actions ? <PluginCardActions data={actions.data} deviceId={deviceId} sessionId={sessionId} callId={callId} /> : <>
+  return actions && resolvedCallId ? <PluginCardActions key={resolvedCallId} data={actions.data} deviceId={deviceId} sessionId={sessionId} callId={resolvedCallId} /> : <>
     <Text style={styles.secondary}>{t(error || hidden ? 'plugins.mailReader.failed' : 'plugins.mailReader.loading')}</Text>
     {(error || hidden) && <MainWindowActionButton action={{ label: t('plugins.mailReader.retry'), onPress: retry }} />}
   </>;

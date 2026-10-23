@@ -8048,7 +8048,9 @@ export function registerGhostIpc(): void {
         const draftCallId = await getMailCardService().resolveLink(sender, sessionId, callId, mail?.accountId, mail?.draftId, current);
         return { ...result, ...(draftCallId ? { draftCallId } : {}) };
       } finally {
-        if (opened && current()) cards.finalizeCall(callId);
+        // Closing the call's capability window must also happen after owner or
+        // installation invalidation. current() controls editor binding, not cleanup.
+        if (opened) cards.finalizeCall(callId);
       }
     },
   });

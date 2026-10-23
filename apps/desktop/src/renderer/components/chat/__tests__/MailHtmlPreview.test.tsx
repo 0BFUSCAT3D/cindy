@@ -270,6 +270,24 @@ it('autosaves simple HTML text edits and the plain alternative, keeps the caret 
   expect(screen.queryByRole('textbox')).toBeNull();
   expect(screen.queryByRole('button', { name: 'chat.ghostCall.mailEditText' })).toBeNull();
 });
+// Unit: CodeQL #409 exposed DOM marker -> image source restoration. Existing
+// save tests only covered unresolved CID images, not Host-backed preview URLs.
+it('restores only Host-backed CID references when serializing an edited body', () => {
+  const change = vi.fn(), url = `cindy-media://blobs/${'a'.repeat(64)}.png`;
+  render(<MailHtmlPreview value={'<p>Body</p><img src="cid:real@example.test">'} images={[{ cid: 'real@example.test', url }]} onChange={change} />);
+  const frame = screen.getByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement, doc = frame.contentDocument!;
+  doc.open(); doc.write(frame.srcdoc); doc.close(); fireEvent.load(frame);
+  const paragraph = doc.querySelector('p')!, image = doc.querySelector('img')!;
+  expect(image.getAttribute('src')).toBe(url);
+  fireEvent.input(paragraph);
+  expect(change.mock.calls.at(-1)![0]).toContain('src="cid:real@example.test"');
+  expect(change.mock.calls.at(-1)![0]).not.toContain('cindy-media:');
+  image.setAttribute('data-cindy-mail-cid', 'forged-reference');
+  fireEvent.input(paragraph);
+  const saved = change.mock.calls.at(-1)![0];
+  expect(saved).not.toContain('forged-reference');
+  expect(saved).not.toContain('cindy-media:');
+});
 it('native WebView binding emits only composed plain text and respects the read-only switch', () => {
   const doc = document.implementation.createHTMLDocument('mail');
   doc.body.innerHTML = '<p><span data-cindy-mail-run="0">Hello</span></p>';

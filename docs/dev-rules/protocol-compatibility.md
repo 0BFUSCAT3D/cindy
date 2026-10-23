@@ -3056,8 +3056,15 @@ optional `draftCallId` only after matching a current card's task, plugin, accoun
 This reference is never accepted from provider result data. Background reads cannot publish
 or return editor bindings. Desktop's local sidebar and Mobile use their existing card editors,
 autosave and send/undo actions. The Mobile editor reuses `plugin-results/card` subscriptions;
-no new transport, persistence, credential transfer or send path is introduced. Old hosts do
-not inject `openDraft` and remain read-only; old providers ignore it, and old clients ignore
+no new transport, persistence, credential transfer or send path is introduced.
+The Mobile editor follows `supersededBy` through the same task-scoped resource reads only
+while installation, account and draft identity still match; its actions and invalidations
+use the resolved card ID. Ordinary chat rows continue hiding superseded cards.
+Remote Desktop retains the read-only message and original mailbox link because its
+existing card editor dispatches local actions only. Native reader calls are finalized
+even after owner/installation invalidation. Owner scope still guards result delivery;
+an invalid installation cannot acquire editor bindings or extend the call-bound Host capability window.
+Old hosts do not inject `openDraft` and remain read-only; old providers ignore it, and old clients ignore
 `draftCallId`. Source package compatibility remains 0.1.112; editable link support requires
 both the updated provider and the corresponding Host/client changes.
 Desktop link opening and card enlargement both await the existing card-form delivery
