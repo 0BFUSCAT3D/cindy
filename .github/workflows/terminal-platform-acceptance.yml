@@ -43,6 +43,10 @@ jobs:
       - name: Install target-native dependencies
         shell: bash
         run: pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
+      - name: Prepare real headless plugin browser
+        run: pnpm --filter cindy-terminal exec playwright-core install --with-deps chromium
+      - name: Select the pinned headless browser for integration tests
+        run: pnpm --filter cindy-terminal exec node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'CINDY_TEST_CHROMIUM='+require('playwright-core').chromium.executablePath()+'\n')"
       - name: Targeted authentication, vault, transport and engine tests
         run: pnpm --filter cindy-terminal exec vitest run src/host.integration.test.ts src/remote/service.test.ts src/tasks/host.test.ts src/engines/engines.test.ts src/ui/authentication.test.tsx src/maintenance.test.ts src/plugins/account.test.ts src/plugins/market.test.ts src/plugins/host.native.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing verified downloads and plugin download policy

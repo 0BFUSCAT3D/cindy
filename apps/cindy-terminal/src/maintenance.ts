@@ -17,8 +17,11 @@ import { terminalSettingsSchema } from './settings.js';
 
 const derive = promisify(scrypt);
 const MAGIC = Buffer.from('CINDY-BACKUP-1\n');
-const EXCLUDED = ['sign-in tokens', 'provider credentials', 'device identity', 'remote grants', 'installed engines', 'files outside the profile'];
-const OWNER_PATHS = new Set(['models.json', 'projects.json', 'tasks', 'schedules.json', 'workspaces', 'scheduled-workspaces', 'cindy-media', 'knowledge-settings.json', 'maker-memory', 'maker-contacts', 'companions', 'capabilities.json', 'managed-agent-skills']);
+const EXCLUDED = ['sign-in tokens', 'provider credentials', 'plugin credentials', 'device identity', 'remote grants', 'installed engines', 'download caches', 'files outside the profile'];
+const OWNER_PATHS = new Set(['models.json', 'projects.json', 'tasks', 'schedules.json', 'workspaces', 'scheduled-workspaces', 'cindy-media', 'knowledge-settings.json', 'maker-memory', 'maker-contacts', 'companions', 'capabilities.json', 'managed-agent-skills',
+  'plugins', 'plugin-approvals', 'plugin-kv', 'plugin-fs', 'plugin-market', 'plugin-cleanup.json', 'ghost-workdir-prefs.json',
+  'libraries', 'libraries-binding.json', 'library-staging', 'libraries-trash']);
+const PLUGIN_MARKET_FILES = new Set(['ledger.v1.json', 'organization.v1.json', 'current-organization.json', 'install.pending.json']);
 const COMPANION_PATHS = new Set(['profiles.json', 'homes', 'history', 'memory', 'backups', 'cloud']);
 // Cloud installation / homes snapshots bind this machine to server identities.
 // Keep only sync cursors and demotion history; fresh sign-in must resolve homes.
@@ -128,7 +131,13 @@ export async function backupProfile(profileDir: string, destination: string, pas
         const output = path.join(staging, 'owners', owner.name); await fs.mkdir(output, { recursive: true, mode: 0o700 });
         for (const entry of await fs.readdir(path.join(owners, owner.name))) if (OWNER_PATHS.has(entry)) {
           const source = path.join(owners, owner.name, entry), destination = path.join(output, entry);
-          if (entry !== 'companions') await copyTree(source, destination, counters, await fs.realpath(profileDir));
+          if (entry === 'plugin-market') {
+            const market = await fs.lstat(source);
+            if (!market.isDirectory() || market.isSymbolicLink()) { counters.externalLinks++; continue; }
+            await fs.mkdir(destination, { mode: 0o700 });
+            for (const file of await fs.readdir(source)) if (PLUGIN_MARKET_FILES.has(file))
+              await copyTree(path.join(source, file), path.join(destination, file), counters, await fs.realpath(profileDir));
+          } else if (entry !== 'companions') await copyTree(source, destination, counters, await fs.realpath(profileDir));
           else {
             const companions = await fs.lstat(source);
             if (!companions.isDirectory() || companions.isSymbolicLink()) { counters.externalLinks++; continue; }
@@ -200,6 +209,10 @@ async function decodeBackup(backup: string, passphrase: string, staging: string)
     for (const owner of await fs.readdir(owners, { withFileTypes: true }).catch(() => [])) {
       if (!owner.isDirectory() || !/^[a-f0-9]{32}$/.test(owner.name)) throw new Error('BACKUP_CONTENT_INVALID');
       if ((await fs.readdir(path.join(owners, owner.name))).some(entry => !OWNER_PATHS.has(entry))) throw new Error('BACKUP_CONTENT_INVALID');
+      const market = path.join(owners, owner.name, 'plugin-market');
+      for (const name of await fs.readdir(market).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; })) {
+        if (!PLUGIN_MARKET_FILES.has(name)) throw new Error('BACKUP_CONTENT_INVALID');
+      }
       const companions = path.join(owners, owner.name, 'companions');
       for (const name of await fs.readdir(companions).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; })) {
         if (!COMPANION_PATHS.has(name)) throw new Error('BACKUP_CONTENT_INVALID');

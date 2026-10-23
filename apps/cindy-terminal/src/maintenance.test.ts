@@ -40,6 +40,22 @@ describe('terminal offline maintenance', () => {
     await atomicPrivateWrite(path.join(owner, 'capabilities.json'), '{"version":1,"skills":[]}');
     await privateDirectory(path.join(owner, 'managed-agent-skills', 'example'));
     await atomicPrivateWrite(path.join(owner, 'managed-agent-skills', 'example', 'SKILL.md'), '# Retained skill');
+    // Plugin data is user work too. Test actual encrypted export/restore, not
+    // the path allowlist, and keep download caches out of the portable archive.
+    const pluginData = {
+      'plugins/example/ghost.json': '{"id":"example"}',
+      'plugin-approvals/example.json': '{"receipt":"synthetic"}',
+      'plugin-kv/example.json': '{"preference":"retained"}',
+      'libraries/example/works/note.txt': 'retained plugin work',
+      'library-staging/example/pending/blob': 'uncommitted original',
+      'plugin-market/ledger.v1.json': '{"version":1}',
+      'ghost-workdir-prefs.json': '{"version":1}',
+    };
+    for (const [relative, body] of Object.entries(pluginData)) {
+      const file = path.join(owner, relative); await privateDirectory(path.dirname(file)); await atomicPrivateWrite(file, body);
+    }
+    await privateDirectory(path.join(owner, 'plugin-market', 'downloads'));
+    await atomicPrivateWrite(path.join(owner, 'plugin-market', 'downloads', 'cache'), 'discardable download');
     const outside = path.join(root, 'outside'); await fs.writeFile(outside, 'outside-test-data');
     if (process.platform !== 'win32') await fs.symlink(outside, path.join(owner, 'tasks', 'external'));
     const backup = path.join(root, 'portable.backup');
@@ -52,7 +68,10 @@ describe('terminal offline maintenance', () => {
     expect(await fs.readFile(path.join(restored, 'owners', 'a'.repeat(32), 'tasks', 'task-one', 'history.jsonl'), 'utf8')).toBe('private-test-task-data');
     expect((await fs.readdir(restored)).sort()).toEqual(['owners', 'settings.json']);
     const restoredOwner = path.join(restored, 'owners', 'a'.repeat(32));
-    expect((await fs.readdir(restoredOwner)).sort()).toEqual(['capabilities.json', 'cindy-media', 'companions', 'knowledge-settings.json', 'maker-memory', 'managed-agent-skills', 'tasks']);
+    expect((await fs.readdir(restoredOwner)).sort()).toEqual(['capabilities.json', 'cindy-media', 'companions', 'knowledge-settings.json', 'maker-memory', 'managed-agent-skills', 'tasks',
+      'plugins','plugin-approvals','plugin-kv','libraries','library-staging','plugin-market','ghost-workdir-prefs.json'].sort());
+    for (const [relative, body] of Object.entries(pluginData)) expect(await fs.readFile(path.join(restoredOwner, relative), 'utf8')).toBe(body);
+    expect(await fs.readdir(path.join(restoredOwner, 'plugin-market'))).toEqual(['ledger.v1.json']);
     expect(await fs.readdir(path.join(restoredOwner, 'companions', 'cloud'))).toEqual(['a'.repeat(64)+'.json']);
     expect(await fs.readFile(path.join(restoredOwner, 'maker-memory', 'MEMORY.md'), 'utf8')).toBe('retained-memory');
     expect(await fs.readFile(path.join(restoredOwner, 'managed-agent-skills', 'example', 'SKILL.md'), 'utf8')).toBe('# Retained skill');
