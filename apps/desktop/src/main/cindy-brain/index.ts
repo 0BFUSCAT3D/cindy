@@ -2111,6 +2111,7 @@ export function setGhostAgentTurnRunner(runner: GhostAgentTurnRunner | null): vo
 export function setGhostSessionRevealer(reveal: ((sessionId: string) => void) | null): void {
   getGhostAgentSlot().setRevealSession(reveal);
   getGhostErrandSlot().setRevealSession(reveal);
+  getGhostTaskViewSlot().setRevealSession(reveal);
 }
 
 const pluginTargetSlot = new PluginTargetSlot();

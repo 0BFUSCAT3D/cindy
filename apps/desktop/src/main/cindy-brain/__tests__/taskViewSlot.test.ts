@@ -41,6 +41,40 @@ function makeSlot(overrides: Partial<TaskViewSlotDeps> = {}) {
 }
 
 describe('taskViewSlot', () => {
+  // 主视图的显式跳转须同时导航任务与打开页签；原测试只覆盖后台开页。
+  // 最小输入：focus:true；unit，缺省/peek 不抢前台，投递失败不导航。
+  it('focus explicitly reveals the same task, while old requests and peek remain passive', () => {
+    const { slot, pushes } = makeSlot();
+    const reveal = vi.fn();
+    expect(slot.handleRequest('sim', { sessionId: 'task-1', focus: true })).toMatchObject({
+      ok: false,
+      errorCode: 'HOST_NOT_READY',
+    });
+    slot.setRevealSession(reveal);
+    for (const request of [{}, { focus: false }, { peek: true, focus: true }])
+      slot.handleRequest('sim', request);
+    expect(reveal).not.toHaveBeenCalled();
+    expect(slot.handleRequest('sim', { sessionId: 'task-1', focus: true })).toEqual({
+      ok: true,
+      sessionId: 'task-1',
+      focusRequested: true,
+    });
+    expect(reveal).toHaveBeenCalledExactlyOnceWith('task-1');
+    expect(pushes.at(-1)).toEqual({ instanceId: 'sim', sessionId: 'task-1', focus: true });
+    expect(slot.handleRequest('sim', { focus: 'true' })).toMatchObject({
+      ok: false,
+      errorCode: 'INVALID_REQUEST',
+    });
+    const failed = makeSlot({ broadcast: () => false }).slot;
+    const failedReveal = vi.fn();
+    failed.setRevealSession(failedReveal);
+    expect(failed.handleRequest('sim', { focus: true })).toMatchObject({
+      ok: false,
+      errorCode: 'HOST_NOT_READY',
+    });
+    expect(failedReveal).not.toHaveBeenCalled();
+  });
+
   // PR #6861 discussion_r4353708280：原有 broadcast=false 用例绕过了真实选窗适配器。
   // 最小失败输入：只有隐藏沙箱，或主窗正在重载；unit，验证回执及实际投递目标。
   it.each(['absent', 'loading', 'destroyed-contents', 'crashed', 'closed', 'send-failed', 'ready'] as const)(
