@@ -56,7 +56,9 @@ describe('terminal private host', () => {
       release();await starting;
       expect(await status).toMatchObject({busy:false,deviceId:expect.any(String),version:expect.any(String)});
     }finally{release();await starting.catch(()=>{});client?.close();await service.close();}
-  });
+    // This case opens the full private profile, including native Windows ACL
+    // commands. Keep the local 5s budget while allowing the Windows CI host IO.
+  },process.platform==='win32'?30_000:5_000);
 
   // Existing GUI attachments use signed OSS URLs. A corrupt or cancelled
   // transfer must never be adopted, and account tokens belong only on the API.

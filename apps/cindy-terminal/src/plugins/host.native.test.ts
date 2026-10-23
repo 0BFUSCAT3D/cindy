@@ -39,6 +39,10 @@ it('creates and packs a real plugin using the cwd-bound Node scaffold worker wit
 it('requires confirmation of exact bytes and keeps native credentials private across restart',async()=>{
   const archive=new JSZip();
   archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-fixture',name:'Terminal fixture',version:'1.0.0',kind:'chip',entry:'main.js',settingsHtml:'settings.html',slots:['tool','node','card'],fs:true,tools:[{name:'check',description:'Verify fixture'}],node:{entry:'worker.cjs',protocol:'json-rpc-stdio',secretBindings:[{key:'key',label:'Fixture key',methods:['check']}]}}));
+  const withNetwork=JSON.parse(await archive.file('ghost.json')!.async('string'));
+  withNetwork.slots.push('network');
+  withNetwork.network={hosts:['accounts.example.com','api.example.com'],secrets:[{key:'oauth',label:'Fixture account',source:'oauth',inject:{header:'Authorization',format:'Bearer {value}',hosts:['api.example.com']},oauth:{authorizeUrl:'https://accounts.example.com/authorize',tokenUrl:'https://accounts.example.com/token',clientId:'fixture-client',scopes:['read']}}],connections:[{key:'instances',label:'Fixture instance',inject:{header:'Authorization',format:'Bearer {value}'}}]};
+  archive.file('ghost.json',JSON.stringify(withNetwork));
   archive.file('main.js',`cindy.onHostMessage(async request=>{
     const reply=await cindy.node.request({method:'check',callId:request.callId,cancelWithCall:true});
     const saved=await cindy.send({type:'fs-request',op:'write',root:'workdir',path:'plugin-result.txt',content:'terminal-plugin-files',callId:request.callId});
@@ -54,7 +58,11 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   const secrets={getSync:(key:string)=>vault.getSync(key),setSync:(key:string,value:string)=>vault.setSync(key,value),deleteSync:(key:string)=>vault.deleteSync(key),get:(key:string)=>vault.get(key),set:(key:string,value:string)=>vault.set(key,value),delete:async(key:string)=>{if(failCleanup&&key.includes(':oauth:'))throw new Error('Synthetic vault write interruption');await vault.delete(key);}};
   let active=true;const media=new TerminalTaskMedia(path.join(directory,'media'));
   const cardPushes:unknown[]=[];
-  const options={root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},cards:{persist:(row:import('@cindy/plugin-runtime/cardService').GhostCardRow)=>media.savePluginCard(row,()=>{}),broadcast:(payload:unknown)=>{cardPushes.push(payload);}},fs:{getSessionSnapshot:async()=>({workingDir:directory,permissionMode:'bypassPermissions',planModeEnabled:false,remoteHostId:null,isCurrent:()=>active}),requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
+  const options={credentials:{
+    getLoginEmail:()=>null,confirmAddHost:async()=>true,
+    openExternal:async(url:string)=>{const authorization=new URL(url);const callback=new URL(authorization.searchParams.get('redirect_uri')!);callback.searchParams.set('state',authorization.searchParams.get('state')!);callback.searchParams.set('code','synthetic-code');await fetch(callback);},
+    fetchImpl:async(input:Parameters<typeof fetch>[0],init?:RequestInit)=>{expect(String(input)).toBe('https://accounts.example.com/token');expect(new URLSearchParams(String(init?.body)).get('client_id')).toBe('fixture-client');return Response.json({access_token:'synthetic-oauth-access',refresh_token:'synthetic-oauth-refresh',expires_in:3600,scope:'read'});},
+  },root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},cards:{persist:(row:import('@cindy/plugin-runtime/cardService').GhostCardRow)=>media.savePluginCard(row,()=>{}),broadcast:(payload:unknown)=>{cardPushes.push(payload);}},fs:{getSessionSnapshot:async()=>({workingDir:directory,permissionMode:'bypassPermissions',planModeEnabled:false,remoteHostId:null,isCurrent:()=>active}),requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
   const host=new TerminalPlugins(options);
   try{
     const registry=new RemoteResourceRegistry();registerPluginResources(registry,host);
@@ -72,6 +80,20 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     expect(binding).toBeTruthy();
     const saveRequest={client,collectionId:'plugins',resourceRef:resource.ref,actionId:'credentials',input:{key:binding,value:'synthetic-acceptance-key'}};
     await registry.invoke(context,saveRequest);
+    // The same production settings endpoints feed browser settings and terminal
+    // forms. Synthetic provider HTTP still exercises real PKCE/loopback and vault.
+    const settings=async(route:string,method='GET',body?:unknown)=>{
+      const response=await host.credentials.request(instance,new Request(`https://plugin.invalid${route}`,{method,...(body===undefined?{}:{body:JSON.stringify(body)})}),()=>active);
+      expect(response).not.toBeNull();return response!;
+    };
+    const connected=await settings('/oauth/oauth/connect','POST',{});
+    expect(await connected.json()).toMatchObject({ok:true,account:{status:'connected'}});
+    expect(await host.credentials.resolveOauthSecret(instance,'oauth')).toMatchObject({ok:true,accessToken:'synthetic-oauth-access'});
+    const connection=await settings('/connections/instances','POST',{host:'private.example.com',token:'synthetic-instance-key',label:'Private instance'});
+    expect(await connection.json()).toMatchObject({ok:true,connection:{host:'private.example.com'}});
+    expect(host.credentials.tokenFor(instance,'PRIVATE.example.com')).toMatchObject({value:'synthetic-instance-key',header:'Authorization'});
+    const publicSettings=JSON.stringify([await (await settings('/oauth')).json(),await (await settings('/connections')).json(),await (await settings('/secrets')).json()]);
+    expect(publicSettings).not.toMatch(/synthetic-oauth|synthetic-instance-key|synthetic-acceptance-key/);
     expect(JSON.stringify(resource)).not.toContain('synthetic-acceptance-key');
     expect((await readFile(path.join(directory,'vault','secrets.enc'),'utf8'))).not.toContain('synthetic-acceptance-key');
     if(process.env.CINDY_TEST_CHROMIUM){
@@ -87,9 +109,10 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     }
     // Integration regression: an old remote form cannot bind new bytes to the
     // previous package's credential request, even when the secret key is reused.
-    const updated=JSON.parse(await archive.file('ghost.json')!.async('string'));updated.version='1.0.1';
+    const updated=JSON.parse(await archive.file('ghost.json')!.async('string'));updated.version='1.0.1';updated.network.secrets[0].oauth.clientId='fixture-client-v2';
     archive.file('ghost.json',JSON.stringify(updated));await writeFile(file,await archive.generateAsync({type:'nodebuffer'}));
     const update=await host.prepareInstall(file,'controller-a');await host.confirmInstall(update.id,'controller-a');
+    expect(await (await settings('/oauth')).json()).toMatchObject([{key:'oauth',accounts:[{status:'expired'}]}]);
     await expect(registry.invoke(context,saveRequest)).rejects.toThrow('PLUGIN_CHANGED');
     await host.writeSecret(instance,'oauth:fixture:refresh','synthetic-refresh-value');
     const approval=(await host.list())[0].approval;await host.close();
