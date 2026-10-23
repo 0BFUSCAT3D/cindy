@@ -7,6 +7,29 @@ import { mailInlineBindingScript, mailInlineRefreshScript } from '@cindy/maker-s
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../ImageLightbox', () => ({ ImageLightbox: ({ src }: { src: string }) => <img alt="attachment-preview" src={src} /> }));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+// Chromium can expose a document before the srcdoc parser creates its body.
+// Account/CID updates during that interval must wait for load, then apply the
+// latest source without crashing the whole conversation reader.
+it('waits for the iframe body before refreshing and uses updates received during loading', () => {
+  const pendingDoc = document.implementation.createHTMLDocument('');
+  pendingDoc.body.remove();
+  const content = vi.spyOn(HTMLIFrameElement.prototype, 'contentDocument', 'get').mockReturnValue(pendingDoc);
+  try {
+    const change = vi.fn();
+    const view = render(<MailHtmlPreview value="<p>Original</p>" reading />);
+    const frame = screen.getByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement;
+    view.rerender(<MailHtmlPreview value="<p>Latest</p>" reading onChange={change} />);
+    fireEvent.load(frame); // An incomplete document must stay hidden.
+    expect(frame.style.visibility).toBe('hidden');
+    pendingDoc.open(); pendingDoc.write(frame.srcdoc); pendingDoc.close();
+    fireEvent.load(frame);
+    expect(frame.style.visibility).toBe('visible');
+    expect(pendingDoc.body.textContent).toBe('Latest');
+    expect(pendingDoc.body.contentEditable).toBe('true');
+    expect(change).not.toHaveBeenCalled();
+    view.unmount();
+  } finally { content.mockRestore(); }
+});
 // Opening a draft in the sidebar must not create a second modal editor or save it.
 it('routes both HTML and plain-text enlargement to the shared mail panel', () => {
   const enlarge = vi.fn(), change = vi.fn();
@@ -114,9 +137,9 @@ it('adapts authored mail colors to the app theme and restores them without chang
     if (oldStyle === null) root.removeAttribute('style'); else root.setAttribute('style', oldStyle);
   }
 });
-// A new srcdoc can paint its authored light background before onLoad. Neither
-// the reader nor the compose preview should reveal that unthemed document.
-it('reveals each new document only after applying the initial dark theme', () => {
+// Initial paint is hidden until themed; updates from the other editor must
+// change the existing document before paint, without a blank loading frame.
+it('themes the first load and updates other-view content without reloading or hiding', () => {
   const root = document.documentElement;
   const oldClass = root.className, oldStyle = root.getAttribute('style');
   const change = vi.fn();
@@ -141,11 +164,21 @@ it('reveals each new document only after applying the initial dark theme', () =>
     view.rerender(<MailHtmlPreview value={change.mock.calls.at(-1)![0]} reading onChange={change} />);
     expect(frame.style.visibility).toBe('visible');
     expect(frame.contentDocument!.querySelector('[data-cindy-mail-run]')).toBe(run);
+    const doc = frame.contentDocument;
+    const src = frame.srcdoc;
     view.rerender(<MailHtmlPreview value='<body style="background:white;color:black"><p>AI update</p></body>' reading onChange={change} />);
-    expect(frame.style.visibility).toBe('hidden');
-    expect(frame.getAttribute('aria-busy')).toBe('true');
-    load();
+    expect(screen.getByTitle('chat.ghostCall.mailPreview')).toBe(frame);
+    expect(frame.contentDocument).toBe(doc);
+    expect(frame.srcdoc).toBe(src);
+    expect(frame.style.visibility).toBe('visible');
+    expect(frame.getAttribute('aria-busy')).toBe('false');
+    expect(doc!.body.textContent).toBe('AI update');
+    expect(doc!.body.style.backgroundColor).not.toBe('white');
     expect(change).toHaveBeenCalledTimes(1);
+    const updated = doc!.querySelector('p')!;
+    updated.textContent = 'Edited again'; fireEvent.input(updated);
+    expect(change.mock.calls.at(-1)![0]).toContain('Edited again');
+    expect(change.mock.calls.at(-1)![0]).not.toContain('color-mix');
   } finally {
     root.className = oldClass;
     if (oldStyle === null) root.removeAttribute('style'); else root.setAttribute('style', oldStyle);
@@ -164,7 +197,10 @@ it('inserts an existing image part into the HTML and hides its duplicate attachm
   expect(values.bodyHtml).toMatch(/<\/p><\/body><\/html>$/);
   expect(JSON.parse(values.attachmentItems)).toHaveLength(1);
   expect(screen.queryByRole('button', { name: 'chat.ghostCall.mailInsertImage' })).toBeNull();
-  expect((screen.getByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement).srcdoc).toContain(url);
+  const frame = screen.getByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement;
+  const doc = frame.contentDocument!;
+  doc.open(); doc.write(frame.srcdoc); doc.close(); fireEvent.load(frame);
+  expect(doc.querySelector('img')?.getAttribute('src')).toBe(url);
   expect(screen.queryByRole('button', { name: 'chat.ghostCall.mailRemoveAttachment' })).toBeNull();
   expect(JSON.parse(values.attachmentItems)[0].contentId).toBe('image-1@cindy.local');
 });
@@ -184,8 +220,14 @@ it('enlarges the read-only preview and reflects later AI updates without changin
   fireEvent.click(screen.getByRole('button', { name: 'chat.ghostCall.mailEnlarge' }));
   expect(screen.getByRole('dialog')).toBeTruthy();
   expect(screen.getAllByTitle('chat.ghostCall.mailPreview')).toHaveLength(2);
+  const frames = screen.getAllByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement[];
+  for (const frame of frames) {
+    const doc = frame.contentDocument!;
+    doc.open(); doc.write(frame.srcdoc); doc.close(); fireEvent.load(frame);
+  }
   rerender(<GhostCardForm fields={[{ ...fields[0], value: '<p>AI updated</p>' }]} disabled={false} onChange={change} />);
-  expect(screen.getAllByTitle('chat.ghostCall.mailPreview').every(frame => frame.getAttribute('srcdoc')?.includes('AI updated'))).toBe(true);
+  expect(screen.getAllByTitle('chat.ghostCall.mailPreview')).toEqual(frames);
+  expect(frames.every(frame => frame.contentDocument!.body.textContent === 'AI updated')).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'chat.lightbox.close' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(change).not.toHaveBeenCalled();
@@ -203,7 +245,8 @@ it('autosaves simple HTML text edits and the plain alternative, keeps the caret 
   const doc = frame.contentDocument!;
   doc.open(); doc.write(src); doc.close(); fireEvent.load(frame);
   const input = doc.querySelector<HTMLElement>('[data-cindy-mail-run="0"]')!;
-  expect(input.contentEditable).toBe('plaintext-only');
+  expect(doc.body.contentEditable).toBe('true');
+  expect(input.hasAttribute('contenteditable')).toBe(false);
   fireEvent.compositionStart(input);
   input.textContent = '你好\n'; fireEvent.input(input);
   expect(change).not.toHaveBeenCalled();
@@ -220,7 +263,7 @@ it('autosaves simple HTML text edits and the plain alternative, keeps the caret 
   expect(screen.queryByRole('textbox')).toBeNull();
   expect(screen.queryByRole('toolbar')).toBeNull();
   rerender(<GhostCardForm fields={fields.map(f => ({ ...f, value: saved[f.name] }))} disabled readOnly onChange={change} />);
-  expect(input.contentEditable).toBe('false');
+  expect(doc.body.contentEditable).toBe('false');
   const count = change.mock.calls.length;
   input.textContent = 'Should not save'; fireEvent.input(input);
   expect(change).toHaveBeenCalledTimes(count);

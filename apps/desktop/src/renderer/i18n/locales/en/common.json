@@ -5,7 +5,9 @@
     "title": "Mail",
     "openMailbox": "Open in mailbox",
     "loading": "Loading email…",
-    "failed": "Could not load this email. Check the connected mailbox account, retry, or open it in your mailbox.",
+    "failed": "Could not load this email. Retry or open it in your mailbox.",
+    "unavailable": "No email plugin is available. You can open this email in your mailbox.",
+    "notReady": "The email plugin is not set up. Connect your mailbox or open the original link.",
     "retry": "Retry",
     "to": "To",
     "cc": "Cc",
@@ -20,7 +22,9 @@
     "collapseMessage": "Collapse email from {{from}}",
     "conversationFailed": "Other emails in this conversation could not be loaded.",
     "messageCount": "{{count}} emails",
-    "showMessages": "Show {{count}} emails"
+    "showMessages": "Show {{count}} emails",
+    "choosePlugin": "Choose a plugin to open this email.",
+    "personalPlugin": "Personal plugin"
   },
   "taskActionConfirmation": {
     "title": "Confirm session action",
@@ -6666,7 +6670,7 @@
         "installMeta": "Version {{version}} · {{source}}",
         "updateMeta": "Version {{from}} → {{to}} · {{source}}",
         "installDescription": "Nothing is installed until you confirm. The plugin is enabled right after installing, and you can disable or uninstall it anytime on the Plugins page.",
-        "updateDescription": "The new version needs more permissions, so it won’t be installed until you confirm. The current version keeps working in the meantime.",
+        "updateDescription": "The update starts only after you confirm. The current version remains available until then.",
         "grantsTitle": "After installing it will have:",
         "noPermissions": "This plugin declares no additional permissions.",
         "addedTitle": "New or changed permissions:",
@@ -6683,7 +6687,11 @@
         "confirmInstall": "Install",
         "confirmUpdate": "Update",
         "cancel": "Cancel",
-        "updateNeedsConsent": "New permissions need confirmation"
+        "updateNeedsConsent": "New permissions need confirmation",
+        "targetIdentity": "Install for: {{name}}",
+        "personalTarget": "Personal",
+        "sourceChanged": "This update switches to a local source. Existing accounts and data are archived separately. Connect your accounts again after updating.",
+        "otherCopies": "There are {{count}} other copies of this plugin. They will stay installed and keep their current enabled state. A separate copy needs its own account connections."
       },
       "trust": {
         "official": "Official Cindy plugin",
