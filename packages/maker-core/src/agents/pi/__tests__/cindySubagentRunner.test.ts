@@ -633,7 +633,15 @@ describe('Cindy durable PI Subagent runner', () => {
     const files = ['result.json', 'transcript.jsonl', 'config.json'];
     const before = await Promise.all(files.map(file => readFile(path.join(fixture.runDir, file))));
     await writeFile(path.join(fixture.runDir, 'status.json'), Buffer.alloc(72_506));
-    await expect(stopForAccountBoundary(fixture.root, { timeoutMs: 0 })).resolves.toBe(true);
+    // A cold Windows inventory can exhaust one recovery budget even after the
+    // runner exits. That attempt must fail closed; wait for a fresh OS query to
+    // confirm absence, as in the orphan-exit case below. A permanently unknown
+    // inventory or invalid receipt still fails the existing bounded wait.
+    await waitFor(
+      async () => await stopForAccountBoundary(fixture.root, { timeoutMs: 0 }) ? true : null,
+      undefined,
+      'the independent process inventory to confirm the completed runner exited',
+    );
     expect(await Promise.all(files.map(file => readFile(path.join(fixture.runDir, file)))))
       .toEqual(before);
   });
