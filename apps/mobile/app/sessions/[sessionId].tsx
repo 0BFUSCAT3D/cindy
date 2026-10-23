@@ -7754,6 +7754,24 @@ function SessionScreenContent() {
     });
   };
 
+  const moveQueueItem = useCallback((clientId: string, direction: 'up' | 'down') => {
+    // 菜单打开期间队列可能变化：按最新位置重新判断方向和目标。
+    const projection = remoteSessionStore.getInputProjection(sessionId);
+    const originalIndex = projection.pendingQueue.findIndex((entry) => entry.clientId === clientId);
+    const item = projection.pendingQueue[originalIndex];
+    if (!item) return;
+    const { actions } = buildQueueRowPresentation({
+      busy: queueBusy, item, originalIndex, projection,
+      queueLength: projection.pendingQueue.length,
+      readOnlyReason: queueAvailabilityReason,
+    });
+    const action = actions[direction === 'up' ? 'moveUp' : 'moveDown'];
+    if (action.disabled || action.targetIndex == null) return;
+    const targetIndex = action.targetIndex;
+    setQueueSelectedClientId(null);
+    void runQueueAction(() => maker.input.move(sessionId, clientId, targetIndex));
+  }, [maker, queueAvailabilityReason, queueBusy, runQueueAction, sessionId]);
+
   const setQueueEditLock = useCallback((clientId: string, locked: boolean) => {
     const projectionEpochAtRequestStart =
       remoteSessionStore.captureInputProjectionAuthorityEpoch(sessionId);
@@ -7935,10 +7953,11 @@ function SessionScreenContent() {
         setQueueSelectedClientId(null);
         steerQueueItem(target);
       },
+      onMove: moveQueueItem,
       onRetryOutbox: retryOutboxItem,
       onRemoveOutbox: removeOutboxItem,
     }),
-    [beginQueueEdit, queueBusy, queueSelectedClientId, removeQueueItem, removeOutboxItem, retryOutboxItem, sessionId, steerQueueItem],
+    [beginQueueEdit, moveQueueItem, queueBusy, queueSelectedClientId, removeQueueItem, removeOutboxItem, retryOutboxItem, sessionId, steerQueueItem],
   );
 
   // ⚠️ 临时取证(定位「气泡凭空消失」,定位完成后删):会话页实例身份 + 挂载/卸载。
