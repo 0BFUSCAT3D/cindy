@@ -1009,6 +1009,13 @@ function InlineTreeRow({
   );
 }
 
+interface PendingInputRowProps {
+  pending: PendingCreate;
+  depth: number;
+  onSubmit?: (name: string) => void;
+  onCancel?: () => void;
+}
+
 function PendingInputRow({ pending, depth, onSubmit, onCancel }: PendingInputRowProps) {
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
