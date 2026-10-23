@@ -13,12 +13,13 @@ const [runtimeArg, reportArg] = process.argv.slice(2);
 if (!runtimeArg || !reportArg) throw new Error('Usage: platform-acceptance.mjs <runtime-directory> <report-directory>');
 const runtime = path.resolve(runtimeArg), report = path.resolve(reportArg);
 await mkdir(report, { recursive: true });
-const temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-platform-'));
-const home = path.join(temporary, 'home'), profile = path.join(temporary, 'profile');
-await mkdir(home);
+const realUserManager=process.platform==='linux'&&process.env.CINDY_ACCEPTANCE_SYSTEMD==='1';
+const temporary = await mkdtemp(path.join(realUserManager?os.homedir():os.tmpdir(), 'cindy-platform-'));
+const home = realUserManager?os.homedir():path.join(temporary, 'home'), profile = path.join(temporary, 'profile');
+if(!realUserManager)await mkdir(home);
 const node = path.join(runtime, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
 const cli = path.join(runtime, 'app/dist/cli.js');
-const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'CI', 'TERM'].filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+const inherited = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'CI', 'TERM','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'].filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
 const env = { ...inherited, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_STATE_HOME: path.join(home, '.local/state'), LOCALAPPDATA: path.join(home, 'AppData/Local'), APPDATA: path.join(home, 'AppData/Roaming'), CODEX_HOME: path.join(home, '.codex'), PI_CODING_AGENT_DIR: path.join(home, '.pi/agent'), NODE_PATH: '', NODE_OPTIONS: '' };
 const results = [];
 const record = (name, status, details) => { results.push({ name, status, ...(details ? { details } : {}) }); console.log(`${status}: ${name}${details ? ` (${details})` : ''}`); writeFileSync(path.join(report,'results.json'),JSON.stringify({platform:process.platform,arch:process.arch,node:process.version,results},null,2)); };
@@ -120,6 +121,7 @@ try {
   const install = await run(['service', 'install'], { raw: true });
   if (install.code === 0) {
     registered = true; record('native user-service registration', 'PASS');
+    if(realUserManager){const installed=JSON.parse(install.output);assert.equal(installed.starts,'boot');record('systemd linger registers startup without an interactive login','PASS');}
     const activated = await run(['service','activate'],{timeout:90_000});
     assert.equal(activated.service.running,true); assert.ok(activated.status.deviceId);
     record('native user-service activation + real IPC', 'PASS');
@@ -143,7 +145,7 @@ try {
     await run(['service', 'uninstall']); registered = false;
     record('native user-service removal', 'PASS');
   }
-  else if (process.platform === 'linux' && /USER_SERVICE_MANAGER_UNAVAILABLE/.test(install.output)) record('native user-service registration', 'UNAVAILABLE', 'Hosted runner has no systemd user manager; not claimed as tested');
+  else if (process.platform === 'linux' && !realUserManager && /USER_SERVICE_MANAGER_UNAVAILABLE/.test(install.output)) record('native user-service registration', 'UNAVAILABLE', 'No systemd user manager; not claimed as tested');
   else throw new Error(`Service registration failed: ${install.output || install.error}`);
   await run(['service', 'stop']);
 } catch (error) {

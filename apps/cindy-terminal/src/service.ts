@@ -352,6 +352,8 @@ export class TerminalService {
       secrets:{get:key=>this.secrets.get(`${owner}:${key}`),set:(key,value)=>this.secrets.set(`${owner}:${key}`,value),delete:key=>this.secrets.delete(`${owner}:${key}`)},
       changed:()=>{if(this.ownerSuspended||this.closing)return;this.transport.publish('ghosts:changed',[]);void this.remote.publish('maker:remote-resources:changed',{collectionId:'plugins'}).catch(()=>{});},
       receive:async()=>({ok:false,errorCode:'UNSUPPORTED_CAPABILITY'}),
+      cards:{persist:row=>this.tasks.media.savePluginCard(row,guardPlugin),broadcast:payload=>{guardPlugin();this.transport.publish('ghosts:card-updated',[payload]);void this.remote.publish('ghosts:card-updated',payload).catch(()=>{});}},
+      fs:{getSessionSnapshot:(id,instance)=>this.tasks.pluginPermissionSnapshot(id,instance),requestWriteConfirm:(id,payload)=>this.tasks.requestPluginWrite(id,payload),writeSaveDeposit:(id,token,name,bytes)=>saves.write(id,token,name,bytes)},
       network:{getLoginEmail:()=>this.auth.snapshot().session?.membership.email??null,
         fetchImpl:(url,init)=>fetch(url,{...init,body:init.body as BodyInit,signal:AbortSignal.any([init.signal,pluginAbort.signal])}),
         fetchPublicImpl:(url,init,beforeDispatch)=>fetchSingleHopWithSsrFGuard({url,init:{...init,body:init.body as BodyInit},signal:AbortSignal.any([init.signal,pluginAbort.signal]),requireHttps:true,beforeDispatch}),

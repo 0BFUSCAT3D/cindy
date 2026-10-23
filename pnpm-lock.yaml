@@ -1667,6 +1667,9 @@ importers:
       '@cindy/device-link':
         specifier: workspace:*
         version: link:../device-link
+      '@cindy/maker-core':
+        specifier: workspace:*
+        version: link:../maker-core
       '@cindy/maker-scheduler':
         specifier: workspace:*
         version: link:../maker-scheduler
@@ -1682,6 +1685,12 @@ importers:
       '@cindy/remote-agent':
         specifier: workspace:*
         version: link:../remote-agent
+      cindy-tools:
+        specifier: workspace:*
+        version: link:../cindy-tools
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -15440,9 +15449,7 @@ snapshots:
       metro-runtime: 0.84.5
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 

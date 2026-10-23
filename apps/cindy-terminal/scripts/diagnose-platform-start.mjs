@@ -10,7 +10,7 @@ const output = path.join(app, 'dist', 'diagnostic-service.mjs');
 await build({
   stdin: { contents: "export { TerminalService } from './src/service.ts'; export { TerminalServiceManager } from './src/service-manager.ts';", resolveDir: app },
   outfile: output, platform: 'node', target: 'node22', format: 'esm', bundle: true,
-  loader: { '.md': 'text' }, external: ['@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2'],
+  loader: { '.md': 'text' }, external: ['@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2', 'playwright-core', 'fsevents'],
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);' },
 });
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-start-diagnostic-'));

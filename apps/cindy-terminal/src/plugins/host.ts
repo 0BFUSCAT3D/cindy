@@ -3,6 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { NativePluginHost, type NativePluginHostOptions } from '@cindy/plugin-runtime';
 import { GhostNetworkSlot, type NetworkSlotDeps } from '@cindy/plugin-runtime/networkSlot';
+import { GhostFsSlot, type FsSlotDeps } from '@cindy/plugin-runtime/fsSlot';
+import { GhostCardService, withCardToken, type GhostCardServiceDeps } from '@cindy/plugin-runtime/cardService';
+import { sanitizeGhostCardHtml } from '@cindy/plugin-runtime/cardSanitizer';
 import { createGhostKvStore } from '@cindy/plugin-runtime/ghostKvStore';
 import { handleGhostKvRequest, readBoundedBodyText } from '@cindy/plugin-runtime/ghostKvEndpoint';
 import { assertGhostInstallConsent, confirmedTaskCapability, type GhostInstallConsentDecision } from '@cindy/plugin-runtime/ghostInstallConsent';
@@ -24,6 +27,8 @@ export interface TerminalPluginOptions {
   changed():void;
   onClose?():void;
   receive(instance:string,payload:unknown):Promise<unknown>;
+  cards:Pick<GhostCardServiceDeps,'persist'|'broadcast'>;
+  fs:Pick<FsSlotDeps,'getSessionSnapshot'|'requestWriteConfirm'|'writeSaveDeposit'>;
   network?:Omit<NetworkSlotDeps,'getGhost'|'captureRequestGuard'|'readSecret'>;
   broker?:NativePluginHostOptions['broker'];
   log?:NativePluginHostOptions['manager']['log'];
@@ -35,6 +40,8 @@ export class TerminalPlugins {
   readonly native:NativePluginHost;
   readonly kv:ReturnType<typeof createGhostKvStore>;
   readonly network?:GhostNetworkSlot;
+  readonly cards:GhostCardService;
+  readonly fs:GhostFsSlot;
   private readonly pending = new Map<string,PendingInstall>();
   private closed=false;
   private revision=0;
@@ -42,8 +49,15 @@ export class TerminalPlugins {
   readonly ready:Promise<void>;
   constructor(private readonly options:TerminalPluginOptions) {
     this.kv=createGhostKvStore({getRootDir:()=>path.join(options.root,'plugin-kv'),log:options.log});
+    const getGhost=(id:string)=>{this.guard();return this.native.list().find(ghost=>installedGhostStoragePart(ghost)===id)??null;};
+    this.cards=new GhostCardService({...options.cards,sanitize:sanitizeGhostCardHtml,
+      hasCardSlot:id=>{const ghost=getGhost(id);return !!ghost?.enabled&&ghost.approval?.state==='approved'&&ghost.manifest.card!==undefined;},
+      log:{debug:(message,meta)=>options.log?.info(message,meta),warn:(message,meta)=>options.log?.warn(message,meta)},
+    });
+    this.fs=new GhostFsSlot({...options.fs,getGhost,dataRootDir:()=>path.join(options.root,'plugin-fs'),
+      callInfo:id=>this.cards.callInfoOf(id),inFlightCallInfo:id=>this.cards.inFlightCallInfoOf(id),log:options.log});
     if(options.network)this.network=new GhostNetworkSlot({...options.network,
-      getGhost:id=>this.native.list().find(ghost=>installedGhostStoragePart(ghost)===id)??null,
+      getGhost,inFlightCallInfo:id=>this.cards.inFlightCallInfoOf(id),
       readSecret:(id,key)=>this.readSecret(id,key),
       captureRequestGuard:id=>{
         this.guard();const previous=this.native.list().find(ghost=>installedGhostStoragePart(ghost)===id);
@@ -58,7 +72,13 @@ export class TerminalPlugins {
       broker:{...options.broker,log:options.log,ownerScope:{capture:()=>{this.guard();return this;},isCurrent:value=>value===this&&this.current(),isStable:()=>this.current()},
         readSecret:(id,key)=>this.readSecret(id,key),secretSaved:async(id,key)=>(await this.readSecret(id,key))!==null},
       web:{executablePath:options.executablePath,mailRuntimeSource:()=>readFile(path.join(options.runtimeDirectory,'plugin-mail-runtime.js'),'utf8'),
-        receive:async(id,payload)=>{this.guard();if((payload as {type?:unknown}|null)?.type==='fetch-request'&&this.network)return this.network.handleFetchRequest(id,payload);return options.receive(id,payload);},
+        receive:async(id,payload)=>{
+          this.guard();const type=(payload as {type?:unknown}|null)?.type;
+          if(type==='fetch-request'&&this.network)return this.network.handleFetchRequest(id,payload);
+          if(type==='fs-request')return this.fs.handleFsRequest(id,payload);
+          if(type==='card-update'){this.cards.handleCardUpdate(id,payload);return {ok:true};}
+          return options.receive(id,payload);
+        },
         request:async(id,request,current)=>{
           if(new URL(request.url).pathname!=='/kv')return null;
           const outcome=await handleGhostKvRequest({method:request.method,readBodyText:()=>readBoundedBodyText(request),store:this.kv,ghostId:id,isCurrent:()=>this.current()&&current(),log:options.log});
@@ -68,7 +88,7 @@ export class TerminalPlugins {
     this.ready=this.open();
   }
   private async open() {
-    for(const directory of ['plugins','plugin-approvals','plugin-kv'])await privateDirectory(path.join(this.options.root,directory));
+    for(const directory of ['plugins','plugin-approvals','plugin-kv','plugin-fs'])await privateDirectory(path.join(this.options.root,directory));
     this.guard();await this.native.open();this.guard();
   }
   private current(){try{this.guard();return true;}catch{return false;}}
@@ -76,6 +96,16 @@ export class TerminalPlugins {
   version(){return String(this.revision);}
   async list(){await this.ready;this.guard();await this.native.refresh();this.guard();return this.native.list();}
   async get(id:string){const ghost=(await this.list()).find(item=>installedGhostStoragePart(item)===id);if(!ghost)throw new Error('PLUGIN_NOT_FOUND');return ghost;}
+  async callTool(id:string,request:{tool:string;args:Record<string,unknown>;signal?:AbortSignal;agentToolUseId?:string},context:{sessionId:string;sessionInstanceId:string;remoteHostId:string|null;assertCurrent():void}){
+    await this.get(id);context.assertCurrent();this.guard();
+    const callId=randomUUID();
+    this.cards.registerCall(callId,{ghostId:id,sessionId:context.sessionId,sessionInstanceId:context.sessionInstanceId,remoteHostId:context.remoteHostId,toolUseId:request.agentToolUseId??null});
+    try {
+      const result=await this.native.dispatcher!.callGhostTool({ghostId:id,tool:request.tool,args:request.args,signal:request.signal,callId,sessionId:context.sessionId});
+      context.assertCurrent();this.guard();
+      return withCardToken(result,this.cards.hasCard(callId),callId);
+    }finally{this.cards.finalizeCall(callId);}
+  }
   private key(id:string,key:string){return `plugin:${id}:${key}`;}
   private async readSecret(id:string,key:string){
     this.guard();const value=await this.options.secrets.get(this.key(id,key));this.guard();return value;
@@ -148,6 +178,6 @@ export class TerminalPlugins {
   close(){
     if(this.closing)return this.closing;
     this.closed=true;this.options.onClose?.();this.pending.clear();
-    return this.closing=(async()=>{await this.ready.catch(()=>{});await this.mutations;await this.native.close();})();
+    return this.closing=(async()=>{await this.ready.catch(()=>{});await this.mutations;await this.native.close();await this.cards.flushWrites();})();
   }
 }

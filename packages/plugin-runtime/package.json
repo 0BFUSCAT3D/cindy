@@ -23,7 +23,10 @@
     "gray-matter": "^4.0.3",
     "jszip": "^3.10.1",
     "playwright-core": "1.60.0",
-    "@cindy/media-core": "workspace:*"
+    "@cindy/media-core": "workspace:*",
+    "@cindy/maker-core": "workspace:*",
+    "cindy-tools": "workspace:*",
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

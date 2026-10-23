@@ -2,6 +2,9 @@ import path from 'node:path';
 import { open, lstat, realpath, chmod } from 'node:fs/promises';
 import { readBoundedFileNoFollow } from '@cindy/remote-agent/readBoundedFile';
 import { GHOST_FETCH_UPLOAD_MAX_BYTES_PER_FILE } from '@cindy/plugin-runtime/shared/ghost';
+import {ghostCards} from '@cindy/plugin-runtime/cardSchema';
+import * as pluginCards from '@cindy/plugin-runtime/cardStoreDb';
+import type {GhostCardRow} from '@cindy/plugin-runtime/cardService';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { createBlobStore, sniffMediaMime, recordBlob, addRef, hasRef, removeRefs, sessionCanRead, ghostCanRead, getBlobInfo } from '@cindy/media-core';
@@ -33,6 +36,8 @@ export class TerminalTaskMedia {
 CREATE TABLE IF NOT EXISTS media_refs (id TEXT PRIMARY KEY, hash TEXT NOT NULL REFERENCES media_blobs(hash) ON DELETE CASCADE, ref_kind TEXT NOT NULL, ref_id TEXT NOT NULL, origin_session_id TEXT, origin_kind TEXT, origin_id TEXT, label TEXT, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS media_refs_hash_idx ON media_refs(hash);
 CREATE INDEX IF NOT EXISTS media_refs_ref_idx ON media_refs(ref_kind,ref_id);`);
+    database.exec(`CREATE TABLE IF NOT EXISTS ghost_cards(call_id TEXT PRIMARY KEY,ghost_id TEXT NOT NULL,session_id TEXT,html TEXT NOT NULL,height INTEGER NOT NULL,v INTEGER NOT NULL DEFAULT 1,updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ghost_cards_updated_at_idx ON ghost_cards(updated_at);`);
     if(process.platform!=='win32')await chmod(file,0o600);
     this.db=drizzle(database,{schema});
   }
@@ -68,6 +73,11 @@ CREATE INDEX IF NOT EXISTS media_refs_ref_idx ON media_refs(ref_kind,ref_id);`);
   }
   removeSession(id:string):Promise<void>{return this.run(async()=>{await removeRefs({refKind:'session-attachment',refId:id},this.db!);});}
   supportedMime(mime:string){return this.store.supportedMime(mime);}
+  private cardDb(){return drizzle(this.native!,{schema:{ghostCards}});}
+  savePluginCard(row:GhostCardRow,guard:()=>void){return this.run(async()=>{guard();await pluginCards.upsertGhostCard(row,this.cardDb());});}
+  getPluginCard(id:string){return this.run(()=>pluginCards.getGhostCard(id,this.cardDb()));}
+  listPluginCards(id:string){return this.run(()=>pluginCards.listGhostCardsBySession(id,this.cardDb()));}
+  setPluginCardHeight(id:string,height:number){return this.run(()=>pluginCards.updateGhostCardHeight(id,height,this.cardDb()));}
   savePluginMedia(input:{ghostId:string;buffer:Uint8Array;mimeType:string;label?:string;assertStillValid?:()=>void},guard:()=>void) {
     return this.run(async()=>{
       const check=()=>{guard();input.assertStillValid?.();};check();

@@ -178,6 +178,20 @@ export class TerminalTaskHost {
     };
   }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
+  async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot|null>{
+    const task=this.live.get(id);if(this.closed||!task||instanceId&&task.session.instanceId!==instanceId)return null;
+    const session=task.session,permission=session.stablePermissionModeState,plan=session.stablePlanModeState;
+    if(!permission?.mode||!plan)return null;
+    const row=await this.storage.get(id);if(!row||this.live.get(id)!==task)return null;
+    const isCurrent=()=>!this.closed&&this.live.get(id)===task&&session.stablePermissionModeState?.generation===permission.generation&&session.stablePlanModeState?.generation===plan.generation;
+    if(!isCurrent())return null;
+    return {workingDir:row.workDir,permissionMode:permission.mode,planModeEnabled:plan.enabled,remoteHostId:null,isCurrent,reviewAction:action=>session.reviewHostPermissionAction(action)};
+  }
+  async requestPluginWrite(id:string,payload:import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmPayload):Promise<import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmDecision>{
+    const task=this.live.get(id);if(!task||this.closed)return {confirmed:false,reason:'session_closed'};
+    const decision=await this.interaction(id,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.write',input:payload as unknown as Record<string,unknown>});
+    return decision.kind==='permission'&&decision.behavior==='allow'&&this.live.get(id)===task?{confirmed:true}:{confirmed:false,reason:'cancelled'};
+  }
   configureScheduler(deps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps) {this.schedulerDeps=deps;}
   helperDeps(input:{sessionId:string;workingDir:string;agentKind:AgentKind;setTitle?:(title:string)=>Promise<void>;title?:()=>string}):import('../../../../packages/lizi-mcps/src/lizi_xdtHelperMcpServer.js').XdtHelperMcpDeps {
     return {

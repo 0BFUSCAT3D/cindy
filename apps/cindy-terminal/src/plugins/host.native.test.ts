@@ -13,6 +13,7 @@ import {RemoteResourceRegistry} from '@cindy/device-link';
 import {TerminalPlugins} from './host.js';
 import {registerPluginResources} from './resources.js';
 import {TerminalSecretStore} from '../secrets.js';
+import {TerminalTaskMedia} from '../tasks/media.js';
 
 let directory:string,runtime:string;
 beforeAll(async()=>{
@@ -25,18 +26,21 @@ afterAll(async()=>{await rm(directory,{recursive:true,force:true,maxRetries:5,re
 
 it('requires confirmation of exact bytes and keeps native credentials private across restart',async()=>{
   const archive=new JSZip();
-  archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-fixture',name:'Terminal fixture',version:'1.0.0',kind:'chip',entry:'main.js',settingsHtml:'settings.html',slots:['tool','node'],tools:[{name:'check',description:'Verify fixture'}],node:{entry:'worker.cjs',protocol:'json-rpc-stdio',secretBindings:[{key:'key',label:'Fixture key',methods:['check']}]}}));
+  archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-fixture',name:'Terminal fixture',version:'1.0.0',kind:'chip',entry:'main.js',settingsHtml:'settings.html',slots:['tool','node','card'],fs:true,tools:[{name:'check',description:'Verify fixture'}],node:{entry:'worker.cjs',protocol:'json-rpc-stdio',secretBindings:[{key:'key',label:'Fixture key',methods:['check']}]}}));
   archive.file('main.js',`cindy.onHostMessage(async request=>{
     const reply=await cindy.node.request({method:'check',callId:request.callId,cancelWithCall:true});
+    const saved=await cindy.send({type:'fs-request',op:'write',root:'workdir',path:'plugin-result.txt',content:'terminal-plugin-files',callId:request.callId});
+    await cindy.send({type:'card-update',callId:request.callId,html:'<p>Plugin result</p><script>bad()</script>'});
     await fetch('/kv',{method:'PUT',body:JSON.stringify({visited:true})});
-    await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:reply});
+    await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:{reply,saved,callId:request.callId}});
   });`);
   archive.file('settings.html','<!doctype html><html><body>Fixture</body></html>');
   archive.file('worker.cjs',String.raw`require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{configured:r.cindy?.secrets?.key==='synthetic-acceptance-key'}})+'\n');});`);
   const file=path.join(directory,'fixture.cindy'),bytes=await archive.generateAsync({type:'nodebuffer'});await writeFile(file,bytes);
   const vault=new TerminalSecretStore(path.join(directory,'vault'));await vault.open();await vault.initialize('machine');
-  let active=true;
-  const options={root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets:vault,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
+  let active=true;const media=new TerminalTaskMedia(path.join(directory,'media'));
+  const cardPushes:unknown[]=[];
+  const options={root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets:vault,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},cards:{persist:(row:import('@cindy/plugin-runtime/cardService').GhostCardRow)=>media.savePluginCard(row,()=>{}),broadcast:(payload:unknown)=>{cardPushes.push(payload);}},fs:{getSessionSnapshot:async()=>({workingDir:directory,permissionMode:'bypassPermissions',planModeEnabled:false,remoteHostId:null,isCurrent:()=>active}),requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
   const host=new TerminalPlugins(options);
   try{
     const registry=new RemoteResourceRegistry();registerPluginResources(registry,host);
@@ -54,12 +58,19 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     expect(JSON.stringify(resource)).not.toContain('synthetic-acceptance-key');
     expect((await readFile(path.join(directory,'vault','secrets.enc'),'utf8'))).not.toContain('synthetic-acceptance-key');
     if(process.env.CINDY_TEST_CHROMIUM){
-      expect(await host.native.dispatcher!.callGhostTool({ghostId:instance,tool:'check',args:{},sessionId:'fixture-task',timeoutMs:2000})).toEqual({ok:true,result:{ok:true,result:{configured:true}}});
+      const called=await host.callTool(instance,{tool:'check',args:{}},{sessionId:'fixture-task',sessionInstanceId:'fixture-incarnation',remoteHostId:null,assertCurrent:options.assertCurrent});
+      expect(called).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true}},saved:{ok:true}}});
+      expect(await readFile(path.join(directory,'plugin-result.txt'),'utf8')).toBe('terminal-plugin-files');
+      expect(cardPushes).toHaveLength(1);
+      await host.cards.flushWrites();
+      const cards=await media.listPluginCards('fixture-task');expect(cards).toHaveLength(1);expect(cards[0].html).toBe('<p>Plugin result</p>');
+      expect(called).toMatchObject({ok:true,result:{xdt_card_id:cards[0].callId}});
+      expect(await host.fs.handleFsRequest(instance,{type:'fs-request',op:'write',root:'workdir',path:'late-write.txt',content:'late',callId:cards[0].callId})).toMatchObject({ok:false});
       expect(host.kv.read(instance)).toEqual({visited:true});
     }
     const approval=(await host.list())[0].approval;await host.close();
     const next=new TerminalPlugins(options);
     try{expect((await next.list())[0].approval).toEqual(approval);await next.setEnabled(instance,false);expect((await next.list())[0].enabled).toBe(false);active=false;await expect(next.list()).rejects.toThrow('OWNER_CHANGED');}
     finally{await next.close();}
-  }finally{await host.close();vault.lock();}
+  }finally{await host.close();vault.lock();await media.close();}
 });
