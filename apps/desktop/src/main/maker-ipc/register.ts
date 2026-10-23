@@ -6781,7 +6781,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     setProviderOrder: (providerIds) => setProviderOrder(providerIds),
     getProviderOrder: () => readProviderOrder(),
     listPresets: () => getActiveCatalog().presets ?? [],
-    testConnection: (input) => testProviderConnection(input),
+    testConnection: (input, signal) => testProviderConnection(input, undefined, signal),
     detectProvider: detectProviderDeployment,
     fetchModels: async (spec) => {
       if (spec.savedProviderId && subscriptionAccountKind(spec.savedProviderId)) {

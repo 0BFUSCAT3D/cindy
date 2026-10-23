@@ -6319,30 +6319,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * saved: 已保存供应商（key main 侧从 safeStorage 读）；adhoc: 表单未保存值（key 仅内存透传）。
      */
     testProviderConnection: (
-      input:
-        | { kind: 'saved'; providerId: string; agent: 'claude-code' | 'codex' | 'pi' }
-        | {
-            kind: 'adhoc';
-            spec: {
-              agent: 'claude-code' | 'codex' | 'pi';
-              baseUrl: string;
-              modelId: string;
-              authMethod: 'apiKey' | 'oauth' | 'none';
-              wireProtocol?: import('@cindy/model-providers').ProviderWireProtocol;
-              api?: import('@cindy/model-providers').PiModelApi;
-              catalogPresetId?: string;
-              requestPath?: string;
-              apiKey?: string | null;
-              headers?: Record<string, string>;
-            };
-          },
-    ): Promise<{
-      ok: boolean;
-      code?: import('../shared/providerErrors').ProviderErrorCode;
-      status?: number;
-      latencyMs: number;
-      detail?: string;
-    }> => ipcRenderer.invoke('maker:provider:test-connection', input),
+      input: import('../shared/providerConnectionTest').ProviderConnectionTestRequest,
+    ): Promise<import('../shared/providerConnectionTest').ProviderConnectionTestResult> =>
+      ipcRenderer.invoke('maker:provider:test-connection', input),
     /**
      * 供应商「获取模型列表」—— 用表单值 GET 该供应商的列模型端点（key 仅内存透传）。
      * 结构化结果：ok=true 带 models；失败 code 走 providerError.* i18n。

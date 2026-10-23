@@ -1,7 +1,8 @@
 import { useDialogExit } from '@/hooks/useDialogExit';
 import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { providerEndpointBindings, canonicalProviderEndpoint, BUNDLED_CATALOG, mergeModelMetadata } from '@cindy/model-providers';
-import { matchOfficialProviders, bindDetectedProvider, isAgentSelectableModel } from '@cindy/model-providers';
+import { matchOfficialProviders, bindDetectedProvider, isAgentSelectableModel, isLoopbackProviderUrl } from '@cindy/model-providers';
+import type { ProviderConnectionTestResult } from '../../../shared/providerConnectionTest';
 import type { DetectedProviderDraft, DetectionCatalog } from '../../../shared/providerDetection';
 import { OFFICIAL_API_PRESETS } from './AddProviderWizard';
 let detectionRequestSequence = 0;
@@ -279,6 +280,8 @@ interface TestState {
   /** 失败分类码（providerError.<code> i18n 键）。 */
   code?: string;
   latencyMs?: number;
+  decision?: ProviderConnectionTestResult['decision'];
+  attempts?: ProviderConnectionTestResult['attempts'];
 }
 const IDLE_TEST: TestState = { status: 'idle' };
 
@@ -519,14 +522,25 @@ export function ProviderConnectionDialog({
   const [imageGenerationReloadConfirmation, setImageGenerationReloadConfirmation] =
     useState<ImageGenerationReloadConfirmation | null>(null);
   // 鉴权形态：API key（默认）/ OAuth / 无鉴权（本机或受信自托管代理）。
-  const [authMode, setAuthModeState] = useState<CustomProviderAuthMode>(
+  const [selectedAuthMode, setAuthModeState] = useState<CustomProviderAuthMode>(
     initial?.auth?.method === 'oauth'
       ? 'oauth'
       : (initial ?? draft?.config)?.auth?.method === 'none'
         ? 'none'
         : 'apiKey',
   );
+  // The simplified add form has no auth selector. Infer no-auth only for an
+  // entirely local, credential-free draft; independent engines must not lose auth.
+  // Keep the key input visible so adding credentials switches back to API-key mode.
+  const authMode: CustomProviderAuthMode = simpleAdding && selectedAuthMode !== 'oauth'
+    ? rt[activeTab].baseUrl.trim() && Object.values(rt).every(fields =>
+        !fields.apiKey.trim() && !fields.headers.some(header => header.name.trim()) &&
+        (!fields.baseUrl.trim() || isLoopbackProviderUrl(fields.baseUrl.trim())) &&
+        (!fields.modelsUrl.trim() || isLoopbackProviderUrl(fields.modelsUrl.trim())))
+      ? 'none' : 'apiKey'
+    : selectedAuthMode;
   const authModeRef = useRef(authMode);
+  authModeRef.current = authMode;
   const setAuthMode = useCallback((mode: CustomProviderAuthMode) => {
     authModeRef.current = mode;
     setAuthModeState(mode);
@@ -968,7 +982,7 @@ export function ProviderConnectionDialog({
   detectionContext.current = { name, activeTab, onDetected, signature: detectionSignature };
 
   const enterDetectedProvider = useCallback((preset: ProviderPreset) => {
-    if (savingRef.current || childLayerRef.current || runtimeFillRef.current) return;
+    if (savingRef.current || childLayerRef.current || runtimeFillRef.current || connectionTestRef.current) return;
     const context = detectionContext.current;
     const sourceAgent = context.activeTab;
     const fields = rtRef.current[sourceAgent];
@@ -1428,7 +1442,25 @@ export function ProviderConnectionDialog({
     return !template?.includes('{') || providerEndpointBindings(template, fields.baseUrl.trim()) !== null;
   }, [presets]);
 
+  const connectionTestRef = useRef<{ id: string; agent: DialogAgentKind; signature: string } | null>(null);
+  const connectionSignature = providerConnectionTestRequestSignature(runtimeProbeFields(activeTab, rt[activeTab], catalogModels?.[activeTab]), authMode);
+  const cancelConnectionTest = useCallback(() => {
+    const current = connectionTestRef.current;
+    if (!current) return;
+    connectionTestRef.current = null;
+    void window.electronAPI.maker.testProviderConnection({ kind: 'cancel', requestId: current.id }).catch(() => undefined);
+  }, []);
+  useLayoutEffect(() => {
+    const current = connectionTestRef.current;
+    if (current && (!dialog.open || current.agent !== activeTab || current.signature !== connectionSignature)) {
+      cancelConnectionTest();
+      setTest(previous => ({ ...previous, [current.agent]: IDLE_TEST }));
+    }
+  }, [activeTab, connectionSignature, dialog.open, cancelConnectionTest]);
+  useEffect(() => () => cancelConnectionTest(), [cancelConnectionTest]);
+
   const handleTest = useCallback(async () => {
+    if (connectionTestRef.current || modelFetchInFlightRef.current || picker) return;
     const agent = activeTab;
     const rf = rt[agent];
     const probeFields = runtimeProbeFields(agent, rf, catalogModels?.[agent]);
@@ -1478,6 +1510,15 @@ export function ProviderConnectionDialog({
       savedBaseline &&
       connectionTestCanUseSaved(probeFields, savedBaseline, authMode),
     );
+    const originalModel = draft?.config.runtimes[agent]?.models.find(model => model.id.trim() === firstModel);
+    const automatic = simpleAdding && agent === 'pi' && !rf.catalogPresetId && !rf.requestPath
+      && !originalModel?.api && !originalModel?.piApi && !originalModel?.route;
+    const cancellable = simpleAdding && agent === 'pi' && !rf.catalogPresetId
+      && (!probeRoute.api || ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai'].includes(probeRoute.api));
+    const requestId = cancellable ? 'connection-' + Date.now() + '-' + (++detectionRequestSequence) : undefined;
+    if (requestId) {
+      connectionTestRef.current = { id: requestId, agent, signature: requestSig };
+    }
     setTest((prev) => ({ ...prev, [agent]: { status: 'testing' } }));
     try {
       const result = await window.electronAPI.maker.testProviderConnection(
@@ -1485,13 +1526,14 @@ export function ProviderConnectionDialog({
           ? { kind: 'saved', providerId: initial!.id, agent }
           : {
               kind: 'adhoc',
+              ...(requestId ? { requestId, ...(automatic ? { strategy: 'auto' as const } : {}) } : {}),
               spec: {
                 agent,
                 baseUrl,
                 modelId: firstModel,
                 authMethod: authMode,
                 wireProtocol: probeWireProtocol,
-                ...(probeRoute.api ? { api: probeRoute.api } : {}),
+                ...(!automatic && probeRoute.api ? { api: probeRoute.api } : {}),
                 ...(rf.catalogPresetId ? { catalogPresetId: rf.catalogPresetId } : {}),
                 ...(probeRequestPath ? { requestPath: probeRequestPath } : {}),
                 apiKey: authMode === 'apiKey' && canSendApiKey ? rf.apiKey.trim() || null : null,
@@ -1499,6 +1541,7 @@ export function ProviderConnectionDialog({
               },
             },
       );
+      if (requestId && connectionTestRef.current?.id !== requestId) return;
       if (
         providerConnectionTestRequestSignature(
           runtimeProbeFields(agent, rtRef.current[agent], catalogModelsRef.current?.[agent]),
@@ -1506,13 +1549,28 @@ export function ProviderConnectionDialog({
         ) !== requestSig
       )
         return;
+      if (requestId) connectionTestRef.current = null;
+      if (result.decision === 'cancelled') {
+        setTest(previous => ({ ...previous, [agent]: IDLE_TEST }));
+        return;
+      }
+      if (automatic && result.ok && result.selected) {
+        const selected = result.selected;
+        const api = selected.wireProtocol === 'openai-chat' ? 'openai-completions' as const : selected.wireProtocol;
+        setRtSynced(previous => ({ ...previous, [agent]: { ...previous[agent],
+          baseUrl: selected.baseUrl, modelRouteBaseUrl: selected.baseUrl, wireProtocol: selected.wireProtocol, requestPath: '',
+          models: previous[agent].models.map(model => model.id.trim() === firstModel
+            ? { ...model, api, piApi: api, route: { baseUrl: selected.baseUrl, wireProtocol: selected.wireProtocol } } : model),
+        } }));
+      }
       setTest((prev) => ({
         ...prev,
         [agent]: result.ok
           ? { status: 'ok', latencyMs: result.latencyMs }
-          : { status: 'fail', code: result.code ?? 'UNKNOWN' },
+          : { status: 'fail', code: result.code ?? 'UNKNOWN', decision: result.decision, attempts: result.attempts },
       }));
     } catch (e) {
+      if (requestId && connectionTestRef.current?.id !== requestId) return;
       if (
         providerConnectionTestRequestSignature(
           runtimeProbeFields(agent, rtRef.current[agent], catalogModelsRef.current?.[agent]),
@@ -1520,11 +1578,12 @@ export function ProviderConnectionDialog({
         ) !== requestSig
       )
         return;
+      if (requestId) connectionTestRef.current = null;
       const ipc = extractIpcError(e);
       setTest((prev) => ({ ...prev, [agent]: { status: 'fail', code: 'UNKNOWN' } }));
       if (ipc?.message) toast.error(ipc.message);
     }
-  }, [activeTab, authMode, rt, t, savedBaselineFor, initial, presets, matchesEndpointTemplate, catalogModels]);
+  }, [activeTab, authMode, rt, t, savedBaselineFor, initial, presets, matchesEndpointTemplate, catalogModels, simpleAdding, setRtSynced, picker, draft]);
 
   // 拉取单飞：任一 runtime（含 Pi）在途时所有 Tab 的拉取按钮都禁用——两个并发请求会竞争
   // 同一个勾选弹层（后到的覆盖先开的、确认还会写进另一个 runtime），单飞直接消掉这类竞态。
@@ -1797,7 +1856,7 @@ export function ProviderConnectionDialog({
   }, [picker, patch]);
 
   const handleSave = useCallback(async () => {
-    if (savingRef.current) return;
+    if (savingRef.current || connectionTestRef.current) return;
     setFieldError(null);
     const trimmedName = name.trim();
     if (!trimmedName) {
@@ -1838,6 +1897,8 @@ export function ProviderConnectionDialog({
     const keys: RuntimeKeys = {};
     for (const a of VISIBLE_AGENTS) {
       const rf = rt[a];
+      if (simpleAdding && activeTab === 'pi' && !rt.pi.catalogPresetId && a !== 'pi'
+        && (!draft?.config.runtimes[a] || followsDefaultConnection(a, rf, rt.pi))) continue;
       if (!rf.baseUrl.trim()) continue; // 该 runtime 未配置
       try {
         const u = new URL(rf.baseUrl.trim());
@@ -2093,6 +2154,8 @@ export function ProviderConnectionDialog({
   }, [
     name,
     activeTab,
+    simpleAdding,
+    draft,
     rowId,
     reportFieldError,
     keyHydrationReady,
@@ -2151,6 +2214,10 @@ export function ProviderConnectionDialog({
     },
     [editing, onSaved, t],
   );
+
+  const detectionAuthFailed = !editing && detection?.signature === detectionSignature &&
+    authMode === 'apiKey' && detection.code === 'AUTH_INVALID';
+  const detectionKeyMissing = detectionAuthFailed && !f.apiKey.trim();
 
   const activeSavedBaseline = savedBaselineFor(activeTab);
   // 共享判据：当前表单的端点相对已存基线是否未变。密钥与请求头都只在
@@ -2581,13 +2648,13 @@ export function ProviderConnectionDialog({
             )}
 
             {/* API 密钥（OAuth 形态隐藏——鉴权走 Runner 的 Bearer，不收集 key） */}
-            {authMode === 'apiKey' && (
+            {(simpleAdding || authMode === 'apiKey') && (
               <div className="flex flex-col gap-[7px]">
                 <FormField
                   id={fieldId(`${activeTab}:apiKey`)}
                   label={t('settings.providers.custom.fields.apiKey')}
-                  error={errorFor(`${activeTab}:apiKey`)}
-                  hint={simpleAdding ? undefined : t('settings.providers.custom.fields.apiKeyHelp')}
+                  error={errorFor(`${activeTab}:apiKey`) ?? (detectionAuthFailed && !detectionKeyMissing ? t('settings.providers.detection.authRejected') : undefined)}
+                  hint={detectionKeyMissing ? t('settings.providers.detection.keyRequired') : simpleAdding ? undefined : t('settings.providers.custom.fields.apiKeyHelp')}
                   labelAction={
                     activeKeyCanRemainSaved &&
                     f.apiKey.trim() && (
@@ -2625,12 +2692,12 @@ export function ProviderConnectionDialog({
               </div>
             )}
 
-          {!editing && detection?.signature === detectionSignature && (
+          {!editing && detection?.signature === detectionSignature && (!detectionAuthFailed || detection.preset) && (
             <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-default)] p-3 text-13 text-[var(--text-secondary)]" role="status">
               <span>{detection.pending ? t('settings.providers.detection.pending') : detection.preset
                 ? t('settings.providers.detection.matched', { name: presetDisplayName(detection.preset, i18n.language) })
                 : t(detection.ambiguous ? 'settings.providers.detection.ambiguous' : 'settings.providers.detection.custom')}</span>
-              {detection.code && <span className="text-[var(--error-fg)]">{t(`providerError.${detection.code}`)}</span>}
+              {detection.code && !detectionAuthFailed && <span className="text-[var(--error-fg)]">{t(`providerError.${detection.code}`)}</span>}
               {detection.preset && <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="secondary" onClick={() => enterDetectedProvider(detection.preset!)}>{t('settings.providers.detection.configure')}</Button>
                 <Button type="button" variant="secondary" tone="quiet" onClick={() => { detectionSuppressed.current = true; setDetection(null); }}>{t('settings.providers.detection.keepCustom')}</Button>
@@ -3061,7 +3128,7 @@ export function ProviderConnectionDialog({
                       loading={test[activeTab].status === 'testing'}
                   type="button"
                   onClick={() => void handleTest()}
-                  disabled={test[activeTab].status === 'testing'}
+                  disabled={Object.values(test).some(value => value.status === 'testing')}
                     >
                       <Plug size={13} />
                       {t('settings.providers.custom.test.button')}
@@ -3092,8 +3159,32 @@ export function ProviderConnectionDialog({
                 )}
                 {!mediaOnly && test[activeTab].status === 'fail' && (
                   <span className="text-12 text-[var(--error-fg)]">
-                    {t(`providerError.${test[activeTab].code ?? 'UNKNOWN'}`)}
+                    {test[activeTab].decision === 'inconclusive'
+                      ? t('settings.providers.custom.test.inconclusive')
+                      : test[activeTab].decision === 'next'
+                        ? t('settings.providers.custom.test.exhausted')
+                        : t(`providerError.${test[activeTab].code ?? 'UNKNOWN'}`)}
                   </span>
+                )}
+                {!mediaOnly && test[activeTab].status === 'testing' && (
+                  <span role="status" className="text-12 text-[var(--text-secondary)]">{t('settings.providers.custom.test.testing')}</span>
+                )}
+                {!mediaOnly && test[activeTab].status === 'testing' && connectionTestRef.current && (
+                  <Button variant="secondary" size="sm" compact type="button" onClick={() => {
+                    cancelConnectionTest();
+                    setTest(previous => ({ ...previous, [activeTab]: IDLE_TEST }));
+                  }}>{t('settings.providers.custom.test.stop')}</Button>
+                )}
+                {!mediaOnly && simpleAdding && (
+                  <span className="w-full text-12 text-[var(--text-secondary)]">{t('settings.providers.custom.test.costHint')}</span>
+                )}
+                {!mediaOnly && test[activeTab].status === 'fail' && Boolean(test[activeTab].attempts?.length) && (
+                  <details className="w-full text-12 text-[var(--text-secondary)]">
+                    <summary>{t('settings.providers.custom.test.details')}</summary>
+                    <ul>{test[activeTab].attempts?.map(attempt => <li key={attempt.wireProtocol}>
+                      {attempt.wireProtocol}: {t('providerError.' + (attempt.code ?? 'UNKNOWN'))}
+                    </li>)}</ul>
+                  </details>
                 )}
                 {mediaOnly && (
                   <span className="w-full text-12 text-[var(--text-secondary)]">
@@ -3124,6 +3215,7 @@ export function ProviderConnectionDialog({
             variant={simpleAdding ? 'cta' : 'primary'}
             size="lg"
             loading={saving}
+            disabled={Object.values(test).some(value => value.status === 'testing')}
             onClick={() => void handleSave()}
             palette={simpleAdding ? 'default' : 'confirmation'}
             className="min-w-[96px]"

@@ -1362,8 +1362,12 @@ export function AddProviderWizard({
             const presetModel = rt.models.find((candidate) => candidate.id === m.id);
             // Only interface facts belong to discovery. Preset defaults follow a live reference.
             const discoveredMetadata = m.discoveredMetadata?.[agent] ?? {};
+            // Current picks own visibility; an old disabled draft must not override
+            // a checked row. Leave checked models on the existing default contract.
+            const { defaultEnabled: _oldEnabled, ...draftModel } =
+              detected?.config.runtimes[agent]?.models.find(model => model.id === m.id) ?? {};
             return {
-              ...(detected?.config.runtimes[agent]?.models.find(model => model.id === m.id) ?? {}),
+              ...draftModel,
               id: m.id,
               name: m.name,
               // Selecting a model follows native-engine defaults; it is not an
@@ -2245,7 +2249,10 @@ export function AddProviderWizard({
                     .filter(([, model]) => model.checked && model.agents.includes(target))
                     .map(([id, model]) => {
                       const saved = original.models.find(row => row.id === id);
-                      return { ...saved, id, name: model.name,
+                      // Only checked rows return to the custom form. Do not
+                      // resurrect an older disabled flag on this second save path.
+                      const { defaultEnabled: _oldEnabled, ...selectedModel } = saved ?? {};
+                      return { ...selectedModel, id, name: model.name,
                         discoveredMetadata: model.discoveredMetadata?.[target] ?? saved?.discoveredMetadata,
                         ...(saved?.route ?? model.routes?.[target] ? { route: saved?.route ?? model.routes?.[target] } : {}),
                       };

@@ -1526,6 +1526,42 @@ describe('identified provider handoff', () => {
     expect(config.runtimes.pi!.models.find(m => m.id === 'unselected')?.defaultEnabled).toBe(false);
     expect(keys).toEqual({ pi: 'fake-key' });
   });
+  it.each([true, false])('current checkbox overrides an old disabled draft: checked=%s', async checked => {
+    const handoff = { ...detected, config: { ...detected.config, runtimes: { pi: {
+      ...detected.config.runtimes.pi, models: [{ ...model, defaultEnabled: false }, { id: 'keep', name: 'Keep' }],
+    } } } };
+    render(<AddProviderWizard providers={[]} detected={handoff} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.wizard.next' }));
+    const finish = await screen.findByRole('button', { name: 'settings.providers.wizard.finish' });
+    await waitFor(() => expect(finish.hasAttribute('disabled')).toBe(false));
+    if (!checked) fireEvent.click(screen.getByText('Upstream name'));
+    fireEvent.click(finish);
+    await waitFor(() => expect(createCustomProvider).toHaveBeenCalledOnce());
+    const saved = vi.mocked(createCustomProvider).mock.calls[0][0].runtimes.pi!.models.find(m => m.id === model.id)!;
+    expect(saved.defaultEnabled).toBe(checked ? undefined : false);
+    expect(saved).toMatchObject({ contextWindow: model.contextWindow, route: model.route });
+  });
+  it.each([true, false])('returns the current selection without reviving disabled flags: %s', async checked => {
+    const handoff = { ...detected, config: { ...detected.config, runtimes: { pi: {
+      ...detected.config.runtimes.pi, models: [{ ...model, defaultEnabled: false }, { id: 'keep', name: 'Keep' }],
+    } } } };
+    const onReturnCustom = vi.fn();
+    render(<AddProviderWizard providers={[]} detected={handoff} onReturnCustom={onReturnCustom} onClose={vi.fn()} onDone={vi.fn()} onOpenCustomForm={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.wizard.next' }));
+    const finish = await screen.findByRole('button', { name: 'settings.providers.wizard.finish' });
+    await waitFor(() => expect(finish.hasAttribute('disabled')).toBe(false));
+    if (!checked) fireEvent.click(screen.getByText('Upstream name'));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.wizard.back' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.wizard.back' }));
+    const models = onReturnCustom.mock.calls[0][0].config.runtimes.pi.models;
+    const returned = models.find((m: { id: string }) => m.id === model.id);
+    if (checked) {
+      expect(returned.defaultEnabled).toBeUndefined();
+      expect(returned).toMatchObject({ contextWindow: model.contextWindow, route: model.route });
+    } else expect(returned).toBeUndefined();
+    expect(models.some((m: { id: string }) => m.id === 'keep')).toBe(true);
+    expect(createCustomProvider).not.toHaveBeenCalled();
+  });
   it('saves the explicit native image option carried by a Codex handoff', async () => {
     const runtime = { ...detected.preset.runtimes.pi, wireProtocol: 'openai-responses' as const, supportsImageGeneration: true };
     const handoff = { ...detected, agent: 'codex' as const, keys: { codex: 'fake-key' },

@@ -1,11 +1,12 @@
 import type { AgentKind, ProviderPreset, ProviderPresetRuntime } from './types.js';
 import { bindProviderPresetRuntime, providerEndpointBindings } from './providerEndpointTemplate.js';
 import { providerInterfaceDefaultRoute } from './providerInterfaceRoutes.js';
+import { isLoopbackProviderUrl } from './provider-url.js';
 import { parseModelsListResponse } from './modelDiscovery.js';
 import type { DiscoveredModel, ModelMetadata } from './modelMetadataLayers.js';
 
 /** Compatibility fingerprints, never an assertion about a model's upstream manufacturer. */
-export const DETECTION_RULE_VERSION = '2026-10-19';
+export const DETECTION_RULE_VERSION = '2026-10-21';
 export const DEPLOYMENT_PROVIDERS = ['sub2api', 'litellm', 'lmstudio', 'llamacpp', 'vllm'] as const;
 export type DeploymentProvider = typeof DEPLOYMENT_PROVIDERS[number];
 export type ProviderEvidence = Partial<Record<'subPublic' | 'subBilling' | 'liteReady' | 'liteModels' | 'lmGreeting' | 'lmModels' | 'llamaProps' | 'vllmVersion' | 'models', unknown>>;
@@ -71,6 +72,12 @@ export function detectionUrl(value: string): URL | undefined {
   } catch { return; }
 }
 const clean = (value: string) => value.replace(/\/+$/, '');
+// Documented public aliases only. Do not strip /v1 or rewrite hostnames for
+// arbitrary providers. Each pair is gated on a declared canonical runtime.
+const officialAliases: Record<string, { canonical: string; input: string }> = {
+  mistral: { canonical: 'https://api.mistral.ai', input: 'https://api.mistral.ai/v1' },
+  together: { canonical: 'https://api.together.ai/v1', input: 'https://api.together.xyz/v1' },
+};
 
 /** Never climb business prefixes or propagate query credentials into diagnostic endpoints. */
 export function providerDeploymentRoot(value: string): string | undefined {
@@ -85,7 +92,7 @@ export function classifyProviderAddress(preset: ProviderPreset): ProviderAddress
   if ((DEPLOYMENT_PROVIDERS as readonly string[]).includes(preset.id)) return 'deployment';
   const urls = Object.values(preset.runtimes).flatMap(rt => rt ? [rt.baseUrl] : []);
   if (!urls.length) return 'manual';
-  if (urls.some(url => url.includes('{endpoint}') || /^http:\/\/(localhost|127\.|\[::1\])/.test(url))) return 'manual';
+  if (urls.some(url => url.includes('{endpoint}') || isLoopbackProviderUrl(url))) return 'manual';
   if (urls.some(url => url.includes('{'))) return 'resource-template';
   return urls.every(url => detectionUrl(url)) ? 'official' : 'manual';
 }
@@ -93,15 +100,31 @@ export function classifyProviderAddress(preset: ProviderPreset): ProviderAddress
 /** Exact official addresses; localhost and arbitrary endpoint templates are not identities. */
 export function matchOfficialProviders(baseUrl: string, presets: readonly ProviderPreset[]): ProviderPreset[] {
   const url = detectionUrl(baseUrl);
-  if (!url || url.search) return [];
+  if (!url || url.search || isLoopbackProviderUrl(baseUrl)) return [];
   return presets.filter(preset => {
     const kind = classifyProviderAddress(preset);
     if (kind === 'deployment' || kind === 'manual') return false;
-    return Object.values(preset.runtimes).some(rt => {
+    return Object.entries(preset.runtimes).some(([agent, rt]) => {
       if (!rt) return false;
-      if (rt.baseUrl.includes('{')) return !!providerEndpointBindings(rt.baseUrl, clean(url.toString()));
+      if (rt.baseUrl.includes('{')) {
+        // Account-family templates describe the official default port, not any
+        // service on the same hostname. Leave nonstandard ports in custom setup.
+        if (url.port) return false;
+        return !!providerEndpointBindings(rt.baseUrl, clean(url.toString()));
+      }
       const declared = detectionUrl(rt.baseUrl);
-      return declared && !declared.search && clean(declared.toString()) === clean(url.toString());
+      if (!declared || declared.search) return false;
+      const input = clean(url.toString());
+      const canonical = clean(declared.toString());
+      if (canonical === input) return true;
+      const alias = officialAliases[preset.id];
+      if (alias?.canonical === canonical && alias.input === input) return true;
+      // Mixed-protocol connections may publish the other protocol's address
+      // only in their maintained contract/model routes, not the default URL.
+      const route = providerInterfaceDefaultRoute(preset.id, agent as AgentKind, input);
+      const current = providerInterfaceDefaultRoute(preset.id, agent as AgentKind, canonical);
+      if (route && current && route.baseUrl === current.baseUrl) return true;
+      return rt.models.some(model => model.route && clean(model.route.baseUrl) === input);
     });
   });
 }
@@ -110,6 +133,12 @@ export function matchOfficialProviders(baseUrl: string, presets: readonly Provid
 export function bindDetectedProvider(preset: ProviderPreset, agent: AgentKind, input: string): ProviderPreset | undefined {
   const original = preset.runtimes[agent];
   if (!original) return;
+  // Match and bind the same normalized URL: scheme/host case and default
+  // ports are equivalent, while account IDs and business paths remain exact.
+  const normalized = detectionUrl(input);
+  if (!normalized || normalized.search) return;
+  input = clean(normalized.toString());
+  if (classifyProviderAddress(preset) === 'resource-template' && detectionUrl(input)?.port) return;
   let runtime: ProviderPresetRuntime;
   if (classifyProviderAddress(preset) === 'deployment') {
     const root = providerDeploymentRoot(input);

@@ -3,7 +3,7 @@ import { useRef, useState } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildUserProvider, type CustomProviderConfig, type ProviderPreset, type ModelRegistry } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildUserProvider, type CustomProviderConfig, type ProviderPreset, type ModelRegistry } from '@cindy/model-providers';
 import { customProviderModelConfigFromCatalogModel } from '@/lib/customProviders';
 
 import { ProviderConnectionDialog } from '../ProviderConnectionDialog';
@@ -2087,7 +2087,7 @@ it('main provider form contains Tab and blocks dismissal only during the actual 
 describe('new-connection identification', () => {
   afterEach(() => { cleanup(); vi.useRealTimers(); });
   const preset = { id: 'deepseek', name: 'DeepSeek', runtimes: { pi: { baseUrl: 'https://api.deepseek.com', wireProtocol: 'openai-chat' as const, models: [] } } };
-  async function openIdentification(available: ProviderPreset = preset) {
+  async function openIdentification(available: ProviderPreset = preset, url = 'https://api.deepseek.com', apiKey = 'fake-key') {
     vi.useFakeTimers();
     const fetchProviderModels = vi.fn(async () => ({ ok: true, models: [{ id: 'private-model', name: 'Model' }] }));
     Object.assign(window.electronAPI.maker, {
@@ -2097,11 +2097,129 @@ describe('new-connection identification', () => {
     const onDetected = vi.fn();
     render(<ProviderConnectionDialog focusAgent="pi" onDetected={onDetected} onClose={vi.fn()} onSaved={vi.fn()} />);
     await act(async () => {});
-    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://api.deepseek.com' } });
-    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'fake-key' } });
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: url } });
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: apiKey } });
     await act(async () => { await vi.advanceTimersByTimeAsync(400); });
     return { onDetected, fetchProviderModels };
   }
+  it.each([
+    ['http://127.0.0.1:1234/v1', '', 'none'],
+    ['http://localhost:1234/v1', '', 'none'],
+    ['http://[::1]:1234/v1', '', 'none'],
+    ['https://remote.example/v1', '', 'apiKey'],
+    ['https://localhost.example/v1', '', 'apiKey'],
+    ['http://127.0.0.1:1234/v1', 'fake-key', 'apiKey'],
+  ])('keeps discovery, testing and saving on the same add-form auth: %s / %s', async (url, key, method) => {
+    await openIdentification(preset, url, key);
+    const testConnection = vi.fn(async () => ({ ok: true, latencyMs: 1 }));
+    window.electronAPI.maker.testProviderConnection = testConnection;
+    expect(window.electronAPI.maker.detectProvider).toHaveBeenCalledWith(expect.objectContaining({ authMethod: method }));
+    // Local inference must never hide the input needed to add authentication later.
+    expect(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    await act(async () => {});
+    expect(testConnection).toHaveBeenCalledWith(expect.objectContaining({ spec: expect.objectContaining({ authMethod: method, apiKey: key || null }) }));
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.namePlaceholder'), { target: { value: 'Auth regression' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.saveProvider' }));
+    await act(async () => {});
+    const [config, keys] = customProviderMocks.createCustomProvider.mock.calls[0];
+    expect(config.auth?.method ?? 'apiKey').toBe(method);
+    expect(keys).toEqual(key ? { pi: key } : {});
+  });
+  it('invalidates inferred no-auth when key or destination changes', async () => {
+    await openIdentification(preset, 'http://127.0.0.1:1234/v1', '');
+    const testConnection = vi.fn(async () => ({ ok: true, latencyMs: 1 }));
+    window.electronAPI.maker.testProviderConnection = testConnection;
+    const key = screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder');
+    for (const [value, method] of [['fake-key', 'apiKey'], ['', 'none']] as const) {
+      fireEvent.change(key, { target: { value } });
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+      await act(async () => {});
+      expect(testConnection).toHaveBeenLastCalledWith(expect.objectContaining({ spec: expect.objectContaining({ authMethod: method }) }));
+    }
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://remote.example/v1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    await act(async () => {});
+    expect(testConnection).toHaveBeenLastCalledWith(expect.objectContaining({ spec: expect.objectContaining({ authMethod: 'apiKey' }) }));
+  });
+  it.each(['remote-engine', 'independent-key', 'remote-directory'])('does not infer global no-auth across a %s draft', async variant => {
+    vi.useFakeTimers();
+    const local = { baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'local-model', name: 'Local' }] };
+    const own = { ...local, baseUrl: variant === 'remote-engine' ? 'https://remote.example/v1' : local.baseUrl,
+      ...(variant === 'remote-directory' ? { modelsUrl: 'https://remote.example/v1/models' } : {}) };
+    const testConnection = vi.fn(async () => ({ ok: true, latencyMs: 1 }));
+    Object.assign(window.electronAPI.maker, { listProviderPresets: vi.fn(async () => ({ presets: [] })), testProviderConnection: testConnection });
+    render(<ProviderConnectionDialog onDetected={vi.fn()} onClose={vi.fn()} onSaved={vi.fn()} draft={{
+      preset, agent: 'pi', apiKey: '', keys: { pi: '', codex: variant === 'independent-key' ? 'own-key' : '' },
+      config: { id: 'draft', name: 'Local with independent runtime', runtimes: { pi: local, codex: own } },
+    }} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    await act(async () => {});
+    expect(testConnection).toHaveBeenCalledWith(expect.objectContaining({ spec: expect.objectContaining({ authMethod: 'apiKey' }) }));
+  });
+  it('preserves header-only credentials on a local new connection', async () => {
+    await openIdentification(preset, 'http://127.0.0.1:1234/v1', '');
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.fields.addHeader' }));
+    // Header input labels are shared by the existing form; use its placeholders.
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.headerNamePlaceholder'), { target: { value: 'Authorization' } });
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.headerValuePlaceholder'), { target: { value: 'Bearer fake-header' } });
+    const testConnection = vi.fn(async () => ({ ok: true, latencyMs: 1 }));
+    window.electronAPI.maker.testProviderConnection = testConnection;
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    await act(async () => {});
+    expect(testConnection).toHaveBeenCalledWith(expect.objectContaining({ spec: expect.objectContaining({ authMethod: 'apiKey', headers: { Authorization: 'Bearer fake-header' } }) }));
+  });
+  // Empty-key GUI regressions: address identification must survive a 401 from
+  // model discovery and reach the wizard without saving an account. Unit.
+  it.each([
+    ['https://ark.cn-beijing.volces.com/api/v3', 'volcengine-api'],
+    ['https://api.siliconflow.cn/v1', 'siliconflow-cn'],
+    ['https://api.siliconflow.com/v1', 'siliconflow-global'],
+    ['https://api.mistral.ai/v1', 'mistral'],
+    ['https://api.together.xyz/v1', 'together'],
+    ['https://api.fireworks.ai/inference/v1', 'fireworks'],
+  ])('hands off %s with an empty key even when discovery requires authentication', async (url, id) => {
+    const available = BUNDLED_CATALOG.presets!.find(p => p.id === id)!;
+    const { onDetected, fetchProviderModels } = await openIdentification(available, '', '');
+    fetchProviderModels.mockResolvedValue({ ok: false, code: 'AUTH_INVALID' } as any);
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: url } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+    expect(onDetected).toHaveBeenCalledOnce();
+    expect(onDetected.mock.calls[0][0]).toMatchObject({ apiKey: '', preset: { id }, agent: 'pi' });
+    expect(fetchProviderModels).toHaveBeenCalledWith(expect.objectContaining({ apiKey: null }));
+    expect(customProviderMocks.createCustomProvider).not.toHaveBeenCalled();
+  });
+  it('shows missing-key guidance instead of an expired-key error, and clears stale authentication feedback on edit', async () => {
+    await openIdentification();
+    Object.assign(window.electronAPI.maker, {
+      detectProvider: vi.fn(async () => ({ candidates: [], reason: 'insufficient_evidence', catalog: { ok: false, code: 'AUTH_INVALID' } })),
+    });
+    const key = screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder');
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://relay.example/v1' } });
+    fireEvent.change(key, { target: { value: '' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(screen.getByText('settings.providers.detection.keyRequired')).toBeTruthy();
+    expect(key.getAttribute('aria-invalid')).not.toBe('true');
+    expect(screen.queryByText('providerError.AUTH_INVALID')).toBeNull();
+    expect(screen.queryByText('settings.providers.detection.custom')).toBeNull();
+    fireEvent.change(key, { target: { value: 'rejected-test-key' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(screen.getByText('settings.providers.detection.authRejected')).toBeTruthy();
+    expect(key.getAttribute('aria-invalid')).toBe('true');
+    fireEvent.change(key, { target: { value: 'replacement-test-key' } });
+    expect(screen.queryByText('settings.providers.detection.authRejected')).toBeNull();
+    expect(key.getAttribute('aria-invalid')).not.toBe('true');
+  });
+  it('still accepts a successful directory response from a service with an empty key', async () => {
+    await openIdentification();
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'http://localhost:1234/v1' } });
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: '' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(window.electronAPI.maker.detectProvider).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'http://localhost:1234/v1', apiKey: null }));
+    expect(screen.queryByText('settings.providers.detection.keyRequired')).toBeNull();
+    expect(screen.getByText('settings.providers.detection.custom')).toBeTruthy();
+  });
   it('waits 1.2 seconds and hands off the URL, key and selected models without saving', async () => {
     const { onDetected, fetchProviderModels } = await openIdentification();
     expect(onDetected).not.toHaveBeenCalled();
@@ -2113,7 +2231,7 @@ describe('new-connection identification', () => {
     expect(fetchProviderModels).toHaveBeenCalledOnce();
     expect(customProviderMocks.createCustomProvider).not.toHaveBeenCalled();
   });
-  it('uses the HTML add layout and saves the shared connection with each engine default', async () => {
+  it('uses the HTML add layout and saves only Pi for the shared custom connection', async () => {
     await openIdentification();
     expect(screen.queryByRole('tablist')).toBeNull();
     expect(screen.queryByText('settings.providers.custom.authMode.label')).toBeNull();
@@ -2131,11 +2249,59 @@ describe('new-connection identification', () => {
     await act(async () => {});
     expect(customProviderMocks.createCustomProvider).toHaveBeenCalledOnce();
     const [config, keys] = customProviderMocks.createCustomProvider.mock.calls[0];
-    for (const [agent, protocol] of [['claude-code', 'anthropic-messages'], ['codex', 'openai-responses'], ['pi', 'openai-chat']]) {
-      expect(config.runtimes[agent]).toMatchObject({ baseUrl: 'https://api.deepseek.com', models: [{ id: 'my-model' }] });
-      expect(config.runtimes[agent].wireProtocol).toBe(agent === 'pi' ? protocol : undefined);
-      expect(keys[agent]).toBe('fake-key');
+    expect(Object.keys(config.runtimes)).toEqual(['pi']);
+    expect(config.runtimes.pi).toMatchObject({ baseUrl: 'https://api.deepseek.com', wireProtocol: 'openai-chat', models: [{ id: 'my-model' }] });
+    expect(keys).toEqual({ pi: 'fake-key' });
+  });
+  // New one-click connection contract: real form actions must preserve the successful
+  // route through Save; changed inputs must invalidate an in-flight paid probe (unit tier).
+  it('applies an automatically verified protocol and saves the same Pi model route', async () => {
+    await openIdentification();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.keepCustom' }));
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://unknown.example/team/v1' } });
+    window.electronAPI.maker.testProviderConnection = vi.fn(async () => ({ ok: true, latencyMs: 3, decision: 'success' as const,
+      selected: { baseUrl: 'https://unknown.example/team', wireProtocol: 'anthropic-messages' as const } }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    await act(async () => {});
+    expect(window.electronAPI.maker.testProviderConnection).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: expect.any(String), strategy: 'auto', kind: 'adhoc',
+      spec: expect.objectContaining({ agent: 'pi', baseUrl: 'https://unknown.example/team/v1', modelId: 'private-model' }),
+    }));
+    expect(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder')).toHaveProperty('value', 'https://unknown.example/team');
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    await act(async () => {});
+    expect(window.electronAPI.maker.testProviderConnection).toHaveBeenLastCalledWith(expect.objectContaining({
+      strategy: 'auto', spec: expect.objectContaining({ wireProtocol: 'anthropic-messages', baseUrl: 'https://unknown.example/team' }),
+    }));
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.namePlaceholder'), { target: { value: 'Verified custom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.connection.saveProvider' }));
+    await act(async () => {});
+    const [config] = customProviderMocks.createCustomProvider.mock.calls[0];
+    expect(Object.keys(config.runtimes)).toEqual(['pi']);
+    expect(config.runtimes.pi).toMatchObject({ baseUrl: 'https://unknown.example/team', wireProtocol: 'anthropic-messages',
+      models: [{ id: 'private-model', api: 'anthropic-messages', route: { baseUrl: 'https://unknown.example/team', wireProtocol: 'anthropic-messages' } }] });
+  });
+  it.each(['key', 'address', 'stop'] as const)('cancels on %s and ignores a late successful protocol result', async change => {
+    await openIdentification();
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.detection.keepCustom' }));
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://unknown.example/v1' } });
+    let finish!: (value: unknown) => void;
+    window.electronAPI.maker.testProviderConnection = vi.fn().mockImplementation(input => input.kind === 'cancel'
+      ? Promise.resolve({ ok: false, latencyMs: 0, decision: 'cancelled' }) : new Promise(resolve => { finish = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.button' }));
+    expect(window.electronAPI.maker.testProviderConnection).toHaveBeenCalledOnce();
+    if (change === 'key') {
+      fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.apiKeyPlaceholder'), { target: { value: 'different-fake-key' } });
+    } else if (change === 'address') {
+      fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://new.example/v1' } });
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'settings.providers.custom.test.stop' }));
     }
+    expect(window.electronAPI.maker.testProviderConnection).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'cancel' }));
+    await act(async () => { finish({ ok: true, latencyMs: 1, selected: { baseUrl: 'https://stale.example', wireProtocol: 'openai-responses' } }); });
+    expect(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder')).toHaveProperty('value', change === 'address' ? 'https://new.example/v1' : 'https://unknown.example/v1');
+    expect(screen.queryByText('settings.providers.custom.test.ok')).toBeNull();
   });
   it('binds each supported engine to the identified provider instead of copying the active protocol', async () => {
     const available: ProviderPreset = { ...preset, runtimes: {
@@ -2338,6 +2504,31 @@ describe('new-connection identification', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
     expect(onDetected).not.toHaveBeenCalled();
     expect(fetchProviderModels).toHaveBeenCalledOnce();
+  });
+  it.each([
+    [[], 'insufficient_evidence'],
+    [['sub2api', 'litellm'], 'conflict'],
+    [['missing-preset'], 'matched'],
+  ])('stays custom for unusable deployment candidates: %s', async (candidates, reason) => {
+    const { onDetected } = await openIdentification();
+    window.electronAPI.maker.detectProvider = vi.fn(async () => ({ candidates, reason, catalog: { ok: true, models: [] } })) as any;
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.baseUrlPlaceholder'), { target: { value: 'https://unknown.example/team/v1' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(onDetected).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'settings.providers.detection.configure' })).toBeNull();
+  });
+  it('does not navigate after unmount with a scheduled official handoff', async () => {
+    const { onDetected } = await openIdentification();
+    cleanup();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(onDetected).not.toHaveBeenCalled();
+  });
+  it('uses the current name when the user edits it during the jump delay', async () => {
+    const { onDetected } = await openIdentification();
+    fireEvent.change(screen.getByPlaceholderText('settings.providers.custom.fields.namePlaceholder'), { target: { value: 'Latest name' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    expect(onDetected).toHaveBeenCalledOnce();
+    expect(onDetected.mock.calls[0][0].config.name).toBe('Latest name');
   });
   it('ignores a late response after the connection changes', async () => {
     const { onDetected, fetchProviderModels } = await openIdentification();

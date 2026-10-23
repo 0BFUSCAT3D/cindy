@@ -922,8 +922,8 @@
     "SSH_HOST_KEY_MISMATCH": "SSH 主机密钥已变化"
   },
   "providerError": {
-    "AUTH_INVALID": "API 密钥无效或已过期（401），请检查密钥后重试",
-    "AUTH_FORBIDDEN": "密钥有效但无权访问（403），请检查套餐或模型权限",
+    "AUTH_INVALID": "当前接口认证失败，请检查地址、密钥和认证方式",
+    "AUTH_FORBIDDEN": "当前接口拒绝访问，请检查套餐、模型或地区权限",
     "RATE_LIMITED": "请求被限流（429），请稍后重试",
     "QUOTA_EXCEEDED": "配额或余额不足，请检查供应商账户",
     "MODEL_NOT_FOUND": "模型不存在或无权使用，请检查模型 ID",
@@ -3135,8 +3135,14 @@
           "placeholder": "选择一个模板…"
         },
         "test": {
+          "testing": "正在测试连接，并按需尝试兼容接口…",
+          "inconclusive": "暂时无法确认连接。请检查地址或网络后重试；上一条请求可能已执行。",
+          "exhausted": "已尝试所有候选接口，暂未找到可用连接。",
+          "costHint": "测试会发送简短生成请求，可能产生少量费用。",
+          "details": "查看尝试结果",
           "button": "测试连接",
           "testing": "测试中…",
+          "stop": "停止测试",
           "ok": "连接成功（{{ms}}ms）",
           "needFields": "请先填写基础 URL 和至少一个模型 ID",
           "unsupportedProtocol": "测试连接暂不支持该模型协议"
@@ -3743,6 +3749,8 @@
       },
       "claudeAccountRetired": "Cindy 已不再支持通过这条旧版 Claude 连接登录订阅，不影响你的 Claude 账号和订阅。请改用「使用 Claude Code 登录」连接订阅",
       "detection": {
+        "keyRequired": "填写 API 密钥后继续。",
+        "authRejected": "认证未通过，请检查地址和 API 密钥，修改后会自动重试。",
         "hint": "填写地址和 API 密钥后自动识别供应商。保存后可在编辑连接中调整协议。",
         "pending": "正在识别供应商…",
         "matched": "已识别为 {{name}}",

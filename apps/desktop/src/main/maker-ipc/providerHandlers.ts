@@ -317,7 +317,7 @@ export interface ProviderHandlerDeps {
   /** 目录 presets 段（生产 = () => getActiveCatalog().presets ?? []）。 */
   listPresets(): ProviderPreset[];
   /** 测试连接（生产 = testProviderConnection；单测注入 stub 不联网）。 */
-  testConnection(input: ProviderTestInput): Promise<ProviderTestResult>;
+  testConnection(input: ProviderTestInput, signal?: AbortSignal): Promise<ProviderTestResult>;
   /** 获取模型列表（生产 = fetchProviderModels；单测注入 stub 不联网）。 */
   fetchModels(spec: ProviderModelsFetchSpec): Promise<ProviderModelsFetchResult>;
   detectProvider?(spec: ProviderModelsFetchSpec, signal: AbortSignal): Promise<DeploymentDetectionResult>;
@@ -475,10 +475,14 @@ export interface ModelContextLimitView {
 function parseTestInput(input: unknown): ProviderTestInput | null {
   if (!input || typeof input !== 'object') return null;
   const i = input as Record<string, unknown>;
+  if (i.requestId !== undefined && (typeof i.requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(i.requestId))) return null;
+  if (i.strategy !== undefined && i.strategy !== 'auto') return null;
+  const options = { ...(i.requestId ? { requestId: i.requestId as string } : {}), ...(i.strategy === 'auto' ? { strategy: 'auto' as const } : {}) };
+  if (i.strategy === 'auto' && (!i.requestId || i.kind !== 'adhoc')) return null;
   if (i.kind === 'saved') {
     if (typeof i.providerId !== 'string' || i.providerId.length === 0) return null;
     if (typeof i.agent !== 'string' || !VALID_AGENTS.includes(i.agent)) return null;
-    return { kind: 'saved', providerId: i.providerId, agent: i.agent as AgentKind };
+    return { kind: 'saved', providerId: i.providerId, agent: i.agent as AgentKind, ...options };
   }
   if (i.kind === 'adhoc') {
     const s = i.spec;
@@ -487,10 +491,10 @@ function parseTestInput(input: unknown): ProviderTestInput | null {
     if (typeof spec.agent !== 'string' || !VALID_AGENTS.includes(spec.agent)) return null;
     if (typeof spec.authMethod !== 'string' || !VALID_ADHOC_AUTH_METHODS.includes(spec.authMethod))
       return null;
-    if (typeof spec.baseUrl !== 'string' || spec.baseUrl.length === 0) return null;
+    if (typeof spec.baseUrl !== 'string' || spec.baseUrl.length === 0 || spec.baseUrl.length > 4096) return null;
     try {
       const u = new URL(spec.baseUrl);
-      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password) return null;
     } catch {
       return null;
     }
@@ -513,8 +517,12 @@ function parseTestInput(input: unknown): ProviderTestInput | null {
     if (spec.api !== undefined && (typeof spec.api !== 'string' || !(PI_MODEL_APIS as readonly string[]).includes(spec.api))) return null;
     if (spec.catalogPresetId !== undefined && typeof spec.catalogPresetId !== 'string') return null;
     if (spec.requestPath !== undefined && !isProviderRequestPath(spec.requestPath)) return null;
+    if ((typeof spec.apiKey === 'string' && spec.apiKey.length > 16384) || (spec.modelId as string).length > 1024
+      || Object.keys(spec.headers ?? {}).length > 64
+      || Object.entries(spec.headers ?? {}).some(([k, v]) => k.length > 256 || (v as string).length > 16384)) return null;
+    if (i.strategy === 'auto' && (spec.agent !== 'pi' || spec.catalogPresetId || spec.api || spec.requestPath || spec.authMethod === 'oauth')) return null;
     return {
-      kind: 'adhoc',
+      kind: 'adhoc', ...options,
       spec: {
         agent: spec.agent as AgentKind,
         baseUrl: spec.baseUrl,
@@ -2316,14 +2324,40 @@ export function registerProviderHandlers(
 
   // 测试连接：查询型结构化返回（规则 13 例外条款——renderer 需要 code 渲染分类文案）。
   // 入参非法 / saved 解析失败（供应商不存在等）仍走 throwIpcError。
-  registry.handle(MAKER_INVOKE.PROVIDER_TEST_CONNECTION, async (_event, input: unknown) => {
+  const connectionTests = new Map<ProviderOAuthRendererSender, { id: string; controller: AbortController }>();
+  registry.handle(MAKER_INVOKE.PROVIDER_TEST_CONNECTION, async (event, input: unknown) => {
+    assertTrustedProviderMutationSender(event);
+    const sender = providerOAuthRendererSender(event);
+    const value = input as Record<string, unknown> | null;
+    if (value?.kind === 'cancel') {
+      if (!sender || typeof value.requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value.requestId)) throwIpcError('INVALID_PARAMS', 'invalid test cancellation');
+      const previous = connectionTests.get(sender);
+      if (previous?.id === value.requestId) previous.controller.abort();
+      return { ok: false, latencyMs: 0, decision: 'cancelled' };
+    }
     const parsed = parseTestInput(input);
     if (!parsed) throwIpcError('INVALID_PARAMS', 'invalid test-connection input');
+    // Old callers retain their single-test contract; new operations are owned by the sender.
+    if (!parsed.requestId) {
+      try { return await deps.testConnection(parsed); }
+      catch { throwIpcError('INVALID_PARAMS', 'invalid saved provider connection'); }
+    }
+    if (!sender) throwIpcError('INVALID_PARAMS', 'missing test owner');
+    if (connectionTests.has(sender)) throwIpcError('PRECONDITION_FAILED', 'connection test already running');
+    const controller = new AbortController();
+    const operation = { id: parsed.requestId, controller };
+    connectionTests.set(sender, operation);
+    const owner = captureProviderOwnerSession();
+    const abort = () => controller.abort();
+    sender.once?.('destroyed', abort);
     try {
-      return await deps.testConnection(parsed);
-    } catch (err) {
-      // resolveSavedProbeSpec 的解析错误（provider 不存在 / 无该 runtime）→ INVALID_PARAMS。
-      throwIpcError('INVALID_PARAMS', err instanceof Error ? err.message : String(err));
+      const result = await deps.testConnection(parsed, controller.signal);
+      if (controller.signal.aborted || !providerMutationOwnerMatches(owner)) return { ok: false, latencyMs: 0, decision: 'cancelled' };
+      return result;
+    } catch { throwIpcError('INVALID_PARAMS', 'invalid provider connection test'); }
+    finally {
+      sender.removeListener?.('destroyed', abort);
+      if (connectionTests.get(sender) === operation) connectionTests.delete(sender);
     }
   });
 
