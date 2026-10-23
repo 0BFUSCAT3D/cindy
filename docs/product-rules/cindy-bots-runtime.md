@@ -298,7 +298,7 @@ Cindy 应用，也不取消伙伴已委派的独立任务。操作中禁用重�
   连接与微信状态没有推送，远程页打开且窗口可见时每 5 秒重读一次。
 - 提升权限仍保留既有确认：设置页本来没有权限档入口，设置主机的写入口拒绝 `permissions`，权限修改只在通用表单页（带确认）。
 
-离线、对方未响应、动作不支持与冲突都不引起布局跳动：状态行固定占位，页面保留已读内容；写入失败沿用自动保存的失败与重试，
+离线、对方未响应、动作不支持与冲突都不引起布局跳动：离线提示浮在页面底部边缘（不占位，在线时页面与本机设置在同一位置），页面保留已读内容；写入失败沿用自动保存的失败与重试，
 记忆 / 例行任务的 revision 冲突沿用各自页面的冲突提示（失败以数据形式返回，保留 `PRECONDITION_FAILED` 与冲突标记）。
 实现见 `RemoteTeammateSettings.tsx`、`remoteBotSettingsTarget.ts`、`localBotSettingsTarget.ts`、`BotSettingsDrawer.tsx`，
 主机侧见 `main/localDb/ipc/botRemoteSettingsHost.ts` 与 `botRemoteSettingsOps.ts`；手机见 Mobile `CompanionProfileSheet.tsx`。

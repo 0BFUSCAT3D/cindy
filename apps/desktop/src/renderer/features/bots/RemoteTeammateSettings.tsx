@@ -180,18 +180,22 @@ function RemoteSettingsPages({ bot, ops, initialPage: requestedPage = 'home', be
   return (
     <BotSettingsTargetContext.Provider value={handle.target}>
       <BotPronounProvider bot={profile as BotProfile}>
-        {/* The status line keeps its height whether or not it has text, so the pages never jump. */}
-        <p role="status" className="shrink-0 truncate px-5 pt-2 text-12 leading-5 text-[var(--text-secondary)] min-h-7">
-          {!bot.online ? t('bots.remote.offlineDescription', { name: bot.name, device: bot.deviceName }) : ''}
-        </p>
-        <BotSettings
-          key={`${bot.deviceId}:${bot.id}:${initialPage}`}
-          initialPage={initialPage}
-          beforeCloseRef={beforeCloseRef}
-          bot={profile}
-          onBack={onBack}
-          onOpenSession={onOpenSession}
-        />
+        {/* The pages sit exactly where the local ones do; the offline note floats over their bottom edge so neither its appearance nor its absence moves anything. */}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {!bot.online ? (
+            <p role="status" className="absolute inset-x-0 bottom-0 z-10 border-t border-[var(--border-default)] bg-[var(--surface-elevated)] px-5 py-2 text-12 leading-5 text-[var(--text-secondary)]">
+              {t('bots.remote.offlineDescription', { name: bot.name, device: bot.deviceName })}
+            </p>
+          ) : null}
+          <BotSettings
+            key={`${bot.deviceId}:${bot.id}:${initialPage}`}
+            initialPage={initialPage}
+            beforeCloseRef={beforeCloseRef}
+            bot={profile}
+            onBack={onBack}
+            onOpenSession={onOpenSession}
+          />
+        </div>
       </BotPronounProvider>
     </BotSettingsTargetContext.Provider>
   );
