@@ -23,3 +23,9 @@ test("只引用已删除的 figma-component-spec，不论哪种写法都不算�
 test("同时引用现行文档时，顺带提到已删除文档不影响通过", () => {
 	assert.equal(passes("DESIGN.md §16.5；旧 figma-component-spec §11 已迁入"), true);
 });
+
+test("与已删除文档无空格连写的现行引用不会被连带剔除", () => {
+	assert.equal(passes("[现行](docs/design-rules/DESIGN.md)；[旧](docs/design-rules/figma-component-spec.md)"), true);
+	assert.equal(passes("DESIGN.md§16；figma-component-spec.md§4"), true);
+	assert.equal(passes("[旧](docs/design-rules/figma-component-spec.md)；[现行](docs/design-rules/token-decision-table.md)"), true);
+});
