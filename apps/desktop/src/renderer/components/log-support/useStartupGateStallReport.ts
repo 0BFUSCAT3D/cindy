@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 
 import {
   STARTUP_GATE_STALL_AFTER_MS,
+  clampStartupGateStallMs,
   type StartupGateStallSnapshot,
 } from '../../../shared/startupGateStall';
 
@@ -32,8 +33,8 @@ export function useStartupGateStallReport(waiting: boolean, state: StartupGateSt
       const now = Date.now();
       window.electronAPI?.reportStartupGateStall?.({
         ...stateRef.current,
-        elapsedMs: now - loadedAtRef.current,
-        waitingMs: now - waitingSince,
+        elapsedMs: clampStartupGateStallMs(now - loadedAtRef.current),
+        waitingMs: clampStartupGateStallMs(now - waitingSince),
         documentVisible: document.visibilityState === 'visible',
       });
     }, STARTUP_GATE_STALL_AFTER_MS);

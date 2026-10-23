@@ -36,6 +36,7 @@ vi.mock('@/contexts/LoginHandoffContext', () => ({ useLoginHandoff: () => mocks.
 vi.mock('@/lib/toast', () => ({ toast: { error: mocks.error, success: mocks.success } }));
 
 import { StartupLogSupport } from '../StartupLogSupport';
+import { parseStartupGateStallSnapshot } from '../../../../shared/startupGateStall';
 
 beforeAll(async () => {
   await i18next.use(initReactI18next).init({
@@ -342,6 +343,28 @@ describe('startup gate stall report', () => {
       elapsedMs: 50_000,
       waitingMs: 20_000,
       localDbGate: 'pending',
+    });
+  });
+
+  // 登录页停留(或休眠)跨过一天后再卡住:时长超出 main 的白名单上限会让整份快照被拒,
+  // 而每次加载只报一次,诊断就此丢失。
+  it('keeps a report from a day-long session within what main accepts', () => {
+    mocks.handoff.brandStageMounted = true;
+    mocks.handoff.startSignals.loginPanelMounted = true;
+    const view = render(<StartupLogSupport />);
+    act(() => vi.advanceTimersByTime(25 * 60 * 60 * 1000));
+
+    mocks.auth.canEnterApp = true;
+    mocks.db.coverHeld = true;
+    mocks.handoff.startSignals.loginPanelMounted = false;
+    view.rerender(<StartupLogSupport />);
+    act(() => vi.advanceTimersByTime(20_000));
+
+    expect(mocks.reportStartupGateStall).toHaveBeenCalledOnce();
+    const payload = mocks.reportStartupGateStall.mock.calls[0][0];
+    expect(parseStartupGateStallSnapshot(payload)).toMatchObject({
+      elapsedMs: 24 * 60 * 60 * 1000,
+      waitingMs: 20_000,
     });
   });
 });

@@ -88,8 +88,16 @@ const FIELD_RULES: { readonly [K in keyof StartupGateStallSnapshot]: FieldRule }
   loginPanelMounted: { kind: 'boolean' },
 };
 
-/** 一天的毫秒数:上限只为拒绝畸形值,真实上报在阈值附近。 */
+/** 一天的毫秒数:上限只为拒绝畸形值。 */
 const MAX_ELAPSED_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * renderer 上报前把时长收进白名单范围:登录页停留或休眠跨过一天、系统时钟回拨时,
+ * 原值会被 main 整份拒绝,而每次加载只报一次,诊断就此丢失。
+ */
+export function clampStartupGateStallMs(ms: number): number {
+  return Math.min(MAX_ELAPSED_MS, Math.max(0, Math.round(ms)));
+}
 
 /**
  * IPC 入口校验:键集合必须与白名单完全一致,每个值都落在规则内,否则返回 null。
