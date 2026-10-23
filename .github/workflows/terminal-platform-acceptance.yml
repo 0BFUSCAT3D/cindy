@@ -32,8 +32,8 @@ jobs:
       XDT_SKIP_AGENT_BIN_INSTALL: '1'
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       ELECTRON_OVERRIDE_DIST_PATH: '${{ github.workspace }}/.electron-stub-dist'
-      CINDY_ACCEPTANCE_OUTPUT: '${{ github.workspace }}/.terminal-native-${{ matrix.target }}'
-      CINDY_ACCEPTANCE_REPORT: '${{ github.workspace }}/.terminal-report-${{ matrix.target }}'
+      CINDY_ACCEPTANCE_OUTPUT: '${{ github.workspace }}/terminal-native-${{ matrix.target }}'
+      CINDY_ACCEPTANCE_REPORT: '${{ github.workspace }}/terminal-report-${{ matrix.target }}'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86

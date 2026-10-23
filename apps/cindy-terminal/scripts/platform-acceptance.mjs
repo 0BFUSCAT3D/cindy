@@ -81,7 +81,12 @@ try {
     const timeout = setTimeout(() => { terminal.kill(); reject(new Error('Native TUI did not render in PTY')); }, 20_000);
     terminal.onData(data => {
       output += data; tuiOutput = output;
-      if (!closing && /Cindy|Tasks|tasks|Service|service/.test(output)) { closing = true; terminal.write('\u0011'); }
+      if (!closing && /Ctrl\+Q/.test(output)) {
+        closing = true;
+        // Let the first committed frame's input effect put the PTY into raw
+        // mode. Before that, the tty driver consumes Ctrl+Q as XON flow control.
+        setTimeout(() => terminal.write('\u0011'), 150);
+      }
     });
     terminal.onExit(() => { clearTimeout(timeout); if (closing) resolve(output); else reject(new Error('TUI exited before rendering')); });
   });
