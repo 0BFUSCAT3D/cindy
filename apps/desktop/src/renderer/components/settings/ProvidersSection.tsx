@@ -2969,14 +2969,17 @@ export function ProvidersSection() {
         }
         // Main owns the active Registry and classifies the complete discovery
         // result in the same save, without freezing defaults into user overrides.
-        const result = providerSpeechSetup(p)
-          ? await updateCustomProvider(config, {}, { speechReferenceRefreshAgents: [...refreshedAgents] })
-          : await updateCustomProvider(config, {});
-        if (!result.ok) {
-          toast.error(t('settings.providers.models.refreshFailed'));
-          return;
-        }
-        if (result.speechReferenceAdded) {
+        let speechReferenceAdded = false;
+        const saved = await confirmProviderChange(async (options) => {
+          const result = await updateCustomProvider(config, {}, {
+            ...options,
+            ...(providerSpeechSetup(p) ? { speechReferenceRefreshAgents: [...refreshedAgents] } : {}),
+          });
+          speechReferenceAdded = result.ok && result.speechReferenceAdded === true;
+          return result;
+        });
+        if (!saved) return;
+        if (speechReferenceAdded) {
           toast.success(t('settings.providers.models.refreshSpeechAdded'));
         } else if (added > 0) {
           toast.success(t('settings.providers.models.refreshAdded', { count: added }));
@@ -2990,7 +2993,7 @@ export function ProvidersSection() {
         finishProviderRefresh(p.id);
       }
     },
-    [beginProviderRefresh, finishProviderRefresh, refetch, t],
+    [beginProviderRefresh, confirmProviderChange, finishProviderRefresh, refetch, t],
   );
 
   /** 内置四家复用 main 已有的 provider-specific 真源刷新，不在 Renderer 复制网络逻辑。 */

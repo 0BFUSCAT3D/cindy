@@ -4813,6 +4813,60 @@ it('preserves the actual Vertex API through the probe IPC and rejects unknown SD
 // active Registry classifies it. Exercise fetch -> merge -> update -> DB reread;
 // Renderer-only tests cannot prove Main classifies before the one persisted write.
 describe('manual refresh speech references through the real provider update handler', () => {
+  // #6928 P1, unit with an in-memory DB: the real update handler/signature must
+  // gate a reference-only Responses route change before persistence/Host restart.
+  // The existing speech cases use openai-chat, so they never require a restart.
+  it.each([true, false])('gates reference-only Responses changes before saving (busy=%s)', async busy => {
+    mountDb();
+    const harness = new IpcHarness();
+    const config = imageProviderConfig('refresh-image-speech', {
+      baseUrl: 'https://api.openai.com/v1',
+      models: [{ id: 'chat-model', name: 'My chat', defaultEnabled: false }],
+    });
+    let busyIds: string[] = [];
+    const deps = makeDeps({
+      listBusyLocalCodexSessionIds: () => busyIds,
+      listProviders: async () => [{ ...buildUserProvider((await getCustomProvider(config.id))!), connected: true }],
+    });
+    registerProviderHandlers(harness, deps);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, config);
+    const before = (await getCustomProvider(config.id))!;
+    vi.mocked(deps.prepareCodexCustomProviderHostChange!).mockClear().mockImplementation(async () => {
+      expect((await getCustomProvider(config.id))!.runtimes).toEqual(before.runtimes);
+    });
+    vi.mocked(deps.finalizeCodexCustomProviderHostChange!).mockClear();
+    vi.mocked(deps.storeCustomProviderKey).mockClear();
+    vi.mocked(deps.refreshCatalog).mockClear();
+    busyIds = busy ? ['local-codex-running'] : [];
+    const options = { source: 'manual-settings', speechReferenceRefreshAgents: ['codex'] };
+    const first = await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, before, {}, options);
+    if (busy) {
+      expect(first).toEqual({ ok: false, confirmationRequired: 'codex-image-generation-reload', busyCount: 1 });
+      expect((await getCustomProvider(config.id))!.runtimes).toEqual(before.runtimes);
+      expect(deps.prepareCodexCustomProviderHostChange).not.toHaveBeenCalled();
+      expect(deps.finalizeCodexCustomProviderHostChange).not.toHaveBeenCalled();
+      expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+      expect(deps.refreshCatalog).not.toHaveBeenCalled();
+      expect(await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, before, {}, {
+        ...options, codexImageGenerationRestartPolicy: 'interrupt',
+      })).toEqual({ ok: true, speechReferenceAdded: true });
+    } else {
+      expect(first).toEqual({ ok: true, speechReferenceAdded: true });
+    }
+    const saved = (await getCustomProvider(config.id))!;
+    expect(saved.runtimes.codex!.models).toEqual([
+      before.runtimes.codex!.models[0],
+      expect.objectContaining({ id: 'gpt-4o-mini-tts', defaultEnabled: true }),
+    ]);
+    expect(deps.prepareCodexCustomProviderHostChange).toHaveBeenCalledOnce();
+    expect(deps.finalizeCodexCustomProviderHostChange).toHaveBeenCalledOnce();
+    expect(deps.storeCustomProviderKey).not.toHaveBeenCalled();
+    // Refreshing the saved reference neither duplicates it nor restarts again.
+    expect(await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, saved, {}, options)).toEqual({ ok: true });
+    expect((await getCustomProvider(config.id))!.runtimes).toEqual(saved.runtimes);
+    expect(deps.prepareCodexCustomProviderHostChange).toHaveBeenCalledOnce();
+  });
+
   it.each([
     'new', 'new-pi', 'hidden', 'hidden-pi', 'transcription', 'discovery-other',
     'user-other', 'missing', 'reference-other', 'failed-target', 'disabled', 'oauth', 'proxy',

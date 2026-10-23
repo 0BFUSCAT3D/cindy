@@ -21,6 +21,7 @@ const {
   requestAutoRefreshSpy,
   setProviderOrderSpy,
   refetchProvidersSpy,
+  confirmSpy,
   authState,
   providerSnapshotState,
   wizardSpy,
@@ -29,6 +30,7 @@ const {
   requestAutoRefreshSpy: vi.fn(async () => ({ ok: true as const })),
   setProviderOrderSpy: vi.fn(async () => ({ ok: true as const })),
   refetchProvidersSpy: vi.fn(),
+  confirmSpy: vi.fn(async () => false),
   authState: { dataOwnerId: 'owner-1' as string | null },
   providerSnapshotState: {
     dataOwnerId: 'owner-1' as string | null,
@@ -157,7 +159,7 @@ vi.mock('@/hooks/useModelAccessStatus', () => ({
 }));
 
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({
-  useConfirmDialog: () => ({ confirm: vi.fn() }),
+  useConfirmDialog: () => ({ confirm: confirmSpy }),
 }));
 
 vi.mock('@/lib/toast', () => ({
@@ -218,6 +220,7 @@ beforeEach(() => {
   providerSnapshotState.error = null;
   providerSnapshotState.order = ['anthropic', 'xd', 'custom'];
   scanResult = { detections: [] };
+  confirmSpy.mockReset().mockResolvedValue(false);
   vi.mocked(updateCustomProvider).mockResolvedValue({ ok: true });
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     maker: {
@@ -287,7 +290,7 @@ describe('ProvidersSection — 双栏管理', () => {
       if (kind === 'hidden') expect(speech[0].defaultEnabled).toBe(false);
       expect(setModelVisibilities).not.toHaveBeenCalled();
       expect(vi.mocked(updateCustomProvider).mock.lastCall![2])
-        .toEqual({ speechReferenceRefreshAgents: ['codex'] });
+        .toEqual({ source: 'manual-settings', speechReferenceRefreshAgents: ['codex'] });
       if (kind === 'missing') {
         expect(toast.success).toHaveBeenLastCalledWith('settings.providers.models.refreshSpeechAdded');
         // A second click sees the saved reference; it does not add HD/other defaults.
@@ -317,7 +320,7 @@ describe('ProvidersSection — 双栏管理', () => {
     await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
     const saved = vi.mocked(updateCustomProvider).mock.lastCall![0];
     expect(vi.mocked(updateCustomProvider).mock.lastCall![2])
-      .toEqual({ speechReferenceRefreshAgents: ['codex'] });
+      .toEqual({ source: 'manual-settings', speechReferenceRefreshAgents: ['codex'] });
     expect(buildUserProvider(saved, { modelRegistry }).audioModels?.map(model => model.id))
       .toEqual([discovered.id]);
     expect(saved.runtimes.codex!.models.find(model => model.id === discovered.id)?.mode).toBeUndefined();
@@ -406,7 +409,7 @@ describe('ProvidersSection — 双栏管理', () => {
       expect(saved.runtimes.codex!.models.some(model => model.id === 'speech-2.8-turbo')).toBe(false);
       expect(saved.runtimes.pi!.models).toEqual(expect.arrayContaining(config.runtimes.pi.models));
       expect(vi.mocked(updateCustomProvider).mock.lastCall![2])
-        .toEqual({ speechReferenceRefreshAgents: kind === 'failed-target' ? ['pi'] : ['codex', 'pi'] });
+        .toEqual({ source: 'manual-settings', speechReferenceRefreshAgents: kind === 'failed-target' ? ['pi'] : ['codex', 'pi'] });
       expect(setModelVisibilities).not.toHaveBeenCalled();
     },
   );
@@ -431,17 +434,58 @@ describe('ProvidersSection — 双栏管理', () => {
     expect(toast.error).toHaveBeenCalledWith('settings.providers.models.refreshFailed');
     expect(toast.success).not.toHaveBeenCalled();
   });
-  it('does not report refresh success when saving the added model is declined', async () => {
-    selectSpeechProvider();
-    window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: true,
-      models: [{ id: 'MiniMax-M3', name: 'Chat' }] }));
-    vi.mocked(updateCustomProvider).mockResolvedValue({ ok: false,
-      confirmationRequired: 'codex-image-generation-reload', busyCount: 1 });
-    render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
-    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
-    expect(toast.error).toHaveBeenCalledWith('settings.providers.models.refreshFailed');
-    expect(toast.success).not.toHaveBeenCalled();
-  });
+  // #6928 P1, renderer unit: real refresh -> existing confirmation -> save/retry.
+  // Earlier chat-only cases did not protect a busy Responses image Host from
+  // a speech-only addition. Cancel must stay silent; retry must retain discovery
+  // options and use the final save result, even if Main no longer adds a model.
+  it.each(['cancel', 'interrupt', 'idle', 'no-add-on-retry'] as const)(
+    'confirms speech refresh Host changes: %s', async action => {
+      const config: CustomProviderConfig = { id: 'openai-api', name: 'My OpenAI', runtimes: {
+        codex: { baseUrl: 'https://api.openai.com/v1', wireProtocol: 'openai-responses',
+          supportsImageGeneration: true,
+          models: [{ id: 'chat-model', name: 'My chat', defaultEnabled: false }] },
+      } };
+      selectSpeechProvider(config);
+      window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: true,
+        models: [{ id: 'chat-model', name: 'Upstream chat' }] }));
+      if (action !== 'idle') vi.mocked(updateCustomProvider).mockResolvedValueOnce({ ok: false,
+        confirmationRequired: 'codex-image-generation-reload', busyCount: 1 });
+      vi.mocked(updateCustomProvider).mockResolvedValue({ ok: true,
+        ...(action !== 'no-add-on-retry' ? { speechReferenceAdded: true } : {}) });
+      confirmSpy.mockResolvedValue(action !== 'cancel');
+      render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+      await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+      const saved = vi.mocked(updateCustomProvider).mock.calls[0][0];
+      expect(saved.runtimes.codex!.models[0]).toMatchObject(config.runtimes.codex!.models[0]);
+      expect(updateCustomProvider).toHaveBeenNthCalledWith(1, saved, {}, {
+        source: 'manual-settings', speechReferenceRefreshAgents: ['codex'],
+      });
+      expect(confirmSpy).toHaveBeenCalledTimes(action === 'idle' ? 0 : 1);
+      if (action !== 'idle') expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'settings.providers.custom.imageGenerationReload.title',
+        confirmText: 'settings.providers.custom.imageGenerationReload.interrupt',
+        cancelText: 'settings.providers.custom.imageGenerationReload.cancel',
+      }));
+      expect(updateCustomProvider).toHaveBeenCalledTimes(action === 'cancel' || action === 'idle' ? 1 : 2);
+      if (action === 'interrupt' || action === 'no-add-on-retry') {
+        expect(updateCustomProvider).toHaveBeenNthCalledWith(2, saved, {}, {
+          source: 'manual-settings', codexImageGenerationRestartPolicy: 'interrupt',
+          speechReferenceRefreshAgents: ['codex'],
+        });
+      }
+      expect(toast.error).not.toHaveBeenCalled();
+      if (action === 'cancel') {
+        expect(toast.success).not.toHaveBeenCalled();
+        expect(refetchProvidersSpy).not.toHaveBeenCalled();
+      } else {
+        expect(toast.success).toHaveBeenCalledWith(action === 'no-add-on-retry'
+          ? 'settings.providers.models.refreshNoNew' : 'settings.providers.models.refreshSpeechAdded');
+        expect(refetchProvidersSpy).toHaveBeenCalledOnce();
+      }
+      expect(window.electronAPI.maker.fetchProviderModels).toHaveBeenCalledOnce();
+      expect(screen.getByRole('button', { name: 'settings.providers.models.refreshAria' }).hasAttribute('disabled')).toBe(false);
+    },
+  );
   it('keeps a recovery action accessible when the first complete catalog could not be published', async () => {
     providerSnapshotState.loading = true;
     providerSnapshotState.error = { reason: 'storage-quota' };
@@ -504,7 +548,7 @@ describe('ProvidersSection — 双栏管理', () => {
         expect.objectContaining({ id: 'new-model', discoveredMetadata: { nativeApi: 'openai-responses' } }),
         ...(hasModels ? [expect.objectContaining({ id: 'old-model', contextWindow: 64000, defaultEnabled: false })] : []),
       ]) }) }),
-    }), {});
+    }), {}, { source: 'manual-settings' });
     const saved = vi.mocked(updateCustomProvider).mock.calls[0]![0];
     // Refresh adds membership without freezing a visibility choice. Native
     // projection decides defaults; compatibility still requires an override.
