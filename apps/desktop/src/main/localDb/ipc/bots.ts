@@ -1961,7 +1961,8 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
   const normalizedNextConfig = normalizeBotModelCapabilitiesOrThrow(nextConfig);
   // Legacy chain-only profiles gain mirrored fields during normalization.
   // Compare the same representation so unrelated edits do not validate stale routes.
-  if (botProfileModelSelectionChanged(normalizeBotModelCapabilitiesOrThrow(previous), normalizedNextConfig)) {
+  const modelSelectionChanged = botProfileModelSelectionChanged(normalizeBotModelCapabilitiesOrThrow(previous), normalizedNextConfig);
+  if (modelSelectionChanged) {
     const primary = (await readEffectiveBotModelChain(normalizedNextConfig))[0];
     owner.assertCurrent();
     if (!primary || !await validateTaskModel(primary)) {
@@ -1997,6 +1998,7 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     && Object.prototype.hasOwnProperty.call(body.capabilities, 'permissions');
   await client.tx('bots.updateProfile', {
     id,
+    ...(modelSelectionChanged ? { clearScheduledModelBaseline: true } : {}),
     ...(changesPermissions ? { canonicalPermissionMode: botSessionPermissionMode(normalizedNextConfig) } : {}),
     ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
     ...(patch.description !== undefined ? { description: patch.description } : {}),
@@ -2065,7 +2067,7 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     .limit(1);
     owner.assertCurrent();
     if (canonical) requestBotRuntimeEpochRefresh(canonical.sessionId,
-      botProfileModelSelectionChanged(previous, normalizedNextConfig) ? 'model' : 'profile');
+      modelSelectionChanged ? 'model' : 'profile');
   }
   const profile = await readProfile(client, id);
   owner.assertCurrent();

@@ -13,7 +13,7 @@ describe('Bot named worker transactions', () => {
       CREATE TABLE sessions (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, working_dir TEXT, workspace_kind TEXT NOT NULL,
         model TEXT NOT NULL, effort TEXT NOT NULL, permission_mode TEXT NOT NULL, status TEXT NOT NULL,
-        scheduled_model_baseline TEXT,
+        scheduled_model_baseline TEXT, agent_device_id TEXT,
         sdk_session_id TEXT, total_token_usage INTEGER NOT NULL, total_cost_usd REAL NOT NULL,
         context_tokens INTEGER NOT NULL, context_window INTEGER NOT NULL, fast_mode INTEGER NOT NULL,
         plan_mode_enabled INTEGER NOT NULL, cleared_at INTEGER, pinned_at INTEGER, user_send_at INTEGER,
@@ -128,6 +128,37 @@ describe('Bot named worker transactions', () => {
       db.prepare('SELECT hidden_at AS hiddenAt, pinned_at AS pinnedAt FROM bot_profiles WHERE id = ?')
         .get('bot-1'),
     ).toEqual({ hiddenAt: null, pinnedAt: null });
+  });
+
+  // #6895: model saves must retire only live profile-following restores, and
+  // a later write failure must roll back both the profile and the restore clear.
+  it('retires only active profile-following restores atomically with the model save', () => {
+    tx(db, { name: 'bots.createProfile', args: {
+      id: 'bot-1', displayName: 'Hermes', description: '', avatar: '🤖', avatarColor: 'violet',
+      identitySource: 'identity', capabilitiesJson: '{}', now: 1,
+    } });
+    for (const role of ['canonical', 'group', 'channel', 'thread', 'worker', 'archived']) {
+      db.prepare(`INSERT INTO sessions
+        (id, title, workspace_kind, model, effort, permission_mode, status, total_token_usage,
+         total_cost_usd, context_tokens, context_window, fast_mode, plan_mode_enabled, agent_kind,
+         extra_dirs, source, created_at, updated_at, scheduled_model_baseline)
+        VALUES (?, 'Hermes', 'dialogue', 'temporary', 'high', 'ask', 'active',
+         0, 0, 0, 0, 0, 0, 'codex', '[]', 'bot', 2, 2, 'old-route')`).run(role);
+      db.prepare(`INSERT INTO bot_session_links
+        (id, bot_id, session_id, profile_version, role, created_at, archived_at)
+        VALUES (?, 'bot-1', ?, 1, ?, 2, ?)`).run(`link-${role}`, role, role === 'archived' ? 'channel' : role, role === 'archived' ? 3 : null);
+    }
+    const args = { id: 'bot-1', identitySource: 'identity', capabilitiesJson: '{"model":"new"}',
+      profileContentChanged: true, expectedCurrentVersion: 1, clearScheduledModelBaseline: true, now: 4 };
+    // The permission write follows restore retirement in this existing transaction.
+    expect(() => tx(db, { name: 'bots.updateProfile', args: { ...args, canonicalPermissionMode: 'invalid' } }))
+      .toThrow('Invalid canonical permission mode');
+    expect(db.prepare('SELECT current_version FROM bot_profiles').pluck().get()).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) FROM sessions WHERE scheduled_model_baseline IS NOT NULL').pluck().get()).toBe(6);
+    tx(db, { name: 'bots.updateProfile', args });
+    expect(db.prepare('SELECT id FROM sessions WHERE scheduled_model_baseline IS NOT NULL ORDER BY id').pluck().all())
+      .toEqual(['archived', 'worker']);
+    expect(db.prepare('SELECT current_version FROM bot_profiles').pluck().get()).toBe(2);
   });
 
   it('creates a local-first profile and keeps one permanent canonical Session', () => {

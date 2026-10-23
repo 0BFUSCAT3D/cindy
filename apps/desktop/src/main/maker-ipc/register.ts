@@ -11500,6 +11500,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       persistedText: extractPlainText(persistedContent ?? message),
     };
 
+    // Check before route/capability reconciliation, then again after waiting for
+    // the send lock: a rejected old primary must not bootstrap or consume a restore.
+    const rejectShadowedCompanion = async (sessionId: string) => {
+      const [link] = await getDbClient().drizzle
+        .select({ role: botSessionLinks.role, botId: botSessionLinks.botId })
+        .from(botSessionLinks).where(eq(botSessionLinks.sessionId, sessionId)).limit(1);
+      return isShadowedCompanionCanonical(link, isCompanionShadowed)
+        ? { ok: false as const, errorCode: 'AGENT_NOT_READY' as const, message: SHADOWED_COMPANION_INPUT_MESSAGE }
+        : null;
+    };
+
     if (targetSessionId) {
       try {
         await assertReviewExternalInputAllowed(targetSessionId);
@@ -11511,6 +11522,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           message: error instanceof Error ? error.message : String(error),
         };
       }
+      const shadowed = await rejectShadowedCompanion(targetSessionId);
+      if (shadowed) return shadowed;
       await reconcileBotModelRoute(targetSessionId);
       const compactedRuntime = maker.getSession(targetSessionId);
       if (compactedRuntime) await refreshBotCapabilityEpochBeforeSend(compactedRuntime);
@@ -11819,6 +11832,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     let lockStage = 'resolve-session-meta+row';
     const run = waitPrev.then(async () => {
       await assertTaskActionCurrent();
+      const shadowed = await rejectShadowedCompanion(targetSessionId);
+      if (shadowed) return shadowed;
       // Internal idle deliveries (including companion cloud-room input) bypass
       // the ordinary send transaction. Restore under this send lock before
       // reading metadata or dispatching; busy inputs defer to the queued path.
@@ -11849,13 +11864,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           errorCode: 'DELETED' as const,
           message: `session ${targetSessionId} is deleted`,
         };
-      }
-      // Internal sends (plugins, tasks, routines) reach idle sessions without sendToAgentAccepted.
-      const [companionLink] = await getDbClient().drizzle
-        .select({ role: botSessionLinks.role, botId: botSessionLinks.botId })
-        .from(botSessionLinks).where(eq(botSessionLinks.sessionId, targetSessionId)).limit(1);
-      if (isShadowedCompanionCanonical(companionLink, isCompanionShadowed)) {
-        return { ok: false as const, errorCode: 'AGENT_NOT_READY' as const, message: SHADOWED_COMPANION_INPUT_MESSAGE };
       }
 
       // 崩溃恢复:在路由决策前加载快照,确保恢复的排队 prompt 不被跳过。
@@ -16008,7 +16016,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await stageSessionRouteSelection(sessionId, { ...route, agentDeviceId: route.agentDeviceId ?? null }, current.agentKind);
       // A changed permanent companion choice supersedes the automation's saved
       // preference, even if it selects the already-running temporary model.
-      // Keep the old preference if staging fails; never detach IM default following.
+      // Profile saves retire it atomically in the DB; other route changes retire
+      // it only after staging succeeds. Never detach IM default following.
       await updateScheduledPreference(sessionId, null);
       // Consume the same model/Harness intent as the normal send path. Its
       // verified window protection and history handoff also apply here; a Bot

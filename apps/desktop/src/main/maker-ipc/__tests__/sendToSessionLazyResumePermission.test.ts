@@ -1,3 +1,4 @@
+import { isShadowedCompanionCanonical } from '../botSessionInputGuard.js';
 import { createScheduledModelScope } from '../scheduledModelSelection.js';
 import { assertTaskActionCurrent, hasTaskActionAuthorization } from '../taskActionAuthorization.js';
 /**
@@ -246,6 +247,29 @@ function botTaskDispatchHarness(
 // Execute that production closure with the real restore scope (unit behavior in
 // this existing guard fixture); assert the route used to send, not call strings.
 describe('companion internal delivery after automation', () => {
+  // #6895: rejected input must not bootstrap the old primary or consume its restore.
+  it.each(['already-shadowed', 'shadowed-while-waiting'] as const)('preserves automation state when %s', async (timing) => {
+    let shadowed = timing === 'already-shadowed';
+    let baseline: string | null = 'saved-pi-route';
+    const restore = vi.fn(async () => { baseline = null; });
+    const reconcile = vi.fn(async () => undefined);
+    const dbChain = { from: () => dbChain, where: () => dbChain,
+      limit: async () => [{ role: 'canonical', botId: 'companion' }] };
+    const h = botTaskDispatchHarness({ child: { permissionMode: 'auto', planModeEnabled: false } }, {}, {
+      getDbClient: () => ({ drizzle: { select: () => dbChain } }),
+      isShadowedCompanionCanonical, isCompanionShadowed: () => shadowed,
+      scheduledModelScope: { restore }, reconcileBotModelRoute: reconcile,
+      waitForSendToSessionLock: async () => { shadowed = true; },
+    });
+    expect(await h.dispatchBotSessionMessage({ targetSessionId: 'child', message: 'Late cloud input' }))
+      .toMatchObject({ ok: false, errorCode: 'AGENT_NOT_READY' });
+    expect(baseline).toBe('saved-pi-route');
+    expect(restore).not.toHaveBeenCalled();
+    expect(h.bootstrapped).toEqual([]);
+    expect(h.sentTo).toEqual([]);
+    if (timing === 'already-shadowed') expect(reconcile).not.toHaveBeenCalled();
+  });
+
   it.each(['live', 'resumed'] as const)('restores before %s dispatch reads its model', async (path) => {
     const saved = { agentKind: 'pi' as const, model: 'saved-model', providerId: 'fixture-provider', effort: null, fastMode: false };
     let current = { ...saved, agentKind: 'codex' as 'codex' | 'pi', model: 'temporary-model' };

@@ -9855,6 +9855,42 @@ describe('Bot self control uses the same profile authority as settings', () => {
 
 
 describe('Teammate model selection shares profile persistence and route reconciliation', () => {
+  // #6895 DB regression: a crash after the profile commit but before the async
+  // runtime refresh must not restore the superseded choice on the next cold send.
+  it('commits a new model and retires its restore before runtime refresh, while unrelated edits retain it', async () => {
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+    });
+    const sessionId = created.session.id;
+    const baseline = JSON.stringify({ scopeId: 'automation', agentKind: 'pi', model: 'old-model', providerId: null, effort: null, fastMode: false });
+    h.sqlite!.prepare('UPDATE sessions SET scheduled_model_baseline = ? WHERE id = ?').run(baseline, sessionId);
+    const readBaseline = () => (h.sqlite!.prepare('SELECT scheduled_model_baseline AS baseline FROM sessions WHERE id = ?').get(sessionId) as { baseline: string | null }).baseline;
+    await invoke('local-db:bots:update', { id: 'bot-1', name: 'Renamed companion' });
+    expect(readBaseline()).toBe(baseline);
+    h.requestRuntimeRefresh.mockClear();
+    const runTx = h.tx!;
+    h.tx = async (name, args) => {
+      const result = await runTx(name, args);
+      if (name === 'bots.updateProfile') throw new Error('simulated process loss after commit');
+      return result;
+    };
+    await expect(invoke('local-db:bots:update', { id: 'bot-1', capabilities: {
+      modelChainOverride: [{ harness: 'codex', model: 'new-saved-model', providerId: null, effort: 'medium', fastMode: false }],
+    } })).rejects.toThrow('simulated process loss after commit');
+    expect(h.requestRuntimeRefresh).not.toHaveBeenCalled();
+    expect(readBaseline()).toBeNull();
+    const profile = await invoke('local-db:bots:get', 'bot-1');
+    const chain = await modelSettings.readEffectiveBotModelChain(profile.capabilities);
+    const apply = vi.fn();
+    const cold = createBotModelRouteReconciler({ ownerEpoch: () => h.ownerScopeKey,
+      read: async () => ({ chain, current: { agentKind: 'pi', model: 'temporary-model', providerId: null, effort: null, fastMode: false },
+        scheduledModelBaseline: readBaseline() ? JSON.parse(readBaseline()!) : null, hasRuntimeOverride: false }), apply,
+    });
+    expect(await cold.preview(sessionId)).toMatchObject({ agentKind: 'codex', model: 'new-saved-model' });
+    await cold(sessionId);
+    expect(apply).toHaveBeenCalledWith(sessionId, expect.objectContaining({ agentKind: 'codex', model: 'new-saved-model' }), expect.anything());
+  });
+
   async function setupModelControl() {
     const canonical = await invoke('local-db:bots:create-canonical-session', {
       botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
