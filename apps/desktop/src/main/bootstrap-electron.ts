@@ -540,6 +540,8 @@ import {
 
 import { onQuit, installQuitHandler } from './lifecycle';
 import { initStartupDiagnostics } from './startup-diagnostics';
+import { createStartupGateStallReporter } from './startupGateStallReport';
+import { STARTUP_GATE_STALL_CHANNEL } from '../shared/startupGateStall';
 import {
   installPowerEventDiagnostics,
   installWindowResponsivenessDiagnostics,
@@ -4721,6 +4723,20 @@ const registerIpcHandlers = () => {
   ipcMain.on('get-app-display-version-info', (event) => {
     event.returnValue = getAppDisplayVersionInfo();
   });
+
+  // 开屏卡住诊断:renderer 的 r: 日志不进上传,这条快照由 main 校验后写进 renderer-guard。
+  // 只在本机使用,不进 device-link 白名单。
+  ipcMain.on(
+    STARTUP_GATE_STALL_CHANNEL,
+    createStartupGateStallReporter({
+      isMainWindowTopFrame: (event) => {
+        const { sender, senderFrame } = event as Electron.IpcMainEvent;
+        const main = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
+        return main !== null && sender === main.webContents && senderFrame === sender.mainFrame;
+      },
+      warn: (message) => rendererGuardLog.warn(message),
+    }),
+  );
 
   // Renderer → main 日志转发:走 unified logger 的 writeFromRenderer,
   // 让 main 的 level filter 生效(scope 加 r: 前缀以区分来源)。
