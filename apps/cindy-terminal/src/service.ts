@@ -165,15 +165,8 @@ export class TerminalService {
       },
       beforeAccountChange:async()=>{
         this.ownerSuspended = true;
-        this.terminals.close();
-        this.ownerGeneration++;this.remote?.stop();
-        await this.sharedTasks?.logout().catch(()=>logger.warn('SHARED_TASK_CLOSE_PENDING'));
-        this.files?.stop();this.browser?.stop();this.resources?.close();this.membership?.close();await this.sharedTasks?.close();this.crossShares?.close();this.groupReshare?.stop();await this.reshares?.close();this.guestRoutes?.close();await this.modelGrants?.close();await this.agents?.stop();await this.groups?.close();await this.ssh?.close();
-        // close() preserves history and native resume ids; no record is deleted.
-        this.pluginTasks?.close();await this.pluginMarket?.close();this.pluginAccount?.close();this.pluginAuthorizations.clear();await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
-        await this.scheduler?.close();
-        if(this.tasks)await this.tasks.close();
-        await this.knowledge?.close();await this.projects?.close();
+        this.ownerGeneration++;
+        await this.closeOwnerServices(true);
       },
       onChange:snapshot=>{
         if(snapshot.flow?.step!=='browser-redirect')this.authorization=null;
@@ -244,16 +237,34 @@ export class TerminalService {
     if(this.closing)return;
     const next=snapshot.session?.key ?? 'guest';
     if(next!==this.ownerKey || this.ownerSuspended){
-      this.terminals.close();
-      this.pluginTasks?.close();await this.pluginMarket?.close();this.pluginAccount?.close();this.pluginAuthorizations.clear();await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
-        await this.scheduler?.close();
-      this.remote.stop();this.files.stop();this.browser.stop();this.resources.close();this.membership.close();await this.sharedTasks.close();this.crossShares.close();this.groupReshare?.stop();await this.reshares.close();this.guestRoutes.close();await this.modelGrants.close();await this.agents.stop();await this.groups.close();await this.ssh.close();await this.tasks.close();await this.knowledge?.close();await this.projects?.close();
-      for(const dispose of this.subscriptions.values())dispose();
-      this.subscriptions.clear();
+      await this.closeOwnerServices();
       await this.createTasks(next);this.ownerSuspended=false;this.tasks.resumePending();
     }
     if(snapshot.session?.status==='authenticated')this.remote.start();
     else this.remote.stop();
+  }
+  /** Account authority is already revoked before this runs. Cleanup failures
+   * cannot skip later owners' private sockets, native tasks or durable stores. */
+  private async closeOwnerServices(logout = false): Promise<void> {
+    const errors: unknown[] = [];
+    const close = async (operation: () => unknown) => { try { await operation(); } catch (error) { errors.push(error); } };
+    await close(() => this.terminals.close()); await close(() => this.remote?.stop());
+    if (logout) await this.sharedTasks?.logout().catch(() => logger.warn('SHARED_TASK_CLOSE_PENDING'));
+    await close(() => this.files?.stop()); await close(() => this.browser?.stop());
+    await close(() => this.resources?.close()); await close(() => this.membership?.close());
+    await close(() => this.sharedTasks?.close()); await close(() => this.crossShares?.close());
+    await close(() => this.groupReshare?.stop()); await close(() => this.reshares?.close());
+    await close(() => this.guestRoutes?.close()); await close(() => this.modelGrants?.close());
+    await close(() => this.agents?.stop()); await close(() => this.groups?.close()); await close(() => this.ssh?.close());
+    await close(() => this.pluginTasks?.close()); await close(() => this.pluginMarket?.close());
+    await close(() => this.pluginAccount?.close()); this.pluginAuthorizations.clear();
+    await close(() => this.plugins?.close()); await close(() => this.routines?.close());
+    await close(() => this.protectedInput?.close()); await close(() => this.companionCloud?.close());
+    await close(() => this.companions?.close()); await close(() => this.scheduler?.close());
+    await close(() => this.tasks?.close()); await close(() => this.knowledge?.close()); await close(() => this.projects?.close());
+    for (const dispose of this.subscriptions.values()) await close(dispose);
+    this.subscriptions.clear();
+    if (errors.length) throw new AggregateError(errors, 'OWNER_CLEANUP_FAILED');
   }
   private async createTasks(owner: string) {
     this.ownerKey=owner;

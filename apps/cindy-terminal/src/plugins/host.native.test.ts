@@ -77,7 +77,8 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   const secrets={setManySync:(entries:Record<string,string|null>)=>vault.setManySync(entries),getSync:(key:string)=>vault.getSync(key),setSync:(key:string,value:string)=>vault.setSync(key,value),deleteSync:(key:string)=>vault.deleteSync(key),get:(key:string)=>vault.get(key),set:(key:string,value:string)=>vault.set(key,value),delete:async(key:string)=>{if(failCleanup&&key.includes(':oauth:'))throw new Error('Synthetic vault write interruption');await vault.delete(key);}};
   let active=true;const media=new TerminalTaskMedia(path.join(directory,'media'));
   const cardPushes:unknown[]=[];
-  const options={downloadRequest:async(url:string,_init:RequestInit,beforeDispatch:()=>void)=>{beforeDispatch();expect(url).toBe('https://api.example.com/artifact');return {response:new Response(artifact)};},credentials:{
+  const runtimeDiagnostics:string[]=[];
+  const options={log:{info(){},warn(message:string,meta?:Record<string,unknown>){runtimeDiagnostics.push(`${message}: ${String(meta?.error??'')}`);}},downloadRequest:async(url:string,_init:RequestInit,beforeDispatch:()=>void)=>{beforeDispatch();expect(url).toBe('https://api.example.com/artifact');return {response:new Response(artifact)};},credentials:{
     getLoginEmail:()=>null,confirmAddHost:async()=>true,
     openExternal:async(url:string)=>{const authorization=new URL(url);const callback=new URL(authorization.searchParams.get('redirect_uri')!);callback.searchParams.set('state',authorization.searchParams.get('state')!);callback.searchParams.set('code','synthetic-code');await fetch(callback);},
     fetchImpl:async(input:Parameters<typeof fetch>[0],init?:RequestInit)=>{expect(String(input)).toBe('https://accounts.example.com/token');expect(new URLSearchParams(String(init?.body)).get('client_id')).toBe('fixture-client');return Response.json({access_token:'synthetic-oauth-access',refresh_token:'synthetic-oauth-refresh',expires_in:3600,scope:'read'});},
@@ -164,7 +165,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
         expect(payload(await client.callTool({name:'ghost_info',arguments:{ghost_id:'terminal-fixture'}}))).toMatchObject({ok:false,errorCode:'GHOST_DISABLED_IN_WORKDIR'});
         await preferences.set(directory,instance,false);
         called=payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{}}}));
-        expect(called).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true,downloaded:artifact}},saved:{ok:true},library:{ok:true}}});
+        expect(called, runtimeDiagnostics.join('\n')).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true,downloaded:artifact}},saved:{ok:true},library:{ok:true}}});
       }finally{await client.close();await server.close();pluginTask.close();setup.close();publisher.close();account.close();}
 
       expect(await readFile(path.join(directory,'plugin-result.txt'),'utf8')).toBe('terminal-plugin-files');
