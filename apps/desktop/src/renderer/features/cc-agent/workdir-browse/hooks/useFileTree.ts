@@ -210,6 +210,10 @@ interface FileTreeStore {
   /** 本 store 的 entries 是否还是从兄弟 scope **借来**的 seed 数据（切换开关的
    *  过渡窗口）。借来的树一旦根请求失败就不代表当前视图，留着会让失败看起来像
    *  加载成功（评审 P2）。 */
+  /** seed 窗口里仍属「借来的」条目路径：这些列表不能当剪枝证据 —— 借来的列表
+   *  缺路径 ≠ 本 scope 的展开位过期（评审 P2：第二次 root 刷新借种子子列表剪掉
+   *  并覆盖持久记录）。真实列表每次落地时逐路径移除，清空后恢复精确剪枝。 */
+  borrowedDirs: Set<string>;
   seeded: boolean;
   /** 本 scope **自己持久化过**的展开位（创建时从 localStorage 读出的那份）。
    *  seed 窗口收尾的 root 剪枝要继续豁免它们：那时子目录列表可能还是兄弟 scope
@@ -376,7 +380,12 @@ function pruneExpandedForCurrentTree(
     let parent = ROOT_KEY;
     for (const part of parts) {
       const list = store.snapshot.entries.get(parent);
+      // 没有列表，或（ROOT 以下的）列表还是 seed 借来的：证据不足，宁可保留
+      // （借来的子列表缺路径 ≠ 本 scope 的展开位过期；真实列表落地后这段自然
+      // 恢复精确判断。root 例外：创建期首剪正是靠借来的 root 列表裁掉 reveal-only
+      // 顶层目录，且 root 请求通常最先落地，语义保持不变）。
       if (!list) return true;
+      if (parent !== ROOT_KEY && store.borrowedDirs.has(parent)) return true;
       const child = parent === ROOT_KEY ? part : `${parent}/${part}`;
       if (!list.some((entry) => entry.relPath === child)) return false;
       parent = child;
@@ -420,6 +429,9 @@ function getOrCreateStore(opts: Required<UseFileTreeOptions>): FileTreeStore {
     hideMetaFiles: opts.hideMetaFiles,
     docMode: opts.docMode,
     showIgnoredDirs: opts.showIgnoredDirs,
+    borrowedDirs: new Set(
+      seedDisplayable && seed ? seed.entries.keys() : [],
+    ),
     snapshot:
       seedDisplayable && seed
         ? {
@@ -481,6 +493,9 @@ async function fetchDirOnce(store: FileTreeStore, relPath: string): Promise<void
       showIgnoredDirs: store.showIgnoredDirs,
     });
     if (store.tokens.get(relPath) !== myToken) return; // stale
+    // 这份列表已是本 store 自己请求的真实数据：从「借来的」证据集合里摘除，
+    // 之后 prune 恢复用它做精确可达性判断（见 borrowedDirs 注释）。
+    store.borrowedDirs.delete(relPath);
     if (store.snapshot.loadError) {
       store.snapshot = { ...store.snapshot, loadError: null };
     }
@@ -674,7 +689,13 @@ async function initStore(store: FileTreeStore): Promise<void> {
   const inheritedExpanded = [...store.snapshot.expanded].filter(
     (p) => p !== ROOT_KEY && !restored.has(p),
   );
-  const refetchInherited = store.showIgnoredDirs ? inheritedExpanded : [];
+  // reveal 方向全量重拉（旧 matcher 的列表缺被忽略目录）；hidden 方向的种子已由
+  // filterSeedTreeForHiddenView 就地滤过、缓存齐备，但「展开请求还在半路就切开关」
+  // 的目录在种子快照里没有缓存（旧请求只会写回旧 store），不补拉会一直「展开但
+  // 空白」（评审 P1）—— 只补拉缺缓存的目录。
+  const refetchInherited = store.showIgnoredDirs
+    ? inheritedExpanded
+    : inheritedExpanded.filter((p) => !store.snapshot.entries.has(p));
   invalidateBorrowedCollapsedEntries(store);
   await Promise.all([
     fetchDir(store, ROOT_KEY),

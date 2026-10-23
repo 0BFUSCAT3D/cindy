@@ -524,6 +524,137 @@ describe('useFileTree showIgnoredDirs option', () => {
     view.unmount();
   });
 
+  it('seed 结束后的第二次 root 刷新：借来的子列表不当剪枝证据，持久展开位不丢', async () => {
+    const hiddenRoot: readonly DirEntry[] = [
+      { name: 'packages', relPath: 'packages', type: 'directory', size: 0, mtimeMs: 1 },
+    ];
+    const hiddenPackages: readonly DirEntry[] = [];
+    const revealedRoot = hiddenRoot;
+    const revealedPackages: readonly DirEntry[] = [
+      {
+        name: 'node_modules',
+        relPath: 'packages/node_modules',
+        type: 'directory',
+        size: 0,
+        mtimeMs: 2,
+      },
+    ];
+    mocks.loadExpandedSet.mockImplementation(
+      (_workdir: string, opts?: { showIgnoredDirs?: boolean }) =>
+        opts?.showIgnoredDirs
+          ? new Set(['packages', 'packages/node_modules'])
+          : new Set(['packages']), // 隐藏态缓存过 packages：借给放行态的空列表得留在 entries
+    );
+    // packages 的真实列表一直挂着不回：seed 借来的空列表始终留在 entries 里。
+    mocks.listDir.mockImplementation((args: { relPath?: string; showIgnoredDirs?: boolean }) => {
+      if (!args.showIgnoredDirs) {
+        return Promise.resolve((args.relPath ?? '') === '' ? hiddenRoot : hiddenPackages);
+      }
+      if ((args.relPath ?? '') === '') return Promise.resolve(revealedRoot);
+      return deferred<readonly DirEntry[]>().promise;
+    });
+
+    const view = renderHook(
+      ({ reveal }: { reveal: boolean }) =>
+        useFileTree({ workdir: '/workdir-second-prune', showIgnoredDirs: reveal }),
+      { initialProps: { reveal: false } },
+    );
+    await waitFor(() => expect(view.result.current.initialLoading).toBe(false));
+    await act(async () => {
+      view.rerender({ reveal: true });
+    });
+    await waitFor(() => expect(view.result.current.entries.get('')).toEqual(revealedRoot));
+    // 首次 root 成功已把 seeded 清掉（seeded 窗口结束）。
+    expect(view.result.current.expanded.has('packages/node_modules')).toBe(true);
+
+    // watch 事件触发第二次 root 刷新：此时 entries 里的 packages 列表仍是借来的
+    // 空列表，不得当剪枝证据剪掉 packages/node_modules 并覆盖持久记录（评审 P2）。
+    const emitEvent = mocks.eventCallbacks[mocks.eventCallbacks.length - 1];
+    await act(async () => {
+      emitEvent({ workdir: '/workdir-second-prune', relPath: 'other.md' });
+      await new Promise((resolve) => setTimeout(resolve, 70));
+    });
+    await waitFor(() =>
+      expect(mocks.listDir).toHaveBeenCalledWith(
+        expect.objectContaining({ relPath: '', showIgnoredDirs: true }),
+      ),
+    );
+    // eslint-disable-next-line no-console
+    console.log('PROBE listDir calls:', JSON.stringify(mocks.listDir.mock.calls.map((c) => [c[0].relPath, c[0].showIgnoredDirs])));
+    // eslint-disable-next-line no-console
+    console.log('PROBE expanded:', JSON.stringify([...view.result.current.expanded]));
+    // eslint-disable-next-line no-console
+    console.log('PROBE packages list:', JSON.stringify(view.result.current.entries.get('packages')));
+    expect(view.result.current.expanded.has('packages/node_modules')).toBe(true);
+    const revealWrites = mocks.saveExpandedSet.mock.calls
+      .filter(
+        (call) =>
+          (call[2] as { showIgnoredDirs?: boolean } | undefined)?.showIgnoredDirs === true,
+      )
+      .map((call) => call[1] as Set<string>);
+    expect(revealWrites.every((set) => set.has('packages/node_modules'))).toBe(true);
+
+    view.unmount();
+  });
+
+  it('切回隐藏态时继承的展开目录缺缓存要补拉，不能一直「展开但空白」', async () => {
+    const revealedRoot: readonly DirEntry[] = [
+      { name: 'src', relPath: 'src', type: 'directory', size: 0, mtimeMs: 1 },
+    ];
+    const hiddenRoot = revealedRoot;
+    const hiddenSrc: readonly DirEntry[] = [
+      { name: 'a.ts', relPath: 'src/a.ts', type: 'file', size: 1, mtimeMs: 2 },
+    ];
+    // 放行态 scope 持久化过 src 展开位；src 的列表请求挂在半路（切开关前未回）。
+    mocks.loadExpandedSet.mockImplementation(
+      (_workdir: string, opts?: { showIgnoredDirs?: boolean }) =>
+        opts?.showIgnoredDirs ? new Set(['src']) : new Set<string>(),
+    );
+    const revealSrcPending = deferred<readonly DirEntry[]>();
+    mocks.listDir.mockImplementation((args: { relPath?: string; showIgnoredDirs?: boolean }) => {
+      const root = (args.relPath ?? '') === '';
+      if (args.showIgnoredDirs) {
+        if (root) return Promise.resolve(revealedRoot);
+        return revealSrcPending.promise;
+      }
+      if (root) return Promise.resolve(hiddenRoot);
+      return Promise.resolve(hiddenSrc);
+    });
+
+    const view = renderHook(
+      ({ reveal }: { reveal: boolean }) =>
+        useFileTree({ workdir: '/workdir-missing-cache', showIgnoredDirs: reveal }),
+      { initialProps: { reveal: true } },
+    );
+    // root 落地即可（src 的列表还挂在半路，所以 initialLoading 还不会落定）。
+    await waitFor(() => expect(view.result.current.entries.get('')).toEqual(revealedRoot));
+    expect(view.result.current.entries.has('src')).toBe(false); // 列表还在半路
+
+    // 关开关：隐藏态 store 种子继承 src 展开位但没有它的缓存。
+    await act(async () => {
+      view.rerender({ reveal: false });
+    });
+    // 补拉：缺缓存的继承目录要发一次隐藏态 listDir（评审 P1）。
+    await waitFor(() =>
+      expect(mocks.listDir).toHaveBeenCalledWith(
+        expect.objectContaining({ relPath: 'src', showIgnoredDirs: false }),
+      ),
+    );
+    await act(async () => {
+      revealSrcPending.resolve(hiddenSrc);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.entries.get('src')).toEqual(hiddenSrc));
+    expect(view.result.current.expanded.has('src')).toBe(true);
+
+    // 收尾：把挂着的放行态 src 请求放掉，避免悬挂 promise 噪音。
+    await act(async () => {
+      revealSrcPending.resolve(hiddenSrc);
+      await Promise.resolve();
+    });
+    view.unmount();
+  });
+
   /**
    * 评审 P1：被忽略目录嵌在已展开的普通目录下时（`packages/foo/node_modules`），
    * 只滤根列表的实现会把它一直留在展开的父目录下 —— 而且 prune 拿过期的 reveal
