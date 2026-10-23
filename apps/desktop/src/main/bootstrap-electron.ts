@@ -540,6 +540,8 @@ import {
 
 import { onQuit, installQuitHandler } from './lifecycle';
 import { initStartupDiagnostics } from './startup-diagnostics';
+import { createStartupGateStallReporter } from './startupGateStallReport';
+import { STARTUP_GATE_STALL_CHANNEL } from '../shared/startupGateStall';
 import {
   installPowerEventDiagnostics,
   installWindowResponsivenessDiagnostics,
@@ -770,6 +772,7 @@ import {
 import {
   anySessionInTurn,
   allowBotWorkbenchPendingPermission,
+  listInTurnSessionIds,
   applyCodexSpawnConfigChangeWithRestart,
   clearDeferredCodexRestartForOwnerBoundary,
   restoreUsageLimitWaits,
@@ -1137,6 +1140,7 @@ import { configureMailAttachmentHost } from './cindy-brain/mailAttachmentUpload.
 import { writeTempFile, materializeDirectSendOssAttachments } from './maker-ipc/normalizeAttachments.js';
 import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-session-background-activity.js';
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
+import { describeRelaunchTurns } from './relaunchTurnFacts.js';
 import { getGhostSetupChangeBus } from './cindy-brain/ghostSetupChangeBus.js';
 import { getGhostSetupInteractionBridge } from './cindy-brain/ghostSetupInteractionBridge.js';
 import { registerPluginMarketIpc, syncDefaultMarketPlugins, refreshForegroundMarketPlugins } from './plugin-market/registerIpc.js';
@@ -4720,6 +4724,20 @@ const registerIpcHandlers = () => {
     event.returnValue = getAppDisplayVersionInfo();
   });
 
+  // 开屏卡住诊断:renderer 的 r: 日志不进上传,这条快照由 main 校验后写进 renderer-guard。
+  // 只在本机使用,不进 device-link 白名单。
+  ipcMain.on(
+    STARTUP_GATE_STALL_CHANNEL,
+    createStartupGateStallReporter({
+      isMainWindowTopFrame: (event) => {
+        const { sender, senderFrame } = event as Electron.IpcMainEvent;
+        const main = mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null;
+        return main !== null && sender === main.webContents && senderFrame === sender.mainFrame;
+      },
+      warn: (message) => rendererGuardLog.warn(message),
+    }),
+  );
+
   // Renderer → main 日志转发:走 unified logger 的 writeFromRenderer,
   // 让 main 的 level filter 生效(scope 加 r: 前缀以区分来源)。
   ipcMain.on(
@@ -6303,7 +6321,9 @@ const registerIpcHandlers = () => {
       //
       // 不进 device-link allowlist:updater 类 channel 按 allowlist 顶部注释属「永不放行」,
       // 且远程控制端不会代替用户点被控端的更新重启。
-      registerRelaunchBusyActivityIpc(readRelaunchActivitySources);
+      registerRelaunchBusyActivityIpc(readRelaunchActivitySources, {
+        describeTurns: () => describeRelaunchTurns(() => listInTurnSessionIds(getMakerIfReady())),
+      });
       // getMakerCore() 首次调用触发 Maker 构造，同时发起自定义 MCP 初始加载。
       // await 确保第一个会话的 mcpProviders 数组已填入已保存的自定义 MCP（P2 冷启动竞态修复）。
       getMakerCore();
