@@ -920,6 +920,87 @@ describe('useFileTree showIgnoredDirs option', () => {
     expect(view.result.current.entries.get('')).toHaveLength(2);
     view.unmount();
   });
+  /**
+   * 评审 P1（#6990）：切开关后已展开的 src 请求先成功、根请求随后失败 —— 清空
+   * entries 会把刚取得的子目录一并清掉而 expanded 保留；refresh 若只遍历现有
+   * 键，src 永远不再被请求，重试后目录「已展开但空」。refresh 必须把缺缓存的
+   * 展开目录一并补拉（反证：去掉 expanded 目标此用例必红）。root / src 都用
+   * 手动 defer 钉死时序；root 只有 seed 那次 defer，refresh 的 root 立即拒。
+   */
+  it('根失败清空 entries 后，refresh 补拉缺缓存的展开目录', async () => {
+    const hiddenRoot: readonly DirEntry[] = [
+      { name: 'src', relPath: 'src', type: 'directory', size: 0, mtimeMs: 1 },
+    ];
+    const srcFiles: readonly DirEntry[] = [
+      { name: 'a.ts', relPath: 'src/a.ts', type: 'file', size: 3, mtimeMs: 2 },
+    ];
+    let rejectRevealRoot!: (err: Error) => void;
+    let rootDeferred = false;
+    const revealSrcResolvers: Array<(v: readonly DirEntry[]) => void> = [];
+    mocks.listDir.mockImplementation((args: { relPath?: string; showIgnoredDirs?: boolean }) => {
+      if (args.showIgnoredDirs) {
+        if (!args.relPath) {
+          if (!rootDeferred) {
+            rootDeferred = true;
+            return new Promise((_, reject) => {
+              rejectRevealRoot = reject;
+            });
+          }
+          return Promise.reject(new Error('boom'));
+        }
+        return new Promise((resolve) => {
+          revealSrcResolvers.push(resolve);
+        });
+      }
+      if (!args.relPath) return Promise.resolve(hiddenRoot);
+      return Promise.resolve([]);
+    });
+
+    const view = renderHook(
+      ({ reveal }: { reveal: boolean }) =>
+        useFileTree({ workdir: '/workdir-refresh-expanded', showIgnoredDirs: reveal }),
+      { initialProps: { reveal: false } },
+    );
+    await waitFor(() => expect(view.result.current.initialLoading).toBe(false));
+
+    // 隐藏态展开 src（进本 scope 持久化），再切 reveal：seed 继承 src 展开。
+    await act(async () => {
+      view.result.current.toggleFolder('src');
+    });
+    await waitFor(() => expect(view.result.current.entries.has('src')).toBe(true));
+    await act(async () => {
+      view.rerender({ reveal: true });
+    });
+    // src 先成功落地。
+    await act(async () => {
+      expect(revealSrcResolvers.length).toBeGreaterThan(0);
+      revealSrcResolvers[0]([srcFiles[0]]);
+    });
+    await waitFor(() => expect(view.result.current.entries.get('src')).toHaveLength(1));
+
+    // 根请求**随后**失败：清空 entries（含刚取得的 src），loadError 可见。
+    await act(async () => {
+      rejectRevealRoot(new Error('boom'));
+    });
+    await waitFor(() => expect(view.result.current.loadError).toBe('load-failed'));
+    expect(view.result.current.entries.size).toBe(0);
+
+    // 重试：refresh 必须把缺缓存的展开目录（src）一并补拉 —— 没有这一步，
+    // src 会一直「已展开但空」。refresh 发起后 root 立即拒、src 落在手动
+    // defer 上：先发起，再放行 src，最后等结果。
+    let refreshSettled = false;
+    await act(async () => {
+      void view.result.current.refresh().then(() => {
+        refreshSettled = true;
+      });
+    });
+    await act(async () => {
+      revealSrcResolvers[revealSrcResolvers.length - 1]([srcFiles[0]]);
+    });
+    await waitFor(() => expect(view.result.current.entries.get('src')).toHaveLength(1));
+    await waitFor(() => expect(refreshSettled).toBe(true));
+    view.unmount();
+  });
 
   /**
    * 上面那条 P1 的另一半：根响应与借来的树**结构一致**时走 entriesStructurallyEqual

@@ -764,7 +764,13 @@ function collapseAll(store: FileTreeStore): void {
 async function refresh(store: FileTreeStore): Promise<void> {
   // 根目录必须恒在请求列表里：根请求失败会清空 entries（含 ROOT_KEY），
   // 而只遍历现有键时根就永远不会被重试，连接恢复后点「重试 / 刷新」也没用。
-  const targets = new Set<string>([ROOT_KEY, ...store.snapshot.entries.keys()]);
+  // 展开目录同样恒在：根失败清 entries 会把刚取得的子目录一并清掉，只遍历
+  // 现有键会让它们永远不再被请求 —— 重试后目录「已展开但空」（评审 P1）。
+  const targets = new Set<string>([
+    ROOT_KEY,
+    ...store.snapshot.entries.keys(),
+    ...store.snapshot.expanded,
+  ]);
   await Promise.all([...targets].map((p) => fetchDir(store, p)));
 }
 
