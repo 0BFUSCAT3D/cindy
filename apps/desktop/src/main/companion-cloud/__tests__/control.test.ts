@@ -36,6 +36,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   const { state } = memoryState();
   const refresh = vi.fn(async () => undefined);
   const publish = vi.fn();
+  const onShadowChanged = vi.fn();
   const host: CompanionCloudHost = {
     homes: createCompanionHomeRegistry(), openState: () => state,
     readValues: options.readValues ?? (async () => options.values ?? [{ key: 'companion.profile.v1', value: { name: 'Mia' } }]),
@@ -50,9 +51,9 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   };
   runtime = startCompanionCloud({ api, host, endpoint: 'https://chat', humanActorId: 'human', selfDeviceId: 'desk', current: () => true,
     bots: () => actors.filter(a => a.homeDeviceId === 'desk' && !state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
-    actors: () => actors, refresh, publish, ...(options.syncProfile ? { syncProfile: options.syncProfile } : {}),
+    actors: () => actors, refresh, publish, onShadowChanged, ...(options.syncProfile ? { syncProfile: options.syncProfile } : {}),
     ...(options.paused ? { paused: options.paused } : {}) });
-  return { runtime, actors, calls, local, state, refresh, publish };
+  return { runtime, actors, calls, local, state, refresh, publish, onShadowChanged };
 }
 
 describe('take over', () => {
@@ -63,6 +64,14 @@ describe('take over', () => {
     expect(t.actors[0]!.homeDeviceId).toBe('desk');
     expect(t.local.host.createProfile).toHaveBeenCalledOnce();
     expect(t.publish).toHaveBeenCalled();
+  });
+
+  it('tells what depends on the hidden copies when this one is hidden and again when it is lifted', async () => {
+    const t = setup({ home: 'laptop' });
+    expect(await t.runtime.takeOver('bot_mia')).toEqual({ ok: true });
+    // Hidden while it is built, visible once the take-over completes: each change is announced once.
+    expect(t.state.isDemoted('bot_mia')).toBe(false);
+    expect(t.onShadowChanged).toHaveBeenCalledTimes(2);
   });
 
   it('does not move the home while the cloud has no profile snapshot', async () => {

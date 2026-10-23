@@ -186,6 +186,8 @@ export function startCompanionCloud(input: {
   refresh?: () => Promise<void>;
   /** Publish the registry snapshot after a local home change. */
   publish?: () => void;
+  /** The set of hidden local copies changed (a copy was demoted or taken over): what depends on it re-reads. */
+  onShadowChanged?: () => void;
   /** Publish the companions' actor name and avatar now (they sync outside the preferences). */
   syncProfile?: (botId: string) => Promise<void>;
   /** Room files (chatServerMedia): the mirror uploads the owner's attachments; readers download them. */
@@ -225,7 +227,13 @@ export function startCompanionCloud(input: {
   const pick = (only: Set<string> | null) => input.bots()
     .filter(bot => (!only || only.has(bot.botId)) && installOwner(bot.botId) === 'mine');
   const actorOf = (botId: string) => (input.actors?.() ?? []).find(a => a.kind === 'bot' && !a.disabled && (a.externalId === botId || a.id === botId));
-  const publish = () => { if (live()) input.publish?.(); };
+  let shadowKey = '';
+  const publish = () => {
+    if (!live()) return;
+    input.publish?.();
+    const key = [...state.demotedBotIds(), ...[...installs].flatMap(([botId, value]) => value.owner === 'other' ? [botId] : [])].sort().join('|');
+    if (key !== shadowKey) { shadowKey = key; input.onShadowChanged?.(); }
+  };
 
   function loop(run: (only: Set<string> | null) => Promise<void>, intervalMs: number, debounceMs: number) {
     let busy: Promise<void> | undefined;
