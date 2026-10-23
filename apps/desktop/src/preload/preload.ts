@@ -4651,6 +4651,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('update-relaunch:blocking-activity', opts),
 
   /**
+   * 同一条忙闲判定的脱敏摘要。busy 仍是布尔;categories 为空表示读不出具体类别,
+   * 界面保留通用警告。不返回会话 id、路径、提示词或远程控制者。
+   */
+  describeRelaunchBlockingActivity: (): Promise<{
+    busy: boolean;
+    categories: Array<'companion' | 'conversation' | 'background-command' | 'scheduled-task' | 'generation' | 'subtask'>;
+    companionNames: string[];
+  }> => ipcRenderer.invoke('update-relaunch:blocking-summary'),
+
+  /**
    * Tell the main process to apply the downloaded update and relaunch.
    */
   relaunchToUpdate: (theme: 'light' | 'dark'): void => {

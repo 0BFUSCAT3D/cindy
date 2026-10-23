@@ -1322,6 +1322,7 @@ import {
   createDeferredRestartQueueGate,
 } from './deferredRestartQueueWiring.js';
 import {
+  collectInTurnSessionIds,
   hasAnySessionInTurn,
   isSessionTurnDispatchBoundaryBusy,
   isTerminalTurnErrorEvent,
@@ -5358,6 +5359,11 @@ function rollbackAgentIslandUserPrompt(
  */
 export function anySessionInTurn(maker?: Pick<Maker, 'listActiveSessions'> | null): boolean {
   return hasAnySessionInTurn(sessionTurnActivityTracker, maker?.listActiveSessions() ?? []);
+}
+
+/** 重启会打断的 turn 会话 id：tracker 已记下的，再加上还没记上 tracker 的 live session。 */
+export function listInTurnSessionIds(maker?: Pick<Maker, 'listActiveSessions'> | null): string[] {
+  return collectInTurnSessionIds(sessionTurnActivityTracker, maker?.listActiveSessions() ?? []);
 }
 
 /**
