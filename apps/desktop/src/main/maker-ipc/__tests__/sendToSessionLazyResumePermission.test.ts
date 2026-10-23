@@ -1,3 +1,4 @@
+import { createScheduledModelScope } from '../scheduledModelSelection.js';
 import { assertTaskActionCurrent, hasTaskActionAuthorization } from '../taskActionAuthorization.js';
 /**
  * #5788:插件 errand 派活走 sendToSessionInternal 的 lazy-resume 时,必须按会话落库的
@@ -111,7 +112,7 @@ function botTaskDispatchSlice(): string {
     `${sendToSessionInternal}
 ${dispatchBotSessionMessage}
 const delegationDispatch = ${delegationDispatch};
-return { delegationDispatch };`,
+return { delegationDispatch, dispatchBotSessionMessage };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
   ).outputText;
 }
@@ -122,6 +123,7 @@ const loadBotTaskDispatch = new Function(
   'scope',
   `with (scope) { return (function () { ${botTaskDispatchSlice()} })(); }`,
 ) as (scope: object) => {
+  dispatchBotSessionMessage: (input: Record<string, unknown>) => Promise<{ ok: boolean; wakeKind?: string }>;
   delegationDispatch: (
     input: Record<string, unknown>,
   ) => Promise<{ ok: boolean; wakeKind?: string }>;
@@ -130,6 +132,7 @@ const loadBotTaskDispatch = new Function(
 function botTaskDispatchHarness(
   rows: Record<string, { permissionMode: string | null; planModeEnabled: boolean }>,
   live: Record<string, object> = {},
+  overrides: Record<string, unknown> = {},
 ) {
   const bootstrapped: Array<Record<string, unknown>> = [];
   const sentTo: Array<{ sessionId: string; planMode: unknown }> = [];
@@ -182,6 +185,7 @@ function botTaskDispatchHarness(
     extractPlainText: (value: unknown) => String(value ?? ''),
     assertReviewExternalInputAllowed: asyncNoop,
     reconcileBotModelRoute: asyncNoop,
+    scheduledModelScope: { restore: asyncNoop },
     refreshBotCapabilityEpochBeforeSend: asyncNoop,
     assertSessionNotRestarting: noop,
     sendToSessionLocks: new Map(),
@@ -225,6 +229,7 @@ function botTaskDispatchHarness(
     GroupToolAuthorizationError: class extends Error {},
     AcceptedCallbackDispatchCancelled: class extends Error {},
   };
+  Object.assign(stubs, overrides);
   const scope = new Proxy(stubs, {
     // 自己声明的桩优先;JS 内建对象照常解析;其余自由标识符一读就失败。
     has: (target, key) => key in target || !(key in globalThis),
@@ -236,6 +241,37 @@ function botTaskDispatchHarness(
   });
   return { ...loadBotTaskDispatch(scope), bootstrapped, sentTo, sendOptions, readAutoReviewHistory };
 }
+
+// #6895 review: the cloud-room dispatcher bypassed the ordinary send transaction.
+// Execute that production closure with the real restore scope (unit behavior in
+// this existing guard fixture); assert the route used to send, not call strings.
+describe('companion internal delivery after automation', () => {
+  it.each(['live', 'resumed'] as const)('restores before %s dispatch reads its model', async (path) => {
+    const saved = { agentKind: 'pi' as const, model: 'saved-model', providerId: 'fixture-provider', effort: null, fastMode: false };
+    let current = { ...saved, agentKind: 'codex' as 'codex' | 'pi', model: 'temporary-model' };
+    let baseline: string | null = JSON.stringify({ ...saved, scopeId: 'automation' });
+    const live: Record<string, object> = {};
+    const makeLive = () => ({ id: 'child', ...current, isTurnRunning: () => false, getStatus: () => 'active' });
+    if (path === 'live') live.child = makeLive();
+    let dispatchedModel: string | undefined;
+    const scope = createScheduledModelScope({
+      createId: () => 'unused', read: async () => ({ profile: current, baseline }),
+      write: async (_id, value) => { baseline = value ? JSON.stringify(value) : null; },
+      isBusy: () => false,
+      apply: async (_id, route) => { current = { ...current, ...route } as typeof current; if (path === 'live') live.child = makeLive(); },
+    });
+    const h = botTaskDispatchHarness({ child: { permissionMode: 'auto', planModeEnabled: false } }, live, {
+      scheduledModelScope: scope,
+      maker: { getSession: (id: string) => live[id], getSessionMeta: async () => ({ id: 'child', ...current, workDir: '/tmp/fixture/child' }) },
+      bootstrapSession: async (opts: Record<string, unknown>) => ({ session: { id: 'child', model: opts.model } }),
+      sendUserMessageWithAwaitedGitBaseline: async (session: { model: string }) => { dispatchedModel = session.model; return { accepted: true }; },
+    });
+    const result = await h.dispatchBotSessionMessage({ targetSessionId: 'child', message: 'Next owner message', clientId: 'cloud-room:next' });
+    expect(result.ok).toBe(true);
+    expect(dispatchedModel).toBe('saved-model');
+    expect(baseline).toBeNull();
+  });
+});
 
 // PR #6514: source receipts must not promote a prior owner's deployment permission.
 // Existing cold-start tests omitted the receipt. Execute the actual production dispatch closure

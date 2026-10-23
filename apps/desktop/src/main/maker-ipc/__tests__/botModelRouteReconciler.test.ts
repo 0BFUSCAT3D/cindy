@@ -23,20 +23,35 @@ describe('permanent Bot model selection', () => {
   // including cold startup and companions following the global default (unit tier).
   it.each([false, true])('preserves an automation route across repeated sends and restart (default=%s)', async (followsCindyDefault) => {
     const h = harness();
-    const state = { ...h.state, followsCindyDefault, hasScheduledModelOverride: true };
+    const state = { ...h.state, followsCindyDefault, scheduledModelBaseline: { ...h.state.current } as SessionRuntimeProfile | null };
     const deps = { ownerEpoch: () => 'owner', read: async () => state, apply: h.apply };
     const reconcile = createBotModelRouteReconciler(deps);
     await reconcile('canonical');
     await reconcile('canonical');
     await createBotModelRouteReconciler(deps)('canonical');
     expect(h.apply).not.toHaveBeenCalled();
-    state.hasScheduledModelOverride = false;
+    state.scheduledModelBaseline = null;
     await reconcile('canonical');
     expect(h.apply).toHaveBeenCalledWith('canonical', expect.objectContaining({ model: 'luna' }), state.current);
   });
+  // Capability grants apply to the next ordinary turn, including after restart.
+  // The temporary automation route must not choose a different Harness catalog.
+  it('previews the saved route without restoring or consuming it', async () => {
+    const h = harness();
+    const baseline = { ...h.state.current, agentKind: 'claude-code' as const, model: 'saved-model' };
+    const state = { ...h.state, scheduledModelBaseline: baseline };
+    const reconcile = createBotModelRouteReconciler({ ownerEpoch: () => 'owner', read: async () => state, apply: h.apply });
+    expect(await reconcile.preview('canonical')).toEqual(baseline);
+    const draft = [{ harness: 'codex' as const, model: 'new-choice', providerId: 'xd', effort: 'medium', fastMode: false }];
+    expect(await reconcile.preview('canonical', draft)).toMatchObject({ agentKind: 'codex', model: 'new-choice' });
+    expect(await reconcile.preview('canonical')).toEqual(baseline);
+    await reconcile('canonical');
+    expect(h.apply).not.toHaveBeenCalled();
+    expect(state.scheduledModelBaseline).toEqual(baseline);
+  });
   it('lands a saved companion choice even when it equals the temporary automation route', async () => {
     const h = harness();
-    const state = { ...h.state, hasScheduledModelOverride: true };
+    const state = { ...h.state, scheduledModelBaseline: { ...h.state.current } as SessionRuntimeProfile | null };
     const reconcile = createBotModelRouteReconciler({ ownerEpoch: () => 'owner', read: async () => state, apply: h.apply });
     await reconcile('canonical');
     state.chain = [{ harness: 'pi', model: 'glm', providerId: 'xd', effort: 'high', fastMode: false }];

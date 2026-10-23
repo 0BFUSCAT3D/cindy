@@ -11819,6 +11819,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     let lockStage = 'resolve-session-meta+row';
     const run = waitPrev.then(async () => {
       await assertTaskActionCurrent();
+      // Internal idle deliveries (including companion cloud-room input) bypass
+      // the ordinary send transaction. Restore under this send lock before
+      // reading metadata or dispatching; busy inputs defer to the queued path.
+      await scheduledModelScope.restore(targetSessionId);
       await reconcileBotModelRoute(targetSessionId, true);
       const [meta, dbRow] = await Promise.all([
         maker.getSessionMeta(targetSessionId).catch(() => null),
@@ -15984,7 +15988,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return {
         chain: selection.chain,
         followsCindyDefault: selection.followsCindyDefault,
-        hasScheduledModelOverride: parseScheduledModelBaseline(row.scheduledModelBaseline) !== null,
+        scheduledModelBaseline: parseScheduledModelBaseline(row.scheduledModelBaseline),
         current: {
           agentDeviceId: row.agentDeviceId,
           agentKind: live?.agentKind ?? dbToMakerAgentKind(row.agentKind),

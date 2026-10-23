@@ -15,7 +15,7 @@ interface BotRouteState {
   chain: BotModelRoute[];
   current: RuntimeRoute;
   hasRuntimeOverride: boolean;
-  hasScheduledModelOverride?: boolean;
+  scheduledModelBaseline?: RuntimeRoute | null;
   followsCindyDefault?: boolean;
   next?: RuntimeRoute;
 }
@@ -29,7 +29,7 @@ function configuredRoute(
   const isDraftChange = key !== JSON.stringify(state.chain);
   // An automation owns its temporary route until ordinary input restores it.
   // This also applies to companions following Cindy defaults and after restart.
-  if (!isDraftChange && state.hasScheduledModelOverride && (previous === undefined || previous === key)) return null;
+  if (!isDraftChange && state.scheduledModelBaseline && (previous === undefined || previous === key)) return null;
   if (!state.followsCindyDefault && !isDraftChange && state.hasRuntimeOverride && (previous === undefined || previous === key)) return null;
   const primary = chain[0];
   if (!primary) return null;
@@ -97,7 +97,7 @@ export function createBotModelRouteReconciler(deps: {
           return;
         }
         const current = state.current;
-        if (state.hasScheduledModelOverride || !sameRoute(route, current) || (state.next && !sameRoute(route, state.next))) {
+        if (state.scheduledModelBaseline || !sameRoute(route, current) || (state.next && !sameRoute(route, state.next))) {
           try {
             await deps.apply(sessionId, route, state.current);
           } catch (error) {
@@ -149,6 +149,7 @@ export function createBotModelRouteReconciler(deps: {
           draftChain ? normalizeBotModelChain(draftChain) : undefined,
         ) ??
         state.next ??
+        state.scheduledModelBaseline ??
         state.current
       );
     },
