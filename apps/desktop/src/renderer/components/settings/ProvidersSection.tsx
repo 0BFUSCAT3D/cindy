@@ -2613,7 +2613,8 @@ export function ProvidersSection() {
           p.id === MANAGED_LLAMACPP_PROVIDER_ID ||
           p.id === MANAGED_LMSTUDIO_PROVIDER_ID ||
           providerHasModels(p) ||
-          !!providerSpeechSetup(p) ||
+          // Suspension gates actions, not the empty connection's enable entry.
+          !!providerSpeechSetup({ ...p, suspended: false }) ||
           (p.auth.method === 'oauth' && (!!p.auth.oauth || !!p.auth.native)))
       ) {
         rows.push(p);

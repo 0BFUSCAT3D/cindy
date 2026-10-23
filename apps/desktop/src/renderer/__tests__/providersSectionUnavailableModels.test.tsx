@@ -390,6 +390,36 @@ describe('ProvidersSection — 双栏管理', () => {
     expect(await screen.findByRole('checkbox', { name: /speech-2.8-turbo/ })).toBeTruthy();
     expect(updateCustomProvider).not.toHaveBeenCalled();
   });
+  // #6928 P2, renderer unit: the empty-connection case above never suspended
+  // its provider. Exercise the real menu and next snapshot so the enable entry
+  // cannot disappear along with the speech setup action.
+  it('keeps an empty speech connection visible through suspend and resume', async () => {
+    const config = miniMaxConfig();
+    config.runtimes.codex.models = [];
+    selectSpeechProvider(config);
+    const setModelDisable = vi.fn<typeof window.electronAPI.maker.setModelDisable>(async input => {
+      if (input.kind === 'provider')
+        providerSnapshotState.customOverride = { ...providerSnapshotState.customOverride!, suspended: input.disabled };
+      return { ok: true as const };
+    });
+    window.electronAPI.maker.setModelDisable = setModelDisable;
+    const view = render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'settings.providers.detail.moreActionsAria' }), { key: 'ArrowDown' });
+    await act(async () => { fireEvent.click(await screen.findByRole('menuitem', { name: 'settings.providers.menu.disableProvider' })); });
+    expect(setModelDisable).toHaveBeenLastCalledWith({ kind: 'provider', providerId: config.id, disabled: true });
+    view.rerender(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    expect(await screen.findByText('settings.providers.detail.suspendedBanner')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.refreshAria' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.providers.models.manage.menu' })).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'settings.providers.button.enableProvider' })); });
+    expect(setModelDisable).toHaveBeenLastCalledWith({ kind: 'provider', providerId: config.id, disabled: false });
+    view.rerender(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    expect(screen.queryByText('settings.providers.detail.suspendedBanner')).toBeNull();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'settings.providers.models.manage.menu' }), { key: 'ArrowDown' });
+    expect(await screen.findByRole('menuitem', { name: 'settings.providers.speechSetup.add' })).toBeTruthy();
+    expect(updateCustomProvider).not.toHaveBeenCalled();
+    expect(setModelVisibilities).not.toHaveBeenCalled();
+  });
   it.each(['hidden-other-runtime', 'failed-target'] as const)(
     'does not supplement a reference across runtimes: %s', async kind => {
       const config: CustomProviderConfig = miniMaxConfig();

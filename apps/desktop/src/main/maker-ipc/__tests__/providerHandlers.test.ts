@@ -4899,6 +4899,7 @@ describe('manual refresh speech references through the real provider update hand
   it.each([
     'new', 'new-pi', 'hidden', 'hidden-pi', 'transcription', 'discovery-other',
     'user-other', 'missing', 'reference-other', 'failed-target', 'disabled', 'oauth', 'proxy',
+    'registry-other', 'registry-transcription',
   ] as const)('preserves effective classification and saved settings: %s', async kind => {
     mountDb();
     const harness = new IpcHarness();
@@ -4909,6 +4910,14 @@ describe('manual refresh speech references through the real provider update hand
       baseModels: [...BUNDLED_CATALOG.modelRegistry!.baseModels!,
         { id: 'server-only-audio', aliases: [], defaults: { mode: registryMode } }],
     };
+    // #6928 P2, Main unit: unlike reference-other, this ID is absent from both
+    // saved settings and discovery. The active Registry must also govern the
+    // candidate before the real update handler persists a reference addition.
+    if (kind === 'registry-other' || kind === 'registry-transcription') {
+      modelRegistry.baseModels = modelRegistry.baseModels!.map(model =>
+        model.aliases.includes('speech-2.8-turbo') ? { ...model, defaults: { ...model.defaults,
+          mode: kind === 'registry-other' ? 'other' : 'audio_transcription' } } : model);
+    }
     const config: CustomProviderConfig = { id: 'refresh-speech', name: 'My connection', runtimes: {
       codex: { baseUrl: kind === 'proxy' ? 'https://proxy.example/v1' : 'https://api.minimax.io/v1',
         wireProtocol: 'openai-chat', models: [{ id: 'MiniMax-M3', name: 'My chat', defaultEnabled: false }] },
@@ -4921,7 +4930,8 @@ describe('manual refresh speech references through the real provider update hand
       config.runtimes[agent]!.models.push({ id, name: 'My saved audio', defaultEnabled: false,
         ...(kind === 'user-other' ? { mode: 'other' as const } : {}) });
     }
-    const discovered: DiscoveredModel[] = ['missing', 'failed-target', 'disabled', 'oauth', 'proxy'].includes(kind)
+    const discovered: DiscoveredModel[] = ['missing', 'failed-target', 'disabled', 'oauth', 'proxy',
+      'registry-other', 'registry-transcription'].includes(kind)
       ? [{ id: 'MiniMax-M3', name: 'Upstream chat' }]
       : [{ id, name: 'Discovered audio', ...(['discovery-other', 'reference-other'].includes(kind)
         ? { discoveredMetadata: { mode: 'other' as const } } : {}) }];

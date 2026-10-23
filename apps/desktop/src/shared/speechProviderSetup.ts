@@ -207,6 +207,13 @@ export function missingSpeechReference(
   if (!runtime) return;
   const model = speechReferenceModels(runtime.baseUrl).find(reference => reference.defaultEnabled);
   if (!model || models.some(existing => existing.id === model.id)) return;
+  // Bundled references only nominate an ID. Resolve the unsaved candidate with
+  // the same active Registry/preset layers that will classify it after saving.
+  const candidate = buildUserProvider({ ...config, runtimes: { ...config.runtimes,
+    [target.agent]: { ...runtime, models: [...runtime.models, model] },
+  } }, catalog);
+  if (!candidate.audioModels?.some(entry => entry.id === model.id &&
+    entry.sourceAgent === target.agent && entry.mode === 'audio_speech')) return;
   return { agent: target.agent, model };
 }
 
