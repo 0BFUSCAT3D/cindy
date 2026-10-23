@@ -20,7 +20,7 @@ import ts from 'typescript';
 
 import { describe, expect, it, vi } from 'vitest';
 import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
-import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION, type SendOptions } from '@cindy/maker-core';
+import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION, TurnDispatchRejectedError, type SendOptions } from '@cindy/maker-core';
 import { restoreAutoReviewUserIntent } from '../autoReviewUserIntent.js';
 
 const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8').replace(
@@ -151,7 +151,7 @@ function botTaskDispatchHarness(
     limit: async () => [],
   };
   const stubs: Record<string, unknown> = {
-    assertTaskActionCurrent, hasTaskActionAuthorization,
+    assertTaskActionCurrent, hasTaskActionAuthorization, TurnDispatchRejectedError,
     AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION,
     restoreAutoReviewUserIntent, readAutoReviewHistory,
     maker: {
@@ -219,11 +219,15 @@ function botTaskDispatchHarness(
       session: { id: string },
       _message: string,
       _clientId: string,
-      opts: SendOptions & { onAccepted?: () => Promise<void> },
+      opts: SendOptions & { onAccepted?: () => Promise<void>; onDispatching?: () => void },
     ) => {
-      sentTo.push({ sessionId: session.id, planMode: opts.planMode });
       sendOptions.push(opts);
       await opts.onAccepted?.();
+      try { opts.onDispatching?.(); } catch (error) {
+        if (error instanceof TurnDispatchRejectedError) return { accepted: false, reason: 'provider-rejected-before-dispatch' };
+        throw error;
+      }
+      sentTo.push({ sessionId: session.id, planMode: opts.planMode });
       return { accepted: true };
     },
     assertDesktopSendDispatched: noop,
@@ -291,6 +295,27 @@ describe('companion internal delivery after automation', () => {
       .toMatchObject({ ok: false, errorCode: 'AGENT_NOT_READY' });
     expect(h.sentTo).toEqual([]);
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  // #6895 review: the post-restore check precedes asynchronous bootstrap and
+  // acceptance. Guard tier: demote at message persistence, then execute the real
+  // dispatch callback and prove neither live nor resumed delivery reaches send.
+  it.each(['live', 'resumed'] as const)('rejects %s delivery demoted immediately before dispatch', async (path) => {
+    let shadowed = false;
+    const dbChain = { from: () => dbChain, where: () => dbChain,
+      limit: async () => [{ role: 'canonical', botId: 'companion' }] };
+    const h = botTaskDispatchHarness({ child: { permissionMode: 'auto', planModeEnabled: false } },
+      path === 'live' ? { child: { id: 'child', agentKind: 'pi', isTurnRunning: () => false, getStatus: () => 'active' } } : {}, {
+        getDbClient: () => ({ drizzle: { select: () => dbChain } }),
+        isShadowedCompanionCanonical, isCompanionShadowed: () => shadowed,
+        createDbMessage: async () => { shadowed = true; },
+      });
+    expect(await h.dispatchBotSessionMessage({ targetSessionId: 'child', message: 'Late cloud input' }))
+      .toMatchObject({ ok: false, errorCode: 'AGENT_NOT_READY', message: 'shadowed' });
+    expect(shadowed).toBe(true);
+    expect(h.sentTo).toEqual([]);
+    expect(h.sendOptions).toHaveLength(1);
+    expect(h.bootstrapped).toHaveLength(path === 'resumed' ? 1 : 0);
   });
 
   it.each(['live', 'resumed'] as const)('restores before %s dispatch reads its model', async (path) => {

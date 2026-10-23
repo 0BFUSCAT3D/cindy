@@ -152,7 +152,7 @@ import {
 } from '@cindy/maker-core/pi-subagent-runs';
 import {
   PI_CACHE_RECOVERY_EXPECTATION, AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT,
-  INHERITED_CAPABILITY_SELECTION, MAIN_OWNED_SEND_CONTEXT,
+  INHERITED_CAPABILITY_SELECTION, MAIN_OWNED_SEND_CONTEXT, TurnDispatchRejectedError,
 } from '@cindy/maker-core';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, readAutoReviewUserText, restoreAutoReviewSteerIntent, restoreAutoReviewUserIntent } from './autoReviewUserIntent.js';
 import type {
@@ -197,7 +197,7 @@ import {
   readInputDeliveryClientIds,
 } from '@cindy/device-link';
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from 'drizzle-orm';
-import { applyScheduledModelSelection, createScheduledModelScope, ScheduledModelSelectionBusyError, type ScheduledModelSelection, type ScheduledModelSelectionLease } from './scheduledModelSelection';
+import { applyScheduledModelSelection, createScheduledModelScope, writeScheduledModelBaselineIfProfileCurrent, ScheduledModelSelectionBusyError, type ScheduledModelSelection, type ScheduledModelSelectionLease } from './scheduledModelSelection';
 import { parseScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
 import { recordTurnModelChange, type TurnModelIdentity } from './turnModelChange';
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
@@ -11088,23 +11088,33 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const [row] = await getDbClient().drizzle.select({
         agentKind: sessions.agentKind, model: sessions.model, providerId: sessions.providerId,
         effort: sessions.effort, fastMode: sessions.fastMode, baseline: sessions.scheduledModelBaseline,
-        status: sessions.status,
-      }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
-      return row?.status === 'active' ? { baseline: row.baseline, profile: {
+        status: sessions.status, botId: botProfiles.id, profileVersion: botProfiles.currentVersion,
+      }).from(sessions)
+        .leftJoin(botSessionLinks, and(eq(botSessionLinks.sessionId, sessions.id),
+          isNull(botSessionLinks.archivedAt), inArray(botSessionLinks.role, ['canonical', 'group', 'channel', 'thread'])))
+        .leftJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
+        .where(eq(sessions.id, sessionId)).limit(1);
+      return row?.status === 'active' ? { baseline: row.baseline,
+        profileRevision: row.botId ? JSON.stringify([row.botId, row.profileVersion]) : null, profile: {
         agentKind: dbToMakerAgentKind(row.agentKind), model: row.model, providerId: row.providerId,
         effort: row.effort, fastMode: row.fastMode,
       } } : null;
     },
-    write: async (sessionId, baseline) => {
+    write: async (sessionId, baseline, profileRevision) => {
+      if (baseline) {
+        const written = await writeScheduledModelBaselineIfProfileCurrent(getDbClient(), sessionId, baseline, profileRevision ?? null);
+        if (written) await broadcastSessionRuntimeProjection(sessionId);
+        return written;
+      }
       const owner = captureSessionRuntimeControlOwnerEpoch();
       const db = getDbClient().drizzle;
-      const [row] = baseline ? [] : await db.select({ baseline: sessions.scheduledModelBaseline })
+      const [row] = await db.select({ baseline: sessions.scheduledModelBaseline })
         .from(sessions).where(eq(sessions.id, sessionId)).limit(1);
       const saved = parseScheduledModelBaseline(row?.baseline);
       if (!sessionRuntimeControlOwnerEpochMatches(owner)) throw new Error('Account changed during scheduled model selection');
       await db.update(sessions)
         .set({
-          scheduledModelBaseline: baseline ? JSON.stringify(baseline) : null,
+          scheduledModelBaseline: null,
           ...(saved ? {
             agentKind: makerToDbAgentKind(saved.agentKind), model: saved.model,
             providerId: saved.providerId, effort: saved.effort ?? undefined, fastMode: saved.fastMode,
@@ -11600,13 +11610,26 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
     // Check before route/capability reconciliation, then again after waiting for
     // the send lock: a rejected old primary must not bootstrap or consume a restore.
+    let dispatchCompanionLink: { role?: string | null; botId?: string | null } | undefined;
     const rejectShadowedCompanion = async (sessionId: string) => {
       const [link] = await getDbClient().drizzle
         .select({ role: botSessionLinks.role, botId: botSessionLinks.botId })
         .from(botSessionLinks).where(eq(botSessionLinks.sessionId, sessionId)).limit(1);
+      dispatchCompanionLink = link;
       return isShadowedCompanionCanonical(link, isCompanionShadowed)
         ? { ok: false as const, errorCode: 'AGENT_NOT_READY' as const, message: SHADOWED_COMPANION_INPUT_MESSAGE }
         : null;
+    };
+
+    let dispatchRejectedForDemotion = false;
+    const onInternalDispatching = () => {
+      // Session invokes this synchronously immediately before provider send,
+      // after bootstrap, authorization and message persistence have all awaited.
+      if (isShadowedCompanionCanonical(dispatchCompanionLink, isCompanionShadowed)) {
+        dispatchRejectedForDemotion = true;
+        throw new TurnDispatchRejectedError(SHADOWED_COMPANION_INPUT_MESSAGE);
+      }
+      dispatchAgentIslandUserPrompt(targetSessionId!);
     };
 
     if (targetSessionId) {
@@ -12151,7 +12174,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             } : {}),
             planMode: false,
             onAccepted: persistUserMessage,
-            onDispatching: () => dispatchAgentIslandUserPrompt(targetSessionId),
+            onDispatching: onInternalDispatching,
           }, directSource);
           if (userPromptPreviewStarted) {
             if (sendResult.accepted) {
@@ -12163,6 +12186,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 'send_to_session:live:not-dispatched',
               );
             }
+          }
+          if (dispatchRejectedForDemotion) {
+            return { ok: false as const, errorCode: 'AGENT_NOT_READY' as const, message: SHADOWED_COMPANION_INPUT_MESSAGE };
           }
           assertDesktopSendDispatched(sendResult, 'send_to_session live');
           return {
@@ -12281,7 +12307,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           } : {}),
           planMode: false,
           onAccepted: persistUserMessage,
-          onDispatching: () => dispatchAgentIslandUserPrompt(targetSessionId),
+          onDispatching: onInternalDispatching,
         }, directSource);
         if (userPromptPreviewStarted) {
           if (sendResult.accepted) {
@@ -12293,6 +12319,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               'send_to_session:resumed:not-dispatched',
             );
           }
+        }
+        if (dispatchRejectedForDemotion) {
+          return { ok: false as const, errorCode: 'AGENT_NOT_READY' as const, message: SHADOWED_COMPANION_INPUT_MESSAGE };
         }
         assertDesktopSendDispatched(sendResult, 'send_to_session resumed');
         return {

@@ -25,8 +25,9 @@ export function createScheduledModelScope(deps: {
       effort: ScheduledModelSelection['effort'] | '';
     };
     baseline: string | null;
+    profileRevision?: string | null;
   } | null>;
-  write: (sessionId: string, baseline: ScheduledModelBaseline | null) => Promise<void>;
+  write: (sessionId: string, baseline: ScheduledModelBaseline | null, profileRevision?: string | null) => Promise<void | boolean>;
   isBusy: (sessionId: string) => boolean;
   apply: (sessionId: string, profile: ScheduledModelSelection) => Promise<void>;
   createId: () => string;
@@ -44,6 +45,7 @@ export function createScheduledModelScope(deps: {
       if (!row) return undefined;
       const existing = parseScheduledModelBaseline(row.baseline);
       if (existing) return existing.scopeId;
+      const profileRevision = row.profileRevision;
       // Settings may have committed while their asynchronous runtime refresh is
       // still queued. Align the owner under this same send lease before capture.
       if (deps.prepareBaseline) {
@@ -53,8 +55,14 @@ export function createScheduledModelScope(deps: {
         assertOwner(owner);
         if (!row) return undefined;
       }
+      if (row.profileRevision !== profileRevision) {
+        throw new ScheduledModelSelectionBusyError('Companion profile changed during baseline preparation');
+      }
       const scopeId = deps.createId();
-      await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId });
+      const written = await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId }, profileRevision);
+      if (written === false) {
+        throw new ScheduledModelSelectionBusyError('Companion profile changed during baseline capture');
+      }
       return scopeId;
     },
     async restore(sessionId: string, expectedScopeId?: string): Promise<void> {
@@ -70,6 +78,26 @@ export function createScheduledModelScope(deps: {
       await deps.write(sessionId, null);
     },
   };
+}
+
+/** Fence even lanes linked after the settings save took its send-lock snapshot.
+ * The revision is read with the route; checking and writing are one DB statement.
+ * Ordinary sessions use null, so acquiring a companion link also invalidates capture.
+ */
+export async function writeScheduledModelBaselineIfProfileCurrent(
+  db: { exec: (sql: string, params: unknown[]) => Promise<{ changes: number }> },
+  sessionId: string,
+  baseline: ScheduledModelBaseline,
+  profileRevision: string | null,
+): Promise<boolean> {
+  const result = await db.exec(`UPDATE sessions SET scheduled_model_baseline = ?
+    WHERE id = ? AND status = 'active'
+      AND (SELECT json_array(p.id, p.current_version)
+           FROM bot_session_links l JOIN bot_profiles p ON p.id = l.bot_id
+           WHERE l.session_id = sessions.id AND l.archived_at IS NULL
+             AND l.role IN ('canonical', 'group', 'channel', 'thread') LIMIT 1) IS ?`,
+  [JSON.stringify(baseline), sessionId, profileRevision]);
+  return result.changes === 1;
 }
 
 export class ScheduledModelSelectionBusyError extends Error {}
