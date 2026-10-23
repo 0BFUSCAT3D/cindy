@@ -1,8 +1,9 @@
+import { confirmedHarnessCapabilities } from '../ghostInstallConsent.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { InstalledGhost } from '../../../shared/ghost.js';
 import type { GhostInstallConsentRequest } from '../../../shared/ghostInstallConsent.js';
 import { findInstalledGhostForDeliveryTarget, installedGhostStoragePart } from '../../../shared/pluginIdentity.js';
-import { assertGhostInstallConsent, confirmedHarnessCapabilities, confirmedTaskCapability, obtainGhostInstallConsent } from '../ghostInstallConsent.js';
+import { assertGhostInstallConsent, confirmedTaskCapability, obtainGhostInstallConsent } from '../ghostInstallConsent.js';
 import { createGhostProductionCallbacks } from './ghostProductionCallbacksFixture.js';
 
 const createCallbacks = createGhostProductionCallbacks<{
