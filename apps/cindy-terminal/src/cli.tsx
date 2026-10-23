@@ -536,7 +536,7 @@ async function main() {
   }finally{client.close();}
 }
 
-void main().catch(error=>{
+void main().catch(error=>{console.error('SYNTHETIC_CLI_ERROR',error);
   const raw=error instanceof Error?String(('code' in error?error.code:undefined)??error.message):'';
   const code=/^[A-Za-z][A-Za-z0-9_]+$/.test(raw)?raw.toUpperCase():'OPERATION_FAILED';
   if(json)process.stdout.write(JSON.stringify({ok:false,error:{code}})+'\n');

@@ -14,6 +14,10 @@ const scheduledTaskXml = (value: string) => Buffer.from('\ufeff' + value.replace
 const readScheduledTaskXml = (value: Buffer) => value[0] === 0xff && value[1] === 0xfe ? value.subarray(2).toString('utf16le') : value.toString('utf8');
 const windowsArg = (value: string) => `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
 const systemdArg = (value: string) => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%').replace(/\$/g, '$$$$')}"`;
+// WorkingDirectory is a path setting, not an ExecStart argument: systemd
+// treats quotes literally. The final /. also protects trailing whitespace or
+// backslashes from unit-file trimming/line continuation without changing cwd.
+const systemdDirectory = (value: string) => `${value.replace(/%/g, '%%')}/.`;
 export type Installation = { version: 1; platform: string; id: string; file: string; starts: 'login' | 'boot'; activeAfter: 'next-login' | 'next-boot'; scope?: 'user' | 'system'; registrationOnly?: true; uninstalling?: boolean };
 export interface ServiceInspection {
   installation: Installation | null;
@@ -82,7 +86,7 @@ export class TerminalServiceManager {
       if (!path.isAbsolute(config)) throw new Error('INVALID_CONFIG_HOME');
       file = path.join(config, 'systemd', 'user', `${this.id}.service`);
       await fs.mkdir(path.dirname(file), { recursive: true });
-      await atomicPrivateWrite(file, `[Unit]\nDescription=Cindy terminal host\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[this.node,...args].map(systemdArg).join(' ')}\nWorkingDirectory=${systemdArg(this.profileDir)}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`);
+      await atomicPrivateWrite(file, `[Unit]\nDescription=Cindy terminal host\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[this.node,...args].map(systemdArg).join(' ')}\nWorkingDirectory=${systemdDirectory(this.profileDir)}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=45\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`);
       try {
         await this.userSystemctl(['daemon-reload']);
         await this.userSystemctl(['enable', `${this.id}.service`]);

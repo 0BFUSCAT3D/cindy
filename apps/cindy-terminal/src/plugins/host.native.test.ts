@@ -14,15 +14,27 @@ import {TerminalPlugins} from './host.js';
 import {registerPluginResources} from './resources.js';
 import {TerminalSecretStore} from '../secrets.js';
 import {TerminalTaskMedia} from '../tasks/media.js';
+import {scaffoldGhostDir,packGhostDir} from '@cindy/plugin-runtime/forge';
+import {createNativeScaffoldWriter} from '@cindy/plugin-runtime/nativeScaffold';
 
 let directory:string,runtime:string;
 beforeAll(async()=>{
   directory=await mkdtemp(path.join(os.tmpdir(),'cindy-terminal-plugins-'));runtime=path.join(directory,'runtime');
   const source=fileURLToPath(new URL('../../../../packages/plugin-runtime/src/',import.meta.url));
-  for(const [entry,out] of [['nativeWorkerEntry.ts','plugin-node-worker.cjs'],['nativeSnapshotWorker.ts','plugin-snapshot-worker.cjs']])await build({entryPoints:[path.join(source,entry)],outfile:path.join(runtime,out),bundle:true,platform:'node',target:'node22',format:'cjs',logLevel:'silent'});
+  for(const [entry,out] of [['nativeWorkerEntry.ts','plugin-node-worker.cjs'],['nativeSnapshotWorker.ts','plugin-snapshot-worker.cjs'],['forgeScaffoldWorkerProcess.ts','plugin-scaffold-worker.cjs']])await build({entryPoints:[path.join(source,entry)],outfile:path.join(runtime,out),bundle:true,platform:'node',target:'node22',format:'cjs',logLevel:'silent'});
   await copyFile(path.join(source,'mailComposeRuntime.js'),path.join(runtime,'plugin-mail-runtime.js'));
 });
 afterAll(async()=>{await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+
+it('creates and packs a real plugin using the cwd-bound Node scaffold worker without replacing files',async()=>{
+  const input={dir:path.join(directory,'author'),template:'node-json-rpc' as const,id:'terminal-authored',name:'Terminal authored',minCindyVersion:'0.1.0'};
+  const options={sessionWorkdir:directory,writeScaffold:createNativeScaffoldWriter({nodePath:process.execPath,workerPath:path.join(runtime,'plugin-scaffold-worker.cjs')})};
+  expect(await scaffoldGhostDir(input,options)).toMatchObject({ok:true});
+  const manifest=await readFile(path.join(input.dir,'ghost.json'));
+  expect(await scaffoldGhostDir({...input,name:'Must not replace'},options)).toMatchObject({ok:false,errorCode:'TARGET_EXISTS'});
+  expect(await readFile(path.join(input.dir,'ghost.json'))).toEqual(manifest);
+  expect(await packGhostDir(input.dir,{sessionWorkdir:directory})).toMatchObject({ok:true,manifest:{id:'terminal-authored'}});
+});
 
 it('requires confirmation of exact bytes and keeps native credentials private across restart',async()=>{
   const archive=new JSZip();

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Executes the installed artifact, not tsx/source imports. All user state and
 // synthetic secrets live in a fresh temporary directory, never the CI account.
-import { spawn } from 'node:child_process';
+import { spawn,execFile } from 'node:child_process';
+import {promisify} from 'node:util';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -15,7 +16,7 @@ const runtime = path.resolve(runtimeArg), report = path.resolve(reportArg);
 await mkdir(report, { recursive: true });
 const realUserManager=process.platform==='linux'&&process.env.CINDY_ACCEPTANCE_SYSTEMD==='1';
 const temporary = await mkdtemp(path.join(realUserManager?os.homedir():os.tmpdir(), 'cindy-platform-'));
-const home = realUserManager?os.homedir():path.join(temporary, 'home'), profile = path.join(temporary, 'profile');
+const home = realUserManager?os.homedir():path.join(temporary, 'home'), profile = path.join(temporary, '终端 profile %name $value');
 if(!realUserManager)await mkdir(home);
 const node = path.join(runtime, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
 const cli = path.join(runtime, 'app/dist/cli.js');
@@ -32,7 +33,7 @@ async function run(args, { input = '', timeout = 30_000, raw = false } = {}) {
     child.on('error', reject); child.on('close', code => {
       clearTimeout(timer);
       if (raw) { resolve({ code, output, error }); return; }
-      if (code !== 0) { reject(new Error(`CLI ${args.slice(0, 2).join(' ')}: ${output || error}`)); return; }
+      if (code !== 0) { reject(new Error(`CLI ${args.slice(0, 2).join(' ')}: ${output}${error?'\n'+error:''}`)); return; }
       try { resolve(JSON.parse(output)); } catch { reject(new Error(`Non-JSON CLI result: ${args.slice(0, 2).join(' ')}`)); }
     });
     child.stdin.end(input);
@@ -152,6 +153,24 @@ try {
   record('platform acceptance', 'FAIL', String(error.message)); process.exitCode = 1;
   // This entire profile contains synthetic acceptance data only.
   console.log('SYNTHETIC_SERVICE_DIAGNOSTIC', await readFile(path.join(profile, 'service.log'), 'utf8').catch(() => 'No service log'));
+  if(realUserManager){
+    const installation=JSON.parse(await readFile(path.join(profile,'service-installation.json'),'utf8').catch(()=>'null'));
+    if(installation?.id){
+      console.log('SYNTHETIC_SERVICE_UNIT',await readFile(installation.file,'utf8').catch(()=>''));
+      const journal=await promisify(execFile)('journalctl',['--user','--unit',`${installation.id}.service`,'--no-pager','--lines=60'],{env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:error.stderr??''}));
+      console.log('SYNTHETIC_SERVICE_JOURNAL',journal.stdout,journal.stderr);
+    }
+  }
+  if(process.platform==='win32'){
+    const installation=JSON.parse(await readFile(path.join(profile,'service-installation.json'),'utf8').catch(()=>'null'));
+    if(installation?.id){
+      const script=`$s=New-Object -ComObject Schedule.Service;$s.Connect();$t=$s.GetFolder('\\').GetTask('${installation.id}');[pscustomobject]@{State=[int]$t.State;LastResult=$t.LastTaskResult;LastRun=$t.LastRunTime;NextRun=$t.NextRunTime;Instances=@($t.GetInstances(0)|ForEach-Object{[pscustomobject]@{PID=$_.EnginePID;State=[int]$_.State}});Xml=$t.Xml}|ConvertTo-Json -Depth 4`;
+      const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe');
+      const diagnostic=await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:error.stderr??''}));
+      console.log('SYNTHETIC_SCHEDULER_STATE',diagnostic.stdout,diagnostic.stderr);
+      console.log('SYNTHETIC_SERVICE_ENDPOINT',await readFile(path.join(profile,'service.json'),'utf8').then(text=>{const {pid}=JSON.parse(text);return {pid};}).catch(()=>null));
+    }
+  }
 } finally {
   if (tuiOutput) await writeFile(path.join(report, 'tui.ansi'), tuiOutput);
   if (registered) await run(['service', 'uninstall'], { raw: true }).catch(() => {});

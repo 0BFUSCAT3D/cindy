@@ -96,7 +96,8 @@ CREATE INDEX IF NOT EXISTS ghost_cards_updated_at_idx ON ghost_cards(updated_at)
     if(!await ghostCanRead(hash,instance,this.db!))return null;
     const info=await getBlobInfo(hash,this.db!);if(!info)return null;
     const resolved=await this.resolveManaged(`cindy-media://blobs/${hash}${info.ext}`);guard();
-    const buffer=await readBoundedFileNoFollow(resolved.path,Math.min(info.bytes,GHOST_FETCH_UPLOAD_MAX_BYTES_PER_FILE),{nonBlocking:true});guard();
+    const root=await realpath(path.join(this.profileDir,'cindy-media','blobs'));guard();
+    const buffer=await readBoundedFileNoFollow(resolved.path,Math.min(info.bytes,GHOST_FETCH_UPLOAD_MAX_BYTES_PER_FILE),{nonBlocking:true,containWithin:root});guard();
     if(!buffer||buffer.length!==info.bytes)return null;
     return {buffer,mimeType:info.mimeType,ext:info.ext};
   }
