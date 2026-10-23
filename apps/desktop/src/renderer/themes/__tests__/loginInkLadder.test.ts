@@ -92,8 +92,10 @@ describe('浏览器登录回调页文字 = 主界面墨水阶梯', () => {
   ] as const) {
     it.each(CALLBACK_VARS)(`${rule}: %s 与 %s 同值`, (cssVar, inkTierId) => {
       const ink = theme.colors[inkTierId];
-      expect(vars[rule][cssVar], `${rule} 规则缺少 ${cssVar}`).toBeDefined();
-      expect(normalizeRgba(vars[rule][cssVar])).toBe(normalizeRgba(ink));
+      const actual = vars[rule][cssVar];
+      if (ink === undefined) throw new Error(`${theme.id} 缺少 ${inkTierId}`);
+      if (actual === undefined) throw new Error(`${rule} 规则缺少 ${cssVar}`);
+      expect(normalizeRgba(actual)).toBe(normalizeRgba(ink));
     });
   }
 });
