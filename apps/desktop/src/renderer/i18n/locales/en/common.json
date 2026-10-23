@@ -3517,6 +3517,7 @@
           },
           "effortMixed": "Effort differs by engine. A selection applies to engines that support that level.",
           "protocol": {
+            "automatic": "Automatic",
             "reference": "Native API",
             "compatibility": "Compatibility mode",
             "compatibilityHint": "Compatibility mode may be unstable or behave unexpectedly. Recommended for experienced users.",

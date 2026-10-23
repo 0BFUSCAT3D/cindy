@@ -861,6 +861,7 @@ export function ProviderConnectionDialog({
                   ...(m.mode ? { mode: m.mode } : {}),
                   ...(m.modalities ? { modalities: { input: [...m.modalities.input], output: [...m.modalities.output] } } : {}),
                   ...(m.officialDocs ? { officialDocs: m.officialDocs } : {}),
+                  ...(m.interfaceId ? { interfaceId: m.interfaceId } : {}),
                   ...(m.api ? { api: m.api } : {}),
                   ...(m.piApi ? { piApi: m.piApi } : {}),
                   ...(m.route ? { route: m.route } : {}),
@@ -1397,7 +1398,8 @@ export function ProviderConnectionDialog({
             discoveredMetadata: m.discoveredMetadata,
           discoveredCost: m.discoveredCost,
             nameExplicit: m.nameExplicit,
-            ...(m.api ? { api: m.api } : {}),
+            ...(m.interfaceId ? { interfaceId: m.interfaceId } : {}),
+          ...(m.api ? { api: m.api } : {}),
           ...(agent === 'pi' && m.piApi ? { piApi: m.piApi } : {}),
             ...(m.route ? { route: { ...m.route } } : {}),
             ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
@@ -1440,6 +1442,7 @@ export function ProviderConnectionDialog({
               modalities: cur?.modalities,
               officialDocs: cur?.officialDocs,
               nameExplicit: cur ? (cur.nameExplicit ?? !cur.discoveredMetadata) : undefined,
+              ...(cur?.interfaceId ? { interfaceId: cur.interfaceId } : {}),
               ...(cur?.api ? { api: cur.api } : {}),
               ...(agent === 'pi' && cur?.piApi ? { piApi: cur.piApi } : {}),
               ...(cur?.route ? { route: { ...cur.route } } : {}),
@@ -1515,6 +1518,7 @@ export function ProviderConnectionDialog({
       const supportsImageInput = latest ? latest.supportsImageInput : m.supportsImageInput;
       const reasoning = latest ? latest.reasoning : m.reasoning;
       const reasoningEfforts = latest ? latest.reasoningEfforts : m.reasoningEfforts;
+      const interfaceId = latest ? latest.interfaceId : m.interfaceId;
       const api = latest ? latest.api : m.api;
       const piApi = latest ? latest.piApi : m.piApi;
       const reasoningDefaultEffort = latest
@@ -1530,6 +1534,7 @@ export function ProviderConnectionDialog({
         discoveredMetadata: m.discoveredMetadata ?? latest?.discoveredMetadata,
         discoveredCost: m.discoveredCost ?? latest?.discoveredCost,
         nameExplicit: latest?.nameExplicit ?? m.nameExplicit,
+        ...(interfaceId ? { interfaceId } : {}),
         ...(api ? { api } : {}),
         ...(picker.agent === 'pi' && piApi ? { piApi } : {}),
         ...((latest?.route ?? m.route) ? { route: { ...(latest?.route ?? m.route)! } } : {}),
@@ -1558,6 +1563,7 @@ export function ProviderConnectionDialog({
           discoveredMetadata: m.discoveredMetadata,
           discoveredCost: m.discoveredCost,
           nameExplicit: m.nameExplicit,
+          ...(m.interfaceId ? { interfaceId: m.interfaceId } : {}),
           ...(m.api ? { api: m.api } : {}),
           ...(picker.agent === 'pi' && m.piApi ? { piApi: m.piApi } : {}),
           ...(m.route ? { route: { ...m.route } } : {}),
@@ -1660,6 +1666,7 @@ export function ProviderConnectionDialog({
           discoveredMetadata: m.discoveredMetadata,
           discoveredCost: m.discoveredCost,
           nameExplicit: m.nameExplicit,
+          ...(m.interfaceId ? { interfaceId: m.interfaceId } : {}),
           ...(m.api ? { api: m.api } : {}),
           ...(a === 'pi' && m.piApi ? { piApi: m.piApi } : {}),
           ...(m.route ? { route: { ...m.route } } : {}),

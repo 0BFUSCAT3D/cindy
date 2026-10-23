@@ -156,7 +156,7 @@ describe('supplier import follows Gateway native model defaults', () => {
       if (agent === 'pi') expect(model.defaultEnabled, message).toBe(true);
       else if (model.defaultEnabled) {
         const api = agent === 'claude-code' ? 'anthropic-messages' : 'openai-responses';
-        expect(model.nativeApi, message).toBe(api);
+        expect(model.nativeApis ?? [model.nativeApi], message).toContain(api);
         expect([api, ...(agent === 'codex' ? ['azure-openai-responses'] : [])], message).toContain(model.api);
       }
     }

@@ -4148,10 +4148,12 @@ describe('per-thread 已见 id 缓存(codex-connector P1:请求体缺席历史 i
 
   // per-thread 缓存需要**同一 proxy 实例**跨请求累积(每个请求独立建 proxy 会丢缓存),
   // 因此 postAs 复用同一个 upstream + proxy。
-  async function setupSingleProxy(): Promise<void> {
+  async function setupSingleProxy(compatibilityProfiles?: string[]): Promise<void> {
     const upstream = await mintingUpstream();
     upstreamClose = upstream.close;
-    proxy = await createAnthropicCompatProxy({ upstream: upstream.url, transformRequest: [] });
+    proxy = await createAnthropicCompatProxy({ upstream: upstream.url, transformRequest: [],
+      ...(compatibilityProfiles ? { routingTransform: () => ({ upstreamOverride: upstream.url, compatibilityProfiles }) } : {}),
+    });
   }
 
   async function postAs(sessionId: string, body: unknown): Promise<string> {
@@ -4184,8 +4186,8 @@ describe('per-thread 已见 id 缓存(codex-connector P1:请求体缺席历史 i
     expect(r2).toMatch(/Bash_210_dup\d+/);
   });
 
-  it.each(['k3', 'k3-256k', 'k3.1-pro', 'k3.1-pro-highspeed'])('Kimi Code 的 %s 首次工具流在 rewind 后仍去重 (#7005)', async (model) => {
-    await setupSingleProxy();
+  it.each(['k3', 'k3-256k', 'k3.1-pro', 'k3.1-pro-highspeed', 'future-catalog-model'])('Kimi Code 的 %s 首次工具流在 rewind 后仍去重 (#7005)', async (model) => {
+    await setupSingleProxy(model === 'future-catalog-model' ? ['kimi-tool-ids-v1'] : undefined);
     // Coding ID 不带 kimi 前缀；小数版本也必须记录首个 streamed id。
     const r1 = await postAs('sess-k3', {
       model,

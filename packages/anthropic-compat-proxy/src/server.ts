@@ -2676,7 +2676,9 @@ export async function createAnthropicCompatProxy(opts: ProxyOptions): Promise<Pr
     // 被接管记录(codex-connector review: Cache first streamed Kimi tool IDs)。
     // Coding Plan 的 k3 / k3.1-pro 等 ID 不带 kimi 前缀，小数版本也必须命中。
     const isKimiRequest =
-      isRecord(parsedForRewrite) && typeof parsedForRewrite.model === 'string'
+      decision?.compatibilityProfiles !== undefined
+        ? decision.compatibilityProfiles.includes('kimi-tool-ids-v1')
+        : isRecord(parsedForRewrite) && typeof parsedForRewrite.model === 'string'
         ? /(^|[/_-])(kimi|k3(?:\.\d+)?)([/_-]|$)/i.test(parsedForRewrite.model)
         : false;
 
