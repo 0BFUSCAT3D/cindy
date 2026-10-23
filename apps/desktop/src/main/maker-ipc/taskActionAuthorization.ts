@@ -11,6 +11,7 @@ export const TASK_ACTION_TOOLS: ReadonlySet<string> = new Set([
   'send_to_agent',
   'continue_workbench_task',
   'set_workbench_task_responsibility',
+  'set_teammate_project',
   'send_to_session',
   'steer_session',
   'stop_session_turn',
@@ -167,6 +168,13 @@ export function approvedTaskDelegation(
 
 export async function assertTaskActionCurrent(): Promise<void> {
   await actionContext.getStore()?.assertCurrent();
+}
+
+/** Host lifecycle only: durable completion delivery is not another invocation
+ * of the tool that started the task. Its caller must validate the persisted
+ * delegation/run and recipient; this does not authorize any Agent task action. */
+export function runHostCompletionDelivery<T>(operation: () => Promise<T>): Promise<T> {
+  return actionContext.exit(operation);
 }
 
 /** Existing lifecycle callbacks can outlive the AsyncLocalStorage call itself. */

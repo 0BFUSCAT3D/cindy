@@ -1,3 +1,4 @@
+import { parseScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import type { AgentKind } from '@cindy/maker-core';
 import { normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
@@ -15,6 +16,7 @@ interface BotRouteState {
   chain: BotModelRoute[];
   current: RuntimeRoute;
   hasRuntimeOverride: boolean;
+  scheduledModelBaseline?: string | null;
   followsCindyDefault?: boolean;
   next?: RuntimeRoute;
 }
@@ -54,7 +56,7 @@ export function createBotModelRouteReconciler(deps: {
   read(sessionId: string, purpose: 'apply' | 'preview'): Promise<BotRouteState | null>;
   apply(sessionId: string, route: RuntimeRoute, current: RuntimeRoute): Promise<void>;
   /** An accepted permanent choice supersedes temporary preferences, even without a switch. */
-  onSelectionAccepted?(sessionId: string): Promise<void>;
+  onSelectionAccepted?(sessionId: string, expectedBaseline?: string | null): Promise<void | boolean>;
 }) {
   let owner: string | undefined;
   const configured = new Map<string, string>();
@@ -91,7 +93,8 @@ export function createBotModelRouteReconciler(deps: {
           throwIpcError('PRECONDITION_FAILED', '请先选择已开启的伙伴模型');
         }
         const key = JSON.stringify(state.chain);
-        const previous = configured.get(sessionId);
+        const previous = parseScheduledModelBaseline(state.scheduledModelBaseline)?.pendingBotProfileVersion
+          ? '' : configured.get(sessionId);
         const route = configuredRoute(state, previous);
         if (!route) {
           configured.set(sessionId, key);
@@ -103,10 +106,11 @@ export function createBotModelRouteReconciler(deps: {
           if (needsApply) await deps.apply(sessionId, route, current);
           if (deps.ownerEpoch() !== epoch) throw new Error('Bot model route owner changed');
           if ((revisions.get(sessionId) ?? 0) !== revision) continue;
-          // Only profileChanged's explicit-save marker supersedes the saved scope.
+          // Only a durable save or profileChanged's explicit marker supersedes the scope.
           // Ordinary IM preparation can switch routes before automation restore.
           if (previous === '') {
-            await deps.onSelectionAccepted?.(sessionId);
+            const accepted = await deps.onSelectionAccepted?.(sessionId, state.scheduledModelBaseline);
+            if (accepted === false) continue; // A newer durable save won the compare-and-set.
           }
         } catch (error) {
           // A failed obsolete selection must not discard a newer explicit save.
@@ -150,7 +154,8 @@ export function createBotModelRouteReconciler(deps: {
       return (
         configuredRoute(
           state,
-          configured.get(sessionId),
+          parseScheduledModelBaseline(state.scheduledModelBaseline)?.pendingBotProfileVersion
+            ? '' : configured.get(sessionId),
           draftChain ? normalizeBotModelChain(draftChain) : undefined,
         ) ??
         state.next ??

@@ -4,6 +4,8 @@ import { runTaskTagsTransaction } from './taskTagsTx.js';
 import { recordMediaSpend } from './mediaSpendTx.js';
 import { batchAutoReviewProjection, readAutoReviewProjectionTransaction } from '../../autoReviewProjection.js';
 import { CLOSE_SHARED_TASKS_FOR_SESSION_SQL } from '../../sharedTaskClosureSql.js';
+import { botProfileModelSelectionChanged } from '../../../../shared/botModelChain.js';
+import { parseScheduledModelBaseline } from '../../../../shared/scheduledModelBaseline.js';
 import { normalizeBotName } from '../../../../shared/botCreation.js';
 import { inferBotTemplatePresetId } from '../../../../shared/botTemplatePreset.js';
 // inproc 回滚口：仅在 XDT_DB_INPROC=true 时使用。
@@ -436,6 +438,23 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
         VALUES (?, ?, ?, ?, ?, ?)`)
         .run(`${id}:v${nextVersion}`, id, nextVersion, expectString(p.identitySource, 'identitySource'),
           expectString(p.capabilitiesJson, 'capabilitiesJson'), now);
+      const previous = db.prepare('SELECT capabilities_json AS capabilities FROM bot_profile_versions WHERE bot_id = ? AND version = ?')
+        .get(id, expectedVersion) as { capabilities: string } | undefined;
+      if (botProfileModelSelectionChanged(
+        parsedObjectJson(previous?.capabilities ?? null) ?? {}, parsedObjectJson(expectString(p.capabilitiesJson, 'capabilitiesJson')) ?? {},
+      )) {
+        // Save the pending choice in the same transaction as the profile. A
+        // paused runtime may not receive its refresh before restart/account exit.
+        const targets = db.prepare(`SELECT id, scheduled_model_baseline AS baseline FROM sessions WHERE id IN
+          (SELECT session_id FROM bot_session_links WHERE bot_id = ?
+            AND role IN ('canonical', 'group', 'channel', 'thread') AND archived_at IS NULL)
+          AND scheduled_model_baseline IS NOT NULL`).all(id) as Array<{ id: string; baseline: string }>;
+        const update = db.prepare('UPDATE sessions SET scheduled_model_baseline = ? WHERE id = ?');
+        for (const target of targets) {
+          const baseline = parseScheduledModelBaseline(target.baseline);
+          if (baseline) update.run(JSON.stringify({ ...baseline, pendingBotProfileVersion: nextVersion }), target.id);
+        }
+      }
       // Hermes capability epoch: the permanent canonical Chat, the Bot's
       // group-chat lanes and its IM channel lanes follow the latest Profile on
       // their next runtime bootstrap. Route/worker links remain pinned to their
@@ -3543,12 +3562,13 @@ function orcaUpsertWorker(db: Database.Database, args: unknown): void {
       const remote = asRecord(payload.remoteExecution, 'remoteExecution');
       if (remote.proxySession !== undefined) {
         const proxy = asRecord(remote.proxySession, 'remoteExecution.proxySession');
-        db.prepare("INSERT INTO sessions (id, title, working_dir, workspace_kind, model, effort, permission_mode, fast_mode, status, agent_kind, orca_role, source, created_at, updated_at) VALUES (?, ?, NULL, 'project', ?, ?, ?, ?, 'active', ?, 'worker', 'desktop', ?, ?)").run(
+        db.prepare("INSERT INTO sessions (id, title, working_dir, workspace_kind, model, effort, permission_mode, fast_mode, status, agent_kind, orca_role, source, created_at, updated_at, agent_device_id) VALUES (?, ?, NULL, 'project', ?, ?, ?, ?, 'active', ?, 'worker', 'desktop', ?, ?, ?)").run(
           sessionId, expectString(proxy.title, 'proxySession.title'),
           expectString(proxy.model, 'proxySession.model'),
           proxy.effort == null ? 'high' : expectString(proxy.effort, 'proxySession.effort'),
           expectString(proxy.permissionMode, 'proxySession.permissionMode'), fastModeToStorage(proxy.fastMode),
           expectString(proxy.agentKind, 'proxySession.agentKind'), now, now,
+          proxy.agentDeviceId == null ? null : expectString(proxy.agentDeviceId, 'proxySession.agentDeviceId'),
         );
       }
     }

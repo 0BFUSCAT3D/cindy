@@ -14,11 +14,7 @@ export function botProfileContentChanged(input: {
   );
 }
 
-/** A saved model selection supersedes an earlier runtime-only fallback. */
-export function botProfileModelSelectionChanged(previous: Record<string, unknown>, next: Record<string, unknown>): boolean {
-  return ['modelChainOverride', 'modelOverride', 'modelChain', 'harness', 'model', 'providerId', 'effort', 'fastMode']
-    .some((key) => JSON.stringify(previous[key] ?? null) !== JSON.stringify(next[key] ?? null));
-}
+export { botProfileModelSelectionChanged } from '../../../shared/botModelChain.js';
 
 export function mergeBotProfileCapabilities(input: {
   previous: Record<string, unknown>;

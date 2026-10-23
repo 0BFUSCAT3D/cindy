@@ -2,6 +2,10 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { tx } from '../tx.js';
+import { createBotModelRouteReconciler } from '../../../../maker-ipc/botModelRouteReconciler';
+import { createScheduledModelScope } from '../../../../maker-ipc/scheduledModelSelection';
+import { normalizeBotModelChain } from '../../../../../shared/botModelChain';
+import type { ScheduledModelSelection } from '../../../../maker-ipc/scheduledModelSelection';
 
 describe('Bot named worker transactions', () => {
   let db: Database.Database;
@@ -13,7 +17,7 @@ describe('Bot named worker transactions', () => {
       CREATE TABLE sessions (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, working_dir TEXT, workspace_kind TEXT NOT NULL,
         model TEXT NOT NULL, effort TEXT NOT NULL, permission_mode TEXT NOT NULL, status TEXT NOT NULL,
-        scheduled_model_baseline TEXT,
+        scheduled_model_baseline TEXT, agent_device_id TEXT,
         sdk_session_id TEXT, total_token_usage INTEGER NOT NULL, total_cost_usd REAL NOT NULL,
         context_tokens INTEGER NOT NULL, context_window INTEGER NOT NULL, fast_mode INTEGER NOT NULL,
         plan_mode_enabled INTEGER NOT NULL, cleared_at INTEGER, pinned_at INTEGER, user_send_at INTEGER,
@@ -49,6 +53,143 @@ describe('Bot named worker transactions', () => {
   });
 
   afterEach(() => db.close());
+
+  // #6759: exercise the actual save transaction, then discard process-local
+  // reconciliation state before IM preparation and automation restore.
+  function savedModelFixture() {
+    const original: ScheduledModelSelection = {
+      agentKind: 'codex', model: 'old', providerId: 'connected-custom', effort: 'high', fastMode: false,
+    };
+    let current = { ...original, model: 'temporary' };
+    let owner = 'account-a';
+    const capabilities = (model: string) => JSON.stringify({ modelChain: [{
+      harness: 'codex', model, providerId: 'connected-custom', effort: 'high', fastMode: false,
+    }] });
+    tx(db, { name: 'bots.createProfile', args: {
+      id: 'saved-bot', displayName: 'Saved', description: '', avatar: '', avatarColor: 'blue',
+      identitySource: 'identity', capabilitiesJson: capabilities('old'), now: 1,
+    } });
+    tx(db, { name: 'bots.replaceCanonicalSession', args: {
+      botId: 'saved-bot', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
+      session: { id: 'saved-session', title: 'Saved', workingDir: '/tmp/saved-session',
+        workspaceKind: 'dialogue', model: 'temporary', effort: 'high', permissionMode: 'ask',
+        agentKind: 'codex', remoteHostId: null, providerId: 'connected-custom', extraDirs: '[]',
+        source: 'bot', createdAt: 2, updatedAt: 2 }, now: 2,
+    } });
+    const readBaseline = () => db.prepare('SELECT scheduled_model_baseline FROM sessions WHERE id = ?')
+      .pluck().get('saved-session') as string | null;
+    const writeBaseline = (value: string | null) => {
+      db.prepare('UPDATE sessions SET scheduled_model_baseline = ? WHERE id = ?').run(value, 'saved-session');
+    };
+    writeBaseline(JSON.stringify({ ...original, scopeId: 'automation' }));
+    const pause = (paused: boolean) => {
+      db.prepare('UPDATE bot_profiles SET status = ? WHERE id = ?').run(paused ? 'paused' : 'active', 'saved-bot');
+    };
+    const save = (model: string, expectedCurrentVersion = 1, extra: Record<string, unknown> = {}) => tx(db, {
+      name: 'bots.updateProfile', args: { id: 'saved-bot', expectedCurrentVersion,
+        identitySource: 'identity', capabilitiesJson: capabilities(model), profileContentChanged: true, now: 3, ...extra },
+    });
+    let failApply = false;
+    const reconcile = () => createBotModelRouteReconciler({
+      ownerEpoch: () => owner,
+      read: async () => {
+        const row = db.prepare(`SELECT p.status, v.capabilities_json AS capabilities FROM bot_profiles p
+          JOIN bot_profile_versions v ON v.bot_id = p.id AND v.version = p.current_version
+          WHERE p.id = 'saved-bot'`).get() as { status: string; capabilities: string };
+        return row.status === 'active' ? {
+          chain: normalizeBotModelChain(JSON.parse(row.capabilities).modelChain), current,
+          hasRuntimeOverride: false, scheduledModelBaseline: readBaseline(),
+        } : null;
+      },
+      apply: async (_id, route) => {
+        if (failApply) throw new Error('provider unavailable');
+        current = { ...route, effort: route.effort as ScheduledModelSelection['effort'] };
+      },
+      onSelectionAccepted: async () => { writeBaseline(null); },
+    });
+    const scope = createScheduledModelScope({
+      read: async () => ({ profile: current, baseline: readBaseline() }),
+      write: async (_id, baseline) => writeBaseline(baseline ? JSON.stringify(baseline) : null),
+      apply: async (_id, route) => { current = route; }, isBusy: () => false, createId: () => 'unused',
+    });
+    return { original, readBaseline, pause, save, reconcile, scope, current: () => current,
+      changeOwner: () => { owner = 'account-b'; }, failApply: (fail: boolean) => { failApply = fail; } };
+  }
+
+  it.each(['restart', 'account-change'])('accepts a paused permanent save after %s before restoring automation', async boundary => {
+    const h = savedModelFixture();
+    h.pause(true);
+    let reconcile = h.reconcile();
+    h.save('permanent');
+    await reconcile.profileChanged('saved-session');
+    if (boundary === 'restart') reconcile = h.reconcile();
+    else h.changeOwner();
+    h.pause(false);
+    await reconcile('saved-session');
+    await h.scope.restore('saved-session');
+    expect(h.current().model).toBe('permanent');
+    expect(h.readBaseline()).toBeNull();
+  });
+
+  it('accepts a same-route permanent save after restart without restoring the old provider choice', async () => {
+    const h = savedModelFixture();
+    h.pause(true);
+    h.save('temporary');
+    h.pause(false);
+    await h.reconcile()('saved-session');
+    await h.scope.restore('saved-session');
+    expect(h.current().model).toBe('temporary');
+    expect(h.readBaseline()).toBeNull();
+  });
+
+  it('keeps the durable save and old baseline on failure, without restoring it while paused', async () => {
+    const h = savedModelFixture();
+    h.pause(true);
+    h.save('permanent');
+    const pending = h.readBaseline();
+    await h.scope.restore('saved-session');
+    expect(h.current().model).toBe('temporary');
+    expect(h.readBaseline()).toBe(pending);
+    h.pause(false);
+    h.failApply(true);
+    await expect(h.reconcile()('saved-session')).rejects.toThrow('provider unavailable');
+    expect(h.readBaseline()).toBe(pending);
+    h.failApply(false);
+    await h.reconcile()('saved-session');
+    await h.scope.restore('saved-session');
+    expect(h.current().model).toBe('permanent');
+  });
+
+  it('does not invalidate a baseline for a non-model profile edit or a rejected save', async () => {
+    const h = savedModelFixture();
+    const baseline = h.readBaseline();
+    h.save('old', 1, { identitySource: 'new identity' });
+    expect(h.readBaseline()).toBe(baseline);
+    expect(() => h.save('permanent')).toThrow('Profile');
+    expect(h.readBaseline()).toBe(baseline);
+    await h.reconcile()('saved-session');
+    await h.scope.restore('saved-session');
+    expect(h.current()).toMatchObject(h.original);
+  });
+
+  it.each(['canonical', 'group', 'channel', 'thread', 'background', 'archived'])('marks only following profile links: %s', role => {
+    const h = savedModelFixture();
+    const baseline = h.readBaseline();
+    if (role === 'archived') db.prepare('UPDATE bot_session_links SET archived_at = 4').run();
+    else db.prepare('UPDATE bot_session_links SET role = ?').run(role);
+    h.save('permanent');
+    if (role === 'background' || role === 'archived') expect(h.readBaseline()).toBe(baseline);
+    else expect(JSON.parse(h.readBaseline()!)).toMatchObject({ pendingBotProfileVersion: 2, model: 'old' });
+  });
+
+  it('rolls back the pending marker with a failed profile transaction', () => {
+    const h = savedModelFixture();
+    const baseline = h.readBaseline();
+    expect(() => h.save('permanent', 1, { canonicalPermissionMode: 'invalid' })).toThrow('permission mode');
+    expect(h.readBaseline()).toBe(baseline);
+    expect(db.prepare('SELECT current_version FROM bot_profiles').pluck().get()).toBe(1);
+    expect(db.prepare('SELECT count(*) FROM bot_profile_versions').pluck().get()).toBe(1);
+  });
 
   it('atomically rejects duplicate names and a second Cindy without touching the first profile', () => {
     const args = { id: 'first', displayName: 'Renamed', description: '', avatar: '🤖', avatarColor: 'blue', identitySource: 'Custom identity', capabilitiesJson: '{"templateId":"cindy"}', now: 1 };

@@ -143,12 +143,15 @@ describe('saved automation model selection at dispatch', () => {
     expect(deps.switchHarness).not.toHaveBeenCalled();
     expect(deps.applyModel).not.toHaveBeenCalled();
   });
-  it.each(['missing', 'archived', 'deleted'])('returns the resolved snapshot for %s target recovery without touching the target', async (status) => {
+  // PR #6832: recovery must not depend on a dead target's catalog. The previous
+  // fixture only resolved successfully, hiding offline/revoked-share failures.
+  // Unit tier: unresolved saved preferences reach the runner without remote I/O.
+  it.each(['missing', 'archived', 'deleted'])('preserves the saved choice for %s recovery without resolving the old catalog', async (status) => {
     const deps = fixture();
-    const expected = { ...selection, effort: 'medium' as const };
     deps.getTarget.mockResolvedValue(status === 'missing' ? null as never : { agentKind: 'codex', status });
-    deps.resolveSelection.mockResolvedValue(expected);
-    await expect(applyScheduledModelSelection(selection, deps)).resolves.toEqual(expected);
+    deps.resolveSelection.mockRejectedValue(new Error('old target offline or share revoked'));
+    await expect(applyScheduledModelSelection(selection, deps)).resolves.toEqual(selection);
+    expect(deps.resolveSelection).not.toHaveBeenCalled();
     expect(deps.switchHarness).not.toHaveBeenCalled();
     expect(deps.applyModel).not.toHaveBeenCalled();
   });
@@ -387,21 +390,21 @@ describe('automation restore uses the execution computer', () => {
       expect(h.guard).not.toHaveBeenCalled();
     },
   );
-  it.each(['archived', 'deleted', 'missing'])('resolves the replacement locally for a %s target', async status => {
+  it.each(['archived', 'deleted', 'missing'])('defers a %s replacement to the runner without querying either catalog', async status => {
     const h = remoteFixture('share:test', status);
     const before = h.state();
     h.remote.mockRejectedValue(new Error('REMOTE_AGENT_SHARE_PAUSED'));
     const localChoice = { ...remoteChoice, providerId: 'openai' };
     await expect(h.apply('task', localChoice)).resolves.toEqual(localChoice);
     expect(h.remote).not.toHaveBeenCalled();
-    expect(h.guard).toHaveBeenCalledWith('codex', 'test-model', 'openai');
+    expect(h.guard).not.toHaveBeenCalled();
     expect(h.applyModel).not.toHaveBeenCalled();
     expect(h.switchHarness).not.toHaveBeenCalled();
     expect(h.state()).toEqual(before);
   });
-  it.each(['archived', 'deleted'])('rejects a remote-only source for the local replacement of a %s target', async status => {
+  it.each(['archived', 'deleted'])('preserves the saved remote source for runner recovery of a %s target', async status => {
     const h = remoteFixture('share:test', status);
-    await expect(h.apply('task', remoteChoice)).rejects.toThrow('provider unavailable');
+    await expect(h.apply('task', remoteChoice)).resolves.toEqual(remoteChoice);
     expect(h.remote).not.toHaveBeenCalled();
     expect(h.applyModel).not.toHaveBeenCalled();
     expect(h.switchHarness).not.toHaveBeenCalled();

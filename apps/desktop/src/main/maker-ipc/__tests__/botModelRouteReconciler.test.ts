@@ -395,3 +395,30 @@ it('retries a paused save after its first resumed route fails without losing the
   expect(h.state.current.model).toBe('luna');
   expect(h.baseline()).toBeNull();
 });
+
+// A profile commit may precede its in-process refresh callback. A failed
+// compare-and-set must reread the durable save, even without profileChanged.
+it('rereads a newer durable save when acceptance loses its database compare-and-set', async () => {
+  const h = harness();
+  let baseline = JSON.stringify({ ...h.state.current, scopeId: 'automation', pendingBotProfileVersion: 2 });
+  const accepted = vi.fn(async (_id: string, expected?: string | null) => {
+    if (expected !== baseline) return false;
+    baseline = '';
+    return true;
+  });
+  const reconcile = createBotModelRouteReconciler({
+    ownerEpoch: () => 'owner', read: async () => ({ ...h.state, scheduledModelBaseline: baseline }),
+    onSelectionAccepted: accepted,
+    apply: async (_id, route) => {
+      h.state.current = { ...route, effort: route.effort as SessionRuntimeProfile['effort'] };
+      if (route.model === 'luna') {
+        h.state.chain = [{ ...h.state.chain[0]!, model: 'newest-model' }];
+        baseline = JSON.stringify({ ...h.state.current, scopeId: 'automation', pendingBotProfileVersion: 3 });
+      }
+    },
+  });
+  await reconcile('canonical');
+  expect(h.state.current.model).toBe('newest-model');
+  expect(accepted).toHaveBeenCalledTimes(2);
+  expect(baseline).toBe('');
+});

@@ -15,10 +15,9 @@ export interface ScheduledModelSelection {
 export interface ScheduledModelSelectionLease {
   release: () => void;
   selection: ScheduledModelSelection;
-  restore?: () => Promise<void>;
 }
 
-/** All calls run under the existing session send lock. The saved preference survives restart. */
+/** Send-boundary operations only. The saved preference survives idle time and restart. */
 export function createScheduledModelScope(deps: {
   read: (sessionId: string) => Promise<{
     profile: Omit<ScheduledModelSelection, 'effort'> & {
@@ -54,6 +53,9 @@ export function createScheduledModelScope(deps: {
       assertOwner(owner);
       const baseline = parseScheduledModelBaseline(row?.baseline);
       if (!baseline || (expectedScopeId && baseline.scopeId !== expectedScopeId)) return;
+      // A permanent save owns the next selection, including across restart.
+      // Keep its old baseline for retries until reconciliation accepts the save.
+      if (baseline.pendingBotProfileVersion) return;
       // Keep the saved choice on failure so the next input retries before dispatch.
       await deps.apply(sessionId, baseline);
       assertOwner(owner);
@@ -105,7 +107,7 @@ export function resolveScheduledModelSelection(
   };
 }
 
-/** Resolve against the bound execution computer; inactive replacements use the local path. */
+/** Resolve against the bound execution computer; the runner owns inactive-target recovery. */
 export function createScheduledModelSelectionResolver(deps: {
   readRemoteProviders: (deviceId: string, agent: AgentKind, model: string, providerId: string | null) => Promise<ProviderView[]>;
   resolveLocalSelection: (selection: ScheduledModelSelection) => Promise<ScheduledModelSelection>;
@@ -133,10 +135,12 @@ export async function applyScheduledModelSelection(
   },
 ): Promise<ScheduledModelSelection> {
   const target = await deps.getTarget();
-  // The runner replaces missing/archived targets with a new local task. Do not
-  // carry the retired task's execution computer into that replacement's route.
+  // The runner restores ordinary archived targets before selection and owns
+  // deleted/missing-target rebinding for persistent tasks.
+  // Its replacement resolves at the schedule's saved location. Do not query the old
+  // target's catalog: that device may be offline or its provider share revoked.
   if (!target || target.status === 'archived' || target.status === 'deleted') {
-    return deps.resolveSelection(selection);
+    return selection;
   }
   if (deps.isBusy()) throw new ScheduledModelSelectionBusyError('Scheduled model selection waits for the current turn');
   assertScheduledHarnessSupported(target, selection.agentKind);
