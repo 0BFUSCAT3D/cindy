@@ -505,6 +505,12 @@ Auto 优先效率，定位是防止严重后果，不是第二次任务规划或
 Claude MCP/额外目录等现有回退路径仍由 Cindy 审批，不因有订阅而免审。
 原生明确拒绝不触发第二次模型判断。独立 Host 操作继续使用自身审批入口。
 
+Browser 的 `action=recipe` 调用复用现有逐次会话审批，不继承整个第一方 server 的静默放行；
+Full Access、Auto、Ask 的含义保持不变。不以配方自报的 read/write 分类免审，用户覆盖层
+也可能改变其实际动作。渐进参数（含 JSON 字符串）、直接工具调用及省略工具名共用
+`maker-host/mcp-tool-approval-policy.ts`，发现和普通浏览器操作沿用原策略；
+不新增配方确认 token 或独立授权状态。回归见 `mcpToolApprovalPolicy.test.ts`。
+
 由 Cindy 负责的 Auto 审核先按固定顺序尝试 `cindy/auto-review`、内置 OpenAI 订阅的
 `gpt-5.4-nano`、`gpt-6-luna`。只有这些候选全部不可用、请求失败或输出无效时，才使用
 系统设置中用户明确自定义的辅助模型链，按已选顺序尝试最多 3 个模型；自动辅助链和
