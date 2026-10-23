@@ -5,11 +5,12 @@
  * 焦点交给可选文字，Android 会在正文上画一条默认焦点高亮。
  */
 import { useState } from 'react';
-import { Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { UITextView } from 'react-native-uitextview';
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Text } from '@/components/AppText';
+import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
 import { radius, useThemedStyles, type ThemeColors } from '@/theme';
 import { fontWeight, lineHeight, spacing, typeScale } from '@/theme/tokens';
 import { CompanionSheet } from './CompanionSheet';
@@ -21,14 +22,15 @@ export function CompanionSelectTextSheet({ text, onClose }: { text: string; onCl
   const { t } = useTranslation();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
-  const window = useWindowDimensions();
+  // The pane SheetModal lays this out in (one side of a fold, a floating panel), not the whole window.
+  const viewport = usePaneViewport();
   const [visible, setVisible] = useState(true);
   const title = t('message.renderer.selectText');
   const close = () => setVisible(false);
   if (Platform.OS === 'android') {
     return (
       <SheetModal visible={visible} onRequestClose={close} onBackdropPress={close} onClosed={onClose}>
-        <View style={[styles.androidCard, { maxHeight: window.height * 0.8, paddingBottom: spacing.lg + insets.bottom }]}
+        <View style={[styles.androidCard, { maxHeight: viewport.height * 0.8, paddingBottom: spacing.lg + insets.bottom }]}
           testID="companion.selectTextSheet">
           <SheetGrabber />
           <Text accessibilityRole="header" numberOfLines={1} style={styles.title}>{title}</Text>
