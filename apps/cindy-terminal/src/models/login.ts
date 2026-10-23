@@ -2,6 +2,7 @@ import { createGenericOAuthRuntime } from '@cindy/model-providers/provider-auth/
 import { buildUserProvider } from '@cindy/model-providers';
 import type { GenericOAuthRuntimeHost } from '@cindy/model-providers/provider-auth/generic-oauth';
 import type { TerminalDurableSecrets } from '../contracts.js';
+import type { TerminalNativeAccounts } from './native-accounts.js';
 import type { TerminalModelConfig, ModelOAuthConnection } from './config.js';
 
 export type ProviderLoginState = {
@@ -24,11 +25,13 @@ type Login = {
 export class TerminalProviderLogin implements ModelOAuthConnection {
   private closed = false;
   private readonly abort = new AbortController();
+  private readonly nativeLogins = new Set<string>();
   private readonly logins = new Map<string, Login>();
   private readonly runtime: ReturnType<typeof createGenericOAuthRuntime>;
   constructor(
     private readonly options: {
       models: TerminalModelConfig;
+      native?: TerminalNativeAccounts;
       secrets: Pick<
         TerminalDurableSecrets,
         'getSync' | 'setSync' | 'deleteSync'
@@ -160,6 +163,9 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     deadline: number,
   ): ProviderLoginState {
     current();
+    if (providerId === 'openai' && this.options.native) {
+      this.nativeLogins.add(id); return this.options.native.begin(id, current, deadline);
+    }
     const provider = this.provider(providerId);
     const old = this.logins.get(id);
     if (old) return this.read(id);
@@ -238,6 +244,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
   }
   read(id: string): ProviderLoginState {
     this.current();
+    if (this.nativeLogins.has(id)) return this.options.native!.state(id);
     const entry = this.logins.get(id);
     if (!entry) throw new Error('PROVIDER_LOGIN_STALE');
     entry.current();
@@ -256,6 +263,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     return this.read(id);
   }
   cancel(id: string, status: 'cancelled' | 'expired' = 'cancelled') {
+    if (this.nativeLogins.has(id)) { this.options.native!.cancel(id, status); return; }
     const entry = this.logins.get(id);
     if (!entry) return;
     clearTimeout(entry.timer);
@@ -271,6 +279,8 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     const work = [...this.logins.values()].map((entry) => entry.work);
     for (const id of this.logins.keys()) this.cancel(id);
     this.runtime.close();
+    await this.options.native?.close();
+    await this.options.models.nativeClaude?.close();
     await Promise.allSettled(work);
   }
 }

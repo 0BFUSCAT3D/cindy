@@ -1,3 +1,4 @@
+import { parseClaudeCliLoginStatus } from '@cindy/model-providers/provider-auth/claude-cli-status';
 import { spawn, type SpawnOptions } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
@@ -28,26 +29,38 @@ export function nativeCommand(binary: string, args: string[], env: NodeJS.Proces
   };
 }
 
-export function runNative(binary: string, args: string[], options: { interactive?: boolean; signal?: AbortSignal; env?: NodeJS.ProcessEnv; cwd?: string; timeout?: number } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+export function runNative(binary: string, args: string[], options: { interactive?: boolean; signal?: AbortSignal; env?: NodeJS.ProcessEnv; cwd?: string; timeout?: number; onOutput?: (text: string) => void } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   const command = nativeCommand(binary, args, options.env);
   return new Promise((resolve, reject) => {
     const settings: SpawnOptions = { env: command.env, cwd: options.cwd, shell: false, windowsHide: !options.interactive, stdio: options.interactive ? 'inherit' : ['ignore', 'pipe', 'pipe'] };
     const child = spawn(command.command, command.args, settings);
     let stdout = '', stderr = '', finished = false;
+    let terminationError: EngineError | undefined, killTimer: NodeJS.Timeout | undefined;
     const end = (error?: EngineError, code = 1) => {
       if (finished) return;
-      finished = true; clearTimeout(timer); options.signal?.removeEventListener('abort', abort);
+      finished = true; clearTimeout(timer); clearTimeout(killTimer); options.signal?.removeEventListener('abort', abort);
       if (error) reject(error); else resolve({ code, stdout, stderr });
     };
-    const abort = () => { child.kill(); end(new EngineError('native_cancelled')); };
-    const timer = setTimeout(() => { child.kill(); end(new EngineError('native_timeout')); }, options.timeout ?? (options.interactive ? 20 * 60_000 : 15_000));
+    // Settle after close: callers may remove temporary auth files, and a still
+    // running native process must not recreate them after cancellation.
+    const terminate = (error: EngineError) => {
+      if (finished || terminationError) return;
+      terminationError = error; child.kill();
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 1000); killTimer.unref();
+    };
+    const abort = () => terminate(new EngineError('native_cancelled'));
+    const timer = setTimeout(() => terminate(new EngineError('native_timeout')), options.timeout ?? (options.interactive ? 20 * 60_000 : 15_000));
     timer.unref();
     for (const [stream, key] of [[child.stdout, 'stdout'], [child.stderr, 'stderr']] as const) stream?.on('data', (chunk: Buffer) => {
       if (key === 'stdout') stdout += chunk.toString(); else stderr += chunk.toString();
-      if (stdout.length + stderr.length > 256_000) { child.kill(); end(new EngineError('native_output_too_large')); }
+      if (stdout.length + stderr.length > 256_000) terminate(new EngineError('native_output_too_large'));
+      else if (!finished && !terminationError) {
+        try { options.onOutput?.(stdout + stderr); }
+        catch { terminate(new EngineError('native_output_rejected')); }
+      }
     });
     child.once('error', () => end(new EngineError('native_start_failed')));
-    child.once('close', code => end(undefined, code ?? 1));
+    child.once('close', code => end(terminationError, code ?? 1));
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
   });
@@ -58,11 +71,10 @@ export async function nativeLoginStatus(kind: EngineKind, binary: string, provid
   try {
     if (kind === 'pi' && (!provider || !/^[a-zA-Z0-9_.-]{1,100}$/.test(provider))) return 'unavailable';
     const args = kind === 'claude-code' ? ['auth', 'status', '--json'] : kind === 'codex' ? ['login', 'status'] : ['auth', 'check', '--provider', provider!, '--json', '--no-refresh'];
-    const result = await runNative(binary, args);
+    const result = await runNative(binary, args, kind === 'claude-code' ? { env: claudeNativeEnv() } : {});
     if (kind === 'claude-code') {
-      const state = JSON.parse(result.stdout) as { loggedIn?: boolean; authMethod?: string; subscriptionType?: string };
-      if (!state.loggedIn) return 'signed-out';
-      return state.authMethod === 'claude.ai' || state.authMethod === 'oauth' && Boolean(state.subscriptionType) ? 'authenticated' : 'non-subscription';
+      const state = result.code === 0 ? parseClaudeCliLoginStatus(result.stdout) : null;
+      return state?.loggedIn ? 'authenticated' : state?.notSubscription ? 'non-subscription' : 'signed-out';
     }
     if (kind === 'codex') {
       const text = result.stdout + result.stderr;
@@ -71,6 +83,12 @@ export async function nativeLoginStatus(kind: EngineKind, binary: string, provid
     // The documented exit contract is enough; never request or expose credentials.
     return result.code === 0 ? 'authenticated' : result.code === 1 ? 'signed-out' : 'unavailable';
   } catch { return 'unavailable'; }
+}
+
+export function claudeNativeEnv(source = process.env): NodeJS.ProcessEnv {
+  const env = { ...source };
+  for (const key of Object.keys(env)) if (['CLAUDE_CONFIG_DIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN'].includes(key.toUpperCase())) delete env[key];
+  return env;
 }
 
 export function nativeLoginCommand(kind: EngineKind, operation: 'login' | 'logout'): { args: string[]; instruction?: 'pi-login' | 'pi-logout' } {
@@ -85,10 +103,6 @@ export async function runNativeLogin(kind: EngineKind, binary: string, operation
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new EngineError('native_tty_required');
   const command = nativeLoginCommand(kind, operation);
   if (command.instruction) options.onInstruction?.(command.instruction);
-  const env = { ...(options.env ?? process.env) };
-  if (kind === 'claude-code') {
-    delete env.CLAUDE_CONFIG_DIR;
-    delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN; delete env.ANTHROPIC_BASE_URL;
-  }
+  const env = kind === 'claude-code' ? claudeNativeEnv(options.env) : { ...(options.env ?? process.env) };
   return (await runNative(binary, command.args, { interactive: true, signal: options.signal, env })).code;
 }

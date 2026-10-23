@@ -38,6 +38,13 @@ function object(value: unknown): Record<string,unknown> {
   if (result.ok===false) throw new Error(String((result.error as Record<string,unknown>)?.code || 'OPERATION_FAILED'));
   return result.ok===true&&result.data&&typeof result.data==='object'?result.data as Record<string,unknown>:result;
 }
+async function claudeAuthorization(client: TerminalClient, binary: string, operation: 'login' | 'logout') {
+  if (operation === 'logout') { await client.invoke('terminal:native-claude',['disconnect']); return 0; }
+  const ticket = await client.invoke<{ id: string; needsLogin: boolean }>('terminal:native-claude',['begin']);
+  const code = ticket.needsLogin ? await runNativeLogin('claude-code', binary, 'login') : 0;
+  if (code === 0) await client.invoke('terminal:native-claude',['finish',ticket.id]);
+  return code;
+}
 async function stdin(limit = 1024 * 1024) {
   const chunks: Buffer[]=[];let size=0;
   for await(const chunk of process.stdin){const data=Buffer.from(chunk);size+=data.length;if(size>limit)throw new Error('INPUT_TOO_LARGE');chunks.push(data);}
@@ -141,7 +148,7 @@ async function main() {
   if(timeoutMs!==undefined&&(!Number.isFinite(timeoutMs)||timeoutMs<=0))throw new Error('INVALID_TIMEOUT');
   if(str('device')&&['service','status','auth','vault','login','logs'].includes(command))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
   if(values.help||command==='help'){
-    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch|refresh\n  cindy auth begin|cancel|memberships|authorization\n  cindy auth email|organization|select|membership|binding-code <id>\n  cindy auth realm accept|cancel\n  cindy auth request-code|captcha-start email|phone <identifier>\n  cindy auth verify|binding-verify|sso-verify --stdin\n  cindy auth captcha-complete <challengeId> --stdin\n  cindy auth authorize sso|social <provider>\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy files download <url> --device <id> --output <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy plugin-market|libraries\n  cindy auxiliary-models [list|get|edit|reset] [chain] [--stdin]\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy channels connect feishu --stdin\n  cindy channels authorization|cancel <request-id>\n  cindy requests list|show|approve|deny|resolve|answer|fill\n  cindy requests answer <taskId> <requestId> --stdin\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|activate|boot|uninstall|logs\n  cindy logs [--follow]\n  cindy browser status|install|check|sandbox-profile\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
+    print(`Cindy ${VERSION}\n\n  cindy                         ${t.tasks}\n  cindy login [--sso]            ${t.login}\n  cindy auth status|accounts|logout|switch|refresh\n  cindy auth begin|cancel|memberships|authorization\n  cindy auth email|organization|select|membership|binding-code <id>\n  cindy auth realm accept|cancel\n  cindy auth request-code|captcha-start email|phone <identifier>\n  cindy auth verify|binding-verify|sso-verify --stdin\n  cindy auth captcha-complete <challengeId> --stdin\n  cindy auth authorize sso|social <provider>\n  cindy vault status|setup|unlock      --machine-key | --passphrase-stdin\n  cindy engines list|install|update|repair\n  cindy models [list|show|use|refresh|enable|disable|reset]        ${t.models}\n  cindy providers [list|presets|add|edit|test|discover|login|logout|status|disconnect|remove]\n  cindy devices [list|connect|disconnect]\n  cindy chat [message] --once [--detach]\n  cindy attach <id>              ${t.history}\n  cindy tasks list|get|search|history|export|stop|resume|send|rename|archive|restore|delete\n  cindy tasks model|effort|permission|plan|fast|compact|queue|cancel-queued <id>\n  cindy ssh list|connect|disconnect|add|edit|remove|terminal\n  cindy terminal [open|attach|list|close] --cwd <path>\n  cindy files list|read|write|create|stat|mkdir|remove|rename --cwd <path>\n  cindy files download <url> --device <id> --output <path>\n  cindy resources [list|get|action]\n  cindy teammates|schedules|projects|plugins|skills|mcp\n  cindy plugin-market|libraries\n  cindy auxiliary-models [list|get|edit|reset] [chain] [--stdin]\n  cindy channels|memory|contacts|shares|provider-groups\n      [list|get|<advertised-action>] [id] [--stdin]\n  cindy channels connect feishu --stdin\n  cindy channels authorization|cancel <request-id>\n  cindy requests list|show|approve|deny|resolve|answer|fill\n  cindy requests answer <taskId> <requestId> --stdin\n  cindy config [get|set|reset]\n  cindy service start|status|stop|restart|install|activate|boot|uninstall|logs\n  cindy logs [--follow]\n  cindy browser status|install|check|sandbox-profile\n  cindy doctor\n  cindy backup create|verify|restore <file> --passphrase-stdin\n  cindy restore <file> --passphrase-stdin\n  cindy completion bash|zsh|fish|powershell\n  cindy update check --manifest <url> --prefix <dir>\n  cindy update apply <archive> --sha256 <hash> --prefix <dir>\n  cindy update status|rollback --prefix <dir>\n  cindy storage status\n  cindy profiles list|create|use\n  cindy serve\n  cindy status\n\n  --profile <name>   --device <id>   --lang <locale>   --json\n  --model <id>   --provider <id>   --engine <pi|codex|claude-code>\n  --stdin   --no-input   --request-id <id>\n  --file <path>   --send-at <ISO-date>\n  providers test --generate: may incur a charge\n  tasks export --output <file>: NDJSON, newest first`);return;
   }
   if(values.version||command==='version'){print(VERSION);return;}
   if(command==='browser'){
@@ -242,6 +249,32 @@ async function main() {
       print(subcommand==='update'?await manager.update(kind):subcommand==='repair'?await manager.repair(kind):await manager.install(kind));return;
     }
     const resolved=await manager.resolve(kind);if(!resolved)throw new Error('ENGINE_NOT_INSTALLED');
+    if(kind==='claude-code') {
+      const authClient = await startBackground(directory);
+      try {
+        if (subcommand === 'status') print(await authClient.invoke('terminal:native-claude',['status']));
+        else {
+          if(json||values['no-input'])throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
+          process.exitCode = await claudeAuthorization(authClient, resolved.binary, subcommand as 'login' | 'logout');
+        }
+      } finally { authClient.close(); }
+      return;
+    }
+    if(kind==='codex') {
+      let authClient = await startBackground(directory);
+      try {
+        if(subcommand==='login') {
+          if(json||values['no-input'])throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
+          authClient=reconnectingClient(directory,authClient);
+          await runTui(authClient,{locale,page:'models',providerLogin:'openai'});
+        } else if(subcommand==='logout') print(await invokeModelConfiguration(authClient,'disconnect',{providerId:'openai'}));
+        else {
+          const providers=await authClient.invoke<unknown[]>('maker:provider:list');
+          print({engine:kind,status:providers.some(value=>{const provider=value as Record<string,unknown>;return provider.id==='openai'&&provider.connected;})?'authenticated':'signed-out'});
+        }
+      } finally { authClient.close(); }
+      return;
+    }
     if(subcommand==='status'){print({engine:kind,status:await nativeLoginStatus(kind,resolved.binary,str('provider'))});return;}
     if(json||values['no-input'])throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
     process.exitCode=await runNativeLogin(kind,resolved.binary,subcommand as 'login'|'logout',{onInstruction:instruction=>print(instruction==='pi-login'?'/login':'/logout')});return;
@@ -559,7 +592,8 @@ async function main() {
         if(external.type==='service-boot'){client.close();client=reconnectingClient(directory,await enableBootService(directory));nextPage='service';continue;}
         const manager=new EngineManager({profileDir:directory});const binary=await manager.resolve(external.kind);
         if(!binary)throw new Error('ENGINE_NOT_INSTALLED');
-        await runNativeLogin(external.kind,binary.binary,external.operation,{onInstruction:value=>print(value==='pi-login'?'/login':'/logout')});
+        if (external.kind === 'claude-code') await claudeAuthorization(client,binary.binary,external.operation);
+        else await runNativeLogin(external.kind,binary.binary,external.operation,{onInstruction:value=>print(value==='pi-login'?'/login':'/logout')});
         client=reconnectingClient(directory,await startBackground(directory));
         await client.invoke('terminal:engines:refresh').catch(()=>{});nextPage='engines';
       }

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useWindowSize } from 'ink';
 import type { TerminalClient } from '../contracts.js';
 import type { ChannelRegistrationState } from '../im/registration.js';
 import type { Locale } from './i18n.js';
@@ -21,6 +21,7 @@ export function ChannelRegistration({ client, device, service, providerId, local
   client: TerminalClient; device?: string; service?: string; providerId?: string; locale: Locale; onDone(): void;
 }) {
   const t = authenticationText(locale), l = labels[locale];
+  const { rows } = useWindowSize();
   const [state, setState] = useState<ChannelRegistrationState & ProviderLoginState>();
   const [callback, setCallback] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -64,10 +65,10 @@ export function ChannelRegistration({ client, device, service, providerId, local
   }
   const status = state?.status;
   const failed = status === 'error' || state?.verdict === 'error';
-  return <Box flexDirection="column" gap={1}>
-    <Text bold>{providerId ? t.login : l[0]}</Text>
-    {!state && <Text>{t.loading}</Text>}
-    {status === 'pending' && <>
+  return <Box flexDirection="column" gap={rows < 28 ? 0 : 1}>
+    <Text bold>{providerId ? ({en:'Connect provider','zh-CN':'连接供应商','zh-TW':'連接供應商',ja:'プロバイダーに接続',ko:'공급자 연결'})[locale] : l[0]}</Text>
+    {(!state || status === 'pending' && !state.verificationUrl) && <Text>{t.loading}</Text>}
+    {status === 'pending' && state?.verificationUrl && <>
       <Text>{t.openBrowser}</Text>
       <Text wrap="wrap">{terminalText(state?.verificationUrl ?? '')}</Text>
       <Text bold>{terminalText(state?.userCode ?? '')}</Text>

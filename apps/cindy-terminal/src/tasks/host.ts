@@ -331,6 +331,7 @@ export class TerminalTaskHost {
     }
   }
   private async authState(kind: AgentKind) {
+    if (kind === 'codex' && this.models?.nativeAccounts) return { authenticated: this.models.nativeAccounts.connected(), authSource: 'oauth' as const };
     const cached = this.authCache.get(kind);
     if (cached && Date.now() - cached.at < 15_000) return cached.value;
     const value = await (this.options.nativeStatus ?? nativeAuthState)(kind, this.binaries.get(kind) ?? null);

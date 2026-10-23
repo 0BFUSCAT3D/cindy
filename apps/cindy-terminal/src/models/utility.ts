@@ -161,7 +161,7 @@ export class TerminalUtilityModels {
         if (provider.id === 'xd')
           return Boolean(this.options.models.gatewayCredentials());
         if (isOpenAiSubscriptionProvider(provider))
-          return Boolean(this.connections.getChatgptBridgeAuthForDispatch);
+          return Boolean(this.options.models.nativeAccounts?.connected());
         if (provider.auth.native === 'xai')
           return Boolean(this.connections.getGrokAccessToken);
         if (provider.auth.method === 'oauth')

@@ -1,7 +1,6 @@
+import { createChatgptProxy } from './subscription-proxy.js';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import path from 'node:path';
 import { privateDirectory } from '../platform.js';
 import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentKind, type AuthAdapter, type AuthState, type BaseAgent, type Logger, type CodexExtraSpawnConfig, type PiNativeProvidersResult, type MakerMemoryManager } from '@cindy/maker-core';
@@ -13,7 +12,7 @@ import { createProviderProxy } from './proxy.js';
 import { resolveBundledPiGatewayModelProfile, pruneAnthropicCompatForGateway } from '@cindy/model-providers/model-plane/pi-gateway-model-catalog';
 import type { TerminalCapabilities } from '../tasks/capabilities.js';
 
-const execute = promisify(execFile);
+import { nativeLoginStatus } from '../engines/native.js';
 const names = { 'claude-code': 'claude', codex: 'codex', pi: 'pi' } as const;
 
 /** Locate installed native CLIs without a shell and without changing global HOME. */
@@ -33,17 +32,8 @@ export async function findAgentBinary(kind: AgentKind, explicit?: string): Promi
 export async function nativeAuthState(kind: AgentKind, binary: string | null): Promise<AuthState> {
   if (!binary) return { authenticated: false, errorReason: 'engine_not_installed' };
   if (kind === 'pi') return { authenticated: false, errorReason: 'configure_a_provider_for_pi' };
-  try {
-    const result = await execute(binary, kind === 'claude-code' ? ['auth', 'status', '--json'] : ['login', 'status'], { timeout: 12_000, maxBuffer: 256_000, windowsHide: true });
-    if (kind === 'claude-code') {
-      const state = JSON.parse(result.stdout) as { loggedIn?: boolean; authMethod?: string; subscriptionType?: string };
-      const subscribed = state.loggedIn === true && (state.authMethod === 'claude.ai' || Boolean(state.subscriptionType));
-      return { authenticated: subscribed, ...(subscribed ? { authSource: 'oauth' as const } : { errorReason: 'native_subscription_login_required' }) };
-    }
-    // `codex login status` communicates success through its exit code, not a token.
-    const text = result.stdout + result.stderr;
-    return { authenticated: /logged in/i.test(text) && !/api key/i.test(text), authSource: 'oauth' };
-  } catch { return { authenticated: false, errorReason: 'native_login_required' }; }
+  const state = await nativeLoginStatus(kind, binary);
+  return { authenticated: state === 'authenticated', ...(state === 'authenticated' ? { authSource: 'oauth' as const } : { errorReason: 'native_subscription_login_required' }) };
 }
 
 export interface RuntimeInput {
@@ -71,19 +61,20 @@ export interface RuntimeInput {
  * changing another task's provider cannot redirect an in-flight request. */
 export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgent> {
   const { selection, route, binaryPath, models, profileDir, taskId, logger } = input;
-  const custom = route.provider.source === 'user' || route.provider.id === 'xd' || Boolean(route.provider.auth.oauth);
+  const chatgpt = route.provider.id === 'openai' && Boolean(models.nativeAccounts);
+  const custom = chatgpt || route.provider.source === 'user' || route.provider.id === 'xd' || Boolean(route.provider.auth.oauth);
   const key = custom && !input.remote ? await models.credential(selection.providerId, selection.agentKind) : null;
   const codexHome = custom && !input.remote && selection.agentKind === 'codex' ? (input.guestHome ? path.join(input.guestHome,'codex') : path.join(profileDir, 'engines', 'codex', taskId)) : undefined;
   const claudeHome = input.guestHome && selection.agentKind==='claude-code' ? path.join(input.guestHome,'claude') : undefined;
   for(const directory of [codexHome,claudeHome])if(directory)await privateDirectory(directory);
-  const proxy = custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined, route.provider.auth.oauth ? () => models.credential(selection.providerId, selection.agentKind) : undefined) : null;
+  const proxy = chatgpt && !input.remote ? await createChatgptProxy({ route, kind: selection.agentKind, taskId, accounts: models.nativeAccounts!, authorize: input.authorizeRequest }) : custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined, route.provider.auth.oauth ? () => models.credential(selection.providerId, selection.agentKind) : undefined) : null;
   const runtimeKey = proxy?.token ?? key;
   const endpoint = proxy?.url ?? route.routing.upstream;
   const own = (agent: BaseAgent) => { if (proxy) { const dispose = agent.dispose.bind(agent); agent.dispose = async () => { try { await dispose(); } finally { await proxy.close(); } }; } return agent; };
   const keyless = route.provider.auth.method === 'none';
   const auth: AuthAdapter = {
     async getState() {
-      return custom ? { authenticated: keyless || Boolean(key), authSource: key ? 'api-key' : undefined } : nativeAuthState(selection.agentKind, binaryPath);
+      return custom ? { authenticated: chatgpt ? models.nativeAccounts!.connected() : keyless || Boolean(key), authSource: key ? 'api-key' : undefined } : selection.agentKind === 'claude-code' && models.nativeClaude ? models.nativeClaude.state() : nativeAuthState(selection.agentKind, binaryPath);
     },
     async getAuthEnv() {
       if (!custom) return {};
@@ -149,16 +140,16 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
         providers: [{
           id: selection.providerId, sourceProviderId: selection.providerId,
           name: route.provider.name, baseUrl: proxy?.url ?? native.baseUrl,
-          api: native.wireProtocol === 'openai-chat' ? 'openai-completions' : native.wireProtocol,
+          api: chatgpt ? 'openai-codex-responses' : native.wireProtocol === 'openai-chat' ? 'openai-completions' : native.wireProtocol,
           ...(runtimeKey ? { apiKeyEnvVar: 'CINDY_TERMINAL_PROVIDER_KEY' } : {}),
           models: catalogModels.flatMap(model => {
             const resolved = resolvePiModelRoute(model, { baseUrl: route.routing.upstream!, wireProtocol: route.routing.wireProtocol });
             if (!resolved) return [];
-            const api = resolved.wireProtocol === 'openai-chat' ? 'openai-completions' as const : resolved.wireProtocol;
+            const api = chatgpt ? 'openai-codex-responses' as const : resolved.wireProtocol === 'openai-chat' ? 'openai-completions' as const : resolved.wireProtocol;
             const bundled = route.provider.id === 'xd' ? resolveBundledPiGatewayModelProfile(model.id) : undefined;
             const metadata = bundled?.api === api ? bundled : undefined;
             const compat = api === 'anthropic-messages' ? pruneAnthropicCompatForGateway(metadata?.compat) : metadata?.compat;
-            return [{ id: model.id, name: model.name,
+            return [{ id: model.id, name: model.name, ...(chatgpt ? { wireId: model.id.replace(/^chatgpt\//, '') } : {}),
               api,
               ...(metadata?.samplingParams ? { samplingParams: metadata.samplingParams } : {}),
               ...(metadata?.thinkingLevelMap ? { thinkingLevelMap: metadata.thinkingLevelMap as import('@cindy/maker-core').PiNativeModelSpec['thinkingLevelMap'] } : {}),

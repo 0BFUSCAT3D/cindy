@@ -1,3 +1,5 @@
+import { TerminalClaudeLogin } from './models/claude-login.js';
+import { TerminalNativeAccounts } from './models/native-accounts.js';
 import { TerminalProviderLogin } from './models/login.js';
 import { TerminalPluginTasks } from './plugins/tasks.js';
 import { TerminalGateway } from './models/gateway.js';
@@ -405,12 +407,35 @@ export class TerminalService {
       emit: (channel, payload) => { guardIm(); if (this.ownerSuspended) return; this.transport.publish(channel, [payload]); void this.remote?.publish(channel, payload).catch(() => {}); },
     });
     this.im = im;
-    this.providerLogin = new TerminalProviderLogin({ models: this.tasks.models,
+    const nativeAccounts = new TerminalNativeAccounts({ root: ownerDir,
+      binary: async () => (await this.engines.resolve('codex'))?.binary ?? null,
+      version: async () => (await this.engines.status('codex')).version,
+      secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
+      assertCurrent: guardIm,
+      changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
+    });
+    await nativeAccounts.ready;
+    this.tasks.models.connectNative(nativeAccounts);
+    this.tasks.models.nativeClaude = new TerminalClaudeLogin({ owner,
+      binary: async () => (await this.engines.resolve('claude-code'))?.binary ?? null,
+      readBinding: () => this.secrets.getSync('terminal:native:anthropic-binding'),
+      writeBinding: value => value === null ? this.secrets.deleteSync('terminal:native:anthropic-binding') : this.secrets.setSync('terminal:native:anthropic-binding', value),
+      assertCurrent: guardIm,
+      changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); },
+    });
+    this.providerLogin = new TerminalProviderLogin({ models: this.tasks.models, native: nativeAccounts,
       secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
       assertCurrent: guardIm, log: logger,
       changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
     });
-    this.tasks.utility.configureConnections({ readCachedGenericOAuthAccessToken: id => this.providerLogin!.cachedCredential(id) });
+    this.tasks.utility.configureConnections({
+      readCachedGenericOAuthAccessToken: id => this.providerLogin!.cachedCredential(id),
+      getChatgptBridgeAuth: async () => nativeAccounts.credential(),
+      getChatgptBridgeAuthForDispatch: async () => {
+        const auth = await nativeAccounts.credential();
+        return auth;
+      },
+    });
     this.configuration=new TerminalConfiguration(this.tasks.capabilities,{login:this.providerLogin,revision:()=>this.tasks.models.revision(),save:(action,provider,keys,context)=>this.tasks.configureProvider(action,provider,keys,context)}, {
       registration: im.registration,
       revision: () => im.version(), save: async (id, input, context) => {
@@ -565,6 +590,17 @@ export class TerminalService {
       version:VERSION,platform:process.platform,busy:this.tasks.isBusy()||(this.companions?.hasRunningWork()??false),startedAt:this.startedAt,deviceId:this.settings.deviceId,deviceName:this.settings.snapshot().effective.deviceName,
       settings:this.settings.snapshot().effective,vault:this.secrets.status(),auth:this.auth.snapshot(),connection:this.remote.getStatus(),installation:await this.manager.status(),
     };
+    if(channel==='terminal:native-claude') {
+      if (!local || context.sharedTask) throw new Error('LOCAL_ONLY_COMMAND');
+      await this.ownerChange; context.assertCurrent?.();
+      if (this.ownerSuspended) throw new Error('ACCOUNT_CHANGE_IN_PROGRESS');
+      const auth = this.tasks.models.nativeClaude!;
+      if (args[0] === 'begin') return auth.begin();
+      if (args[0] === 'finish' && typeof args[1] === 'string') return auth.finish(args[1]);
+      if (args[0] === 'disconnect') return auth.disconnect();
+      if (args[0] === 'status') return auth.state();
+      throw new Error('INVALID_ARGUMENT');
+    }
     if(channel==='terminal:engines:list')return this.engines.allStatus();
     if(channel==='terminal:engines:refresh'){const statuses=await this.engines.allStatus();await this.tasks.refreshBinaries(Object.fromEntries(statuses.filter(status=>status.binary).map(status=>[status.kind,status.binary!])));return statuses;}
     if(['terminal:engines:install','terminal:engines:update','terminal:engines:repair'].includes(channel)){

@@ -8,7 +8,8 @@ import net from 'node:net';
 import { mkdtemp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { TerminalNativeAccounts } from './native-accounts.js';
 import type { Logger, AgentSessionHandle } from '@cindy/maker-core';
 import { TerminalTaskHost } from '../tasks/host.js';
 import { EngineManager } from '../engines/manager.js';
@@ -125,3 +126,59 @@ describe.skipIf(!process.env.CINDY_PI_TEST_BINARY && process.env.CINDY_TEST_MANA
     }
   }, process.env.CINDY_TEST_MANAGED_PI === '1' ? 180_000 : 30_000);
 });
+
+// Real native clients exercise the subscription protocol, while the account
+// and HTTP server are synthetic. No system credential is read or changed.
+for (const [kind, envKey] of [['pi', 'CINDY_PI_TEST_BINARY'], ['codex', 'CINDY_CODEX_TEST_BINARY'], ['claude-code', 'CINDY_CLAUDE_TEST_BINARY']] as const) {
+  it.skipIf(!process.env[envKey] && process.env.CINDY_TEST_NATIVE_SUBSCRIPTIONS !== '1')(`routes ChatGPT through real ${kind} with an owner-private proxy`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-native-subscription-'));
+    let nativeBinary = process.env[envKey];
+    if (!nativeBinary) {
+      try { nativeBinary = (await new EngineManager({ profileDir: path.join(root, 'managed') }).install(kind)).binary ?? undefined; }
+      catch (error) { await rm(root, { recursive: true, force: true }); throw error; }
+      if (!nativeBinary) throw new Error('MANAGED_ENGINE_UNAVAILABLE');
+    }
+    const calls: Array<{ authorization: string; account: string; model: string }> = [];
+    const api = createServer(async (req, res) => {
+      if (req.url?.startsWith('/models')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({models:[{slug:'gpt-5.4-mini',display_name:'GPT fixture',visibility:'list',supported_in_api:true,context_window:128000,supported_reasoning_levels:[]}]})); return; }
+      let raw = ''; for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw);
+      calls.push({ authorization: String(req.headers.authorization), account: String(req.headers['chatgpt-account-id']), model: body.model });
+      const item = { type: 'message', id: 'msg-fixture', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'SUBSCRIPTION_NATIVE_OK', annotations: [] }] };
+      const events = [
+        { type: 'response.created', response: { id: 'r', status: 'in_progress', output: [] } },
+        { type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress', content: [] } },
+        { type: 'response.content_part.added', output_index: 0, content_index: 0, item_id: 'msg-fixture', part: { type: 'output_text', text: '', annotations: [] } },
+        { type: 'response.output_text.delta', output_index: 0, content_index: 0, item_id: 'msg-fixture', delta: 'SUBSCRIPTION_NATIVE_OK' },
+        { type: 'response.output_item.done', output_index: 0, item },
+        { type: 'response.completed', response: { id: 'r', status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ];
+      res.setHeader('content-type', 'text/event-stream'); res.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+    });
+    await new Promise<void>(resolve => api.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${(api.address() as net.AddressInfo).port}`;
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', ((url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+      const target = String(url);
+      if (target.startsWith('https://chatgpt.com/backend-api/codex/')) return originalFetch(target.replace('https://chatgpt.com/backend-api/codex', base), init);
+      return originalFetch(url, init);
+    }) as typeof fetch);
+    const secrets = new Map<string, string>([['terminal:native:openai', JSON.stringify({ tokens: { access_token: 'synthetic-native-subscription', account_id: 'synthetic-owner' } })]]);
+    const store = { get: async (key: string) => secrets.get(key) ?? null, set: async (key: string, value: string) => { secrets.set(key, value); }, delete: async (key: string) => { secrets.delete(key); } };
+    const accounts = new TerminalNativeAccounts({ root, secrets: { getSync: key => secrets.get(key) ?? null, setSync: (key,value) => { secrets.set(key,value); }, deleteSync: key => { secrets.delete(key); } }, binary: async () => null, assertCurrent() {}, changed() {} });
+    const errors: unknown[] = [];
+    const host = new TerminalTaskHost({ profileDir: path.join(root, 'profile'), logger, emit(channel, args) { if (channel === 'maker:event' && (args[0] as {event?:{type?:string}})?.event?.type === 'error') errors.push(args[0]); }, binaryPaths: { [kind]: nativeBinary }, secretStore: store, nativeStatus: async () => ({ authenticated: false }) });
+    try {
+      await host.ready; host.models.connectNative(accounts);
+      const model = kind === 'codex' ? 'gpt-5.4-mini' : 'chatgpt/gpt-5.4-mini';
+      const task = await host.invoke('maker:create-session', [{ agentKind: kind, providerId: 'openai', model, workingDir: root }]) as { id: string };
+      await host.invoke('maker:send', [task.id, { text: 'Reply briefly. Do not call tools.', clientId: 'native-subscription-input' }]);
+      const receipt = await host.invoke('terminal:tasks:wait', [task.id, 'native-subscription-input']);
+      expect(receipt, JSON.stringify({receipt,errors,calls})).toMatchObject({ status: 'completed', finalText: 'SUBSCRIPTION_NATIVE_OK' });
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every(call => call.authorization === 'Bearer synthetic-native-subscription' && call.account === 'synthetic-owner' && call.model === 'gpt-5.4-mini')).toBe(true);
+    } finally {
+      await host.close(); await accounts.close(); vi.unstubAllGlobals(); api.closeAllConnections(); await new Promise<void>(resolve => api.close(() => resolve())); await rm(root, { recursive: true, force: true });
+    }
+  }, process.env.CINDY_TEST_NATIVE_SUBSCRIPTIONS === '1' ? 180_000 : 30_000);
+}

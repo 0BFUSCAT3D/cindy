@@ -77,6 +77,8 @@ jobs:
         run: pnpm --filter @cindy/im-runtime typecheck
       - name: Existing account catalog and auxiliary model authority
         run: pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/activeCatalogDiscovery.test.ts src/main/maker-host/__tests__/activeCatalogRevision.test.ts src/main/maker-host/__tests__/activeCatalogXdAvailability.test.ts src/main/maker-host/__tests__/piGatewayModelCatalog.test.ts src/main/maker-host/__tests__/genericOAuth.test.ts src/main/maker-host/__tests__/custom-provider-store.test.ts src/main/model-access/__tests__/credentialsSync.test.ts src/main/model-access/__tests__/modelsSyncRefresh.test.ts src/main/model-access/__tests__/gatewayKeyRejection.test.ts src/main/utility-model/__tests__/oneShotCandidates.test.ts src/main/maker-host/__tests__/opencode-go-session.test.ts src/main/maker-ipc/__tests__/auxiliaryModelSettings.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Existing native subscription discovery and CLI login boundaries
+        run: pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/codexModelDiscovery.test.ts src/main/maker-host/__tests__/chatgptBridgeHeaders.test.ts src/main/maker-host/__tests__/claudeNativeCli.test.ts src/main/maker-host/__tests__/claudeNativeConnection.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck shared model runtime
         run: pnpm exec tsc -p packages/model-providers/tsconfig.json --noEmit
       - name: Shared model switching and context recovery
@@ -89,10 +91,11 @@ jobs:
         run: pnpm --filter @cindy/plugin-runtime exec vitest run src/nativeProcess.integration.test.ts --testTimeout=30000 --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal
         run: pnpm --filter cindy-terminal typecheck
-      - name: Real bundled Pi switches APIs without exposing provider credentials
+      - name: Real bundled engines preserve provider and subscription boundaries
         env:
           CINDY_TEST_MANAGED_PI: '1'
-        run: pnpm --filter cindy-terminal exec vitest run src/models/runtime.integration.test.ts -t 'real Pi' --maxWorkers=1 --minWorkers=1
+          CINDY_TEST_NATIVE_SUBSCRIPTIONS: '1'
+        run: pnpm --filter cindy-terminal exec vitest run src/models/runtime.integration.test.ts -t 'real Pi|routes ChatGPT' --maxWorkers=1 --minWorkers=1
       - name: Build terminal bundle
         run: pnpm --filter cindy-terminal build
       - name: Package official Node and native dependencies

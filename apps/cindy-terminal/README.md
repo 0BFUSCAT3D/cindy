@@ -25,9 +25,18 @@ Access and refresh tokens stay in its account-scoped encrypted vault.
 
 `cindy providers status --provider <id>` reports connection state;
 `cindy providers logout --provider <id>` disconnects that saved provider.
-The positional engine commands, such as `cindy providers login claude-code`,
-continue to invoke the native CLI. Claude subscription credentials are managed
-exclusively by Claude Code.
+`cindy providers login --provider openai` uses the official Codex device-code
+login. It works through the same protected remote configuration surface. The
+host keeps its OpenAI login in the current Cindy account's encrypted vault and
+routes Codex, Claude Code and Pi through a private proxy. It does not reuse or
+modify `~/.codex` credentials.
+
+`cindy providers login claude-code` connects an existing official Claude CLI
+subscription, or launches `claude auth login --claudeai` in the foreground.
+Claude credentials stay exclusively in the CLI's default credential store.
+`cindy providers logout claude-code` revokes Cindy's permission to use that login;
+it does not log out the CLI. A different Cindy account must explicitly connect.
+The native Pi CLI's own `/login` remains available through the engine menu.
 
 ## Headless plugin browser
 

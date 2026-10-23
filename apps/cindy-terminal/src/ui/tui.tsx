@@ -226,12 +226,13 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     const id=label(provider.id);
     const custom=array((await readModelConfiguration(client,device)).providers).find(p=>p.id===id);
     const common=[provider.suspended?modelText.enable:modelText.disable,modelText.reset];
-    const options=custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[t.refresh,...common];
+    const options=custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[...(id==='openai'?[t.login,modelText.disconnect]:[]),t.refresh,...common];
     edit(label(provider.name,id),[{key:'action',label:t.commands,choices:options}],async values=>{
       const selected=values.action;
       if(selected===t.login){setForm(null);setProviderLogin(id);return;}
       if(common.includes(selected)){await invokeModelConfiguration(client,'disabled',{providerId:id,kind:selected===modelText.reset?'reset':'provider',disabled:selected===modelText.disable},device);setForm(null);await load();return;}
       if(selected===t.refresh){await invokeModelConfiguration(client,'refresh',{providerId:id},device);setForm(null);await load();return;}
+      if(!custom&&id==='openai'&&selected===modelText.disconnect){await invokeModelConfiguration(client,'disconnect',{providerId:id},device);setForm(null);await load();return;}
       if(!custom)throw new Error('PROVIDER_NOT_FOUND');
       if(selected===modelText.disconnect||selected===modelText.remove){
         edit(selected,[{key:'confirm',label:label(custom.name,id),choices:[t.cancel,t.yes]}],async value=>{if(value.confirm===t.yes)await invokeModelConfiguration(client,selected===modelText.remove?'remove':'disconnect',{providerId:id},device);setForm(null);await load();});return;
@@ -345,12 +346,12 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         }
       } else if(at.page==='providers'){
         const raw=await call('maker:provider:list');
-        nextItems=array(record(raw).providers??raw).filter(p=>p.source==='user'||p.connected).map(provider=>({id:label(provider.id),title:label(provider.name,label(provider.id)),detail:provider.suspended?modelText.disable:provider.connected?t.connected:t.signedOut,run:()=>manageProvider(provider)}));
+        nextItems=array(record(raw).providers??raw).filter(p=>p.source==='user'||p.connected||p.id==='openai').map(provider=>({id:label(provider.id),title:label(provider.name,label(provider.id)),detail:provider.suspended?modelText.disable:provider.connected?t.connected:t.signedOut,run:()=>manageProvider(provider)}));
       } else if(at.page==='engines'){
         const statuses=array(await call('terminal:engines:list',[],false));
         nextItems=statuses.map(item=>({id:label(item.kind),title:label(item.kind),detail:label(item.version,t.notInstalled),run:()=>{setEngine(label(item.kind) as typeof engine);navigate('engine');}}));
       } else if(at.page==='engine'){
-        const operation=(name:'login'|'logout')=>{onExternalAction({type:'native-auth',kind:engine,operation:name});exit();};
+        const operation=(name:'login'|'logout')=>{if(engine==='codex'){if(name==='login')setProviderLogin('openai');else void invokeModelConfiguration(client,'disconnect',{providerId:'openai'},device).then(()=>load()).catch(error=>setError(String(error)));return;}onExternalAction({type:'native-auth',kind:engine,operation:name});exit();};
         nextItems=[
           {id:'install',title:t.install,run:async()=>{await call('terminal:engines:install',[engine],false);await load();}},
           {id:'update',title:t.update,run:async()=>{await call('terminal:engines:update',[engine],false);await load();}},

@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -14,6 +14,10 @@ import { TerminalProtectedInput } from '../protected-input.js';
 import { registerModelConfigurationResources } from './resources.js';
 import { createProviderProxy } from './proxy.js';
 import * as platform from '../platform.js';
+import { TerminalClaudeLogin } from './claude-login.js';
+import { TerminalNativeAccounts } from './native-accounts.js';
+import { runNative } from '../engines/native.js';
+import { createChatgptProxy } from './subscription-proxy.js';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -359,4 +363,151 @@ it('discards a token response that arrives after the owner is revoked', async ()
   await expect(
     f.controller.channelRegistration({ command: 'read', id }, 'providers'),
   ).rejects.toThrow('OWNER_CHANGED');
+});
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+const nativeToken = (expires: number, signature = 'synthetic-signature') => `header.${Buffer.from(JSON.stringify({ exp: expires })).toString('base64url')}.${signature}`;
+
+async function nativeFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-native-login-'));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const vault = new TerminalSecretStore(root); await vault.initialize('machine');
+  const grant = deferred(), visible = deferred(), changed = deferred();
+  const expires = Math.floor(Date.now() / 1000) + 3600;
+  const token = nativeToken(expires);
+  const calls: Array<{ url: string; headers: import('node:http').IncomingHttpHeaders; body: Record<string, unknown> }> = [];
+  let refreshes = 0;
+  let beforeRefresh: (() => Promise<void>) | undefined;
+  const api = createServer(async (req, res) => {
+    if (req.url === '/models') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ models: [{ slug: 'gpt-fixture', display_name: 'GPT Fixture', visibility: 'list', supported_in_api: true, context_window: 128000, supported_reasoning_levels: [] }] })); return; }
+    if (req.url === '/grant') { await grant.promise; res.end('{}'); return; }
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    if (req.url === '/token') {
+      refreshes++; await beforeRefresh?.();
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ access_token: nativeToken(Math.floor(Date.now() / 1000) + 3600, 'rotated'), refresh_token: 'rotated-private-refresh' })); return;
+    }
+    calls.push({ url: req.url!, headers: req.headers, body: JSON.parse(raw) });
+    const item = { type: 'message', id: 'msg', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'NATIVE_BRIDGE_OK', annotations: [] }] };
+    const events = [
+      { type: 'response.created', response: { id: 'r', status: 'in_progress', output: [] } },
+      { type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress', content: [] } },
+      { type: 'response.content_part.added', output_index: 0, content_index: 0, item_id: 'msg', part: { type: 'output_text', text: '', annotations: [] } },
+      { type: 'response.output_text.delta', output_index: 0, content_index: 0, item_id: 'msg', delta: 'NATIVE_BRIDGE_OK' },
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response: { id: 'r', status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1 } } },
+    ];
+    res.setHeader('content-type', 'text/event-stream'); res.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+  });
+  await new Promise<void>(resolve => api.listen(0, '127.0.0.1', resolve));
+  cleanup.push(async () => { grant.resolve(); api.closeAllConnections(); await new Promise<void>(resolve => api.close(() => resolve())); });
+  const endpoint = `http://127.0.0.1:${(api.address() as { port: number }).port}`;
+  const runner = path.join(root, 'official-cli-fixture.mjs');
+  await writeFile(runner, `import fs from 'node:fs/promises';import path from 'node:path';
+    console.log('https://auth.openai.com/codex/device\\nABCD-12345');
+    await fetch(${JSON.stringify(endpoint + '/grant')});
+    await fs.writeFile(path.join(process.env.CODEX_HOME,'auth.json'),JSON.stringify(${JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: token, refresh_token: 'private-refresh', account_id: 'synthetic-workspace' } })}),{mode:0o600});`);
+  let active = true;
+  const guard = () => { if (!active) throw new Error('OWNER_CHANGED'); };
+  const fetchLocal: typeof fetch = (url, init) => fetch(endpoint + (String(url).endsWith('/oauth/token') ? '/token' : String(url).includes('/models?') ? '/models' : '/responses'), init);
+  const accounts = new TerminalNativeAccounts({ root, secrets: vault, binary: async () => process.execPath, assertCurrent: guard, changed: () => changed.resolve(), fetch: fetchLocal,
+    run: async (_binary, args, opts) => {
+      expect(args).toEqual(['login', '--device-auth']); expect(opts?.env?.CODEX_HOME).not.toBe(process.env.CODEX_HOME);
+      return runNative(process.execPath, [runner], { ...opts, onOutput: text => { opts?.onOutput?.(text); visible.resolve(); } });
+    },
+  });
+  cleanup.push(() => accounts.close());
+  return { root, vault, token, expires, calls, accounts, grant, visible, changed, fetchLocal, guard,
+    refreshes: () => refreshes, beforeRefresh: (fn: () => Promise<void>) => { beforeRefresh = fn; }, revoke: () => { active = false; } };
+}
+
+// Integration: use a real native child and temporary auth file, encrypted vault,
+// actual shared refresh serializer and all three HTTP dispatch protocols.
+it('isolates official CLI sign-in and refresh across the three native model routes', async () => {
+  const f = await nativeFixture();
+  f.accounts.begin('native-login', f.guard, Date.now() + 60_000);
+  await f.visible.promise;
+  expect(f.accounts.state('native-login')).toMatchObject({ status: 'pending', verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'ABCD-12345' });
+  f.grant.resolve(); await f.changed.promise;
+  expect(f.accounts.state('native-login').status).toBe('success');
+  expect(await readdir(path.join(f.root, 'provider-login'))).toEqual([]);
+  expect(await readFile(path.join(f.root, 'secrets.enc'), 'utf8')).not.toContain(f.token);
+  const models = new TerminalModelConfig(f.root, f.vault, async () => ({ authenticated: false }));
+  await models.open(); models.connectNative(f.accounts);
+  for (const kind of ['codex', 'claude-code', 'pi'] as const) {
+    const provider = (await models.views()).find(p => p.id === 'openai')!;
+    const model = provider.models[kind]!.find(m => !m.disabled)!;
+    const { route } = await models.select({ agentKind: kind, providerId: 'openai', model: model.id });
+    const proxy = await createChatgptProxy({ route, kind, taskId: 'native-route', accounts: f.accounts, fetch: f.fetchLocal });
+    cleanup.push(() => proxy.close());
+    const response = await fetch(proxy.url + (kind === 'claude-code' ? '/v1/messages' : kind === 'pi' ? '/codex/responses' : '/responses'), {
+      method: 'POST', headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(kind === 'claude-code' ? { model: model.id, stream: true, max_tokens: 32, messages: [{ role: 'user', content: 'hello' }] } : { model: model.id.replace(/^chatgpt\//, ''), input: [], stream: true, store: false }),
+    });
+    expect(response.status).toBe(200); expect(await response.text()).toContain('NATIVE_BRIDGE_OK');
+  }
+  expect(f.calls).toHaveLength(3);
+  for (const call of f.calls) {
+    expect(call.headers.authorization).toBe(`Bearer ${f.token}`); expect(call.headers['chatgpt-account-id']).toBe('synthetic-workspace');
+    expect(call.body.model).not.toMatch(/^chatgpt\//);
+  }
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime((f.expires + 1) * 1000);
+  const refreshed = await Promise.all([f.accounts.credential(), f.accounts.credential(), f.accounts.credential()]);
+  expect(f.refreshes()).toBe(1); expect(refreshed.every(value => value.accessToken.endsWith('.rotated'))).toBe(true);
+  const retained = refreshed[0]; f.accounts.disconnect(); expect(retained.canDispatch()).toBe(false);
+  await expect(f.accounts.credential()).rejects.toThrow('PROVIDER_LOGIN_REQUIRED');
+  expect((await models.views()).find(p => p.id === 'openai')?.connected).toBe(false);
+});
+
+it('discards a late native grant and a late refresh after the owner disconnects', async () => {
+  const f = await nativeFixture();
+  f.accounts.begin('cancelled-native', f.guard, Date.now() + 60_000); await f.visible.promise;
+  f.accounts.cancel('cancelled-native'); f.grant.resolve(); await f.accounts.close();
+  expect(f.vault.getSync('terminal:native:openai')).toBeNull();
+  expect(await readdir(path.join(f.root, 'provider-login'))).toEqual([]);
+  const g = await nativeFixture();
+  g.accounts.begin('native-refresh', g.guard, Date.now() + 60_000); await g.visible.promise; g.grant.resolve(); await g.changed.promise;
+  const refreshing = deferred(), finish = deferred(); g.beforeRefresh(async () => { refreshing.resolve(); await finish.promise; });
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime((g.expires + 1) * 1000);
+  const pending = g.accounts.credential(); const rejected = expect(pending).rejects.toThrow('PROVIDER_AUTHORIZATION_CHANGED');
+  await refreshing.promise; g.accounts.disconnect(); finish.resolve(); await rejected;
+  expect(g.vault.getSync('terminal:native:openai')).toBeNull();
+});
+
+
+// Authorization boundary: the same OS CLI login may be used only by its
+// explicitly connected Cindy owner. Disconnect never logs out the native CLI.
+it('binds Claude usage to one owner and rejects a stale or non-subscription grant', async () => {
+  let binding: string | null = null;
+  let status: Record<string, unknown> = { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', email: 'fixture@example.invalid' };
+  let beforeRead: (() => Promise<void>) | undefined;
+  const calls: string[][] = [];
+  const make = (owner: string) => new TerminalClaudeLogin({ owner, readBinding: () => binding, writeBinding: value => { binding = value; }, binary: async () => '/native/claude', assertCurrent() {}, changed() {},
+    run: async (_binary, args, options) => {
+      calls.push(args);
+      expect(options?.env).not.toHaveProperty('CLAUDE_CONFIG_DIR'); expect(options?.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN');
+      await beforeRead?.(); return { code: 0, stdout: JSON.stringify(status), stderr: '' };
+    },
+  });
+  const first = make('owner-a'), second = make('owner-b');
+  cleanup.push(() => first.close(), () => second.close());
+  expect(await first.state()).toEqual({ authenticated: false }); expect(calls).toEqual([]);
+  const firstTicket = await first.begin(); expect(firstTicket.needsLogin).toBe(false); await first.finish(firstTicket.id);
+  expect(await first.state()).toMatchObject({ authenticated: true }); expect(await second.state()).toMatchObject({ authenticated: false });
+  const secondTicket = await second.begin(); await second.finish(secondTicket.id);
+  expect(await first.state()).toMatchObject({ authenticated: false }); expect(await second.state()).toMatchObject({ authenticated: true });
+  second.disconnect(); expect(await second.state()).toMatchObject({ authenticated: false });
+  const stale = await second.begin(), reading = deferred(), finish = deferred();
+  beforeRead = async () => { reading.resolve(); await finish.promise; };
+  const result = second.finish(stale.id); const rejected = expect(result).rejects.toThrow('PROVIDER_LOGIN_STALE');
+  await reading.promise; second.disconnect(); finish.resolve(); await rejected; beforeRead = undefined;
+  expect(binding).toBeNull();
+  status = { loggedIn: true, authMethod: 'claude.ai', apiKeySource: 'console' };
+  const consoleTicket = await second.begin(); expect(consoleTicket.needsLogin).toBe(true);
+  await expect(second.finish(consoleTicket.id)).rejects.toThrow('NATIVE_SUBSCRIPTION_LOGIN_REQUIRED');
+  expect(binding).toBeNull(); expect(calls.every(args => args.join(' ') === 'auth status --json')).toBe(true);
 });
