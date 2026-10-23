@@ -14,7 +14,6 @@ import {
   exportAvatarCrop,
   type AvatarSource,
 } from '@/components/settings/avatarCropImage';
-import { BOT_AVATAR_MAX_BYTES } from '../../../shared/botAvatarValue';
 
 export const BOT_PORTRAIT_COUNT = 17;
 
@@ -76,7 +75,7 @@ export function BotPortraitPicker({
   cropRef.current = cropSession;
   const exporting = useRef(false);
   const [exportBusy, setExportBusy] = useState(false);
-  const file = useRef<HTMLInputElement>(null);
+  const choosing = useRef(false);
   const generation = useRef(0);
   const currentToken = useRef(token);
   const preparing = useRef(false);
@@ -92,6 +91,7 @@ export function BotPortraitPicker({
   };
   useEffect(() => {
     currentToken.current = token;
+    choosing.current = false;
     generation.current++;
     cropRef.current?.source.bitmap.close();
     cropRef.current = null;
@@ -136,6 +136,38 @@ export function BotPortraitPicker({
     } finally {
       exporting.current = false;
       setExportBusy(false);
+    }
+  };
+  const chooseUpload = async () => {
+    if (disabled || choosing.current) return;
+    const request = ++generation.current;
+    choosing.current = true;
+    setPreparing(true);
+    setError(false);
+    setOpen(false);
+    try {
+      // Account avatars use this same host chooser: validate and tone-map HDR
+      // before the renderer's sRGB canvas discards the original HDR metadata.
+      // Choosing prepares bytes only; it never saves or updates the account.
+      const result = await window.electronAPI.profileChooseAvatar();
+      if (request !== generation.current || result.canceled || !result.previewDataUrl) return;
+      const source = await loadAvatarSource(result.previewDataUrl);
+      if (request !== generation.current) {
+        source.bitmap.close();
+        return;
+      }
+      cropRef.current?.source.bitmap.close();
+      const session = { source, crop: initialAvatarCrop(source.size) };
+      cropRef.current = session;
+      setCropSession(session);
+    } catch {
+      if (request === generation.current) {
+        setError(true);
+        setOpen(true);
+      }
+    } finally {
+      if (request === generation.current) choosing.current = false;
+      if (!cropRef.current) finishPreparing(request);
     }
   };
   const select = async (index: number) => {
@@ -227,11 +259,7 @@ export function BotPortraitPicker({
                 <button
                   type="button"
                   aria-label={t('bots.guided.upload')}
-                  onClick={() => {
-                    generation.current++;
-                    setPreparing(false);
-                    file.current?.click();
-                  }}
+                  onClick={() => void chooseUpload()}
                   className="flex aspect-square items-center justify-center rounded-full border border-[var(--border-default)] text-[var(--text-secondary)] outline-none hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
                 >
                   <Plus size={20} aria-hidden="true" />
@@ -313,60 +341,6 @@ export function BotPortraitPicker({
             }
           />
         )}
-        <input
-          ref={file}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          className="hidden"
-          onChange={async (event) => {
-            const selected = event.target.files?.[0];
-            event.target.value = '';
-            if (!selected) return;
-            if (
-              !['image/png', 'image/jpeg', 'image/webp'].includes(selected.type) ||
-              !selected.size ||
-              selected.size > BOT_AVATAR_MAX_BYTES
-            ) {
-              setError(true);
-              return;
-            }
-            if (disabled) return;
-            const current = ++generation.current;
-            setPreparing(true);
-            try {
-              const reader = new FileReader();
-              reader.onload = async () => {
-                try {
-                  if (current !== generation.current) return;
-                  const source = await loadAvatarSource(String(reader.result));
-                  if (current !== generation.current) {
-                    source.bitmap.close();
-                    return;
-                  }
-                  cropRef.current?.source.bitmap.close();
-                  const session = { source, crop: initialAvatarCrop(source.size) };
-                  cropRef.current = session;
-                  setCropSession(session);
-                  setError(false);
-                  setOpen(false);
-                } catch {
-                  if (current === generation.current) setError(true);
-                } finally {
-                  if (!cropRef.current) finishPreparing(current);
-                }
-              };
-              reader.onerror = () => {
-                if (current === generation.current) setError(true);
-                finishPreparing(current);
-              };
-              reader.onabort = () => finishPreparing(current);
-              reader.readAsDataURL(selected);
-            } catch {
-              if (current === generation.current) setError(true);
-              finishPreparing(current);
-            }
-          }}
-        />
       </div>
     </Popover.Root>
   );

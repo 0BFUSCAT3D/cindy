@@ -15,6 +15,22 @@ function Portrait() {
   );
 }
 mountPage({
-  host: { profileUpdate: forbid('profileUpdate') },
+  host: {
+    profileUpdate: forbid('profileUpdate'),
+    // Component-only host substitute. Real Electron prepares HDR through
+    // profileEdit.chooseAvatarFile; that path has its own main-process tests.
+    profileChooseAvatar: async () => {
+      const supplied = (window as unknown as { __botAvatarUpload?: string }).__botAvatarUpload;
+      if (supplied) return { canceled: false, previewDataUrl: supplied };
+      const image = new Image();
+      image.src = cindy;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      canvas.getContext('2d')!.drawImage(image, 0, 0);
+      return { canceled: false, previewDataUrl: canvas.toDataURL() };
+    },
+  },
   render: () => <Portrait />,
 });

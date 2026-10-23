@@ -5,7 +5,8 @@ export default {
   entry: './bot-avatar-crop-fixture.tsx',
   viewport: { width: 720, height: 640 },
   real: 'BotPortraitPicker upload entry, account AvatarCropEditor, real image decode, crop geometry and export',
-  notCovered: 'Full app navigation, main-process persistence, remote device transport and Mobile',
+  notCovered:
+    'Native chooser and HDR conversion are host substitutes; full app persistence, remote transport and Mobile are not covered',
   cases: {
     default: { about: 'Upload, drag/zoom, confirm, cancel, repeat selection and invalid image' },
   },
@@ -28,13 +29,18 @@ export default {
       buffer: Buffer.from(dataUrl.split(',')[1], 'base64'),
     };
     const upload = async (image = file) => {
+      await page.evaluate(
+        (source) => {
+          window.__botAvatarUpload = source;
+        },
+        `data:${image.mimeType};base64,${image.buffer.toString('base64')}`,
+      );
       await page
         .getByRole('button', { name: await ui.t('bots.profile.changeAvatar'), exact: true })
         .click();
       await page
         .getByRole('button', { name: await ui.t('bots.guided.upload'), exact: true })
         .click();
-      await page.locator('input[type=file]').setInputFiles(image);
     };
     await upload();
     const stage = page.getByRole('group', {

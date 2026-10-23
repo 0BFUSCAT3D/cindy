@@ -626,15 +626,19 @@ it.each(['gallery', 'file'])(
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     const decodes: Array<() => void> = [];
     await openAvatar(() => new Promise<void>((resolve) => decodes.push(resolve)));
-    let reader: { result: string; onload: () => void };
+    let finishChoose!: (result: { canceled: boolean; previewDataUrl: string }) => void;
+    window.electronAPI.profileChooseAvatar = vi.fn(() =>
+      new Promise<{ canceled: boolean; previewDataUrl: string }>((resolve) => {
+        finishChoose = resolve;
+      }),
+    );
     vi.stubGlobal(
       'FileReader',
       class {
         result = 'data:image/png;base64,cG5n';
         onload = () => {};
-        readAsDataURL(blob: Blob) {
-          reader = { result: this.result, onload: this.onload };
-          if (!(blob instanceof File)) this.onload();
+        readAsDataURL() {
+          this.onload();
         }
       },
     );
@@ -642,10 +646,7 @@ it.each(['gallery', 'file'])(
     let canClose: unknown;
     await act(async () => {
       if (source === 'gallery') fireEvent.click(screen.getByRole('button', { name: 'Cindy' }));
-      else
-        fireEvent.change(document.querySelector('input[type="file"]')!, {
-          target: { files: [new File(['image'], 'avatar.png', { type: 'image/png' })] },
-        });
+      else fireEvent.click(screen.getByRole('button', { name: 'bots.guided.upload' }));
       canClose = await close.current?.();
     });
     expect(canClose).toBe(false);
@@ -655,7 +656,7 @@ it.each(['gallery', 'file'])(
     expect(h.portrait.disabled).toBe(true);
     await act(async () => {
       if (source === 'gallery') decodes.shift()!();
-      else reader!.onload();
+      else finishChoose({ canceled: false, previewDataUrl: 'data:image/png;base64,c2Ry' });
     });
     if (source === 'file') {
       expect(h.invoke).not.toHaveBeenCalledWith('host', REMOTE_RESOURCE_INVOKE_CHANNEL, expect.anything());
