@@ -145,7 +145,11 @@ export function providerInterfaceModelRoute<T extends ProviderRuntimeModelConfig
 }
 
 export function hasDeclaredProviderInterface(model: ProviderRuntimeModelConfig, agent: AgentKind, presetId: string | undefined, baseUrl: string, registry: ModelRegistry = bundledRegistry): boolean {
-  return !!presetId && availableModelInterfaces(registry, presetId, model.id, baseUrl, agent)
+  // Older servers cannot declare interface profiles. Retain the bundled proof
+  // for metadata on an already selected route; never fill an empty/retired V6
+  // directory or use this fallback to select a different execution interface.
+  const declarations = registry.schemaVersion < 6 ? bundledRegistry : registry;
+  return !!presetId && availableModelInterfaces(declarations, presetId, model.id, baseUrl, agent)
     .some(p => p.api === model.api && clean(p.route.baseUrl) === clean(model.route?.baseUrl ?? baseUrl));
 }
 
