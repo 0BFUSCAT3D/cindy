@@ -34,6 +34,7 @@ beforeAll(async()=>{
   directory=await mkdtemp(path.join(os.tmpdir(),'cindy-terminal-plugins-'));runtime=path.join(directory,'runtime');
   const source=fileURLToPath(new URL('../../../../packages/plugin-runtime/src/',import.meta.url));
   for(const [entry,out] of [['nativeWorkerEntry.ts','plugin-node-worker.cjs'],['nativeSnapshotWorker.ts','plugin-snapshot-worker.cjs'],['forgeScaffoldWorkerProcess.ts','plugin-scaffold-worker.cjs']])await build({entryPoints:[path.join(source,entry)],outfile:path.join(runtime,out),bundle:true,platform:'node',target:'node22',format:'cjs',logLevel:'silent'});
+  await build({entryPoints:[path.join(source,'library/libraryDbWorker.ts')],outfile:path.join(runtime,'plugin-library-worker.mjs'),bundle:true,platform:'node',target:'node22',format:'esm',logLevel:'silent'});
   await copyFile(path.join(source,'mailComposeRuntime.js'),path.join(runtime,'plugin-mail-runtime.js'));
 });
 afterAll(async()=>{await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
@@ -202,3 +203,42 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   // Native Windows vault ACL commands run for each durable mutation. Preserve
   // the local 5s budget while allowing that real OS work on the CI runner.
 },process.platform==='win32'?30_000:5_000);
+
+// Native integration: Library was absent from the terminal pipe. Exercise real
+// package approval, the Node SQLite worker, source archival and uninstall, so
+// success cannot come from an in-process SQL fake or a second storage engine.
+it('persists plugin works through restart and uninstall while isolating a changed source',async()=>{
+  const root=path.join(directory,'library-owner'),values=new Map<string,string>();
+  const secrets={get:async(key:string)=>values.get(key)??null,set:async(key:string,value:string)=>{values.set(key,value);},delete:async(key:string)=>{values.delete(key);},getSync:(key:string)=>values.get(key)??null,setSync:(key:string,value:string)=>{values.set(key,value);},deleteSync:(key:string)=>{values.delete(key);},setManySync:(entries:Record<string,string|null>)=>{for(const [key,value]of Object.entries(entries))if(value===null)values.delete(key);else values.set(key,value);}};
+  const options={root,runtimeDirectory:runtime,secrets,assertCurrent:()=>{},locale:()=> 'en',changed:()=>{},
+    cards:{persist:async()=>{},broadcast:()=>{}},fs:{getSessionSnapshot:async()=>null,requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:'unused',receive:async()=>{throw new Error('Unexpected slot');}};
+  const zip=new JSZip();zip.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-library',name:'Terminal library',version:'1.0.0',kind:'chip',entry:'main.js',slots:['tool','library'],tools:[{name:'save',description:'Save work'}]}));zip.file('main.js','cindy.onHostMessage(()=>{});');
+  const file=path.join(directory,'library.cindy');await writeFile(file,await zip.generateAsync({type:'nodebuffer'}));
+  let host=new TerminalPlugins(options);
+  const install=async(origin:'manual'|'agent-forge'='manual')=>{const pending=await host.prepareInstall(file,'test-controller',origin==='agent-forge'?{installOrigin:origin}:{});return installedGhostStoragePart(await host.confirmInstall(pending.id,'test-controller'));};
+  const request=(id:string,op:string,rest:Record<string,unknown>={})=>host.receive(id,{type:'library-request',op,...rest});
+  try{
+    const id=await install();
+    expect(await request(id,'write',{path:'works/note.txt',content:'retained work',encoding:'utf8'})).toMatchObject({ok:true,sha256:expect.stringMatching(/^[a-f0-9]{64}$/)});
+    expect(await request(id,'db.open',{dbPath:'works/index.sqlite'})).toMatchObject({ok:true});
+    expect(await request(id,'db.exec',{dbPath:'works/index.sqlite',sql:'CREATE TABLE works(name TEXT)'})).toMatchObject({ok:true});
+    expect(await request(id,'db.exec',{dbPath:'works/index.sqlite',sql:'INSERT INTO works(name) VALUES (?)',params:['retained work']})).toMatchObject({ok:true});
+    expect(await request(id,'db.exec',{dbPath:'works/index.sqlite',sql:"ATTACH DATABASE '/tmp/outside.sqlite' AS outside"})).toMatchObject({ok:false,errorCode:'DB_STATEMENT_REJECTED'});
+    expect(await request(id,'write',{path:'../escape.txt',content:'outside',encoding:'utf8'})).toMatchObject({ok:false,errorCode:'PATH_INVALID'});
+    await host.close();host=new TerminalPlugins(options);await host.ready;
+    expect(await request(id,'read',{path:'works/note.txt',encoding:'utf8'})).toMatchObject({ok:true,content:'retained work'});
+    expect(await request(id,'db.open',{dbPath:'works/index.sqlite'})).toMatchObject({ok:true});
+    expect(await request(id,'db.exec',{dbPath:'works/index.sqlite',sql:'SELECT name FROM works'})).toMatchObject({ok:true,rows:[{name:'retained work'}]});
+    await host.uninstall(id);
+    expect(await readFile(path.join(root,'libraries',id,'works/note.txt'),'utf8')).toBe('retained work');
+    expect(JSON.parse(await readFile(path.join(root,'libraries',id,'.cindy-library/meta.json'),'utf8'))).toMatchObject({orphaned:{name:'Terminal library'}});
+    expect(await install()).toBe(id);
+    expect(await request(id,'read',{path:'works/note.txt',encoding:'utf8'})).toMatchObject({ok:true,content:'retained work'});
+    expect(JSON.parse(await readFile(path.join(root,'libraries',id,'.cindy-library/meta.json'),'utf8'))).not.toHaveProperty('orphaned');
+    await install('agent-forge');
+    expect(await request(id,'read',{path:'works/note.txt',encoding:'utf8'})).toMatchObject({ok:false,errorCode:'NOT_FOUND'});
+    const archived=(await readdir(path.join(root,'libraries'))).find(name=>name.startsWith('arch_'))!;
+    expect(await readFile(path.join(root,'libraries',archived,'works/note.txt'),'utf8')).toBe('retained work');
+    expect(JSON.parse(await readFile(path.join(root,'libraries',archived,'.cindy-library/meta.json'),'utf8'))).toMatchObject({ghostId:archived});
+  }finally{await host.close();}
+});

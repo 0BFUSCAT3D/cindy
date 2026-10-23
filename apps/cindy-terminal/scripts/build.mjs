@@ -15,6 +15,7 @@ await build({
 // The native plugin worker keeps the same published bootstrap ABI as Desktop.
 await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/nativeWorkerEntry.ts')], outfile:path.join(appDir,'dist/plugin-node-worker.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
 await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/nativeSnapshotWorker.ts')], outfile:path.join(appDir,'dist/plugin-snapshot-worker.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
+await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/library/libraryDbWorker.ts')], outfile:path.join(appDir,'dist/plugin-library-worker.mjs'), platform:'node', target:'node22', format:'esm', bundle:true, sourcemap:true, external:['better-sqlite3'] });
 await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/forgeScaffoldWorkerProcess.ts')], outfile:path.join(appDir,'dist/plugin-scaffold-worker.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
 await build({ entryPoints:[path.join(appDir,'src/service-supervisor-entry.ts')], outfile:path.join(appDir,'dist/service-supervisor.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
 

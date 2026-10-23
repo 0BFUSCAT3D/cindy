@@ -49,9 +49,12 @@ async function waitForStopped(directory:string) {
     try{await fs.access(path.join(directory,'service.json'));}
     catch(error){
       if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
-      // Windows' scheduled action owns a supervisor. Let the normal child
-      // exit finish that action before /Run, which otherwise ignores it.
-      if(process.platform!=='win32'||!(await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).inspect()).running)return;
+      // Removing IPC precedes process exit. Every native manager must observe
+      // that exit before activation: systemd start, launchd kickstart and a
+      // scheduled task can otherwise reuse the still-stopping instance.
+      const service=await new TerminalServiceManager(directory,fileURLToPath(import.meta.url)).inspect();
+      if(service.installation&&!service.managerAvailable)throw new Error('SERVICE_MANAGER_UNAVAILABLE');
+      if(!service.running)return;
     }
     await pause(100);
   }
