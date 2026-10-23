@@ -11,7 +11,7 @@ import { Input, terminalText } from './input.js';
 import { useInputState } from './state.js';
 
 /** Portable resource controller; business actions remain on the selected host. */
-export function Resources({ client, device, locale, initialCollection, onTask }: { client: TerminalClient; device?: string; locale: Locale;initialCollection?:string; onTask(id: string,device?:string): void }) {
+export function Resources({ client, device, locale, initialCollection, initialRef, onTask }: { client: TerminalClient; device?: string; locale: Locale;initialCollection?:string;initialRef?:RemoteResourceRef; onTask(id: string,device?:string): void }) {
   const t=getMessages(locale);
   const { rows, columns }=useWindowSize();
   const [collections,setCollections]=useState<RemoteCollectionDescriptor[]>([]);
@@ -42,13 +42,19 @@ export function Resources({ client, device, locale, initialCollection, onTask }:
   }
   async function open(ref:RemoteResourceRef){
     const at=epoch.current;
+    if(collection?.id!==ref.collectionId){
+      let target=collections.find(item=>item.id===ref.collectionId);
+      if(!target){const manifest=await call<{collections:RemoteCollectionDescriptor[]}>('manifest',{});if(epoch.current!==at)return;setCollections(manifest.collections);target=manifest.collections.find(item=>item.id===ref.collectionId);}
+      if(!target)throw new Error('CAPABILITY_NOT_AVAILABLE_ON_TARGET');
+      await list(target);if(epoch.current!==at)return;
+    }
     const result=await call<RemoteResource>('get',{ref});
     if(epoch.current!==at)return;
     setResource(result);setSelected(0);setBodyOffset(0);
   }
   async function submit(chosen:RemoteActionDescriptor,inputValues:Record<string,unknown>){
     if(!collection)return;
-    const result=await call<RemoteActionInvokeResponse>('invoke',{collectionId:collection.id,actionId:chosen.id,...(resource?{resourceRef:resource.ref}:{}),input:inputValues});
+    const result=await call<RemoteActionInvokeResponse>('invoke',{collectionId:resource?.ref.collectionId??collection.id,actionId:chosen.id,...(resource?{resourceRef:resource.ref}:{}),input:inputValues});
     setAction(undefined);setInput('');setValues({});
     const target=result.result as {sessionId?:unknown;deviceId?:unknown}|undefined;
     if(target&&typeof target.sessionId==='string'&&typeof target.deviceId==='string'){onTask(target.sessionId,target.deviceId);return;}
@@ -69,9 +75,9 @@ export function Resources({ client, device, locale, initialCollection, onTask }:
   }
   useEffect(()=>{
     epoch.current++;const at=epoch.current;setCollection(undefined);setResource(undefined);setAction(undefined);setSelected(0);
-    void run(async()=>{const result=await call<{collections:RemoteCollectionDescriptor[]}>('manifest',{});if(epoch.current!==at)return;setCollections(result.collections);if(initialCollection){const target=result.collections.find(item=>item.id===initialCollection);if(!target)throw new Error('CAPABILITY_NOT_AVAILABLE_ON_TARGET');await list(target);}});
+    void run(async()=>{const result=await call<{collections:RemoteCollectionDescriptor[]}>('manifest',{});if(epoch.current!==at)return;setCollections(result.collections);const collectionId=initialRef?.collectionId??initialCollection;if(collectionId){const target=result.collections.find(item=>item.id===collectionId);if(!target)throw new Error('CAPABILITY_NOT_AVAILABLE_ON_TARGET');await list(target);if(initialRef)await open(initialRef);}});
     return()=>{epoch.current++;};
-  },[device,client]);
+  },[device,client,initialCollection,initialRef]);
   const fieldDescriptor=action?.fields?.[field];
   const choices=action&&!confirmed?[t.cancel,txt(action.confirmation?.confirmLabel)||t.yes]
     :fieldDescriptor?.kind==='toggle'?[t.no,t.yes]

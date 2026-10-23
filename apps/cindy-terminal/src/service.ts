@@ -1,3 +1,6 @@
+import { TerminalPluginTasks } from './plugins/tasks.js';
+import { TerminalPluginMarket } from './plugins/market.js';
+import { TerminalPluginAccount } from './plugins/account.js';
 import { fileURLToPath } from 'node:url';
 import { TerminalBrowserRuntime } from './plugins/browser.js';
 import { TerminalPlugins } from './plugins/host.js';
@@ -81,6 +84,10 @@ export class TerminalService {
   private resources!: TerminalResources;
   private knowledge?: TerminalKnowledge;
   private plugins?:TerminalPlugins;
+  private pluginTasks?:TerminalPluginTasks;
+  private pluginMarket?:TerminalPluginMarket;
+  private pluginAccount?:TerminalPluginAccount;
+  private pluginAuthorizations=new Map<string,{url:string;userCode?:string;expiresAt:number}>();
   private readonly pluginBrowser:TerminalBrowserRuntime;
   private projects?: TerminalProjects;
   private tasks!: TerminalTaskHost;
@@ -162,7 +169,7 @@ export class TerminalService {
         await this.sharedTasks?.logout().catch(()=>logger.warn('SHARED_TASK_CLOSE_PENDING'));
         this.files?.stop();this.browser?.stop();this.resources?.close();this.membership?.close();await this.sharedTasks?.close();this.crossShares?.close();this.groupReshare?.stop();await this.reshares?.close();this.guestRoutes?.close();await this.modelGrants?.close();await this.agents?.stop();await this.groups?.close();await this.ssh?.close();
         // close() preserves history and native resume ids; no record is deleted.
-        await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
+        this.pluginTasks?.close();await this.pluginMarket?.close();this.pluginAccount?.close();this.pluginAuthorizations.clear();await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
         await this.scheduler?.close();
         if(this.tasks)await this.tasks.close();
         await this.knowledge?.close();await this.projects?.close();
@@ -222,7 +229,7 @@ export class TerminalService {
       invokeRemote:(peer,channel,args)=>this.remote.invoke(peer,channel,args),
       attachment:async(request,context)=>{context.assertCurrent();const result=await this.media.inbox.handlePeerAttachment(context.sourceDeviceId,request);context.assertCurrent();return result;},
     });
-    await this.createTasks('guest');
+    await this.createTasks('guest');this.tasks.resumePending();
     if(!this.secrets.status().locked)await this.auth.initialize();
     await this.ownerChange;
     this.refreshTimer=setInterval(()=>{
@@ -237,12 +244,12 @@ export class TerminalService {
     const next=snapshot.session?.key ?? 'guest';
     if(next!==this.ownerKey || this.ownerSuspended){
       this.terminals.close();
-      await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
+      this.pluginTasks?.close();await this.pluginMarket?.close();this.pluginAccount?.close();this.pluginAuthorizations.clear();await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
         await this.scheduler?.close();
       this.remote.stop();this.files.stop();this.browser.stop();this.resources.close();this.membership.close();await this.sharedTasks.close();this.crossShares.close();this.groupReshare?.stop();await this.reshares.close();this.guestRoutes.close();await this.modelGrants.close();await this.agents.stop();await this.groups.close();await this.ssh.close();await this.tasks.close();await this.knowledge?.close();await this.projects?.close();
       for(const dispose of this.subscriptions.values())dispose();
       this.subscriptions.clear();
-      await this.createTasks(next);this.ownerSuspended=false;
+      await this.createTasks(next);this.ownerSuspended=false;this.tasks.resumePending();
     }
     if(snapshot.session?.status==='authenticated')this.remote.start();
     else this.remote.stop();
@@ -275,7 +282,7 @@ export class TerminalService {
       },
     });
     await this.protectedInput.prepare();
-    this.tasks=new TerminalTaskHost({profileDir:ownerDir,logger,protectedInput:this.protectedInput,resolveAttachment:async(reference,context,sessionId)=>{
+    this.tasks=new TerminalTaskHost({profileDir:ownerDir,logger,deferPendingTasks:true,protectedInput:this.protectedInput,resolveAttachment:async(reference,context,sessionId)=>{
       if(reference.startsWith('xdt-oss-attach:')||reference.startsWith('cindy-oss-attach:')||reference.startsWith('cindy-peer-attach:'))return this.media.resolve(reference,context);
       const url=path.isAbsolute(reference)?`xdt-file://open?path=${encodeURIComponent(reference)}`:reference;
       if(context.sharedTask&&url.startsWith('cindy-media:')){
@@ -349,13 +356,17 @@ export class TerminalService {
     registerKnowledgeResources(this.resources.registry,this.knowledge);
     this.tasks.registerCapabilityResources(this.resources.registry);
     const guardPlugin=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
+    this.pluginAccount=new TerminalPluginAccount({endpoints,membership:()=>this.auth.snapshot().session?.membership??null,token:()=>this.auth.getAccessToken(),refresh:()=>this.auth.refresh(),assertCurrent:guardPlugin,onOrganization:organization=>this.plugins?.identity.rememberOrganization(organization)});
     const pluginAbort=new AbortController();
     const deposits=new DirDepositVault(),saves=new SaveDepositVault();
     this.plugins=new TerminalPlugins({root:ownerDir,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),
+      account:this.pluginAccount,
       executablePath:()=>this.pluginBrowser.resolve(),locale:()=>this.settings.snapshot().effective.language,assertCurrent:guardPlugin,log:logger,onClose:()=>pluginAbort.abort(),
-      secrets:{get:key=>this.secrets.get(`${owner}:${key}`),set:(key,value)=>this.secrets.set(`${owner}:${key}`,value),delete:key=>this.secrets.delete(`${owner}:${key}`),getSync:key=>this.secrets.getSync(`${owner}:${key}`),setSync:(key,value)=>this.secrets.setSync(`${owner}:${key}`,value),deleteSync:key=>this.secrets.deleteSync(`${owner}:${key}`)},
+      secrets:{get:key=>this.secrets.get(`${owner}:${key}`),set:(key,value)=>this.secrets.set(`${owner}:${key}`,value),delete:key=>this.secrets.delete(`${owner}:${key}`),getSync:key=>this.secrets.getSync(`${owner}:${key}`),setSync:(key,value)=>this.secrets.setSync(`${owner}:${key}`,value),deleteSync:key=>this.secrets.deleteSync(`${owner}:${key}`),setManySync:entries=>this.secrets.setManySync(Object.fromEntries(Object.entries(entries).map(([key,value])=>[`${owner}:${key}`,value])))},
       changed:()=>{if(this.ownerSuspended||this.closing)return;this.transport.publish('ghosts:changed',[]);void this.remote.publish('maker:remote-resources:changed',{collectionId:'plugins'}).catch(()=>{});},
+      credentials:{getLoginEmail:()=>this.auth.snapshot().session?.membership.email??null,openExternal:async url=>{guardPlugin();const id=randomUUID();this.pluginAuthorizations.set(id,{url,expiresAt:Date.now()+15*60_000});this.transport.publish('terminal:plugin-authorization',[]);}},
       receive:async()=>({ok:false,errorCode:'UNSUPPORTED_CAPABILITY'}),
+      archiveUserState:(from,to)=>this.tasks.media.relocatePlugin(from,to,guardPlugin),
       cards:{persist:row=>this.tasks.media.savePluginCard(row,guardPlugin),broadcast:payload=>{guardPlugin();this.transport.publish('ghosts:card-updated',[payload]);void this.remote.publish('ghosts:card-updated',payload).catch(()=>{});}},
       fs:{getSessionSnapshot:(id,instance)=>this.tasks.pluginPermissionSnapshot(id,instance),requestWriteConfirm:(id,payload)=>this.tasks.requestPluginWrite(id,payload),writeSaveDeposit:(id,token,name,bytes)=>saves.write(id,token,name,bytes)},
       network:{getLoginEmail:()=>this.auth.snapshot().session?.membership.email??null,
@@ -368,6 +379,13 @@ export class TerminalService {
       },
     });
     await this.plugins.ready;
+    this.pluginMarket=new TerminalPluginMarket({root:ownerDir,host:this.plugins,account:this.pluginAccount,assertCurrent:guardPlugin});
+    this.pluginMarket.register(this.resources.registry);
+    this.pluginTasks=new TerminalPluginTasks({root:ownerDir,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),host:this.plugins,account:this.pluginAccount,market:this.pluginMarket,tasks:this.tasks,protectedInput:this.protectedInput,deposits,saves,
+      owner:()=>({mode:this.auth.snapshot().session?'cloud':'local',dataOwnerId:owner,generation}),signedIn:()=>Boolean(this.auth.snapshot().session),remoteAvailable:()=>Boolean(this.auth.snapshot().session)&&this.settings.snapshot().effective.remoteEnabled,locale:()=>this.settings.snapshot().effective.language,assertCurrent:guardPlugin,
+      emit:(channel,payload)=>{guardPlugin();if(this.ownerSuspended)return;this.transport.publish(channel,[payload]);void this.remote.publish(channel,payload).catch(()=>{});},
+    });
+    await this.pluginTasks.ready;
     registerPluginResources(this.resources.registry,this.plugins);
 
     this.projects=new TerminalProjects(ownerDir,{guard:guardKnowledge,createSession:async(workingDir,title)=>{const created=await this.tasks.invoke('maker:create-session',[{workingDir,title}],{source:'local',assertCurrent:guardKnowledge}) as {sessionId?:string;id?:string};const id=created.sessionId??created.id;if(!id)throw new Error('SESSION_CREATE_FAILED');return id;}});
@@ -424,6 +442,21 @@ export class TerminalService {
     const local=context.source==='local';
     if(this.closing)throw new Error('SERVICE_STOPPING');
     context.assertCurrent?.();
+    if(channel==='terminal:plugin-authorizations'){
+      if(!local)throw new Error('LOCAL_ONLY_COMMAND');
+      for(const [id,item] of this.pluginAuthorizations)if(item.expiresAt<=Date.now())this.pluginAuthorizations.delete(id);
+      return [...this.pluginAuthorizations].map(([id,value])=>({id,...value}));
+    }
+    if(channel==='terminal:plugin-assist'){
+      if(!local)throw new Error('LOCAL_ONLY_COMMAND');
+      const id=randomUUID(),owner=this.ownerGeneration;
+      const current=()=>{if(owner!==this.ownerGeneration||this.ownerSuspended)throw new Error('OWNER_CHANGED');};
+      const present=(value:{url:string;userCode?:string;expiresAt:number})=>{current();this.pluginAuthorizations.set(id,value);this.transport.publish('terminal:plugin-authorization',[]);};
+      try{return await this.protectedInput!.assistPlugin(args[0],{
+        openExternal:async url=>{present({...this.pluginAuthorizations.get(id),url,expiresAt:this.pluginAuthorizations.get(id)?.expiresAt??Date.now()+15*60_000});},
+        presentDeviceCode:prompt=>{present({url:prompt.authorizeUrl,userCode:prompt.userCode,expiresAt:prompt.expiresAt});return ()=>{this.pluginAuthorizations.delete(id);this.transport.publish('terminal:plugin-authorization',[]);};},
+      });}finally{this.pluginAuthorizations.delete(id);this.transport.publish('terminal:plugin-authorization',[]);}
+    }
     if (channel === PLUGIN_OAUTH_CHANNEL) {
       if (local || !context.deviceId || context.sharedTask) throw new Error('OWNER_REQUIRED');
       return this.protectedInput!.request(context.deviceId, args[0]);
@@ -554,7 +587,7 @@ export class TerminalService {
       this.files?.stop();this.browser?.stop();this.resources?.close();this.membership?.close();await this.sharedTasks?.close();this.crossShares?.close();this.groupReshare?.stop();await this.reshares?.close();this.guestRoutes?.close();await this.modelGrants?.close();await this.agents?.stop();await this.groups?.close();await this.ssh?.close();
       await this.auth?.cancel();await this.ownerChange;
       for(const dispose of this.subscriptions.values())dispose();this.subscriptions.clear();
-      await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
+      this.pluginTasks?.close();await this.pluginMarket?.close();this.pluginAccount?.close();this.pluginAuthorizations.clear();await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
         await this.scheduler?.close();await this.tasks?.close();await this.knowledge?.close();await this.projects?.close();await this.pluginBrowser.close();await this.secrets.flush();this.secrets.lock();await this.transport.close();this.stopWait();
     })();
     return this.closing;

@@ -101,17 +101,16 @@ export class TerminalSecretStore implements TerminalSecrets {
     try { this.changeSync(key,value); return Promise.resolve(); }
     catch (error) { return Promise.reject(error); }
   }
-  private changeSync(key: string, value: string | null): void {
-    if (!key || key.length > 1024 || (value !== null && (typeof value !== 'string' || Buffer.byteLength(value) > 4 * 1024 * 1024))) throw new Error('VAULT_ENTRY_INVALID');
+  private changeSync(key: string, value: string | null): void { this.setManySync({[key]:value}); }
+  /** One encrypted commit for related identity moves; no partial credential copy. */
+  setManySync(entries:Record<string,string|null>):void {
+    for(const [key,value] of Object.entries(entries))if(!key||key.length>1024||(value!==null&&(typeof value!=='string'||Buffer.byteLength(value)>4*1024*1024)))throw new Error('VAULT_ENTRY_INVALID');
     if (!this.values || !this.envelope?.iv) throw new Error('VAULT_LOCKED');
-    const previous = this.values;
-    this.values = Object.assign(Object.create(null), previous) as Record<string,string>;
-    if (value === null) delete this.values[key]; else this.values[key] = value;
-    try {
-      const envelope=this.encode();
-      atomicPrivateWriteSync(this.vaultPath,JSON.stringify(envelope));
-      this.envelope=envelope;
-    } catch (error) { this.values=previous; throw error; }
+    const previous=this.values;
+    this.values=Object.assign(Object.create(null),previous) as Record<string,string>;
+    for(const [key,value] of Object.entries(entries))if(value===null)delete this.values[key];else this.values[key]=value;
+    try{const envelope=this.encode();atomicPrivateWriteSync(this.vaultPath,JSON.stringify(envelope));this.envelope=envelope;}
+    catch(error){this.values=previous;throw error;}
   }
 
   private decrypt(key: Buffer): void {

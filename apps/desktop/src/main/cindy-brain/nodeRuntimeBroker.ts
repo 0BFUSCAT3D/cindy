@@ -246,4 +246,3 @@ export function createUtilityNodeWorkerProcess(
   };
   return adapter as NodeWorkerProcess;
 }
-

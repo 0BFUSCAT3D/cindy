@@ -1,10 +1,14 @@
+import { listenForOauthCallback } from '@cindy/plugin-runtime/authorization/loopbackListener';
+import { openAuthorizationOffer } from '@cindy/plugin-runtime/authorization/authorizationAdapters';
+import { parsePluginOauthAction,parsePluginSecretPresentation,parsePluginConnectionPresentation,parsePluginConnectionInput } from '@cindy/device-link';
+import type { OauthControllerDeps } from '@cindy/plugin-runtime/authorization/controller';
 import path from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { InputHandoffService } from '@cindy/remote-agent/input-handoff/service';
 import { AskpassHost } from '@cindy/remote-agent/input-handoff/askpass/host';
 import { OauthIdentityStore, oauthIdentityScopeKey, type OauthIdentityScope } from '@cindy/plugin-runtime/authorization/identityStore';
 import { AuthenticatedOauthHost, OauthHostIdentity, authenticateOauthController } from '@cindy/plugin-runtime/authorization/authentication';
-import { OauthTransactions } from '@cindy/plugin-runtime/authorization/transactions';
+import { OauthTransactions, type OauthTransactionDeps } from '@cindy/plugin-runtime/authorization/transactions';
 import { createInputHandoffAuthorization } from '@cindy/plugin-runtime/authorization/inputHandoffBinding';
 import { resolveOauthPeerIdentity } from '@cindy/plugin-runtime/authorization/identityResolver';
 import { assistPluginOauth } from '@cindy/plugin-runtime/authorization/controller';
@@ -36,6 +40,7 @@ export class TerminalProtectedInput {
   private key?: Buffer;
   private preparing?: Promise<OauthIdentityStore>;
   private closed = false;
+  private plugins?:Pick<OauthTransactionDeps,'bind'|'run'|'settingsRequest'>;
 
   constructor(private readonly options: ProtectedInputOptions) {
     this.handoff = new InputHandoffService({
@@ -50,10 +55,11 @@ export class TerminalProtectedInput {
     });
     const binding = createInputHandoffAuthorization(() => this.handoff);
     const deps = {
-      owner: () => this.closed ? null : options.scope() ? oauthIdentityScopeKey(options.scope()!) : null,
-      available: (_peer: string) => !this.closed && options.remoteEnabled() && Boolean(options.scope()),
-      bind: async (action: Parameters<typeof binding.find>[0]) => binding.find(action)?.binding ?? null,
-      run: binding.run,
+      owner: () => this.closed ? null : options.scope() ? oauthIdentityScopeKey(options.scope()!) : `local:${options.root}`,
+      available: (peer: string) => !this.closed && (peer==='terminal-local' || options.remoteEnabled() && Boolean(options.scope())),
+      bind: async (action: Parameters<typeof binding.find>[0]) => (await this.plugins?.bind(action)) ?? binding.find(action)?.binding ?? null,
+      run: async (action: Parameters<typeof binding.find>[0]) => await this.plugins?.bind(action) ? this.plugins!.run(action) : binding.run(action),
+      settingsRequest: (peer:string,request:import('@cindy/device-link').PluginSettingsRequest) => this.plugins?.settingsRequest?.(peer,request) ?? Promise.reject(new Error('PLUGIN_PAGE_UNAVAILABLE')),
     };
     this.transactions = new OauthTransactions(deps);
     this.authenticated = new AuthenticatedOauthHost({ ...deps,
@@ -70,6 +76,7 @@ export class TerminalProtectedInput {
     });
   }
   private guard() { if (this.closed) throw new Error('INPUT_HANDOFF_CLOSED'); this.options.assertCurrent(); }
+  configurePlugins(plugins:Pick<OauthTransactionDeps,'bind'|'run'|'settingsRequest'>){this.guard();this.plugins=plugins;}
   async prepare() { this.guard(); await this.askpass.prepare(); this.guard(); }
   request(peer: string, raw: unknown) { this.guard(); return this.authenticated.request(peer, raw); }
   envFor(id: string) { this.guard(); return this.askpass.envFor(id); }
@@ -93,6 +100,40 @@ export class TerminalProtectedInput {
     }, action);
   }
 
+  async assistPlugin(raw:unknown,present:Pick<OauthControllerDeps,'openExternal'|'presentDeviceCode'|'presentBrowserAuthorization'>){
+    this.guard();if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('PLUGIN_AUTHORIZATION_INVALID');
+    const value=raw as Record<string,unknown>,action=parsePluginOauthAction(value.action);
+    if(!action||typeof value.ghostId!=='string'||!value.ghostId||value.ghostId.length>256)throw new Error('PLUGIN_AUTHORIZATION_INVALID');
+    const ghostId=value.ghostId;
+    const scope=this.options.scope(),owner=JSON.stringify(scope);
+    const assertCurrent=()=>{this.guard();if(JSON.stringify(this.options.scope())!==owner)throw new Error('OWNER_CHANGED');};
+    let invoke:OauthControllerDeps['invoke'];
+    if(value.deviceId!==undefined){
+      if(typeof value.deviceId!=='string'||!value.deviceId||!scope)throw new Error('AUTH_REQUIRED');
+      const device=value.deviceId,target=await resolveOauthPeerIdentity({scope:this.options.scope,invoke:this.options.invoke},device,assertCurrent),store=await this.identityStore();
+      invoke=await authenticateOauthController({target,peer:scope.deviceId,action,ghostId,assertCurrent,
+        trustIdentity:(identity,check)=>store.trustPeer(scope,identity.deviceId,identity.publicKey,check),
+        invoke:async request=>{const result=await this.options.invoke(device,PLUGIN_OAUTH_CHANNEL,[request]);if(!result.ok)throw new Error('OAUTH_BRIDGE_UNAVAILABLE');return result.result;},
+      });
+    }else{
+      const binding=await this.plugins?.bind(action);assertCurrent();
+      if(!binding||binding.ghostId!==ghostId||!binding.current())throw new Error('PLUGIN_AUTHORIZATION_STALE');
+      invoke=request=>this.transactions.request('terminal-local',request);
+    }
+    const deps:OauthControllerDeps={...present,invoke,assertCurrent,listenForOauthCallback,openAuthorizationOffer,
+      // A terminal displays a device code; it does not need a system clipboard.
+      copyDeviceCode:()=>()=>{},
+    };
+    if(value.kind==='secret'){
+      if(typeof value.value!=='string')throw new Error('PLUGIN_SECRET_INVALID');
+      deps.secretPresentation=parsePluginSecretPresentation(value.presentation);deps.secretValue=value.value;
+    }else if(value.kind==='connection'){
+      deps.connectionPresentation=parsePluginConnectionPresentation(value.presentation);
+      deps.connectionValue=parsePluginConnectionInput(value.value);
+    }else if(value.kind!=='oauth')throw new Error('PLUGIN_AUTHORIZATION_INVALID');
+    return assistPluginOauth(deps,action);
+  }
+
   private identityStore(): Promise<OauthIdentityStore> {
     if (this.store) return Promise.resolve(this.store);
     this.preparing ??= (async () => {
@@ -112,7 +153,7 @@ export class TerminalProtectedInput {
     return this.preparing;
   }
   async close() {
-    this.handoff.cleanupAll(); this.closed = true;
+    this.handoff.cleanupAll(); this.closed = true;this.plugins=undefined;
     this.authenticated.invalidate(); this.transactions.cancelPeer();
     await this.askpass.close(); await this.preparing?.catch(() => {}); await this.identityFlight?.catch(() => {});
     this.key?.fill(0); this.identity = undefined; this.identityFlight=undefined; this.store = undefined;

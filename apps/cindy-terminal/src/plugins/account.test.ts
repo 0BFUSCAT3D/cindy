@@ -39,3 +39,17 @@ it('never sends a late token to the publisher after its account is revoked',asyn
   release(Response.json({token:'synthetic-late',expiresIn:600,audience:'fixture-org:cindy-publisher'}));
   expect(await rejected).toMatchObject({message:'OWNER_CHANGED'});expect(fetcher).toHaveBeenCalledTimes(2);host.close();
 });
+
+it('distinguishes broker refresh rejection from login expiry and transport failure without returning upstream details',async()=>{
+  let failure='TOKEN_EXPIRED';const refresh=vi.fn(async()=>{});
+  const host=new TerminalPluginAccount({endpoints:()=>({authApiBaseUrl:'https://auth.example.invalid',pluginApiBaseUrl:'https://plugins.example.invalid',oauthBrokerApiBaseUrl:'https://broker.example.invalid'}),membership:()=>member,token:()=> 'synthetic-login',refresh,assertCurrent:()=>{},fetch:async url=>{
+    expect(new URL(String(url)).hostname).toBe('broker.example.invalid');
+    if(failure==='network')throw new Error('Sensitive transport diagnostics');
+    return Response.json({error:{code:failure,message:'Sensitive upstream response'}},{status:401});
+  }});
+  try{
+    expect(await host.broker.refresh('jira',{refreshToken:'synthetic-refresh'})).toMatchObject({ok:false,invalidGrant:false});expect(refresh).toHaveBeenCalledTimes(1);
+    failure='JIRA_OAUTH_FAILED';const rejected=await host.broker.refresh('jira',{refreshToken:'synthetic-refresh'});expect(rejected).toMatchObject({ok:false,invalidGrant:true});expect(JSON.stringify(rejected)).not.toContain('Sensitive');
+    failure='network';expect(await host.broker.refresh('jira',{refreshToken:'synthetic-refresh'})).toMatchObject({ok:false,error:'NETWORK',invalidGrant:false});
+  }finally{host.close();}
+});

@@ -1,8 +1,20 @@
+import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { TerminalPluginAccount } from './account.js';
+import { TerminalPluginPublisher } from './publisher.js';
+import { TerminalPluginPreferences } from './preferences.js';
+import { createTerminalPluginForge } from './forge.js';
+import { createTerminalPluginTask } from './mcp.js';
+import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
+import { TerminalPluginSetup } from './setup.js';
+import { TerminalProtectedInput } from '../protected-input.js';
+import { createPluginSecretPresentation } from '@cindy/plugin-runtime/shared/pluginOauth';
+import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
 /** Native integration tier: exercises the product's real consent, encrypted
  * vault, installed receipt and browser→Node route. Source-byte/owner changes
  * must revoke a pending approval; keys must never appear in resource responses. */
 import {beforeAll,afterAll,expect,it} from 'vitest';
-import {mkdtemp,writeFile,readFile,copyFile,rm} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,copyFile,rm,readdir} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
@@ -41,6 +53,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-fixture',name:'Terminal fixture',version:'1.0.0',kind:'chip',entry:'main.js',settingsHtml:'settings.html',slots:['tool','node','card'],fs:true,tools:[{name:'check',description:'Verify fixture'}],node:{entry:'worker.cjs',protocol:'json-rpc-stdio',secretBindings:[{key:'key',label:'Fixture key',methods:['check']}]}}));
   const withNetwork=JSON.parse(await archive.file('ghost.json')!.async('string'));
   withNetwork.slots.push('network');
+  withNetwork.setup={requires:[{anyOf:['secret:key']}]};
   withNetwork.network={hosts:['accounts.example.com','api.example.com'],secrets:[{key:'oauth',label:'Fixture account',source:'oauth',inject:{header:'Authorization',format:'Bearer {value}',hosts:['api.example.com']},oauth:{authorizeUrl:'https://accounts.example.com/authorize',tokenUrl:'https://accounts.example.com/token',clientId:'fixture-client',scopes:['read']}}],connections:[{key:'instances',label:'Fixture instance',inject:{header:'Authorization',format:'Bearer {value}'}}]};
   archive.file('ghost.json',JSON.stringify(withNetwork));
   archive.file('main.js',`cindy.onHostMessage(async request=>{
@@ -55,7 +68,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   const file=path.join(directory,'fixture.cindy'),bytes=await archive.generateAsync({type:'nodebuffer'});await writeFile(file,bytes);
   const vault=new TerminalSecretStore(path.join(directory,'vault'));await vault.open();await vault.initialize('machine');
   let failCleanup=false;
-  const secrets={getSync:(key:string)=>vault.getSync(key),setSync:(key:string,value:string)=>vault.setSync(key,value),deleteSync:(key:string)=>vault.deleteSync(key),get:(key:string)=>vault.get(key),set:(key:string,value:string)=>vault.set(key,value),delete:async(key:string)=>{if(failCleanup&&key.includes(':oauth:'))throw new Error('Synthetic vault write interruption');await vault.delete(key);}};
+  const secrets={setManySync:(entries:Record<string,string|null>)=>vault.setManySync(entries),getSync:(key:string)=>vault.getSync(key),setSync:(key:string,value:string)=>vault.setSync(key,value),deleteSync:(key:string)=>vault.deleteSync(key),get:(key:string)=>vault.get(key),set:(key:string,value:string)=>vault.set(key,value),delete:async(key:string)=>{if(failCleanup&&key.includes(':oauth:'))throw new Error('Synthetic vault write interruption');await vault.delete(key);}};
   let active=true;const media=new TerminalTaskMedia(path.join(directory,'media'));
   const cardPushes:unknown[]=[];
   const options={credentials:{
@@ -96,9 +109,51 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     expect(publicSettings).not.toMatch(/synthetic-oauth|synthetic-instance-key|synthetic-acceptance-key/);
     expect(JSON.stringify(resource)).not.toContain('synthetic-acceptance-key');
     expect((await readFile(path.join(directory,'vault','secrets.enc'),'utf8'))).not.toContain('synthetic-acceptance-key');
+    // Integration tier: the real pending setup card and encrypted controller
+    // exchange resume the blocked tool without carrying the entered value in
+    // generic interactions, discovery, or task events. Replayed cards must fail.
+    const setupEvents:unknown[]=[];
+    let onCard!:(card:GhostSetupInteractionSnapshot)=>void;
+    const cardReady=new Promise<GhostSetupInteractionSnapshot>(resolve=>{onCard=resolve;});
+    const setup=new TerminalPluginSetup(host,{visibility:{translate:key=>key,listGhosts:()=>host.native.list(),isAvailableForActiveSession:()=>true,isDisabledForWorkdir:()=>false},owner:()=>directory,remoteAvailable:()=>true,assertCurrent:options.assertCurrent,translate:key=>key,navigate:()=>{},emit:(_channel,payload)=>{setupEvents.push(payload);const card=(payload as {request?:GhostSetupInteractionSnapshot}).request;if(card?.steps.some(step=>step.action?.kind==='inline_form'&&step.phase==='pending'))onCard(card);}});
+    const protectedInput=new TerminalProtectedInput({root:path.join(directory,'protected'),secrets,scope:()=>null,assertCurrent:options.assertCurrent,remoteEnabled:()=>false,taskExists:async()=>true,emit:()=>{},invoke:async()=>({ok:false,error:{code:'IPC_ERROR',message:'No remote peer in this fixture'}})});
+    protectedInput.configurePlugins(setup.authorization);
+    try{
+      host.writeSecretSync(instance,'key',null);host.credentialsChanged(instance);
+      expect(host.assessment(instance).state).not.toBe('ready');
+      const ready=setup.coordinator.ensureReady({sessionId:'fixture-task',ghostId:instance,workingDir:directory});
+      const card=await cardReady,step=card.steps.find(step=>step.action?.kind==='inline_form'&&step.phase==='pending')!;
+      if(step.action?.kind!=='inline_form')throw new Error('Inline card missing');
+      const submission={kind:'secret',ghostId:instance,action:{requestId:card.requestId,actionId:step.action.id,expectedRevision:card.revision},presentation:createPluginSecretPresentation(card,step,step.action.form.fields[0]),value:'synthetic-acceptance-key'};
+      expect(await protectedInput.assistPlugin(submission,{openExternal:async()=>{throw new Error('Secret submission must not open a URL');}})).toEqual({accepted:true});
+      expect(await ready).toMatchObject({ok:true});
+      expect(host.readSecretSync(instance,'key')).toBe('synthetic-acceptance-key');
+      expect(JSON.stringify(setupEvents)).not.toContain('synthetic-acceptance-key');
+      await expect(protectedInput.assistPlugin(submission,{openExternal:async()=>{}})).rejects.toThrow('PLUGIN_AUTHORIZATION_STALE');
+    }finally{setup.close();await protectedInput.close();}
     if(process.env.CINDY_TEST_CHROMIUM){
-      const called=await host.callTool(instance,{tool:'check',args:{}},{sessionId:'fixture-task',sessionInstanceId:'fixture-incarnation',remoteHostId:null,assertCurrent:options.assertCurrent});
-      expect(called).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true}},saved:{ok:true}}});
+      const preferences=new TerminalPluginPreferences(options.root,options.assertCurrent);await preferences.refresh();
+      const account=new TerminalPluginAccount({endpoints:()=>({authApiBaseUrl:'https://auth.example.com',pluginApiBaseUrl:'https://plugins.example.com'}),membership:()=>null,token:()=>null,refresh:async()=>{},assertCurrent:options.assertCurrent});
+      const publisher=new TerminalPluginPublisher({stagingDirectory:path.join(directory,'publish'),host,account,owner:()=>({mode:'local',dataOwnerId:'fixture',generation:1}),assertCurrent:options.assertCurrent});
+      const visibility={translate:(key:string)=>key,listGhosts:()=>host.native.list(),isAvailableForActiveSession:()=>true,isDisabledForWorkdir:(id:string,dir:string|null)=>preferences.disabled(id,dir)};
+      const setup=new TerminalPluginSetup(host,{visibility,owner:()=>directory,remoteAvailable:()=>true,assertCurrent:options.assertCurrent,translate:key=>key,navigate:()=>{},emit:()=>{}});
+      const taskContext={sessionId:'fixture-task',workingDir:directory,instanceId:()=> 'fixture-incarnation',assertCurrent:options.assertCurrent,snapshot:options.fs.getSessionSnapshot,confirm:options.fs.requestWriteConfirm};
+      const pluginTask=createTerminalPluginTask({host,setup,preferences,visibility,context:taskContext,media,deposits:new DirDepositVault(),saves:new SaveDepositVault(),forge:createTerminalPluginForge({root:options.root,runtimeDirectory:runtime,host,account,publisher,context:taskContext,media,requestPermission:async()=>null,translate:key=>key})});
+      const server=pluginTask.factories.cindy_ghosts(),client=new McpClient({name:'terminal-native-acceptance',version:'1.0.0'});
+      const [clientTransport,serverTransport]=InMemoryTransport.createLinkedPair();
+      const payload=(result:Awaited<ReturnType<McpClient['callTool']>>)=>JSON.parse((result.content as Array<{text:string}>)[0].text);
+      let called:unknown;
+      try{
+        await server.connect(serverTransport);await client.connect(clientTransport);
+        expect(pluginTask.getGhostRosterPrompt()).toContain('terminal-fixture');
+        expect(payload(await client.callTool({name:'ghost_info',arguments:{ghost_id:'terminal-fixture'}}))).toMatchObject({ok:true,ghost:{id:'terminal-fixture'}});
+        await preferences.set(directory,instance,true);
+        expect(payload(await client.callTool({name:'ghost_info',arguments:{ghost_id:'terminal-fixture'}}))).toMatchObject({ok:false,errorCode:'GHOST_DISABLED_IN_WORKDIR'});
+        await preferences.set(directory,instance,false);
+        called=payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{}}}));
+        expect(called).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true}},saved:{ok:true}}});
+      }finally{await client.close();await server.close();pluginTask.close();setup.close();publisher.close();account.close();}
+
       expect(await readFile(path.join(directory,'plugin-result.txt'),'utf8')).toBe('terminal-plugin-files');
       expect(cardPushes).toHaveLength(1);
       await host.cards.flushWrites();
@@ -114,6 +169,17 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     const update=await host.prepareInstall(file,'controller-a');await host.confirmInstall(update.id,'controller-a');
     expect(await (await settings('/oauth')).json()).toMatchObject([{key:'oauth',accounts:[{status:'expired'}]}]);
     await expect(registry.invoke(context,saveRequest)).rejects.toThrow('PLUGIN_CHANGED');
+    // Integration: switching authoring provenance must isolate credentials/KV
+    // instead of silently handing the old account to the new package source.
+    host.kv.write(instance,{preserve:'source-owned-value'});
+    const switchSource=await host.prepareInstall(file,'controller-a',{installOrigin:'agent-forge'});
+    expect(switchSource.target.sourceChanged).toBe(true);
+    await host.confirmInstall(switchSource.id,'controller-a');
+    expect(host.readSecretSync(instance,'key')).toBeNull();expect(host.kv.read(instance)).toEqual({});
+    const archiveName=(await readdir(path.join(options.root,'plugin-kv'))).find(name=>name.startsWith('arch_'))!;
+    expect(archiveName).toBeTruthy();
+    expect(JSON.parse(await readFile(path.join(options.root,'plugin-kv',archiveName),'utf8'))).toEqual({preserve:'source-owned-value'});
+    expect(vault.getSync(`plugin:${archiveName.slice(0,-5)}:key`)).toBe('synthetic-acceptance-key');
     await host.writeSecret(instance,'oauth:fixture:refresh','synthetic-refresh-value');
     const approval=(await host.list())[0].approval;await host.close();
     const next=new TerminalPlugins(options);

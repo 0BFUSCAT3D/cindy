@@ -747,6 +747,8 @@ export const PUSH_FORWARD_ALLOWLIST: ReadonlySet<string> = new Set([
   'maker:input:projection',
   'maker:interaction-request',
   'maker:interaction-dismissed',
+  // Optional terminal controller navigation, scoped to the requesting task.
+  'terminal:plugin-settings',
   // Claude Auto classifier 故障后降级到 ask;payload 带 sessionId,控制端显示同款提示。
   'maker:auto-permission:fallback',
   // Deferred model-provider outcome. Both payloads contain only task identity

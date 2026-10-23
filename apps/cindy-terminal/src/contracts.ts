@@ -17,6 +17,7 @@ export interface TerminalDurableSecrets extends TerminalSecrets {
   getSync(key: string): string | null;
   setSync(key: string, value: string): void;
   deleteSync(key: string): void;
+  setManySync(entries:Record<string,string|null>):void;
 }
 
 export interface InvocationContext {

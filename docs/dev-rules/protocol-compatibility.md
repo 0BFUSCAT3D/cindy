@@ -3284,3 +3284,13 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 
 定向回归覆盖控制设备隔离、重复输入、账号替换及输出窗口；跨平台安装包仍需分别
 完成真实 PTY 验收，不能由类型检查或内存测试推断。
+
+## 终端插件配置导航
+
+`terminal:plugin-settings` 为可选的同账号推送，携带 `sessionId`、`target`
+（`plugin_settings` / `client_settings`）及已安装插件的 `ghostId`。它沿现有
+`session:<id>` 订阅转发，只为发起配置的任务切换终端页面，不包含凭证或授权值。
+共享任务和供应商访客不获得该通道。旧控制端忽略此导航，既有配置卡及资源查询继续
+可用；新终端也能从资源列表进入设置，不依赖新推送。插件市场与已安装插件使用现有
+Remote Resources 的列表、权限确认、隐藏输入和跨集合导航，不另加安装 IPC 或
+服务器协议版本。市场安装动作携带确切 Release ID，旧列表不能默许安装新 Release。

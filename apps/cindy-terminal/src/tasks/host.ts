@@ -1,3 +1,7 @@
+import type { TerminalPluginTask } from '../plugins/mcp.js';
+import type { PluginTaskContext } from '../plugins/permissions.js';
+import type { TerminalPluginSetup } from '../plugins/setup.js';
+import { parseGhostSetupInlineSubmitRequest } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
 import { createHash, randomUUID } from 'node:crypto';
 import { stat, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -24,6 +28,7 @@ import { TerminalTaskStorage, type TerminalTaskMeta, type Submission } from './s
 
 export const TERMINAL_TASK_CHANNELS = [
   ...CAPABILITY_CHANNELS,
+  'maker:plugin-setup:submit-inline',
   'local-db:messages:around','local-db:messages:around-client-id','local-db:messages:view','local-db:messages:view-intent','local-db:messages:work-details',
   'maker:input:stop', 'maker:input:resume', 'maker:input:remove', 'maker:input:update-text', 'maker:input:update-content', 'maker:input:move', 'maker:input:set-expanded', 'maker:input:set-edit-lock', 'maker:input:set-interaction-lock', 'maker:get-capabilities', 'maker:get-new-maker-defaults', 'maker:git-safety:get', 'maker:get-session-tree', 'maker:set-thinking-enabled', 'maker:session:handoff', 'local-db:history:messages', 'local-db:history:query', 'maker:input:enqueue', 'maker:input:get-projection', 'maker:create-session', 'maker:close-session', 'maker:abort-session', 'maker:send', 'maker:steer',
   'maker:list-active', 'maker:any-session-in-turn', 'maker:session-in-turn', 'maker:get-context-usage',
@@ -43,6 +48,7 @@ export interface TerminalTaskHostOptions extends InputHost {
   logger: Logger;
   secretStore: TerminalSecrets;
   emit(channel: string, args: unknown[]): void;
+  deferPendingTasks?:boolean;
   defaultTitle?: string | (() => string);
   protectedInput?: import('../protected-input.js').TerminalProtectedInput;
   beforeTaskUnavailable?: (sessionId:string)=>Promise<void>;
@@ -58,7 +64,7 @@ export interface TerminalTaskHostOptions extends InputHost {
 }
 type ScheduledOrigin = { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string; firedAt?: number };
 type TaskInvocationContext = InvocationContext & { scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
-type LiveTask = { capabilityRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
+type LiveTask = { revoke():void; plugin?:TerminalPluginTask; capabilityRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
 type Pending = { sessionId: string; request: InteractionRequest; settle: (decision: InteractionDecision) => void };
 
 function record(value: unknown): Record<string, unknown> {
@@ -85,6 +91,8 @@ export class TerminalTaskHost {
   readonly capabilities: TerminalCapabilities;
   private readonly live = new Map<string, LiveTask>();
   private readonly starts = new Map<string, Promise<LiveTask>>();
+  private pluginFactory?: (context:PluginTaskContext)=>Promise<TerminalPluginTask>;
+  private pluginSetup?:TerminalPluginSetup;
   private knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>;
   private schedulerDeps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps;
   private readonly taskObservers = new Map<string,Set<(event:AgentEvent)=>void>>();
@@ -106,11 +114,13 @@ export class TerminalTaskHost {
   private readonly binaries = new Map<AgentKind, string | null>();
   private readonly authCache = new Map<AgentKind, { at: number; value: Awaited<ReturnType<typeof nativeAuthState>> }>();
   private readonly ready: Promise<void>;
+  private pendingDispatchReady:boolean;
   private closed = false;
   private closing?: Promise<void>;
   private readonly persistenceFaults = new Set<string>();
 
   constructor(private readonly options: TerminalTaskHostOptions) {
+    this.pendingDispatchReady=!options.deferPendingTasks;
     if (!path.isAbsolute(options.profileDir)) throw new Error('PROFILE_DIRECTORY_MUST_BE_ABSOLUTE');
     this.media = new TerminalTaskMedia(options.profileDir);
     this.storage = new TerminalTaskStorage(path.join(options.profileDir, 'tasks'));
@@ -177,19 +187,25 @@ export class TerminalTaskHost {
       },
     };
   }
+  resumePending(){this.pendingDispatchReady=true;for(const id of this.queuedSubmissions.keys())this.drain(id);}
+  configurePlugins(factory:(context:PluginTaskContext)=>Promise<TerminalPluginTask>,setup:TerminalPluginSetup){this.pluginFactory=factory;this.pluginSetup=setup;}
+  requestHostPermission:import('@cindy/plugin-runtime/ghostInstallConsentInteraction').HostPermissionRequester=async(id,instance,request,signal)=>{
+    const task=this.live.get(id);if(this.closed||!task||task.session.instanceId!==instance)return null;
+    const result=await this.interaction(id,request,signal);return this.live.get(id)===task?result:null;
+  };
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
-  async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot|null>{
+  async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<(import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot & {autoReviewOwner:'native'|'cindy'})|null>{
     const task=this.live.get(id);if(this.closed||!task||instanceId&&task.session.instanceId!==instanceId)return null;
     const session=task.session,permission=session.stablePermissionModeState,plan=session.stablePlanModeState;
     if(!permission?.mode||!plan)return null;
     const row=await this.storage.get(id);if(!row||this.live.get(id)!==task)return null;
     const isCurrent=()=>!this.closed&&this.live.get(id)===task&&session.stablePermissionModeState?.generation===permission.generation&&session.stablePlanModeState?.generation===plan.generation;
     if(!isCurrent())return null;
-    return {workingDir:row.workDir,permissionMode:permission.mode,planModeEnabled:plan.enabled,remoteHostId:null,isCurrent,reviewAction:action=>session.reviewHostPermissionAction(action)};
+    return {workingDir:row.workDir,permissionMode:permission.mode,planModeEnabled:plan.enabled,remoteHostId:null,autoReviewOwner:session.autoReviewOwner,isCurrent,reviewAction:action=>session.reviewHostPermissionAction(action)};
   }
-  async requestPluginWrite(id:string,payload:import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmPayload):Promise<import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmDecision>{
+  async requestPluginWrite(id:string,payload:import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmPayload,signal?:AbortSignal):Promise<import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmDecision>{
     const task=this.live.get(id);if(!task||this.closed)return {confirmed:false,reason:'session_closed'};
-    const decision=await this.interaction(id,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.write',input:payload as unknown as Record<string,unknown>});
+    const decision=await this.interaction(id,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.write',input:payload as unknown as Record<string,unknown>},signal);
     return decision.kind==='permission'&&decision.behavior==='allow'&&this.live.get(id)===task?{confirmed:true}:{confirmed:false,reason:'cancelled'};
   }
   configureScheduler(deps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps) {this.schedulerDeps=deps;}
@@ -337,27 +353,34 @@ export class TerminalTaskHost {
     if (!binary && !row.agentDeviceId) throw new Error('ENGINE_NOT_INSTALLED');
     const capability = await this.capabilities.runtime({workingDir:row.workDir,agentKind:chosen.selection.agentKind});
     const knowledge = await this.knowledge?.createRuntime({ sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind });
+    let lease:LiveTask|undefined,revoked=false;
+    const isCurrent=()=>!this.closed&&!revoked&&(!lease||this.live.get(id)===lease);
+    const assertCurrent=()=>{if(!isCurrent())throw new Error('TASK_PLUGIN_SCOPE_REVOKED');};
+    const instanceId=()=>{assertCurrent();if(!lease)throw new Error('TASK_NOT_READY');return lease.session.instanceId;};
+    let plugin:TerminalPluginTask|undefined;
+    try{plugin=await this.pluginFactory?.({sessionId:id,workingDir:row.workDir,instanceId,assertCurrent,snapshot:()=>this.pluginPermissionSnapshot(id,instanceId()),confirm:(payload,signal)=>this.requestPluginWrite(id,payload,signal)});}
+    catch(error){await knowledge?.close();await capability.close();throw error;}
     let tools: Awaited<ReturnType<typeof createTaskTools>>;
     try { tools = await createTaskTools({ sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind,
-      extraFactories: {...capability.factories,...knowledge?.factories},
-      isCurrent: () => !this.closed,
+      extraFactories: {...capability.factories,...knowledge?.factories,...plugin?.factories},
+      isCurrent,
       scheduler: this.schedulerDeps,
       helper: this.helperDeps({sessionId:id,workingDir:row.workDir,agentKind:chosen.selection.agentKind,title:()=>row.title}),
-    }); } catch(error) { await knowledge?.close(); await capability.close(); throw error; }
+    }); } catch(error) { revoked=true;plugin?.close();await knowledge?.close(); await capability.close(); throw error; }
     let agent;
-    try { agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, taskShellEnv:()=>this.options.protectedInput?.envFor(id)??{}, remote: Boolean(row.agentDeviceId), capabilities:capability, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
+    try { agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, taskShellEnv:()=>this.options.protectedInput?.envFor(id)??{}, remote: Boolean(row.agentDeviceId), capabilities:capability,getGhostRosterPrompt:plugin?.getGhostRosterPrompt, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { revoked=true;plugin?.close();await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
     const startDeviceAgentSession = row.agentDeviceId && this.options.remoteInvoke ? createDeviceAgentStarter({ remoteInvoke: this.options.remoteInvoke, rgPath: () => 'rg', codexPath: () => this.binaries.get('codex') ?? undefined, mcpProviders: () => tools.providers, prepareMcpBridge: async () => tools.pi(), makerMemory: () => knowledge?.memory, logger: this.options.logger }) : undefined;
     const maker = new Maker({ agents: { [chosen.selection.agentKind]: agent }, storage: this.storage, logger: this.options.logger, ...(knowledge ? {makerMemory:knowledge.memory} : {}), ...(startDeviceAgentSession ? { startDeviceAgentSession } : {}) });
     try {
       const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, planMode: row.planMode, ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
-      const task: LiveTask = { capabilityRevision:capability.revision, maker, session, selection: chosen.selection, dispose: [() => tools.close(), () => knowledge?.close(), () => capability.close()] };
+      const task: LiveTask = { revoke:()=>{revoked=true;plugin?.close();},plugin,capabilityRevision:capability.revision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
       session.setInteractionListener((request, signal) => this.interaction(id, request, signal));
       task.dispose.push(session.onEvent(event => this.onEvent(id, event)));
       task.dispose.push(session.onStatusChange(status => this.emit('maker:status-changed', { sessionId: id, status })));
-      this.live.set(id, task);
+      lease=task;this.live.set(id, task);
       if (this.closed) { await this.closeTask(id); throw new Error('TASK_HOST_CLOSED'); }
       return task;
-    } catch (error) { await maker.shutdown(); await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
+    } catch (error) { revoked=true;plugin?.close();await maker.shutdown(); await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
   }
   private onEvent(id: string, event: AgentEvent) {
     for(const observer of this.taskObservers.get(id)??[])observer(event);
@@ -447,11 +470,13 @@ export class TerminalTaskHost {
   }
   private async closeTask(id: string) {
     this.options.protectedInput?.handoff.cleanupForSession(id);
+    this.pluginSetup?.bridge.cleanupForSession(id,'session_closed');
     const task = this.live.get(id);
     if (!task) return;
     for (const pending of [...this.pending.values()]) if (pending.sessionId === id) pending.settle(decisionForDismissal(pending.request));
     const requestId = this.activeSubmissions.get(id);
     if (requestId) { this.activeSubmissions.delete(id); await this.updateReceipt(id, requestId, 'interrupted', 'SESSION_CLOSED', this.submissionText.get(id)); this.submissionText.delete(id); }
+    task.revoke();
     await task.maker.shutdown();
     for (const dispose of task.dispose) await dispose();
     this.live.delete(id);
@@ -570,10 +595,11 @@ export class TerminalTaskHost {
       case 'maker:list-active': { const sessions = [...this.live.values()].map(({ session }) => ({ sessionId: session.id, agentKind: session.agentKind, workDir: session.workDir, capabilities: session.capabilities, isTurnRunning: session.isTurnRunning() })); return args[0] && record(args[0]).snapshotVersion === 2 ? { format: 'active-sessions-v2', sessions } : sessions; }
       case 'maker:any-session-in-turn': return [...this.live.values()].some(task => task.session.isTurnRunning());
       case 'maker:session-in-turn': return this.live.get(string(args[0]))?.session.isTurnRunning() ?? false;
-      case 'maker:get-pending-interactions': return [...(!context.sharedTask ? this.options.protectedInput?.handoff.pendingSnapshots(string(args[0]))??[] : []), ...[...this.pending.values()].filter(p => p.sessionId === args[0] && (!context.sharedTask || ['permission','ask_user_question','plan_review'].includes(p.request.kind))).map(p => ({ request: p.request }))];
-      case 'maker:resolve-interaction': {if(!context.sharedTask&&this.options.protectedInput?.handoff.isCurrent(string(args[0])))return this.options.protectedInput.handoff.resolve(string(args[0]),args[1],context.source==='remote'?{deviceId:context.deviceId}:{local:true});if(context.sharedTask)this.assertSharedInteraction(string(args[0]),record(args[1]));return this.resolveInteraction(string(args[0]), args[1]);}
+      case 'maker:plugin-setup:submit-inline': {if(context.source!=='local')throw new Error('LOCAL_ONLY_COMMAND');const request=parseGhostSetupInlineSubmitRequest(args[0]);return {accepted:Boolean(request&&this.pluginSetup?.bridge.submitInline(request.requestId,request))};}
+      case 'maker:get-pending-interactions': return [...(!context.sharedTask?this.pluginSetup?.bridge.pendingSnapshots(string(args[0]))??[]:[]),...(!context.sharedTask ? this.options.protectedInput?.handoff.pendingSnapshots(string(args[0]))??[] : []), ...[...this.pending.values()].filter(p => p.sessionId === args[0] && (!context.sharedTask || ['permission','ask_user_question','plan_review'].includes(p.request.kind))).map(p => ({ request: p.request }))];
+      case 'maker:resolve-interaction': {if(!context.sharedTask&&this.pluginSetup?.bridge.pendingSnapshots().some(item=>item.request.requestId===args[0]))return {accepted:this.pluginSetup.bridge.resolve(string(args[0]),args[1])};if(!context.sharedTask&&this.options.protectedInput?.handoff.isCurrent(string(args[0])))return this.options.protectedInput.handoff.resolve(string(args[0]),args[1],context.source==='remote'?{deviceId:context.deviceId}:{local:true});if(context.sharedTask)this.assertSharedInteraction(string(args[0]),record(args[1]));return this.resolveInteraction(string(args[0]), args[1]);}
       case 'maker:close-session': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.closeTask(id); return { success: true }; }
-      case 'maker:abort-session': { const id=string(args[0]);this.options.protectedInput?.handoff.cleanupForSession(id);const task = this.live.get(id); await task?.session.abort(); return { success: true }; }
+      case 'maker:abort-session': { const id=string(args[0]);this.options.protectedInput?.handoff.cleanupForSession(id);this.pluginSetup?.bridge.cleanupForSession(id,'session_aborted');const task = this.live.get(id); await task?.session.abort(); return { success: true }; }
       case 'maker:send': {
         if (args[1] && typeof args[1] === 'object' && typeof (args[1] as Record<string, unknown>).clientId === 'string') {
           const receipt = await this.submit(string(args[0]), args[1], { requestId: (args[1] as Record<string, unknown>).clientId }, context);
@@ -667,7 +693,7 @@ export class TerminalTaskHost {
     void this.projection(id).then(projection => this.emit('maker:input:projection', projection)).catch(() => undefined);
   }
   private drain(id: string) {
-    if (this.closed || this.queuePaused.has(id) || this.queueMutations.has(id) || this.queueLocks.get(id)?.size || this.queueEditLocks.get(id)?.size || this.activeSubmissions.has(id) || this.starts.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning()) return;
+    if (!this.pendingDispatchReady || this.closed || this.queuePaused.has(id) || this.queueMutations.has(id) || this.queueLocks.get(id)?.size || this.queueEditLocks.get(id)?.size || this.activeSubmissions.has(id) || this.starts.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning()) return;
     const queue = this.queuedSubmissions.get(id) ?? [];
     const readyIndex = queue.findIndex(item => !item.sendAtMs || item.sendAtMs <= Date.now());
     const next = readyIndex >= 0 ? queue.splice(readyIndex,1)[0] : undefined;

@@ -91,6 +91,38 @@ CREATE INDEX IF NOT EXISTS ghost_cards_updated_at_idx ON ghost_cards(updated_at)
       return {url:written.url,hash:written.hash,ext:written.ext};
     });
   }
+  relocatePlugin(from:string,to:string,guard:()=>void){
+    return this.run(async()=>{
+      guard();this.native!.exec('BEGIN IMMEDIATE');
+      try{
+        this.native!.prepare("UPDATE media_refs SET ref_id=? WHERE ref_id=? AND ref_kind IN ('ghost-gallery','ghost-grant','ghost-tool-grant')").run(to,from);
+        this.native!.prepare("UPDATE media_refs SET origin_id=? WHERE origin_kind='ghost' AND origin_id=?").run(to,from);
+        await pluginCards.reassignGhostCards(from,to,this.cardDb());guard();this.native!.exec('COMMIT');
+      }catch(error){this.native!.exec('ROLLBACK');throw error;}
+    });
+  }
+  async preparePluginAttachment(url:string,sessionId:string,guard:()=>void){
+    const resolved=await this.resolveManaged(url,sessionId);guard();
+    const {hash}=this.store.resolveSafe(url);
+    const user=await hasRef({hash,refKind:'session-attachment',refId:sessionId,originKind:'user'},this.db!);guard();
+    const bytes=await readBoundedFileNoFollow(resolved.path,GHOST_FETCH_UPLOAD_MAX_BYTES_PER_FILE,{nonBlocking:true,containWithin:await realpath(path.join(this.profileDir,'cindy-media','blobs'))});guard();
+    if(!bytes)throw new Error('MEDIA_NOT_FOUND');
+    return {bytes:Buffer.from(bytes),mimeType:resolved.mimeType!,originKind:user?'user' as const:'tool' as const};
+  }
+  grantPluginAttachments(instance:string,sources:Array<{bytes:Buffer;mimeType:string;originKind:'user'|'tool'}>,guard:()=>void){
+    return this.run(async()=>{
+      const written=[];
+      for(const source of sources){guard();written.push({...await this.store.writeBlob({buffer:source.bytes,mimeType:source.mimeType,assertStillValid:guard}),originKind:source.originKind});}
+      guard();this.native!.exec('BEGIN IMMEDIATE');
+      try{
+        for(const item of written){
+          await recordBlob({...item,isCache:false},this.db!);guard();
+          await addRef({hash:item.hash,refKind:item.originKind==='user'?'ghost-grant':'ghost-tool-grant',refId:instance,originKind:item.originKind},this.db!);guard();
+        }
+        this.native!.exec('COMMIT');return written.map(item=>item.hash);
+      }catch(error){this.native!.exec('ROLLBACK');throw error;}
+    });
+  }
   async readPluginMedia(instance:string,hash:string,guard:()=>void) {
     await this.ready;await this.operations;guard();
     if(!await ghostCanRead(hash,instance,this.db!))return null;

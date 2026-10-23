@@ -1,3 +1,5 @@
+import { PluginSetupView } from './plugin-setup.js';
+import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
 /** Behavior: the real Ink login surface must discover enabled methods, route
  * every action locally, and keep submitted codes/return URLs out of rendering.
  * Existing controller tests cannot catch missing keyboard routes or visible
@@ -269,4 +271,39 @@ it('edits resource defaults and returns to the collection after deletion',async(
   await screen.press('\r');expect(removed).toBe(false);
   await screen.burst(['\x1b[B','\r']);await screen.burst(['\x1b[B','\r']);
   expect(removed).toBe(true);expect(screen.latest()).toContain('Records');expect(screen.latest()).not.toContain('Saved record');
+});
+
+// Unit: real Ink typing must use the dedicated setup submission, never a
+// generic permission answer or unmasked frame. Replaces the absent TUI route.
+it('submits a market installation confirmation to the destination plugin collection',async()=>{
+  const host=fakeClient(),invoked:string[]=[];
+  const market={id:'plugin-market',resourceKind:'market-plugin',title:'Plugin market'};
+  const plugins={id:'plugins',resourceKind:'plugin',title:'Installed plugins'};
+  const marketRef={collectionId:market.id,kind:market.resourceKind,id:'fixture'},pendingRef={collectionId:plugins.id,kind:plugins.resourceKind,id:'install:fixture'};
+  host.handle((channel,args)=>{
+    const request=args[0] as {collectionId?:string;ref?:typeof marketRef;actionId?:string};
+    if(channel==='maker:remote-resources:manifest')return {collections:[market,plugins]};
+    if(channel==='maker:remote-resources:list')return {items:request.collectionId===market.id?[{ref:marketRef,revision:'1',display:{title:'Fixture'},links:[]}]:[]};
+    if(channel==='maker:remote-resources:get')return {ref:request.ref,revision:'1',display:{title:request.ref?.collectionId===market.id?'Fixture':'Review plugin permissions'},links:[],blocks:[],actions:request.ref?.collectionId===market.id?[{id:'install:release',label:'Install'}]:[{id:'confirm-install',label:'Confirm installation',confirmation:{title:'Install plugin?'}}]};
+    if(channel==='maker:remote-resources:invoke'){
+      invoked.push(String(request.collectionId));
+      return {effects:request.actionId==='confirm-install'?[{kind:'refresh-collection',collectionId:plugins.id}]:[{kind:'navigate',target:{kind:'resource',ref:pendingRef}}]};
+    }
+  });
+  const screen=await mount(host.client,{node:<Resources client={host.client} locale="en" initialCollection={market.id} onTask={()=>{}}/>});
+  await screen.press('\r');await screen.press('\r');expect(screen.latest()).toContain('Review plugin permissions');
+  await screen.press('\r');await screen.burst(['\x1b[B','\r']);
+  expect(invoked).toEqual(['plugin-market','plugins']);expect(screen.latest()).toContain('Installed plugins');
+});
+
+// Unit: a bound card keeps owner-entered credentials out of terminal frames.
+it('submits a plugin secret through its bound card without rendering the value',async()=>{
+  const client=fakeClient().client,submit=vi.fn(),resolve=vi.fn();
+  const request:GhostSetupInteractionSnapshot={kind:'plugin_setup',requestId:'fixture-setup',revision:7,ghost:{id:'fixture',name:'Fixture plugin'},remoteSecret:true,steps:[{id:'key',groupId:'group',groupMode:'any_of',title:'Connect account',description:'API key',phase:'pending',action:{id:'inline:key',kind:'inline_form',form:{fields:[{id:'value',type:'secret',label:'API key',required:true,maxLength:4096}]}}}]};
+  const screen=await mount(client,{node:<PluginSetupView request={request} locale="en" busy={false} back={()=>{}} resolve={resolve} submit={submit}/>});
+  await screen.press('\r');await screen.press('synthetic-tui-secret');
+  expect(screen.all()).not.toContain('synthetic-tui-secret');
+  await screen.press('\r');
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({kind:'secret',ghostId:'fixture',value:'synthetic-tui-secret',action:{requestId:'fixture-setup',actionId:'inline:key',expectedRevision:7}}));
+  expect(resolve).not.toHaveBeenCalled();expect(screen.all()).not.toContain('synthetic-tui-secret');
 });

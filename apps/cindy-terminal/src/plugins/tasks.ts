@@ -1,0 +1,56 @@
+import path from 'node:path';
+import { isCindyAccountGhostId } from '@cindy/plugin-runtime/shared/ghost';
+import type { GhostVisibilityDeps } from '@cindy/plugin-runtime/ghostVisibility';
+import type { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
+import type { TerminalTaskHost } from '../tasks/host.js';
+import type { TerminalProtectedInput } from '../protected-input.js';
+import type { TerminalPlugins } from './host.js';
+import type { TerminalPluginAccount } from './account.js';
+import { TerminalPluginPreferences } from './preferences.js';
+import { TerminalPluginSetup } from './setup.js';
+import { TerminalPluginPublisher } from './publisher.js';
+import { createTerminalPluginTask } from './mcp.js';
+import { createTerminalPluginForge } from './forge.js';
+import type { TerminalPluginMarket } from './market.js';
+import translations from './translations.json';
+
+/** Owner-scoped wiring; no process-global Desktop singleton is borrowed. */
+export class TerminalPluginTasks {
+  readonly setup:TerminalPluginSetup;
+  readonly preferences:TerminalPluginPreferences;
+  readonly publisher:TerminalPluginPublisher;
+  readonly ready:Promise<void>;
+  private closed=false;
+  constructor(private readonly options:{
+    root:string;runtimeDirectory:string;host:TerminalPlugins;account:TerminalPluginAccount;market:TerminalPluginMarket;
+    tasks:TerminalTaskHost;protectedInput:TerminalProtectedInput;deposits:DirDepositVault;saves:SaveDepositVault;
+    owner():import('@cindy/plugin-runtime/owner').PluginOwner;
+    signedIn():boolean;remoteAvailable(peer:string):boolean;locale():string;assertCurrent():void;
+    emit(channel:string,payload:unknown):void;
+  }){
+    const guard=()=>{if(this.closed)throw new Error('PLUGIN_TASKS_CLOSED');options.assertCurrent();};
+    const translate=(key:string)=>((translations as Record<string,Record<string,string>>)[options.locale()]??translations.en)[key]??(translations.en as Record<string,string>)[key]??key;
+    this.preferences=new TerminalPluginPreferences(options.root,guard);
+    const visibility:GhostVisibilityDeps={translate,listGhosts:()=>{guard();return options.host.native.list();},
+      isAvailableForActiveSession:id=>{guard();const ghost=options.host.installed(id);return !!ghost&&(!isCindyAccountGhostId(ghost.manifest.id)||options.signedIn());},
+      isDisabledForWorkdir:(id,dir)=>this.preferences.disabled(id,dir),
+    };
+    this.setup=new TerminalPluginSetup(options.host,{visibility,owner:()=>JSON.stringify(options.owner()),remoteAvailable:options.remoteAvailable,translate,assertCurrent:guard,emit:options.emit,
+      navigate:(sessionId,target,ghostId)=>options.emit('terminal:plugin-settings',{sessionId,target,ghostId}),
+    });
+    this.publisher=new TerminalPluginPublisher({stagingDirectory:path.join(options.root,'plugin-publish-staging'),host:options.host,account:options.account,owner:options.owner,assertCurrent:guard,
+      onProgress:progress=>options.emit('ghosts:publish-progress',progress),
+    });
+    options.protectedInput.configurePlugins(this.setup.authorization);
+    options.tasks.configurePlugins(async context=>{
+      guard();await this.ready;await this.preferences.refresh();guard();
+      const scoped={...context,assertCurrent:()=>{guard();context.assertCurrent();}};
+      return createTerminalPluginTask({host:options.host,setup:this.setup,preferences:this.preferences,visibility,context:scoped,media:options.tasks.media,deposits:options.deposits,saves:options.saves,
+        market:options.market.task(scoped,options.tasks.requestHostPermission,translate),
+        forge:createTerminalPluginForge({...options,context:scoped,media:options.tasks.media,publisher:this.publisher,requestPermission:options.tasks.requestHostPermission,translate}),
+      });
+    },this.setup);
+    this.ready=this.preferences.refresh();
+  }
+  close(){if(this.closed)return;this.closed=true;this.setup.close();this.publisher.close();}
+}

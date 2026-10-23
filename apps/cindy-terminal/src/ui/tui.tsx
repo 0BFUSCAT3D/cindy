@@ -1,3 +1,5 @@
+import { PluginSetupView } from './plugin-setup.js';
+import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
 import { ProtectedInputView } from './protected-input.js';
 import { inputHandoffPresentation, INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, type InputHandoffSnapshot } from '@cindy/device-link';
 import React, { useEffect, useRef, useState } from 'react';
@@ -92,7 +94,9 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   const [error, setError] = useState('');
   const [status, setStatus] = useState<Data>({});
   const [auth, setAuth] = useState<TerminalAuthSnapshot | null>(null);
-  const [pending, setPending] = useState<Array<InteractionRequest|InputHandoffSnapshot>>([]);
+  const [pluginAuthorization,setPluginAuthorization]=useState<{url:string;userCode?:string}>();
+  const [resourceTarget,setResourceTarget]=useState<import('@cindy/device-link').RemoteResourceRef>();
+  const [pending, setPending] = useState<Array<InteractionRequest|InputHandoffSnapshot|GhostSetupInteractionSnapshot>>([]);
   const [reviewRequest, setReviewRequest] = useState(false);
   const [running, setRunning] = useState(false);
   const [device, setDevice] = useState(initialDevice);
@@ -283,7 +287,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
             return overlap<0?latest:[...previous.slice(0,overlap),...latest];
           });
           if(latest.length<200)setHistoryExhausted(true);
-          setPending(array(requests).map(value => (value.request ?? value) as InteractionRequest|InputHandoffSnapshot));
+          setPending(array(requests).map(value => (value.request ?? value) as InteractionRequest|InputHandoffSnapshot|GhostSetupInteractionSnapshot));
           setRunning(inTurn === true);setTaskInfo(info);
           if(at.device)setTargetOnline(true);
         }
@@ -369,6 +373,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   }
 
   useEffect(()=>{setMessages([]);setHistoryExhausted(false);setScroll(0);},[task,device]);
+  useEffect(()=>{setResourceTarget(undefined);},[device]);
   useEffect(() => { void action(load); }, [page,task,device]);
   useEffect(()=>{
     setDeviceLabel('');setTargetOnline(!device);if(!device)return;
@@ -378,13 +383,17 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   },[client,device]);
   useEffect(() => { if (!pending.length) setReviewRequest(false); }, [pending.length]);
   useEffect(() => client.subscribe((channel,args) => {
-    if (channel === 'terminal:connection-lost') { setConnected(false);setError(t.connectionLost); }
+    const navigatePlugin=(payload:unknown)=>{const value=record(payload);if(value.sessionId!==current.current.task)return;if(value.target==='client_settings'){setPage('models');return;}if(value.target==='plugin_settings'&&typeof value.ghostId==='string'){setResourceTarget({collectionId:'plugins',kind:'plugin',id:value.ghostId});setPage('resources');}};
+    if(channel==='terminal:plugin-settings'&&!current.current.device){navigatePlugin(args[0]);return;}
+    if(channel==='terminal:plugin-authorization'){void client.invoke('terminal:plugin-authorizations',[]).then(result=>{const items=array(unwrap(result));const latest=items[items.length-1];setPluginAuthorization(latest?{url:String(latest.url),...(typeof latest.userCode==='string'?{userCode:latest.userCode}:{})}:undefined);}).catch(()=>{});}
+    else if (channel === 'terminal:connection-lost') { setConnected(false);setError(t.connectionLost); }
     else if (channel === 'terminal:connection-ready') {setConnected(true);setError(previous=>previous===t.connectionLost?'':previous);setConnectionEpoch(value=>value+1);void loadCurrent.current().catch(()=>{});}
     else if (channel === 'terminal:remote-status') {if(current.current.device){if(args[0]!=='online')setTargetOnline(false);else void loadCurrent.current().catch(()=>{});}}
     else if (channel === 'terminal:devices:changed') {const changed=record(args[0]);if(changed.deviceId===current.current.device)setTargetOnline(changed.online===true);if(current.current.page==='connections')void loadCurrent.current().catch(()=>{});}
     else if (channel === 'terminal:auth:changed') setAuth(args[0] as TerminalAuthSnapshot);
     else if (channel === 'terminal:remote-event') {
       const push = record(args[0]);
+      if(push.deviceId===current.current.device&&push.channel==='terminal:plugin-settings'){navigatePlugin(push.payload);return;}
       if (push.deviceId === current.current.device) void loadCurrent.current().catch(() => {});
     } else if (!current.current.device && (channel.includes('event') || channel.includes('changed') || channel.includes('interaction'))) void loadCurrent.current().catch(() => {});
   }), [client,device]);
@@ -447,11 +456,14 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     <Box flexGrow={1} flexDirection="column" overflow="hidden">
       {page === 'login' ? <Authentication client={client} locale={locale} sso={initialSso} onDone={()=>navigate('tasks')} onNeedsVault={()=>navigate('service')} />
         : form ? <FormView key={form.id} form={form} busy={busy} error={error} cancel={() => setForm(null)} submit={values => void action(() => form.submit(values))} />
-        : page === 'resources' ? <Resources client={client} device={device} locale={locale} initialCollection={initialCollection} onTask={(id,target)=>{if(target)setDevice(target);setTask(id);setPage('tasks');}} />
+        : page === 'resources' ? <Resources client={client} device={device} locale={locale} initialCollection={initialCollection} initialRef={resourceTarget} onTask={(id,target)=>{if(target)setDevice(target);setTask(id);setPage('tasks');}} />
         : task && reviewRequest && pending[0]?.kind==='input_handoff' ? <ProtectedInputView key={`${pending[0].requestId}:${pending[0].revision}`} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)}
           submit={submission=>{const request=pending[0] as InputHandoffSnapshot;void action(async()=>{const result=unwrap(await client.invoke(device?INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL:INPUT_HANDOFF_LOCAL_CHANNEL,[device?{deviceId:device,presentation:inputHandoffPresentation(request),submission}:{requestId:request.requestId,submission}]));if(record(result).accepted!==true)throw new Error('INPUT_HANDOFF_STALE');setReviewRequest(false);await load();});}}
           decide={decision=>void action(async()=>{await call('maker:resolve-interaction',[pending[0].requestId,decision]);setReviewRequest(false);await load();})}/>
-        : task && reviewRequest && pending[0] && pending[0].kind!=='input_handoff' ? <InteractionView key={pending[0].requestId} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)} resolve={decision=>void action(async()=>{ await call('maker:resolve-interaction',[pending[0].requestId,decision]); setReviewRequest(false); await load(); })} />
+        : task && reviewRequest && pending[0]?.kind==='plugin_setup' ? <PluginSetupView key={pending[0].requestId} request={pending[0]} locale={locale} busy={busy} authorization={pluginAuthorization} back={()=>setReviewRequest(false)}
+          resolve={decision=>{void action(async()=>{await call('maker:resolve-interaction',[pending[0].requestId,decision]);await load();});}}
+          submit={submission=>{void action(async()=>{await client.invoke('terminal:plugin-assist',[{...submission,...(device?{deviceId:device}:{})}]);await load();});}}/>
+        : task && reviewRequest && pending[0] && pending[0].kind!=='input_handoff' && pending[0].kind!=='plugin_setup' ? <InteractionView key={pending[0].requestId} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)} resolve={decision=>void action(async()=>{ await call('maker:resolve-interaction',[pending[0].requestId,decision]); setReviewRequest(false); await load(); })} />
         : task ? <>
           <Text bold>{label(taskInfo.title,t.newTask)}</Text>
           <Text dimColor>{label(taskInfo.model)} · {label(taskInfo.agentKind)} · {running ? t.working : t.ready}{pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}</Text>

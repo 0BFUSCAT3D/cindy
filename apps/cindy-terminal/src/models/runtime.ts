@@ -61,6 +61,7 @@ export interface RuntimeInput {
   memory?: MakerMemoryManager;
   capabilities?: Awaited<ReturnType<TerminalCapabilities['runtime']>>;
   contactsEnabled?: boolean;
+  getGhostRosterPrompt?: () => string;
   getContactsPromptState?: () => 'enabled' | 'disabled';
 }
 
@@ -100,6 +101,7 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
   const deps = {
     auth, binaryPath, logger,
     makerMemory: input.memory,
+    getGhostRosterPrompt: input.getGhostRosterPrompt,
     getManagedSkills: input.capabilities?.getManagedSkills,
     getDisabledSkillPaths: input.capabilities?.getDisabledSkillPaths,
     prepareCodexSkills: input.capabilities?.prepareCodexSkills,

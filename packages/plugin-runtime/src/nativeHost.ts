@@ -29,11 +29,12 @@ export class NativePluginHost {
   private installed = new Map<string, InstalledGhost>();
   private refreshTail: Promise<void> = Promise.resolve();
   private closed = false;
+  private opened = false;
 
   constructor(private readonly options: NativePluginHostOptions) {
     this.manager = new GhostManager({ ...options.manager,
       mutateSnapshot: options.manager.mutateSnapshot ?? createNativeSnapshotMutation({ nodePath: options.node.nodePath, workerPath: options.node.snapshotWorkerPath }),
-      onChanged: ghosts => { options.manager.onChanged?.(ghosts); void this.refresh().catch(error => options.manager.log?.warn('plugin runtime refresh failed', { code: error instanceof Error ? error.name : 'Error' })); },
+      onChanged: ghosts => { options.manager.onChanged?.(ghosts); if(this.opened)void this.refresh().catch(error => options.manager.log?.warn('plugin runtime refresh failed', { code: error instanceof Error ? error.name : 'Error' })); },
     });
     if (options.web) {
       this.web = new HeadlessGhostSandbox({ ...options.web,
@@ -87,9 +88,15 @@ export class NativePluginHost {
     });
   }
 
-  async open(): Promise<void> {
+  async open(beforeStart?:()=>void|Promise<void>): Promise<void> {
     if (this.closed) throw new Error('PLUGIN_HOST_CLOSED');
     await this.manager.migrateLegacyApprovalsOnce();
+    const ghosts=await this.manager.listAsync();
+    if(this.closed)throw new Error('PLUGIN_HOST_CLOSED');
+    this.installed=new Map(ghosts.map(ghost=>[installedGhostStoragePart(ghost),ghost]));
+    await beforeStart?.();
+    if(this.closed)throw new Error('PLUGIN_HOST_CLOSED');
+    this.opened=true;
     await this.refresh();
   }
 
