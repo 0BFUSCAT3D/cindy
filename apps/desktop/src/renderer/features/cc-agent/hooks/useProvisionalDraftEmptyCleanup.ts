@@ -41,11 +41,13 @@ export function useProvisionalDraftEmptyCleanup(draftKey: string, refreshTitle: 
     // The component will be gone when ASR settles. Bind cleanup to its source
     // task, then recheck after the existing detached-persist path has finished.
     return () => {
+      if (provisionalDraftTaskId() !== id) return;
+      refreshTitle();
       void discardProvisionalDraftTask(
         () => provisionalDraftTaskId() === id && !getDraftPresence(draftKey),
       );
     };
-  }, [draftKey]);
+  }, [draftKey, refreshTitle]);
 
   useEffect(() => {
     const unsubscribe = subscribeDraftContent(draftKey, () => {

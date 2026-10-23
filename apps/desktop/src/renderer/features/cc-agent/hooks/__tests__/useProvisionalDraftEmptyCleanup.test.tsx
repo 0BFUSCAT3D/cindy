@@ -10,7 +10,7 @@ vi.mock('../../provisionalDraftTask', () => ({
   },
 }));
 
-import { clearDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
+import { clearDraft, getDraft, plainTextToTiptapDoc, saveDraft } from '@/lib/composerDraftStore';
 import {
   armDetachedVoiceDraftPersist,
   clearArmedDetachedVoiceDraft,
@@ -19,7 +19,8 @@ import {
 import { useProvisionalDraftEmptyCleanup } from '../useProvisionalDraftEmptyCleanup';
 
 const draftKey = 'provisional-cleanup-test';
-const refreshTitle = vi.fn();
+let titlePreview: unknown = 'default';
+const refreshTitle = vi.fn(() => { titlePreview = getDraft(draftKey)?.text ?? null; });
 function save(text: string) {
   saveDraft(draftKey, { text: plainTextToTiptapDoc(text), attachments: [] }, { silent: true });
 }
@@ -112,8 +113,12 @@ describe('provisional draft empty cleanup', () => {
     armDetachedVoiceDraftPersist(draftKey, '', result.current.onVoiceDetached());
     unmount();
     expect(mocks.discard).not.toHaveBeenCalled();
+    // PR #6956's second review: detached completion must refresh the source
+    // preview after saving, and must leave a replacement task's title alone.
+    titlePreview = 'default';
     if (replacement) mocks.currentId = 'draft-2';
     settleArmedDetachedVoiceDraft(text);
     expect(mocks.discard).toHaveBeenCalledTimes(discarded);
+    expect(titlePreview).toEqual(replacement ? 'default' : text ? plainTextToTiptapDoc(text) : null);
   });
 });
