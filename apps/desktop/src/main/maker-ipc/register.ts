@@ -625,11 +625,13 @@ import { requestUtilityText } from '../utility-model/oneShotCandidates.js';
 import { validateExistingLocalProjectDirectory } from '../mcp-integrations/createProject.js';
 import { gitExec } from '../worktree/gitExec.js';
 import { BOT_GROUP_CLIENT_ID_PREFIX } from '../../shared/botGroupChat.js';
+import { syncBotLanePermission, syncBotLinkedLanePermissions } from './botPermissionSync.js';
 import { ensureBotGroupLaneSession } from '../localDb/ipc/bots.js';
 import { restartBotRuntime } from './botRuntimeRestart.js';
 import { registerBotLifecycleHandlers } from './botLifecycleService.js';
 import { isSessionPermissionMode, persistPermissionModeWithoutRuntime } from './sessionPermissionPersistence.js';
 import { withSessionPermissionChange } from './sessionPermissionChange.js';
+import { withBotPermissionChange } from './botPermissionDispatch.js';
 import { updateBotRoutineLifecycle } from '../routines/service.js';
 import {
   createBotCompactRuntimeRefreshCoordinator,
@@ -916,6 +918,7 @@ import {
   type OrcaInterAgentDispatcher,
   type OrcaInterAgentMessageSource,
 } from './orcaInterAgentDispatcher.js';
+import { resolveOrcaImageAttachmentInput } from './orcaImageAttachments.js';
 import { OrcaWorkerPermissionConfirmBridge } from './orcaWorkerPermissionConfirmBridge.js';
 import { assertTaskActionCurrent, captureTaskActionGuard, bindTaskActionInput, hasTaskActionAuthorization, taskActionInputGuard, settleTaskActionInput, TaskActionAuthorizationError, type TaskActionDeliveryGuard } from './taskActionAuthorization.js';
 import {
@@ -2697,6 +2700,7 @@ interface OrcaCollabService {
     workingDir?: string;
     worktree?: { sourceBranch?: string };
     initialTask?: string;
+    initialTaskImages?: string[];
     executionDeviceId?: string;
     /** Worker 的 Agent 所在位置；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
     agentDeviceId?: string | null;
@@ -2823,6 +2827,7 @@ interface OrcaCollabService {
     targetSessionId: string;
     message: string;
     delivery?: 'queue' | 'steer';
+    imagePaths?: string[];
   }) => Promise<SendToWorkerResult>;
   interruptWorker: (params: {
     callerLeadSessionId: string;
@@ -11606,6 +11611,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           message: error instanceof Error ? error.message : String(error),
         };
       }
+      await syncBotLanePermission(targetSessionId);
       await reconcileBotModelRoute(targetSessionId);
       const compactedRuntime = maker.getSession(targetSessionId);
       if (compactedRuntime) await refreshBotCapabilityEpochBeforeSend(compactedRuntime);
@@ -12686,26 +12692,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     closeLanes: async (sessionIds) => {
       await Promise.all(sessionIds.map((id) => maker.closeSession(id).catch(() => undefined)));
     },
-    syncLanePermission: async (laneSessionId, botId) => {
-      const [canonical] = await getDbClient().drizzle
-        .select({ mode: sessions.permissionMode })
-        .from(botSessionLinks)
-        .innerJoin(sessions, eq(sessions.id, botSessionLinks.sessionId))
-        .where(and(eq(botSessionLinks.botId, botId), eq(botSessionLinks.role, 'canonical'), isNull(botSessionLinks.archivedAt)))
-        .limit(1);
-      const mode = canonical?.mode;
-      if (!mode || !isSessionPermissionMode(mode)) return;
-      const live = maker.getSession(laneSessionId);
-      if (live) {
-        if (live.stablePermissionModeState?.mode !== mode) {
-          await live.setPermissionMode(mode as 'ask' | 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions');
-        }
-        return;
-      }
-      if (!(await persistPermissionModeWithoutRuntime(laneSessionId, mode))) {
-        throw new Error('Group lane permission could not be persisted');
-      }
-    },
+    syncLanePermission: async (laneSessionId) => syncBotLanePermission(laneSessionId),
     hasPendingInteraction: (sessionId) => hasPendingAgentInteractionForSession(sessionId),
     decidePlan: createBotGroupPlanDecider((prompt, opts) => requestUtilityText(maker, prompt, opts)),
     workDir: botGroupWorkDir,
@@ -13774,7 +13761,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           if (result.response !== 0) return { granted: false };
           // Reserve permission order before the lifecycle/restart fence. Ordinary
           // permission writers never hold that fence while awaiting this queue.
-          return await withSessionPermissionChange(task.taskId, () => service.completeOperation(() => withSessionRestartLock(task.taskId, async () => {
+          return await withBotPermissionChange(task.taskId, () => withSessionPermissionChange(task.taskId, () => service.completeOperation(() => withSessionRestartLock(task.taskId, async () => {
             assertRequestCurrent();
             if (snapshot !== getCurrentDbClientSnapshot() || before !== JSON.stringify(readPluginTaskConfig(pluginId))) throw new PluginTaskError('PERMISSION_DENIED', 'Account or permission settings changed');
             const fresh = await service.get(pluginId, task.taskId);
@@ -13809,7 +13796,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               if (persisted) await snapshot!.client.tx('bots.persistSessionPermission', {sessionId: task.taskId, mode: task.permissionMode});
               throw error;
             }
-          })));
+          }))));
           });
         } finally { pluginPermissionRequests.delete(pluginId); }
       }
@@ -14445,6 +14432,35 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getSessionMeta: (sessionId) => maker.getSessionMeta(sessionId).catch(() => null),
     getSessionRowSnapshot,
     getLiveSession: (sessionId) => maker.getSession(sessionId),
+    validateImageAttachments: async (paths) => {
+      // 图片来源两类: 会话受管地址(cindy-media:// / xdt-image://)与任意本机绝对路径。
+      const images: Array<{ path: string; name: string; ext: string; size: number; mimeType: string }> = [];
+      for (const input of paths) {
+        const resolved = resolveOrcaImageAttachmentInput(input);
+        if (!resolved) {
+          return {
+            ok: false,
+            message: `image not resolvable (accepts cindy-media:// / xdt-image:// URIs or local image files: png/jpeg/gif/webp): ${input}`,
+          };
+        }
+        let size: number;
+        try {
+          const stat = await fsp.stat(resolved.absPath);
+          if (!stat.isFile()) throw new Error('not a file');
+          size = stat.size;
+        } catch {
+          return { ok: false, message: `image not found or unreadable: ${input}` };
+        }
+        images.push({
+          path: resolved.absPath,
+          name: path.basename(resolved.absPath),
+          ext: path.extname(resolved.absPath).toLowerCase(),
+          size,
+          mimeType: resolved.mimeType,
+        });
+      }
+      return { ok: true, images };
+    },
     applyPendingAgentSwitch: (sessionId) =>
       applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId, { bootstrapAfterSwitch: true }),
     hasPendingAgentSwitch: (sessionId) => !!agentSwitchPending.get(sessionId),
@@ -15084,6 +15100,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       message,
       workerId,
       delivery,
+      imagePaths,
       dispatchMeta,
       onAccepted,
       onAcceptedRollback,
@@ -15096,6 +15113,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         senderLabel: 'Lead',
         workerId,
         ...(delivery ? { delivery } : {}),
+        ...(imagePaths ? { imagePaths } : {}),
         meta: dispatchMeta,
         onAccepted,
         onAcceptedRollback,
@@ -17706,6 +17724,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       throwIpcError('PRECONDITION_FAILED', 'Cindy Make is still preparing this task');
     }
     await assertReviewExternalInputAllowed(sessionId);
+    await syncBotLanePermission(sessionId);
     await reconcileBotModelRoute(sessionId);
     const compactedRuntime = maker.getSession(sessionId);
     if (compactedRuntime) await refreshBotCapabilityEpochBeforeSend(compactedRuntime);
@@ -17774,6 +17793,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // TODO(im-bot-companion): IM turns do not yet get the desktop model-chain
     // fallback (botFallbackInputs / coordinator recovery); a failing primary
     // route surfaces as an IM error instead of moving to the next candidate.
+    await syncBotLanePermission(sessionId);
     await reconcileBotModelRoute(sessionId);
     const live = maker.getSession(sessionId);
     if (live) await refreshBotCapabilityEpochBeforeSend(live);
@@ -23736,7 +23756,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           throwIpcError('PRECONDITION_FAILED', 'Account changed during permission update');
         }
       };
-      return withSessionPermissionChange(sessionId, async () => {
+      return withBotPermissionChange(sessionId, () => withSessionPermissionChange(sessionId, async () => {
         assertOwnerCurrent();
         await assertReviewSettingsUnlocked(sessionId);
         assertOwnerCurrent();
@@ -23768,13 +23788,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // 分享供应商的「本任务总是允许」随权限档变化失效；Agent 实例被回收时执行器收不到这次切换。
         if (row.permissionMode !== mode) forgetCredentialGrants(sessionId);
         broadcastSessionPatched(sessionId, { permissionMode: mode });
+        await syncBotLinkedLanePermissions(sessionId);
         if (remote) {
           const result = {};
           markRemoteSettingPersistedInsideHandler(result);
           return result;
         }
         return true;
-      });
+      }));
     },
   );
 
