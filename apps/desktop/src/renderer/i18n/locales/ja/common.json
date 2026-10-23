@@ -966,6 +966,9 @@
     "handoffWindow": "代理入力 · {{app}}"
   },
   "ipcError": {
+    "SSH_HARNESS_SWITCH_UNSUPPORTED": "この SSH タスクでは Harness を切り替えられません。現在の Harness のモデルを選ぶか、必要な Harness で新しい SSH タスクを作成してください。",
+    "MODEL_SELECTION_UNAVAILABLE": "選択したプロバイダーのモデルは利用できなくなりました。設定で接続を確認するか、利用可能なモデルを選び直してください。",
+    "HARNESS_SWITCH_NOT_READY": "Harness の切り替えが完了していません。エラーの詳細を確認し、Harness の準備ができてから再試行してください。",
     "DEVICE_LINK_BUSY": "接続先のコンピュータが混み合っています。しばらくしてから再試行してください。",
     "INVALID_PARAMS": "パラメータが無効です。確認して再試行してください。",
     "PRECONDITION_FAILED": "現在の状態ではこの操作を実行できません。しばらくしてから再試行してください。",
@@ -12266,6 +12269,9 @@
       "daemonNotReady": "{{manager}} のアップグレードは完了しましたが、リモート daemon がまだ起動していません — メッセージを手動で再送信してください"
     },
     "remoteError": {
+      "SSH_HARNESS_SWITCH_UNSUPPORTED": "この SSH タスクでは Harness を切り替えられません。現在の Harness のモデルを選ぶか、必要な Harness で新しい SSH タスクを作成してください。",
+      "MODEL_SELECTION_UNAVAILABLE": "選択したプロバイダーのモデルは利用できなくなりました。設定で接続を確認するか、利用可能なモデルを選び直してください。",
+      "HARNESS_SWITCH_NOT_READY": "Harness の切り替えが完了していません。エラーの詳細を確認し、Harness の準備ができてから再試行してください。",
       "DEVICE_LINK_BUSY": "接続先のコンピュータが混み合っています。しばらくしてから再試行してください。",
       "REMOTE_DAEMON_CLOSED": "リモート接続が切れました。更新中の可能性があります。このターンは終了したので、もう一度送信してください。",
       "REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED": "リモートセッションではローカルのファイル/画像の添付にアクセスできません。内容を直接貼り付けてください。",
