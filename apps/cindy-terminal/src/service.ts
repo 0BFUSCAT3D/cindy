@@ -254,7 +254,7 @@ export class TerminalService {
       scope:()=>{const session=this.auth.snapshot().session;return session&&session.key===owner&&this.ownerGeneration===generation&&!this.ownerSuspended?{realm:session.realm,membershipId:session.membership.id,deviceId:this.settings.deviceId}:null;},
       assertCurrent:()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');},
       remoteEnabled:()=>this.settings.snapshot().effective.remoteEnabled,
-      taskExists:async id=>Boolean(await this.tasks.storage.get(id)),
+      taskExists:async id=>Boolean(await this.tasks.storage.get(id)||await this.companions?.storage.get(id)),
       emit:(channel,payload)=>{if(this.ownerSuspended)return;this.transport.publish(channel,[payload]);void this.remote.publish(channel,payload).catch(()=>{});},
       invoke:async(device,channel,args)=>{
         try { return {ok:true,result:await this.remote.invoke(device,channel,args)}; }
@@ -348,11 +348,13 @@ export class TerminalService {
       canDispatch:()=>this.ownerKey===owner&&this.ownerGeneration===generation&&!this.ownerSuspended&&!this.closing,
       emit:(channel,args)=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.ownerSuspended||this.closing)return;this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
     this.scheduler.registerResources(this.resources.registry);
-    const guardCompanion=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.ownerSuspended||this.closing)throw new Error('OWNER_CHANGED');};
-    this.companions=new TerminalCompanionHost({root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,attachments:this.tasks.attachmentHost(),
+    // The new owner initializes while public RPC remains suspended. Generation
+    // fences reject the old owner; the suspension gate is lifted only after setup.
+    const guardCompanion=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
+    this.companions=new TerminalCompanionHost({root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,protectedInput:this.protectedInput,attachments:this.tasks.attachmentHost(),
       binary:async kind=>(await this.engines.allStatus()).find(status=>status.kind===kind)?.binary??null,
       helper:input=>this.tasks.helperDeps(input),
-      emit:(channel,args)=>{guardCompanion();this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
+      emit:(channel,args)=>{guardCompanion();if(this.ownerSuspended)return;this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
     await this.companions.ready;
     this.routines=new TerminalCompanionRoutines(this.companions,this.scheduler);
     this.companions.routines=this.routines;

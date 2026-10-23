@@ -2,9 +2,6 @@ name: Terminal native platform acceptance
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'terminal-platform-acceptance/**'
 
 permissions:
   contents: read
@@ -20,12 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: linux-x64
           - runner: windows-latest
             target: win32-x64
-          - runner: ubuntu-24.04-arm
-            target: linux-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     env:
