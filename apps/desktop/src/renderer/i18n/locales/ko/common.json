@@ -9756,7 +9756,8 @@
           "archived": "보관된 그룹입니다. 기록은 계속 볼 수 있습니다.",
           "noneHint": "이 그룹에서는 동료의 소유자만 응답을 요청할 수 있습니다.",
           "companionPermissions": "동료 권한",
-          "configureCapabilities": "도구 및 사용 권한 설정"
+          "configureCapabilities": "도구 및 사용 권한 설정",
+          "capabilityScope": "이것은 {{name}}의 도구와 사용 권한이며, 이 그룹에만 적용되는 설정이 아닙니다."
         }
       },
       "lifecycle": {

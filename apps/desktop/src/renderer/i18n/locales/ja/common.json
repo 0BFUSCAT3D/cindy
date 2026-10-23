@@ -9756,7 +9756,8 @@
           "archived": "アーカイブ済みです。履歴は引き続き閲覧できます。",
           "noneHint": "このグループでは仲間の所有者だけが応答を依頼できます。",
           "companionPermissions": "仲間の権限",
-          "configureCapabilities": "ツールと利用権限の設定"
+          "configureCapabilities": "ツールと利用権限の設定",
+          "capabilityScope": "これは{{name}}自身のツールと利用権限で、このグループだけの設定ではありません。"
         }
       },
       "lifecycle": {

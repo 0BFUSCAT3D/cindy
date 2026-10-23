@@ -9790,7 +9790,8 @@
           "archived": "This group is archived. History is still available.",
           "noneHint": "Only the companion’s owner can ask it to respond in this group.",
           "companionPermissions": "Companion permissions",
-          "configureCapabilities": "Tools and access settings"
+          "configureCapabilities": "Tools and access settings",
+          "capabilityScope": "These are {{name}}’s own tools and access, not settings for this group only."
         }
       },
       "lifecycle": {
