@@ -34,6 +34,9 @@ const FIELD_LABEL = '引用的设计规范';
 // 设计规范文档引用特征：docs/design-rules/ 目录或其下具体文档名。
 const DESIGN_DOC_PATTERN =
   /(docs\/design-rules\/|DESIGN\.md|cindy-design-system|token-decision-table)/i;
+// 已删除的设计文档：连同它所在的整段写法（裸文件名、完整路径、Markdown 链接）一起先剔除再判断，
+// 否则 `docs/design-rules/figma-component-spec.md §4` 仍会因目录前缀被当作有效依据。
+const REMOVED_DESIGN_DOC_PATTERN = /\S*figma-component-spec\S*/gi;
 // 「不涉及」豁免在去掉该词与标点后至少要剩这么多字符，才算附了理由
 // （放到 4 是为了让「纯逻辑重构」「无 UI 变化」这类最短合理理由能过）。
 const MIN_EXEMPT_REASON_CHARS = 4;
@@ -87,7 +90,7 @@ export function validateDesignBasis(body, uiFiles) {
     return errors;
   }
 
-  if (DESIGN_DOC_PATTERN.test(content)) return errors;
+  if (DESIGN_DOC_PATTERN.test(content.replace(REMOVED_DESIGN_DOC_PATTERN, ' '))) return errors;
 
   if (content.includes('不涉及')) {
     const reason = content.replace(/不涉及/g, '').replace(/[\s、，,。.：:；;！!？?()（）-]/g, '');
