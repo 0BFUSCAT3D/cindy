@@ -244,11 +244,21 @@ function LocalTerminalTabBody({ state, ctx, active, shellVisible = true }: Props
   // ─── 5. Restart 按钮 handler ───
   const onRestart = useCallback(async () => {
     if (restarting) return;
+    const entry = entryRef.current;
     setRestarting(true);
     setRuntimeError(null);
     try {
       const result = await window.electronAPI.terminal.restart(tabId);
       if (!aliveRef.current) return;
+      // The exited PTY ignored font-driven resizes. Restart uses its old grid,
+      // so resend the latest usable size even when the renderer has not changed.
+      // Do not measure a hidden or collapsed panel just to synchronize restart.
+      if (entry && entryRef.current === entry) {
+        const { cols, rows } = entry.lastSize;
+        if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
+          void window.electronAPI.terminal.resize(tabId, cols, rows).catch(() => undefined);
+        }
+      }
       patchState({
         created: true,
         shellId: result.shellId,

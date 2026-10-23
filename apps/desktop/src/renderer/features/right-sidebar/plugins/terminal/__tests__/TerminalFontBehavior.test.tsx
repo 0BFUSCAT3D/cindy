@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_APPEARANCE_SETTINGS, type AppearanceSettings } from '../../../../../../shared/appearanceSettings';
@@ -57,7 +57,7 @@ function installBridge() {
     create: vi.fn(async () => ({ shellId: 'zsh', shellDisplayName: 'zsh' })),
     restart: vi.fn(async () => ({ shellId: 'zsh', shellDisplayName: 'zsh' })),
     dispose: vi.fn(async () => undefined),
-    resize: vi.fn(async () => undefined),
+    resize: vi.fn(async (_id: string, _cols: number, _rows: number) => undefined),
     write: vi.fn(async () => undefined),
     onData: vi.fn((listener: Listener) => {
       dataListeners.add(listener);
@@ -481,6 +481,131 @@ describe('TerminalTabBody terminal font preferences', () => {
     expect(api.terminal.resize).toHaveBeenCalledWith(ctx.tabId, 66, 20);
     expect(api.terminal.restart).not.toHaveBeenCalled();
   });
+
+  it.each(['before', 'during', 'after'] as const)(
+    'keeps the restarted PTY grid in sync when the font loads %s restart',
+    async (fontTiming) => {
+      const ctx = context();
+      const exitedState = { ...runningState, exited: { code: 0, signal: null } };
+      const view = render(<TerminalTabBody state={runningState} ctx={ctx} active />);
+      await flushWork();
+      const entry = entries.get(ctx.tabId)!;
+      let ptySize = { ...entry.lastSize };
+      let ptyRunning = false;
+      // The main process ignores resize after exit, and restart starts with its
+      // last running dimensions rather than the renderer's newly fitted grid.
+      api.terminal.resize.mockImplementation(async (_id, cols, rows) => {
+        if (ptyRunning) ptySize = { cols, rows };
+      });
+      act(() => {
+        for (const listener of dataListeners) listener({ id: ctx.tabId, chunk: 'before exit\r\n' });
+        for (const listener of exitListeners) listener({ id: ctx.tabId, exit: exitedState.exited });
+      });
+      view.rerender(<TerminalTabBody state={exitedState} ctx={ctx} active />);
+      const font = deferred<FontFace[]>();
+      const restart = deferred<{ shellId: string; shellDisplayName: string }>();
+      loadFonts.mockReturnValueOnce(font.promise);
+      api.terminal.restart.mockReturnValueOnce(restart.promise);
+      await broadcast({ terminalFamily: 'Menlo', terminalSize: 20 });
+      if (fontTiming === 'before') {
+        font.resolve([]);
+        await flushWork();
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'rightSidebar.terminal.restart' }));
+      if (fontTiming === 'during') {
+        font.resolve([]);
+        await flushWork();
+      }
+      api.terminal.resize.mockClear();
+      entry.terminal.focus.mockClear();
+      ptyRunning = true;
+      restart.resolve({ shellId: 'zsh', shellDisplayName: 'zsh' });
+      await flushWork();
+      expect(api.terminal.resize).toHaveBeenCalledOnce();
+      expect(ptySize).toEqual(entry.lastSize);
+
+      if (fontTiming === 'after') {
+        font.resolve([]);
+        await flushWork();
+      }
+      expect(entry.terminal.options.fontSize).toBe(20);
+      expect(ptySize).toEqual({ cols: 66, rows: 20 });
+      expect(ptySize).toEqual(entry.lastSize);
+      expect(api.terminal.restart).toHaveBeenCalledOnce();
+      expect(api.terminal.create).not.toHaveBeenCalled();
+      expect(api.terminal.dispose).not.toHaveBeenCalled();
+      expect(entry.terminal.open).toHaveBeenCalledOnce();
+      expect(entry.terminal.dispose).not.toHaveBeenCalled();
+      expect(entry.terminal.reset).not.toHaveBeenCalled();
+      expect(entry.terminal.clear).not.toHaveBeenCalled();
+      expect(entry.terminal.focus).not.toHaveBeenCalled();
+      expect(entry.output).toEqual(['before exit\r\n']);
+    },
+  );
+
+  it.each(['collapsed', 'inactive', 'zero-sized'] as const)(
+    'reuses the last usable grid when restart completes in a %s terminal',
+    async (visibility) => {
+      const ctx = context();
+      const state = { ...runningState, exited: { code: 0, signal: null } };
+      const view = render(<TerminalTabBody state={state} ctx={ctx} active />);
+      await flushWork();
+      await broadcast({ terminalSize: 20 });
+      const entry = entries.get(ctx.tabId)!;
+      expect(entry.lastSize).toEqual({ cols: 66, rows: 20 });
+      const restart = deferred<{ shellId: string; shellDisplayName: string }>();
+      api.terminal.restart.mockReturnValueOnce(restart.promise);
+      fireEvent.click(screen.getByRole('button', { name: 'rightSidebar.terminal.restart' }));
+      if (visibility === 'zero-sized') { width = 0; height = 0; }
+      view.rerender(<TerminalTabBody
+        state={state} ctx={ctx}
+        active={visibility !== 'inactive'} shellVisible={visibility !== 'collapsed'}
+      />);
+      await broadcast({ terminalSize: 24 });
+      entry.fitAddon.fit.mockClear();
+      entry.terminal.focus.mockClear();
+      api.terminal.resize.mockClear();
+
+      restart.resolve({ shellId: 'zsh', shellDisplayName: 'zsh' });
+      await flushWork();
+      expect(api.terminal.resize).toHaveBeenCalledOnce();
+      expect(api.terminal.resize).toHaveBeenCalledWith(ctx.tabId, 66, 20);
+      expect(entry.fitAddon.fit).not.toHaveBeenCalled();
+      expect(entry.terminal.focus).not.toHaveBeenCalled();
+      expect(entry.terminal.options.fontSize).toBe(20);
+
+      width = 800; height = 480;
+      view.rerender(<TerminalTabBody state={runningState} ctx={ctx} active shellVisible />);
+      await notifyResize();
+      expect(entry.terminal.options.fontSize).toBe(24);
+      expect(api.terminal.resize).toHaveBeenLastCalledWith(ctx.tabId, 55, 16);
+      expect(api.terminal.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['failed', 'unmounted', 'replaced'] as const)(
+    'does not synchronize a %s restart',
+    async (outcome) => {
+      const ctx = context();
+      const state = { ...runningState, exited: { code: 0, signal: null } };
+      const view = render(<TerminalTabBody state={state} ctx={ctx} active />);
+      await flushWork();
+      await broadcast({ terminalSize: 20 });
+      const restart = deferred<{ shellId: string; shellDisplayName: string }>();
+      api.terminal.restart.mockReturnValueOnce(restart.promise);
+      fireEvent.click(screen.getByRole('button', { name: 'rightSidebar.terminal.restart' }));
+      if (outcome === 'unmounted') view.unmount();
+      if (outcome === 'replaced') {
+        view.rerender(<TerminalTabBody state={runningState} ctx={context('terminal-b')} active />);
+        await flushWork();
+      }
+      api.terminal.resize.mockClear();
+      if (outcome === 'failed') restart.reject(new Error('TERMINAL_SPAWN_FAILED'));
+      else restart.resolve({ shellId: 'zsh', shellDisplayName: 'zsh' });
+      await flushWork();
+      expect(api.terminal.resize).not.toHaveBeenCalled();
+    },
+  );
 
   it('updates both subscribed terminals while deferring measurements for the hidden one', async () => {
     const firstCtx = context('terminal-a');
