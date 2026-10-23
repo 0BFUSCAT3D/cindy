@@ -14532,8 +14532,8 @@ describe('usage-limit wait (ordinary tasks)', () => {
       session, didInjectOrcaInstructions: false, didInjectProjectContext: false,
     })).mockRejectedValueOnce(quota);
     const transaction = createMakerSendTransaction({
-      getSession: () => rehydrate ? session : undefined,
       statDirectory: async () => ({ isDirectory: () => true }),
+      getSession: () => rehydrate ? session : undefined,
       closeSession: async () => {}, preflightBotRuntimeResources: async () => {},
       getSessionMeta: async () => ({}), ensureRemoteReadyForSessionStart: async () => {},
       checkWorkDirExists: async () => true, isOrcaMcpHydrated: () => !rehydrate,
