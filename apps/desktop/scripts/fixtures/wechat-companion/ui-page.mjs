@@ -85,6 +85,14 @@ export default {
       assert.notEqual(focused.boxShadow, 'none', 'focus ring must survive the global outline suppression');
       assert.equal(focused.outlineStyle, 'none');
       await row.evaluate((el) => el.blur());
+      const platform = await ui.t('bots.channels.platform.feishu');
+      const collapse = page.getByRole('button', { name: await ui.t('bots.channels.lanes.collapse', { platform }), exact: true });
+      await ui.capture('tasks-expanded');
+      await collapse.click();
+      assert.equal(await row.isVisible(), false, 'task records collapse without invoking a write');
+      await ui.capture('tasks-collapsed');
+      await page.getByRole('button', { name: await ui.t('bots.channels.lanes.expand', { platform }), exact: true }).click();
+      assert.equal(await row.isVisible(), true, 'task records return after expanding');
       return;
     }
     const trigger = page.locator('#companion-im-wechat-trigger');

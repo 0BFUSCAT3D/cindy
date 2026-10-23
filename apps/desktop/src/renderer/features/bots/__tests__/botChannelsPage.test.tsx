@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -87,6 +87,7 @@ let groupsApi: {
 let lanesApi: {
   listLanes?: ReturnType<typeof vi.fn>;
   resetLane?: ReturnType<typeof vi.fn>;
+  archiveLane?: ReturnType<typeof vi.fn>;
 } = {};
 
 beforeEach(() => {
@@ -99,6 +100,29 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('BotChannelsPage', () => {
+  // 用户确认的飞书任务折叠合同；既有测试只覆盖打开与重启。
+  // 最小输入：一条连接和一条专线。unit：真实组件点击后列表隐藏，展开保留原记录，无业务写入。
+  it('collapses only this connection task list and restores it without changing sessions', async () => {
+    lanesApi = {
+      listLanes: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes: [
+        { sessionId: 'lane', kind: 'topic', chatId: 'group', threadId: 'topic', name: 'Release room', state: 'idle', lastActivityAt: null, contextMessageCount: 0 },
+      ] })),
+      resetLane: vi.fn(),
+    };
+    installApi({ connections: [connection({ channel: 'feishu' })] });
+    render(<BotChannelsPage bot={mia} />);
+    const label = { platform: 'bots.channels.platform.feishu' };
+    expect(await screen.findByText(`bots.channels.lanes.title:${JSON.stringify(label)}`)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Release room/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: `bots.channels.lanes.collapse:${JSON.stringify(label)}` }));
+    expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull();
+    expect(screen.getByText('bots.channels.platform.feishu')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: `bots.channels.lanes.expand:${JSON.stringify(label)}` }));
+    expect(screen.getByRole('button', { name: /^Release room/ })).toBeTruthy();
+    expect(lanesApi.resetLane).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
   // 测试价值: 真实列表点击应打开主界面只读详情, 旧覆盖只有重启; 最小输入为一条渠道记录。
   // unit: 校验路由与副作用, 不需真实飞书连接。
   it('opens each IM record in the existing history page without restarting it', async () => {
@@ -153,6 +177,65 @@ describe('BotChannelsPage', () => {
         screen.getByRole('radio', { name: 'bots.channels.groups.mode.always' }).getAttribute('aria-checked'),
       ).toBe('true'),
     );
+  });
+
+  // 已确认的归档功能：真实列表按钮应调用本连接的归档 IPC，成功移出、失败与取消保留。
+  // 现有测试只有 reset；最小输入一条专线。unit：可观察列表结果和错误提示。
+  it.each(['done', 'cancel', 'failed'] as const)('archives a channel task with %s outcome', async (outcome) => {
+    const lanes = [{ sessionId: 's-topic', kind: 'topic', chatId: 'group', threadId: 'topic', name: 'Release room', state: 'idle', lastActivityAt: null, contextMessageCount: 0 }];
+    mocks.confirm.mockResolvedValue(outcome !== 'cancel');
+    lanesApi = {
+      listLanes: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes })),
+      resetLane: vi.fn(),
+      archiveLane: vi.fn(async () => {
+        if (outcome === 'failed') throw new Error('unavailable');
+        return { connectionId: 'a1b2c3d4e5f6', lanes: [] };
+      }),
+    };
+    installApi({ connections: [connection({ channel: 'feishu' })] });
+    render(<BotChannelsPage bot={mia} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.lanes.archiveAria:{"lane":"Release room"}' }));
+    if (outcome === 'cancel') {
+      await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
+      expect(lanesApi.archiveLane).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: /^Release room/ })).toBeTruthy();
+    } else {
+      await waitFor(() => expect(lanesApi.archiveLane).toHaveBeenCalledWith({ id: 'a1b2c3d4e5f6', sessionId: 's-topic' }));
+      if (outcome === 'done') await waitFor(() => expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull());
+      else {
+        expect(await screen.findByText('bots.channels.lanes.archiveFailed')).toBeTruthy();
+        expect(screen.getByRole('button', { name: /^Release room/ })).toBeTruthy();
+      }
+    }
+    expect(lanesApi.resetLane).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  // 归档与既有 20 秒轮询竞态；最小输入为归档期间迟到的旧列表，旧测试没有在途读取。
+  it('does not restore an archived task when an older list request arrives late', async () => {
+    const lanes = [{ sessionId: 's-topic', kind: 'topic', chatId: 'group', threadId: 'topic', name: 'Release room', state: 'idle', lastActivityAt: null, contextMessageCount: 0 }];
+    let finishOldRead!: (value: { connectionId: string; lanes: typeof lanes }) => void;
+    lanesApi = {
+      listLanes: vi.fn().mockResolvedValueOnce({ connectionId: 'a1b2c3d4e5f6', lanes })
+        .mockImplementationOnce(() => new Promise((resolve) => { finishOldRead = resolve; })),
+      resetLane: vi.fn(),
+      archiveLane: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes: [] })),
+    };
+    installApi({ connections: [connection({ channel: 'feishu' })] });
+    const visibility = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    vi.useFakeTimers();
+    try {
+      await act(async () => { render(<BotChannelsPage bot={mia} />); });
+      const archive = screen.getByRole('button', { name: 'bots.channels.lanes.archiveAria:{"lane":"Release room"}' });
+      await act(async () => { vi.advanceTimersByTime(20_000); });
+      await act(async () => { fireEvent.click(archive); });
+      expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull();
+      await act(async () => { finishOldRead({ connectionId: 'a1b2c3d4e5f6', lanes }); });
+      expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      visibility.mockRestore();
+    }
   });
 
   it('starts one hidden task over through the connection it belongs to', async () => {

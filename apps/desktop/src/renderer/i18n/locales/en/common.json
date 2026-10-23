@@ -10130,8 +10130,10 @@
         }
       },
       "lanes": {
-        "title": "Hidden tasks",
-        "hint": "Each group, topic, and DM from someone else has its own hidden task. If one gets stuck or goes off track, start it over. Its history is kept.",
+        "title": "{{platform}} tasks",
+        "expand": "Expand {{platform}} tasks",
+        "collapse": "Collapse {{platform}} tasks",
+        "hint": "Each group, topic, and DM from someone else has its own task. If one gets stuck or goes off track, start it over. Its history is kept.",
         "ownerName": "Your DM",
         "kind": {
           "ownerDm": "Main task",
@@ -10150,15 +10152,24 @@
         "resetAria": "Start “{{lane}}” over",
         "resetConfirm": {
           "title": "Start “{{lane}}” over?",
-          "description": "The next message starts with a clean context, and any reply in progress stops. The full history stays in this hidden task, and {{name}}’s memory is unchanged.",
+          "description": "The next message starts with a clean context, and any reply in progress stops. The full history stays in this task, and {{name}}’s memory is unchanged.",
           "ownerDescription": "This is {{name}}’s main task, shared by your desktop conversation and this DM. The next message starts with a clean context, and any reply in progress stops. History, memory, and files are kept.",
           "confirm": "Start over",
           "cancel": "Cancel"
         },
         "resetDone": "“{{lane}}” started over. The next message begins with a clean context.",
         "resetFailed": "Couldn’t start it over. Try again later.",
-        "loadFailed": "Couldn’t load hidden tasks",
-        "empty": "No groups or DMs from others yet. They show up here once someone talks to {{name}} in a group or a DM."
+        "loadFailed": "Couldn’t load tasks",
+        "empty": "No groups or DMs from others yet. They show up here once someone talks to {{name}} in a group or a DM.",
+        "archive": "Archive task",
+        "archiveAria": "Archive “{{lane}}”",
+        "archiveConfirm": {
+          "title": "Archive “{{lane}}”?",
+          "description": "Hide this conversation from this list. Its task, context, history and current reply stay unchanged. New messages bring it back to the list.",
+          "confirm": "Archive"
+        },
+        "archiveDone": "“{{lane}}” archived from the list. Its task and history are kept.",
+        "archiveFailed": "Could not archive the task"
       },
       "add": {
         "button": "Add platform",

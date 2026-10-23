@@ -1,5 +1,15 @@
 # 跨端协议兼容
 
+## 伙伴消息平台任务归档
+
+Desktop 本机伙伴「消息平台」页新增 `botImConnection:archive-lane({ id, sessionId })`，
+响应复用 `BotImConnectionLanesPayload`。Main 校验可信顶层 Renderer、连接归属与具体任务，
+仅在账号隔离的连接记录中保存可选 `archivedTaskRows` 显示状态；不改变 session 状态或路由链接。
+新 Renderer 配旧 preload 时仅不展示归档按钮，列表读取与重新开始照常；旧 Renderer 不调用新入口。
+旧版本忽略新的可选记录字段，若旧版本重写连接记录，列表归档状态可重置，但任务和消息不受影响。
+该页原本只对本机伙伴开放，新入口不加入 device-link allowlist，不扩大远程 / 手机的渠道可见性。
+无服务端、数据库 schema、历史 migration 或 Mobile 原生改动。
+
 ## 灵动岛完成卡操作
 
 `local-db:sessions:activity` 追加可选的 `completionToken`，由任务所属进程按完成卡代次签发。

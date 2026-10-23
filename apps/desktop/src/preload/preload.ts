@@ -2477,6 +2477,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       sessionId: string;
     }): Promise<import('../shared/botImConnection').BotImConnectionLanesPayload> =>
       ipcRenderer.invoke('botImConnection:reset-lane', payload),
+    archiveLane: (payload: {
+      id: string;
+      sessionId: string;
+    }): Promise<import('../shared/botImConnection').BotImConnectionLanesPayload> =>
+      ipcRenderer.invoke('botImConnection:archive-lane', payload),
     listAdoptable: (): Promise<import('../shared/botImConnection').BotImAdoptablePersonalBotsPayload> =>
       ipcRenderer.invoke('botImConnection:list-adoptable'),
     adopt: (
