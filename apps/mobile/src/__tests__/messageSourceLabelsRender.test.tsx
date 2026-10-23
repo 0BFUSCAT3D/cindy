@@ -626,4 +626,20 @@ describe("companion menu with a screen reader", () => {
       h.unmount();
     }
   });
+
+  it("keeps inserting the link from rows that cannot be quoted", () => {
+    const onQuote = vi.fn();
+    const onAddMessageToComposer = vi.fn();
+    const h = mount([{ ...msg("e1", "Boom", { turnCompleted: true }), role: "error" }], {
+      companion: true,
+      companionQuote: { names: { owner: "你", companion: "Vela" }, showReplyTargets: false, onQuote, onLocate: vi.fn(), onSelectText: vi.fn() },
+      onAddMessageToComposer,
+    });
+    try {
+      const reply = h.host.querySelector('[data-testid="companion.messageReply"]')!;
+      act(() => reply.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onQuote).not.toHaveBeenCalled();
+      expect(onAddMessageToComposer).toHaveBeenCalledExactlyOnceWith("e1");
+    } finally { h.unmount(); }
+  });
 });

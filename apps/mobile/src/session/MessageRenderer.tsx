@@ -4198,7 +4198,9 @@ function MessageBubble({
           ...(absoluteTime ? [{ id: 'time', title: t('message.renderer.sentTime', { time: absoluteTime }), disabled: true }] : []),
         ]}
         onAction={id => {
-          if (id === 'add-to-chat' && companionQuote) selectCompanionMenuAction('reply');
+          // Reply quotes what can be quoted; other rows (errors, system cards) keep inserting their link.
+          const quote = id === 'add-to-chat' && companionQuote ? companionReplyQuoteFor(item.message) : null;
+          if (quote) companionQuote?.onQuote(quote);
           else if (id === 'copy') selectControlAction(id);
           else if (id === 'share') actions.onEnterShareSelection?.(clientId);
           else if (messageMenu.some(item => item.id === id)) selectMenuAction(id as MobileMessageMenuActionId);
