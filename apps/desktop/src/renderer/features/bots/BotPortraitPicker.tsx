@@ -6,6 +6,14 @@ import { Camera, Check, ChevronDown, Plus } from 'lucide-react';
 import cindyPortrait from '@/assets/bot-presets/cindy.png';
 import { Tip } from '@/components/ui/tooltip';
 import gallery from '../../../../resources/teammate-portrait-gallery.png';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { AvatarCropEditor } from '@/components/settings/AvatarCropEditor';
+import { initialAvatarCrop, type AvatarCrop } from '@/components/settings/avatarCropGeometry';
+import {
+  loadAvatarSource,
+  exportAvatarCrop,
+  type AvatarSource,
+} from '@/components/settings/avatarCropImage';
 import { BOT_AVATAR_MAX_BYTES } from '../../../shared/botAvatarValue';
 
 export const BOT_PORTRAIT_COUNT = 17;
@@ -42,7 +50,6 @@ export function BotPortraitPicker({
   token,
   disabled,
   onChange,
-  onUpload,
   onPreparingChange,
   trigger,
   fallback,
@@ -51,8 +58,6 @@ export function BotPortraitPicker({
   token?: string;
   disabled?: boolean;
   onChange: (value: string) => void;
-  /** Editing can retain the existing host-owned file chooser. */
-  onUpload?: () => void;
   /** Synchronous navigation guard while decoding a selection or reading a file. */
   onPreparingChange?: (pending: boolean) => void;
   trigger?: ReactElement;
@@ -64,6 +69,13 @@ export function BotPortraitPicker({
   const [busy, setBusy] = useState(false);
   const [candidate, setCandidate] = useState<string>();
   const [error, setError] = useState(false);
+  const [cropSession, setCropSession] = useState<{ source: AvatarSource; crop: AvatarCrop } | null>(
+    null,
+  );
+  const cropRef = useRef(cropSession);
+  cropRef.current = cropSession;
+  const exporting = useRef(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const file = useRef<HTMLInputElement>(null);
   const generation = useRef(0);
   const currentToken = useRef(token);
@@ -80,15 +92,52 @@ export function BotPortraitPicker({
   };
   useEffect(() => {
     currentToken.current = token;
+    generation.current++;
+    cropRef.current?.source.bitmap.close();
+    cropRef.current = null;
+    setCropSession(null);
+    setPreparing(false);
     setCandidate(undefined);
   }, [token]);
   useEffect(
     () => () => {
       generation.current++;
+      cropRef.current?.source.bitmap.close();
+      cropRef.current = null;
       setPreparing(false);
     },
     [],
   );
+  const cancelCrop = () => {
+    cropRef.current?.source.bitmap.close();
+    cropRef.current = null;
+    setCropSession(null);
+    setPreparing(false);
+  };
+  const confirmCrop = async () => {
+    const session = cropRef.current;
+    if (!session || exporting.current) return;
+    exporting.current = true;
+    setExportBusy(true);
+    try {
+      const output = await exportAvatarCrop(session.source, session.crop);
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('Avatar read failed'));
+        reader.onabort = () => reject(new Error('Avatar read aborted'));
+        reader.readAsDataURL(output.blob);
+      });
+      if (cropRef.current !== session) return;
+      onChange(dataUrl);
+      cancelCrop();
+    } catch {
+      if (cropRef.current === session) setError(true);
+    } finally {
+      exporting.current = false;
+      setExportBusy(false);
+    }
+  };
   const select = async (index: number) => {
     if (disabled) return;
     const current = ++generation.current;
@@ -181,10 +230,7 @@ export function BotPortraitPicker({
                   onClick={() => {
                     generation.current++;
                     setPreparing(false);
-                    if (onUpload) {
-                      setOpen(false);
-                      onUpload();
-                    } else file.current?.click();
+                    file.current?.click();
                   }}
                   className="flex aspect-square items-center justify-center rounded-full border border-[var(--border-default)] text-[var(--text-secondary)] outline-none hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
                 >
@@ -233,6 +279,40 @@ export function BotPortraitPicker({
             )}
           </Popover.Content>
         </Popover.Portal>
+        {cropSession && (
+          <ConfirmDialog
+            open
+            onOpenChange={(next) => {
+              if (!next && !exporting.current) cancelCrop();
+            }}
+            title={t('settings.userProfile.edit.crop.title')}
+            description={t('settings.userProfile.edit.crop.description')}
+            confirmText={t('settings.userProfile.edit.crop.done')}
+            cancelText={t('settings.userProfile.edit.cancel')}
+            loading={exportBusy}
+            onConfirm={() => void confirmCrop()}
+            content={
+              <>
+                <AvatarCropEditor
+                  source={cropSession.source}
+                  crop={cropSession.crop}
+                  onCropChange={(crop) => {
+                    if (exporting.current || !cropRef.current) return;
+                    const next = { ...cropRef.current, crop };
+                    cropRef.current = next;
+                    setCropSession(next);
+                  }}
+                  tipClassName="z-[10001]"
+                />
+                {error && (
+                  <p role="alert" className="mt-2 text-12 text-[var(--text-danger)]">
+                    {t('settings.userProfile.edit.crop.exportFailed')}
+                  </p>
+                )}
+              </>
+            }
+          />
+        )}
         <input
           ref={file}
           type="file"
@@ -255,15 +335,24 @@ export function BotPortraitPicker({
             setPreparing(true);
             try {
               const reader = new FileReader();
-              reader.onload = () => {
+              reader.onload = async () => {
                 try {
-                  if (current === generation.current) {
-                    onChange(String(reader.result));
-                    setError(false);
-                    setOpen(false);
+                  if (current !== generation.current) return;
+                  const source = await loadAvatarSource(String(reader.result));
+                  if (current !== generation.current) {
+                    source.bitmap.close();
+                    return;
                   }
+                  cropRef.current?.source.bitmap.close();
+                  const session = { source, crop: initialAvatarCrop(source.size) };
+                  cropRef.current = session;
+                  setCropSession(session);
+                  setError(false);
+                  setOpen(false);
+                } catch {
+                  if (current === generation.current) setError(true);
                 } finally {
-                  finishPreparing(current);
+                  if (!cropRef.current) finishPreparing(current);
                 }
               };
               reader.onerror = () => {

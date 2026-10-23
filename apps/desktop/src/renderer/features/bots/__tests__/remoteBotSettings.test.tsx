@@ -9,6 +9,13 @@ import {
 import { RemoteBotSettings } from '../RemoteBotSettings';
 import { parseRemoteMediaUrl } from '../../../../shared/remoteMediaUrl';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+
+// Unit: remote navigation stays guarded during upload/crop, then JPEG conversion.
+// Existing gallery coverage cannot exercise the new confirmation boundary.
+vi.mock('@/components/settings/avatarCropImage', () => ({
+  loadAvatarSource: async () => ({ bitmap: { close() {} }, size: { width: 800, height: 400 } }),
+  exportAvatarCrop: async () => ({ blob: new Blob(['cropped'], { type: 'image/png' }) }),
+}));
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   confirm: vi.fn(async () => true),
@@ -616,6 +623,7 @@ it.each(['gallery', 'file'])(
   'guards navigation through real picker %s preparation and conversion',
   async (source) => {
     h.realPortrait = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     const decodes: Array<() => void> = [];
     await openAvatar(() => new Promise<void>((resolve) => decodes.push(resolve)));
     let reader: { result: string; onload: () => void };
@@ -624,8 +632,9 @@ it.each(['gallery', 'file'])(
       class {
         result = 'data:image/png;base64,cG5n';
         onload = () => {};
-        readAsDataURL() {
-          reader = this;
+        readAsDataURL(blob: Blob) {
+          reader = { result: this.result, onload: this.onload };
+          if (!(blob instanceof File)) this.onload();
         }
       },
     );
@@ -648,7 +657,13 @@ it.each(['gallery', 'file'])(
       if (source === 'gallery') decodes.shift()!();
       else reader!.onload();
     });
-    // Picker preprocessing has finished; the subsequent JPEG conversion still owns the guard.
+    if (source === 'file') {
+      expect(h.invoke).not.toHaveBeenCalledWith('host', REMOTE_RESOURCE_INVOKE_CHANNEL, expect.anything());
+      expect(await close.current?.()).toBe(false);
+      expect(h.portrait.disabled).toBe(true);
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'settings.userProfile.edit.crop.done' })));
+    }
+    // Confirmed crop / gallery bytes now enter the existing JPEG conversion.
     expect(decodes).toHaveLength(1);
     expect(await close.current?.()).toBe(false);
     expect(h.portrait.disabled).toBe(true);
