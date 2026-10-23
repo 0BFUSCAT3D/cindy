@@ -52,7 +52,7 @@ describe('DisplayPricingDetails', () => {
     expect(within(output).getByText('$0.5').tagName).toBe('S');
     expect(within(output).getByText('/ second')).toBeTruthy();
     expect(within(output).getByText('/ 3 custom-unit')).toBeTruthy();
-    expect(within(input).getByText('/ 1M tokens')).toBeTruthy();
+    expect(within(input).getByText('/ million tokens')).toBeTruthy();
     expect(screen.getByText('Billed by output duration.')).toBeTruthy();
     expect(screen.getByText('<b>Provider terms</b>')).toBeTruthy();
     expect(container.querySelector('b')).toBeNull();
@@ -92,12 +92,20 @@ describe('DisplayPricingDetails', () => {
       expect(container.textContent).toContain('480P/720P');
       expect(container.textContent).toContain((priceType === 'estimated' ? copy.estimated : copy.startingAt).replace('{{price}}', '¥4.8–¥8'));
       expect(container.querySelector('s')?.textContent).toBe('¥6–¥10');
-      expect(screen.getByText(`/ ${copy.million} ${copy.units.token}`)).toBeTruthy();
+      expect(screen.getByText(locales[locale].settings.providers.models.advanced.perMtok)).toBeTruthy();
     });
     it('uses the same million denominator in the supplementary price table', async () => {
       await renderPricing({ currency: 'CNY', displayPricing: { items: [{ ...item, unit: 'character', quantity: 1000000 }] } }, locale);
       const copy = locales[locale].newChat.modelSelector.displayPricing;
-      expect(screen.getByText(`/ ${copy.million} ${copy.units.character}`)).toBeTruthy();
+      const separator = locale === 'en' || locale === 'ko' ? ' ' : '';
+      expect(screen.getByText(`/ ${copy.million}${separator}${copy.units.character}`)).toBeTruthy();
+    });
+
+    // Unit: token spelling must agree with chat prices for both quote surfaces in all five languages.
+    it.each([false, true])('uses the chat token wording (summary=%s)', async summary => {
+      const quote = { ...item, unit: 'token', quantity: 1000000 };
+      await renderPricing({ currency: 'USD', displayPricing: { items: [quote], summary: { output: [quote] } } }, locale, summary);
+      expect(screen.getByText(locales[locale].settings.providers.models.advanced.perMtok)).toBeTruthy();
     });
 
     it('localizes known image units and keeps unknown provider units unchanged', async () => {

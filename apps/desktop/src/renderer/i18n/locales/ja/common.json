@@ -10785,7 +10785,7 @@
         "estimated": "約 {{price}}",
         "startingAt": "{{price}} から",
         "units": {
-          "token": "トークン",
+          "token": "tokens",
           "character": "文字",
           "image": "枚",
           "second": "秒",

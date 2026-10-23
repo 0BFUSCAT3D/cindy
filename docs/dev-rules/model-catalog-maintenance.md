@@ -111,8 +111,10 @@ Registry/defaults、ModelPriceQuote 或 token 成本估算，不跨供应商补�
 
 Desktop 设置页模型详情有 `displayPricing.summary` 时优先按输入、输出、缓存读取、缓存写入
 展示主报价，每个角色允许 1–4 段、各带单位与数量，可带最高价形成区间。summary 缺失或无效时
-沿用原价目表；summary 无效只清除摘要，不丢价目表。详细价目表保留在摘要下方，因为供应商
-label 可能包含摘要没有的条件，不能仅凭金额相同判断重复。设置页列表取 output 首段，没有则取
+沿用原价目表；summary 无效只清除摘要，不丢价目表。补充价目表仅在以下条件全部满足时隐藏：
+有 summary 且没有 notes；所有 item 都没有 tier，priceType 缺省或 exact；item 总数等于
+所有角色报价段数，且每个 item 能按 unit、quantity、price 一一匹配不同的摘要报价，
+匹配报价没有 maxPrice 或 tier。其余情况保留在摘要下方。设置页列表取 output 首段，没有则取
 input 首段；不从混合单位挑最低价。选择器、浮层和聊天价格档位逻辑保持原样。
 `price` / `maxPrice` 为每 `quantity` 个 `unit` 的折扣前报价，只在展示时应用一次折扣，保留币种
 与“约/起价”语义；角色和已知单位本地化，label、tier、notes 仅按纯文本呈现，未知单位不猜换算。

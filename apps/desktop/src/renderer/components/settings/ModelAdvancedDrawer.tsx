@@ -1,3 +1,4 @@
+import { isDisplayPricingTableRedundant } from '@/lib/displayPricingFormat';
 import { DisplayPricingDetails, DisplayPricingQuote } from '@/components/DisplayPricingDetails';
 import { Button } from '@/components/ui/button';
 import { localizedModelDescription } from '@/lib/modelDescriptions';
@@ -1017,10 +1018,12 @@ export function ModelAdvancedDrawer({
                             </Row>
                           );
                         })}
-                        {/* Item labels may carry conditions absent from summary; retain the supplier's full table. */}
-                        <div className={primaryModel.displayPricing.summary ? 'pt-3' : undefined}>
-                          <DisplayPricingDetails model={primaryModel} />
-                        </div>
+                        {/* Keep conditions and notes; omit a plain table fully covered by the summary. */}
+                        {!isDisplayPricingTableRedundant(primaryModel.displayPricing) && (
+                          <div className={primaryModel.displayPricing.summary ? 'pt-3' : undefined}>
+                            <DisplayPricingDetails model={primaryModel} />
+                          </div>
+                        )}
                       </>
                     ) : price === null ? (
                       <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>

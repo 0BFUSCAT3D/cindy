@@ -1,4 +1,4 @@
-import type { SummaryQuote } from '@cindy/model-providers';
+import type { ModelDisplayPricing, SummaryQuote } from '@cindy/model-providers';
 
 /** Keep the quoted basis; do not convert mixed units or infer a model-wide starting price. */
 export function displayPricingAmount(
@@ -37,4 +37,28 @@ export function displayPricingQuantity(quantity: number, locale: string, million
   if (quantity === 1) return '';
   if (quantity === 1_000_000) return million;
   return new Intl.NumberFormat(locale, { maximumSignificantDigits: 12 }).format(quantity);
+}
+
+/** Hide only a plain table whose items match distinct summary quotes exactly. */
+export function isDisplayPricingTableRedundant(pricing: ModelDisplayPricing): boolean {
+  if (!pricing.summary || pricing.notes?.length) return false;
+  const unmatched = Object.values(pricing.summary).flat();
+  if (pricing.items.length !== unmatched.length) return false;
+  for (const item of pricing.items) {
+    if (item.tier || (item.priceType && item.priceType !== 'exact')) return false;
+    const index = unmatched.findIndex(quote =>
+      quote.unit === item.unit && quote.quantity === item.quantity && quote.price === item.price &&
+      quote.maxPrice === undefined && !quote.tier,
+    );
+    if (index === -1) return false;
+    unmatched.splice(index, 1);
+  }
+  return true;
+}
+
+/** Chinese/Japanese counters join CJK units; Latin units and other locales keep a space. */
+export function displayPricingDenominator(quantity: string, unit: string, locale: string): string {
+  if (!quantity) return `/ ${unit}`;
+  const join = /^(zh|ja)(-|$)/i.test(locale) && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(unit);
+  return `/ ${quantity}${join ? '' : ' '}${unit}`;
 }

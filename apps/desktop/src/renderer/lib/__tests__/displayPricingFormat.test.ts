@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { displayPricingAmount, displayPricingQuantity } from '../displayPricingFormat';
+import type { ModelDisplayPricing } from '@cindy/model-providers';
+import { displayPricingAmount, displayPricingDenominator, displayPricingQuantity, isDisplayPricingTableRedundant } from '../displayPricingFormat';
 const row = { label: 'Output', price: 0.5, unit: 'second', quantity: 1 };
 describe('display pricing amounts', () => {
   it('applies the provider discount once while retaining the quoted basis', () => {
@@ -42,4 +43,52 @@ it.each([
   [1000000, 'en', '1M', '1M'], [1234.5, 'en', '1M', '1,234.5'],
 ])('formats quantity %s in %s', (quantity, locale, million, expected) => {
   expect(displayPricingQuantity(quantity as number, locale as string, million as string)).toBe(expected);
+});
+
+// Unit: a redundant table hid role distinctions or repeated the summary. Existing tests covered only amounts.
+// Minimum input: two identical items must consume two distinct quotes, not reuse a single match.
+describe('supplementary price table deduplication', () => {
+  const quote = { price: 0.5, unit: 'image', quantity: 1 };
+  const item = { ...quote, label: 'Supplier label' };
+  it('matches across roles regardless of order, without mutating the summary', () => {
+    const pricing: ModelDisplayPricing = {
+      items: [{ ...item, price: 2, priceType: 'exact' }, item], notes: [],
+      summary: { input: [quote], output: [{ ...quote, price: 2, priceType: 'starting_at' }] },
+    };
+    expect(isDisplayPricingTableRedundant(pricing)).toBe(true);
+    expect(pricing.summary!.input).toEqual([quote]);
+    expect(pricing.summary!.output).toHaveLength(1);
+    expect(isDisplayPricingTableRedundant({ items: [item, item], summary: { input: [quote], output: [quote] } })).toBe(true);
+  });
+  it.each([
+    { items: [item] },
+    { items: [item], notes: ['Billing condition'], summary: { input: [quote] } },
+    { items: [{ ...item, tier: 'HD' }], summary: { input: [quote] } },
+    { items: [{ ...item, priceType: 'estimated' as const }], summary: { input: [quote] } },
+    { items: [{ ...item, priceType: 'starting_at' as const }], summary: { input: [quote] } },
+    { items: [item], summary: { input: [quote], output: [quote] } },
+    { items: [item, item], summary: { input: [quote] } },
+    { items: [item, item], summary: { input: [quote], output: [{ ...quote, price: 2 }] } },
+    { items: [item], summary: { input: [{ ...quote, unit: 'second' }] } },
+    { items: [item], summary: { input: [{ ...quote, quantity: 2 }] } },
+    { items: [item], summary: { input: [{ ...quote, maxPrice: 2 }] } },
+    { items: [item], summary: { input: [{ ...quote, tier: 'HD' }] } },
+  ])('keeps a table with additional or different information: %j', pricing => {
+    expect(isDisplayPricingTableRedundant(pricing)).toBe(false);
+  });
+});
+
+// Unit: the previous unconditional separator produced “百万 字符”; Latin/custom units must keep spacing.
+it.each([
+  ['百万', '字符', 'zh-CN', '/ 百万字符'],
+  ['百萬', '字元', 'zh-TW', '/ 百萬字元'],
+  ['100万', '文字', 'ja', '/ 100万文字'],
+  ['100万', 'リクエスト', 'ja', '/ 100万リクエスト'],
+  ['100만', '자', 'ko', '/ 100만 자'],
+  ['1M', 'characters', 'en', '/ 1M characters'],
+  ['百万', 'tokens', 'zh-CN', '/ 百万 tokens'],
+  ['1,234.5', '次', 'zh-CN', '/ 1,234.5次'],
+  ['', '张', 'zh-CN', '/ 张'],
+])('joins %s and %s in %s', (quantity, unit, locale, expected) => {
+  expect(displayPricingDenominator(quantity, unit, locale)).toBe(expected);
 });

@@ -788,7 +788,7 @@ it('keeps enterprise reference prices read-only in the model drawer', () => {
 
 // Unit contract: drawer summary must show translated roles while retaining supplier conditions below.
 // Previous drawer tests had no displayPricing; one input quote previously showed only the English table.
-it.each([{ hasSummary: true, withNotes: true }, { hasSummary: true, withNotes: false }, { hasSummary: false, withNotes: false }])('keeps supplier detail labels even without tiers or notes: %j', ({ hasSummary, withNotes }) => {
+it.each([{ hasSummary: true, withNotes: true }, { hasSummary: true, withNotes: false }, { hasSummary: false, withNotes: false }])('keeps supplementary items when they do not match the summary: %j', ({ hasSummary, withNotes }) => {
   const quote = { price: 0.02, unit: 'image', quantity: 1 };
   const summary = { input: [quote, { price: 140, unit: 'character', quantity: 1000000 }],
     output: [{ ...quote, price: 6, maxPrice: 10, tier: '480P/720P' }],
@@ -814,4 +814,16 @@ it.each([{ hasSummary: true, withNotes: true }, { hasSummary: true, withNotes: f
   expect(screen.getByText('settings.providers.models.advanced.price.cacheRead')).toBeTruthy();
   expect(screen.getByText('settings.providers.models.advanced.price.cacheCreate')).toBeTruthy();
   expect(output.compareDocumentPosition(screen.getByText('Supplier-specific charge')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+// Unit: a plain speech table used to repeat the primary quote; notes must still keep the table visible.
+it.each([false, true])('omits only a fully redundant supplementary table (notes=%s)', withNotes => {
+  const quote = { price: 140, unit: 'character', quantity: 1000000 };
+  draw({ ...model, currency: 'CNY', displayPricing: {
+    items: [{ ...quote, label: 'Text input' }], summary: { input: [quote] },
+    ...(withNotes ? { notes: ['Provider billing condition'] } : {}),
+  } });
+  expect(screen.getByText('settings.providers.models.advanced.price.input').parentElement!.textContent).toContain('¥140');
+  expect(screen.queryByText('Text input') !== null).toBe(withNotes);
+  expect(screen.queryByText('Provider billing condition') !== null).toBe(withNotes);
 });

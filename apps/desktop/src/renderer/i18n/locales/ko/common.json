@@ -10785,7 +10785,7 @@
         "estimated": "약 {{price}}",
         "startingAt": "{{price}}부터",
         "units": {
-          "token": "토큰",
+          "token": "tokens",
           "character": "문자",
           "image": "장",
           "second": "초",

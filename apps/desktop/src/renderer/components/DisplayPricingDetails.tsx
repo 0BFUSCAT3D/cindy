@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import type { CatalogModel, ModelDisplayPricing, SummaryQuote } from '@cindy/model-providers';
-import { displayPricingAmount, displayPricingQuantity } from '@/lib/displayPricingFormat';
+import { displayPricingAmount, displayPricingDenominator, displayPricingQuantity } from '@/lib/displayPricingFormat';
 
 type PricingModel = Pick<CatalogModel, 'displayPricing' | 'currency' | 'costDiscount'>;
 const UNIT_KEYS = {
@@ -35,6 +35,9 @@ export function DisplayPricingQuote({
     locale,
     t('newChat.modelSelector.displayPricing.million'),
   );
+  const denominator = quote.unit === 'token' && quote.quantity === 1_000_000
+    ? t('settings.providers.models.advanced.perMtok')
+    : displayPricingDenominator(quantity, unit, locale);
   const price = amount.free ? t('newChat.modelSelector.displayPricing.free') : amount.current;
   const qualifiedPrice =
     quote.priceType === 'estimated'
@@ -48,8 +51,7 @@ export function DisplayPricingQuote({
       {qualifiedPrice}
       {amount.original && <s className="ml-1.5 text-[var(--text-tertiary)]">{amount.original}</s>}
       <span className="ml-1 text-[var(--text-tertiary)]">
-        / {quantity ? `${quantity} ` : ''}
-        {unit}
+        {denominator}
       </span>
     </span>
   );
