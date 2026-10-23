@@ -9,8 +9,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
-import { TerminalGrokLogin } from './grok-login.js';
-import { TerminalNativeAccounts } from './native-accounts.js';
+import { TerminalSubscriptions } from './subscriptions.js';
 import type { Logger, AgentSessionHandle } from '@cindy/maker-core';
 import { TerminalTaskHost } from '../tasks/host.js';
 import { EngineManager } from '../engines/manager.js';
@@ -139,14 +138,14 @@ for (const [kind, envKey] of [['pi', 'CINDY_PI_TEST_BINARY'], ['codex', 'CINDY_C
       catch (error) { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); throw error; }
       if (!nativeBinary) throw new Error('MANAGED_ENGINE_UNAVAILABLE');
     }
-    const calls: Array<{ authorization: string; account: string; model: string; tools?: Array<{ type: string }> }> = [];
+    const calls: Array<{ authorization: string; account: string; model: string; tools?: Array<{ type: string }>; effort?: string; tier?: string }> = [];
     const api = createServer(async (req, res) => {
       if (req.url?.startsWith('/user')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ userId: 'synthetic-owner' })); return; }
       if (req.url?.startsWith('/models') && subscription === 'xai') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'grok-fixture', name: 'Grok fixture', context_window: 128000, max_completion_tokens: 4096 }] })); return; }
-      if (req.url?.startsWith('/models')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({models:[{slug:'gpt-5.4-mini',display_name:'GPT fixture',visibility:'list',supported_in_api:true,context_window:128000,supported_reasoning_levels:[]}]})); return; }
+      if (req.url?.startsWith('/models')) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({models:[{slug:'gpt-5.4-mini',display_name:'GPT fixture',visibility:'list',supported_in_api:true,context_window:128000,supported_reasoning_levels:[{effort:'low'},{effort:'high'}],default_reasoning_level:'high',service_tiers:[{id:'priority'}]}]})); return; }
       let raw = ''; for await (const chunk of req) raw += chunk;
       const body = JSON.parse(raw);
-      calls.push({ authorization: String(req.headers.authorization), account: String(req.headers['chatgpt-account-id']), model: body.model, tools: body.tools });
+      calls.push({ authorization: String(req.headers.authorization), account: String(req.headers['chatgpt-account-id']), model: body.model, tools: body.tools, effort: body.reasoning?.effort, tier: body.service_tier });
       const item = { type: 'message', id: 'msg-fixture', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'SUBSCRIPTION_NATIVE_OK', annotations: [] }] };
       const events = [
         { type: 'response.created', response: { id: 'r', status: 'in_progress', output: [] } },
@@ -174,16 +173,36 @@ for (const [kind, envKey] of [['pi', 'CINDY_PI_TEST_BINARY'], ['codex', 'CINDY_C
     const host = new TerminalTaskHost({ profileDir: path.join(root, 'profile'), logger, emit(channel, args) { if (channel === 'maker:event' && (args[0] as {event?:{type?:string}})?.event?.type === 'error') errors.push(args[0]); }, binaryPaths: { [kind]: nativeBinary }, secretStore: store, nativeStatus: async () => ({ authenticated: false }) });
     const ownerStore = { getSync: (key: string) => secrets.get(key) ?? null, setSync: (key: string,value: string) => { secrets.set(key,value); }, deleteSync: (key: string) => { secrets.delete(key); } };
     if (subscription === 'xai') { secrets.set('terminal:native:xai', JSON.stringify({ access_token: 'synthetic-native-subscription' })); secrets.set('terminal:native:xai:bound', '1'); }
-    const accounts = subscription === 'openai' ? new TerminalNativeAccounts({ root, secrets: ownerStore, binary: async () => null, assertCurrent() {}, changed() {} }) : new TerminalGrokLogin({ root, models: host.models, secrets: ownerStore, assertCurrent() {}, changed() {} });
+    const accounts = new TerminalSubscriptions({ root, models: host.models, secrets: ownerStore, binary: async () => null, assertCurrent() {}, changed() {} });
     try {
-      await host.ready; if (accounts instanceof TerminalNativeAccounts) host.models.connectNative(accounts);
+      await host.ready;
       const model = subscription === 'xai' ? (await host.models.views()).find(p => p.id === 'xai')!.models[kind]!.find(m => m.id.endsWith('grok-fixture'))!.id : kind === 'codex' ? 'gpt-5.4-mini' : 'chatgpt/gpt-5.4-mini';
-      const task = await host.invoke('maker:create-session', [{ agentKind: kind, providerId: subscription, model, workingDir: root }]) as { id: string };
+      const task = await host.invoke('maker:create-session', [{ agentKind: kind, providerId: subscription, model, workingDir: root, ...(subscription==='openai'?{effort:'low',fastMode:true}:{}) }]) as { id: string };
       await host.invoke('maker:send', [task.id, { text: 'Reply briefly. Do not call tools.', clientId: 'native-subscription-input' }]);
       const receipt = await host.invoke('terminal:tasks:wait', [task.id, 'native-subscription-input']);
       expect(receipt, JSON.stringify({receipt,errors,calls})).toMatchObject({ status: 'completed', finalText: 'SUBSCRIPTION_NATIVE_OK' });
       expect(calls.length).toBeGreaterThan(0);
       expect(calls.every(call => call.authorization === 'Bearer synthetic-native-subscription' && (subscription === 'xai' ? call.account === 'undefined' && call.model === 'grok-fixture' && call.tools?.some(tool => tool.type === 'x_search') : call.account === 'synthetic-owner' && call.model === 'gpt-5.4-mini'))).toBe(true);
+      if(subscription==='openai'){
+        expect(calls.at(-1)).toMatchObject({effort:'low',tier:'priority'});
+        await host.invoke('maker:set-fast-mode',[task.id,false]);
+        await host.invoke('maker:set-effort',[task.id,'high']);
+        await host.invoke('maker:send',[task.id,{text:'Reply briefly again.',clientId:'native-prefs-updated'}]);
+        expect(await host.invoke('terminal:tasks:wait',[task.id,'native-prefs-updated'])).toMatchObject({status:'completed',finalText:'SUBSCRIPTION_NATIVE_OK'});
+        expect(calls.at(-1)?.effort).toBe('high');expect(calls.at(-1)?.tier).not.toBe('priority');
+      }
+      const providerId = `${subscription}-independent`;
+      await host.models.saveProvider({ id: providerId, name: 'Independent account', auth: { method: 'oauth', native: subscription === 'openai' ? 'codex' : 'xai' },
+        runtimes: { codex: { baseUrl: subscription === 'openai' ? 'https://chatgpt.com/backend-api/codex' : 'https://api.x.ai/v1', wireProtocol: 'openai-responses', models: [] } },
+      }, {}, true);
+      const secretKey = `terminal:subscription:${providerId}:terminal:native:${subscription}`;
+      secrets.set(secretKey, JSON.stringify(subscription === 'openai' ? { tokens: { access_token: 'independent-subscription', account_id: 'independent-owner' } } : { access_token: 'independent-subscription' }));
+      if (subscription === 'xai') secrets.set(`${secretKey}:bound`, '1');
+      const independent = await host.invoke('maker:create-session', [{ agentKind: kind, providerId, model, workingDir: root }]) as { id: string };
+      await host.invoke('maker:send', [independent.id, { text: 'Reply briefly.', clientId: 'independent-input' }]);
+      expect(await host.invoke('terminal:tasks:wait', [independent.id, 'independent-input'])).toMatchObject({ status: 'completed', finalText: 'SUBSCRIPTION_NATIVE_OK' });
+      expect(calls.at(-1)?.authorization).toBe('Bearer independent-subscription');
+      if (subscription === 'openai') expect(calls.at(-1)?.account).toBe('independent-owner');
     } finally {
       await host.close(); await accounts.close(); vi.unstubAllGlobals(); api.closeAllConnections(); await new Promise<void>(resolve => api.close(() => resolve())); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }

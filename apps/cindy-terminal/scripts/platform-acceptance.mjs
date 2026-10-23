@@ -26,7 +26,12 @@ const results = [];
 const record = (name, status, details) => { results.push({ name, status, ...(details ? { details } : {}) }); console.log(`${status}: ${name}${details ? ` (${details})` : ''}`); writeFileSync(path.join(report,'results.json'),JSON.stringify({platform:process.platform,arch:process.arch,node:process.version,results},null,2)); };
 async function run(args, { input = '', timeout = 30_000, raw = false } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(node, [cli, ...args, '--state-dir', profile, '--json'], { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    // Shared hosted-runner egress can exhaust GitHub's anonymous quota. Only
+    // the metadata lookup command receives the ephemeral read-only job token;
+    // the daemon, task processes and service installation keep the clean env.
+    const commandEnv = args[0] === 'engines' && args[1] === 'update' && process.env.CINDY_GITHUB_API_TOKEN
+      ? { ...env, CINDY_GITHUB_API_TOKEN: process.env.CINDY_GITHUB_API_TOKEN } : env;
+    const child = spawn(node, [cli, ...args, '--state-dir', profile, '--json'], { env: commandEnv, cwd: home, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let output = '', error = '';
     const timer = setTimeout(() => { child.kill(); reject(new Error(`Timeout: ${args.slice(0, 2).join(' ')}`)); }, timeout);
     child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { error += chunk; });

@@ -1,9 +1,10 @@
 import { createChatgptProxy, createGrokProxy } from './subscription-proxy.js';
+import type { BridgeSessionPrefs } from '@cindy/anthropic-responses-bridge';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { privateDirectory } from '../platform.js';
-import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentKind, type AuthAdapter, type AuthState, type BaseAgent, type Logger, type CodexExtraSpawnConfig, type PiNativeProvidersResult, type MakerMemoryManager } from '@cindy/maker-core';
+import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentKind, type AgentSessionHandle, type AuthAdapter, type AuthState, type BaseAgent, type Logger, type CodexExtraSpawnConfig, type PiNativeProvidersResult, type MakerMemoryManager } from '@cindy/maker-core';
 import { BUNDLED_CATALOG, findModelRegistryRoute, resolvePiModelRoute, type ResolvedRoute } from '@cindy/model-providers';
 import type { createTaskTools } from '../tasks/mcp.js';
 import type { TerminalModelConfig, ModelSelection } from './config.js';
@@ -61,21 +62,55 @@ export interface RuntimeInput {
  * changing another task's provider cannot redirect an in-flight request. */
 export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgent> {
   const { selection, route, binaryPath, models, profileDir, taskId, logger } = input;
-  const chatgpt = route.provider.id === 'openai' && Boolean(models.nativeAccounts);
-  const grok = route.provider.id === 'xai' && Boolean(models.nativeGrok);
+  let currentModel = selection.model;
+  let currentEffort = selection.effort ?? route.model.defaultEffort ?? undefined;
+  let currentFast: boolean | 'ultrafast' = false;
+  let activeHandle: AgentSessionHandle | undefined;
+  const preferences = (model: string): BridgeSessionPrefs => {
+    // Match a request to this physical runtime, including the vendor wire alias.
+    const normalize = (id: string) => id.replace(/^(?:chatgpt|xai)\//, '').replace(/\[1m\]$/, '');
+    if (normalize(model) !== normalize(activeHandle?.model ?? currentModel)) return {};
+    const entry = route.provider.models[selection.agentKind]?.find(entry => normalize(entry.id) === normalize(model));
+    // A proxy-backed subscription is a custom provider to the native engine,
+    // whose private catalog may not advertise the account's paid speed tiers.
+    return { reasoningEffort: activeHandle?.getEffort?.() ?? currentEffort, fast: entry?.supportsFastMode && (currentFast !== 'ultrafast' || entry.supportsUltrafastMode) ? currentFast : false };
+  };
+  const openaiAccount = models.openAiAccount(route.provider.id);
+  const grokAccount = models.grokAccount(route.provider.id);
+  const chatgpt = Boolean(openaiAccount);
+  const grok = Boolean(grokAccount);
   const custom = grok || chatgpt || route.provider.source === 'user' || route.provider.id === 'xd' || Boolean(route.provider.auth.oauth);
   const key = custom && !input.remote ? await models.credential(selection.providerId, selection.agentKind) : null;
   const codexHome = custom && !input.remote && selection.agentKind === 'codex' ? (input.guestHome ? path.join(input.guestHome,'codex') : path.join(profileDir, 'engines', 'codex', taskId)) : undefined;
   const claudeHome = input.guestHome && selection.agentKind==='claude-code' ? path.join(input.guestHome,'claude') : undefined;
   for(const directory of [codexHome,claudeHome])if(directory)await privateDirectory(directory);
-  const proxy = grok && !input.remote ? await createGrokProxy({ route, kind: selection.agentKind, taskId, accounts: models.nativeGrok!, authorize: input.authorizeRequest }) : chatgpt && !input.remote ? await createChatgptProxy({ route, kind: selection.agentKind, taskId, accounts: models.nativeAccounts!, authorize: input.authorizeRequest }) : custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined, route.provider.auth.oauth ? () => models.credential(selection.providerId, selection.agentKind) : undefined) : null;
+  const proxy = grok && !input.remote ? await createGrokProxy({ route, kind: selection.agentKind, taskId, accounts: grokAccount!, authorize: input.authorizeRequest, preferences }) : chatgpt && !input.remote ? await createChatgptProxy({ route, kind: selection.agentKind, taskId, accounts: openaiAccount!, authorize: input.authorizeRequest, preferences }) : custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined, route.provider.auth.oauth ? () => models.credential(selection.providerId, selection.agentKind) : undefined, preferences) : null;
   const runtimeKey = proxy?.token ?? key;
   const endpoint = proxy?.url ?? route.routing.upstream;
-  const own = (agent: BaseAgent) => { if (proxy) { const dispose = agent.dispose.bind(agent); agent.dispose = async () => { try { await dispose(); } finally { await proxy.close(); } }; } return agent; };
+  const own = (agent: BaseAgent) => {
+    if (proxy) {
+      const start = agent.startSession.bind(agent);
+      agent.startSession = async options => {
+        currentModel = options.model ?? selection.model;
+        currentEffort = options.effort ?? selection.effort ?? route.model.defaultEffort ?? undefined;
+        currentFast = options.fastMode ?? false;
+        const handle = await start(options);
+        activeHandle = handle;
+        // Only successful native changes update subsequent bridge requests.
+        if (handle.setEffort) { const set = handle.setEffort.bind(handle); handle.setEffort = async effort => { await set(effort); currentEffort = effort; }; }
+        if (handle.setFastMode) { const set = handle.setFastMode.bind(handle); handle.setFastMode = async fast => { await set(fast); currentFast = fast; }; }
+        if (handle.setModel) { const set = handle.setModel.bind(handle); handle.setModel = async (model, opts) => { await set(model, opts); currentModel = model; currentEffort = opts?.effort ?? currentEffort; }; }
+        return handle;
+      };
+      const dispose = agent.dispose.bind(agent);
+      agent.dispose = async () => { try { await dispose(); } finally { await proxy.close(); } };
+    }
+    return agent;
+  };
   const keyless = route.provider.auth.method === 'none';
   const auth: AuthAdapter = {
     async getState() {
-      return custom ? { authenticated: grok ? models.nativeGrok!.connected() : chatgpt ? models.nativeAccounts!.connected() : keyless || Boolean(key), authSource: key ? 'api-key' : undefined } : selection.agentKind === 'claude-code' && models.nativeClaude ? models.nativeClaude.state() : nativeAuthState(selection.agentKind, binaryPath);
+      return custom ? { authenticated: grok ? grokAccount!.connected() : chatgpt ? openaiAccount!.connected() : keyless || Boolean(key), authSource: key ? 'api-key' : undefined } : selection.agentKind === 'claude-code' && models.nativeClaude ? models.nativeClaude.state() : nativeAuthState(selection.agentKind, binaryPath);
     },
     async getAuthEnv() {
       if (!custom) return {};

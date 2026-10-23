@@ -219,6 +219,20 @@ export class TerminalNativeAccounts {
     this.discovered = undefined;
     this.options.changed();
   }
+  removeReversibly() {
+    this.current();
+    const previous = this.options.secrets.getSync(KEY);
+    this.disconnect();
+    return () => {
+      this.current();
+      if (previous === null) this.options.secrets.deleteSync(KEY);
+      else this.options.secrets.setSync(KEY, previous);
+      this.generation++;
+      this.discovered = undefined;
+      this.cacheRead = true;
+      this.options.changed();
+    };
+  }
   begin(id: string, current: () => void, deadline: number): ProviderLoginState {
     this.current();
     current();

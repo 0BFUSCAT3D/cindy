@@ -1,7 +1,6 @@
 import { TerminalClaudeAuthorization } from './models/claude-terminal.js';
-import { TerminalGrokLogin } from './models/grok-login.js';
 import { TerminalClaudeLogin } from './models/claude-login.js';
-import { TerminalNativeAccounts } from './models/native-accounts.js';
+import { TerminalSubscriptions } from './models/subscriptions.js';
 import { TerminalProviderLogin } from './models/login.js';
 import { TerminalPluginTasks } from './plugins/tasks.js';
 import { TerminalGateway } from './models/gateway.js';
@@ -412,15 +411,14 @@ export class TerminalService {
       emit: (channel, payload) => { guardIm(); if (this.ownerSuspended) return; this.transport.publish(channel, [payload]); void this.remote?.publish(channel, payload).catch(() => {}); },
     });
     this.im = im;
-    const nativeAccounts = new TerminalNativeAccounts({ root: ownerDir,
+    const subscriptions = new TerminalSubscriptions({ root: ownerDir, models: this.tasks.models,
       binary: async () => (await this.engines.resolve('codex'))?.binary ?? null,
       version: async () => (await this.engines.status('codex')).version,
       secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
       assertCurrent: guardIm,
       changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
     });
-    await nativeAccounts.ready;
-    this.tasks.models.connectNative(nativeAccounts);
+    await subscriptions.openAiAccount()!.ready;
     this.tasks.models.nativeClaude = new TerminalClaudeLogin({ owner,
       binary: async () => (await this.engines.resolve('claude-code'))?.binary ?? null,
       readBinding: () => this.secrets.getSync('terminal:native:anthropic-binding'),
@@ -428,12 +426,7 @@ export class TerminalService {
       assertCurrent: guardIm,
       changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); },
     });
-    const nativeGrok = new TerminalGrokLogin({ root: ownerDir, models: this.tasks.models,
-      secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
-      assertCurrent: guardIm,
-      changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
-    });
-    this.providerLogin = new TerminalProviderLogin({ models: this.tasks.models, native: nativeAccounts, grok: nativeGrok,
+    this.providerLogin = new TerminalProviderLogin({ models: this.tasks.models, subscriptions,
       claude: new TerminalClaudeAuthorization({ auth: this.tasks.models.nativeClaude!, binary: async () => (await this.engines.resolve('claude-code'))?.binary ?? null, assertCurrent: guardIm }),
       secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
       assertCurrent: guardIm, log: logger,
@@ -441,13 +434,7 @@ export class TerminalService {
     });
     this.tasks.utility.configureConnections({
       readCachedGenericOAuthAccessToken: id => this.providerLogin!.cachedCredential(id),
-      getGrokAccessToken: async () => (await nativeGrok.credential()).accessToken,
-      getGrokOAuthCredentialGeneration: () => nativeGrok.generation(),
-      getChatgptBridgeAuth: async () => nativeAccounts.credential(),
-      getChatgptBridgeAuthForDispatch: async () => {
-        const auth = await nativeAccounts.credential();
-        return auth;
-      },
+      ...subscriptions.utilityConnections(),
     });
     this.configuration=new TerminalConfiguration(this.tasks.capabilities,{login:this.providerLogin,revision:()=>this.tasks.models.revision(),save:(action,provider,keys,context)=>this.tasks.configureProvider(action,provider,keys,context)}, {
       registration: im.registration,

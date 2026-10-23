@@ -29,6 +29,7 @@ export class TerminalGrokLogin {
   constructor(
     private readonly options: {
       root: string;
+      providerId?: string;
       models: TerminalModelConfig;
       secrets: Pick<
         TerminalDurableSecrets,
@@ -135,11 +136,11 @@ export class TerminalGrokLogin {
       cacheFilePath: () => path.join(options.root, "xai-models.json"),
       applySnapshot: (models) => {
         this.current();
-        options.models.catalogRuntime.setXaiDiscoveredModels(models);
+        options.models.catalogRuntime.setXaiDiscoveredModels(models, options.providerId);
       },
       invalidateAuth: this.invalidate,
     });
-    options.models.nativeGrok = this;
+    if (!options.providerId || options.providerId === 'xai') options.models.nativeGrok = this;
   }
   private current() {
     if (this.closed) throw new Error("OWNER_CHANGED");
@@ -189,6 +190,22 @@ export class TerminalGrokLogin {
     this.discovery.clearXaiDiscoveredModels();
     this.loaded = false;
     this.options.changed();
+  }
+  removeReversibly() {
+    this.current();
+    const previous = new Map([KEY, BINDING].map(key => [key, this.options.secrets.getSync(key)]));
+    this.disconnect();
+    return () => {
+      this.current();
+      for (const [key, value] of previous) {
+        if (value === null) this.options.secrets.deleteSync(key);
+        else this.options.secrets.setSync(key, value);
+      }
+      this.runtime.resetGrokOAuthMemoryCache();
+      this.discovery.clearXaiDiscoveredModels();
+      this.loaded = false;
+      this.options.changed();
+    };
   }
   begin(id: string, current: () => void, deadline: number): ProviderLoginState {
     this.current();

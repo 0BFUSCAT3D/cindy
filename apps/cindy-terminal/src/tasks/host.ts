@@ -331,7 +331,7 @@ export class TerminalTaskHost {
     }
   }
   private async authState(kind: AgentKind) {
-    if (kind === 'codex' && this.models?.nativeAccounts) return { authenticated: this.models.nativeAccounts.connected(), authSource: 'oauth' as const };
+    if (kind === 'codex' && this.models?.openAiAccount()) return { authenticated: this.models.openAiAccount()!.connected(), authSource: 'oauth' as const };
     const cached = this.authCache.get(kind);
     if (cached && Date.now() - cached.at < 15_000) return cached.value;
     const value = await (this.options.nativeStatus ?? nativeAuthState)(kind, this.binaries.get(kind) ?? null);
@@ -921,7 +921,9 @@ export class TerminalTaskHost {
     const admitted = await this.admitTask(input, id, guard);
     const { resolved, cwd } = admitted;
     input = admitted.input;
-    await this.storage.create({ id, agentKind: resolved.selection.agentKind, model: resolved.selection.model, workDir: cwd, title: typeof input.title === 'string' ? input.title : typeof this.options.defaultTitle === 'function' ? this.options.defaultTitle() : this.options.defaultTitle ?? 'New task', permissionMode: input.permissionMode ? permission(input.permissionMode) : 'default', ...(typeof input.planMode === 'boolean' ? { planMode: input.planMode } : {}) });
+    if (input.fastMode !== undefined && typeof input.fastMode !== 'boolean' && input.fastMode !== 'ultrafast') throw new Error('INVALID_ARGUMENT');
+    if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== 'boolean') throw new Error('INVALID_ARGUMENT');
+    await this.storage.create({ id, agentKind: resolved.selection.agentKind, model: resolved.selection.model, workDir: cwd, title: typeof input.title === 'string' ? input.title : typeof this.options.defaultTitle === 'function' ? this.options.defaultTitle() : this.options.defaultTitle ?? 'New task', permissionMode: input.permissionMode ? permission(input.permissionMode) : 'default', ...(typeof input.planMode === 'boolean' ? { planMode: input.planMode } : {}), ...(input.fastMode !== undefined ? { fastMode: input.fastMode as boolean | 'ultrafast' } : {}), ...(typeof input.thinkingEnabled === 'boolean' ? { thinkingEnabled: input.thinkingEnabled } : {}) });
     guard();
     await this.storage.setSelection(id, resolved.selection);
     if (input.agentDeviceId || input.groupBinding) await this.storage.update(id, { ...(input.agentDeviceId ? {agentDeviceId: string(input.agentDeviceId)} : {}), ...(input.groupBinding ? {groupBinding: input.groupBinding as import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding} : {}) });

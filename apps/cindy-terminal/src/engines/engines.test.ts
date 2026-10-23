@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import * as tar from 'tar';
 import { EngineManager } from './manager.js';
 import { nativeCommand, nativeLoginCommand, nativeLoginStatus } from './native.js';
-import { enginePlatform } from './releases.js';
+import { enginePlatform, latestEngineRelease } from './releases.js';
 import { extractEngineArchive } from './archive.js';
 import type { EngineRelease } from './types.js';
 import { RemoteResourceRegistry, type RemoteResource } from '@cindy/device-link';
@@ -20,7 +20,7 @@ import type { EngineKind, EngineStatus } from './types.js';
 // Behavior tier: installer publication/rollback and hostile archive boundary;
 // native auth must select vendor flows without exposing credential output.
 const folders: string[] = [];
-afterEach(async () => { vi.unstubAllGlobals(); vi.restoreAllMocks(); await Promise.all(folders.splice(0).map(folder => rm(folder, { recursive: true, force: true }))); });
+afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); await Promise.all(folders.splice(0).map(folder => rm(folder, { recursive: true, force: true }))); });
 async function temporary() { const folder = await mkdtemp(path.join(os.tmpdir(), 'cindy-engines-test-')); folders.push(folder); return folder; }
 function release(data: Buffer, version = '1.2.3'): EngineRelease {
   return { version, assets: { [enginePlatform()]: { url: 'https://engine.invalid/fake', sha256: createHash('sha256').update(data).digest('hex'), size: data.length, format: 'raw', entrypoint: 'claude' } } };
@@ -28,6 +28,27 @@ function release(data: Buffer, version = '1.2.3'): EngineRelease {
 const posix = process.platform !== 'win32';
 
 describe('engine installation', () => {
+  // Protocol boundary: a rate-limited official release must be recoverable,
+  // and a CI metadata token must never reach another source or native process.
+  it('reports release HTTP failures and confines lookup credentials to the GitHub API', async () => {
+    vi.stubEnv('CINDY_GITHUB_API_TOKEN', 'synthetic-metadata-token');
+    const requests: Array<{ url: string; authorization: string | null; redirect?: RequestRedirect }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      requests.push({ url, authorization: new Headers(init?.headers).get('authorization'), redirect: init?.redirect });
+      if (url.startsWith('https://api.github.com/')) return new Response('{}', { status: 403, headers: { 'x-ratelimit-remaining': '0' } });
+      if (url.startsWith('https://registry.npmjs.org/')) return Response.json({ version: '1.2.3' });
+      return Response.json({ platforms: { 'darwin-arm64': { checksum: 'a'.repeat(64), size: 1 } } });
+    }));
+    await expect(latestEngineRelease('pi')).rejects.toThrow('release_rate_limited');
+    expect(requests[0]).toMatchObject({ authorization: 'Bearer synthetic-metadata-token', redirect: 'error' });
+    expect((await latestEngineRelease('claude-code')).version).toBe('1.2.3');
+    expect(requests.slice(1).every(request => request.authorization === null)).toBe(true);
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const native = nativeCommand(platform === 'win32' ? 'C:\\tools\\native.cmd' : '/bin/native', ['--version'], { CINDY_GITHUB_API_TOKEN: 'synthetic-metadata-token' }, platform);
+      expect(native.env).not.toHaveProperty('CINDY_GITHUB_API_TOKEN');
+    }
+  });
+
   it('runs advertised installation on the selected host, survives a detached view, and fences owner changes', async () => {
     // Behavior tier: a remote engine page previously invoked controller-local IPC.
     // Use the real resource registry/client; substitute only the installer I/O.

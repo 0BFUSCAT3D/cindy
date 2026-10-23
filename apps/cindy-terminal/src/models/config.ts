@@ -3,6 +3,7 @@ import { BUNDLED_CATALOG, buildRegistry, buildUserProvider, resolveRoute, type A
 import type { TerminalSecrets } from '../contracts.js';
 import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platform.js';
 import { createActiveCatalog } from '@cindy/model-providers/model-plane/activeCatalog';
+import type { TerminalSubscriptions } from './subscriptions.js';
 import type { TerminalGrokLogin } from './grok-login.js';
 import type { TerminalClaudeLogin } from './claude-login.js';
 import type { TerminalNativeAccounts } from './native-accounts.js';
@@ -48,7 +49,20 @@ export class TerminalModelConfig {
   nativeAccounts?: TerminalNativeAccounts;
   nativeClaude?: TerminalClaudeLogin;
   nativeGrok?: TerminalGrokLogin;
-  private nativeModels?: CatalogModel[];
+  private readonly nativeModels = new Map<string, CatalogModel[]>();
+  private subscriptions?: TerminalSubscriptions;
+  connectSubscriptions(accounts: TerminalSubscriptions) { this.subscriptions = accounts; this.generation++; }
+  openAiAccount(id = 'openai') { return this.subscriptions?.openAiAccount(id) ?? (id === 'openai' ? this.nativeAccounts : undefined); }
+  grokAccount(id = 'xai') { return this.subscriptions?.grokAccount(id) ?? (id === 'xai' ? this.nativeGrok : undefined); }
+  private async discoverOpenAi(id: string, force = false) {
+    const account = this.openAiAccount(id);
+    if (!account?.connected()) return;
+    const models = await account.models(force);
+    if (models === this.nativeModels.get(id)) return;
+    if (id === 'openai') this.catalogRuntime.setDiscoveredCodexModels(models);
+    else this.catalogRuntime.setDiscoveredProviderModels(id, 'codex', models);
+    this.nativeModels.set(id, models);
+  }
   connectNative(connection: TerminalNativeAccounts) { this.nativeAccounts = connection; this.generation++; }
 
   connectOAuth(connection: ModelOAuthConnection) { this.oauth = connection; this.generation++; }
@@ -73,9 +87,9 @@ export class TerminalModelConfig {
     if (typeof input.id !== 'string' || !/^[a-z0-9_-]{1,80}$/.test(input.id) || this.catalogRuntime.getActiveCatalog().providers.some(p => p.id === input.id && p.source !== 'user')) throw new Error('INVALID_PROVIDER_ID');
     if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('INVALID_PROVIDER_NAME');
     const auth = input.auth === undefined ? { method: 'apiKey' } : object(input.auth);
-    if (!validateAuthSection(auth).ok || auth.native !== undefined) throw new Error('INVALID_PROVIDER_AUTH');
+    if (!validateAuthSection(auth).ok || auth.native !== undefined && !['codex', 'xai'].includes(String(auth.native))) throw new Error('INVALID_PROVIDER_AUTH');
     const runtimes = object(input.runtimes);
-    const clean: CustomProviderConfig = { id: input.id, name: input.name.trim(), auth: (auth.method === 'oauth' ? { method: 'oauth', oauth: structuredClone(auth.oauth) } : { method: auth.method }) as CustomProviderConfig['auth'], runtimes: {} };
+    const clean: CustomProviderConfig = { id: input.id, name: input.name.trim(), auth: (auth.method === 'oauth' ? auth.native ? { method: 'oauth', native: auth.native } : { method: 'oauth', oauth: structuredClone(auth.oauth) } : { method: auth.method }) as CustomProviderConfig['auth'], runtimes: {} };
     for (const [kind, raw] of Object.entries(runtimes)) {
       if (!ENGINES.includes(kind as AgentKind)) throw new Error('INVALID_ENGINE');
       const runtime = object(raw);
@@ -83,7 +97,7 @@ export class TerminalModelConfig {
       if (typeof runtime.baseUrl !== 'string') throw new Error('INVALID_PROVIDER_URL');
       const url = new URL(runtime.baseUrl);
       if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('INVALID_PROVIDER_URL');
-      if (!Array.isArray(runtime.models) || runtime.models.length === 0) throw new Error('PROVIDER_MODELS_REQUIRED');
+      if (!Array.isArray(runtime.models) || !auth.native && runtime.models.length === 0) throw new Error('PROVIDER_MODELS_REQUIRED');
       // Only explicitly supported metadata crosses the persistence boundary; keys and
       // custom headers are held by TerminalSecrets, never smuggled into this JSON.
       const models = runtime.models.map(value => {
@@ -132,8 +146,8 @@ export class TerminalModelConfig {
   presets() { return structuredClone(this.activeCatalog().presets ?? []); }
   async refresh(providerId:string) {
     if (this.oauth && this.activeCatalog().providers.find(p => p.id === providerId)?.auth.oauth) { await this.oauth.refresh(providerId); return { ok: true as const, providerId }; }
-    if (providerId === 'xai' && this.nativeGrok) { await this.nativeGrok.models(true); this.generation++; return { ok: true as const, providerId }; }
-    if (providerId === 'openai' && this.nativeAccounts) { await this.nativeAccounts.models(true); this.generation++; return { ok: true as const, providerId }; }
+    if (this.grokAccount(providerId)) { await this.grokAccount(providerId)!.models(true); this.generation++; return { ok: true as const, providerId }; }
+    if (this.openAiAccount(providerId)) { await this.discoverOpenAi(providerId, true); this.generation++; return { ok: true as const, providerId }; }
     if (providerId === 'xd' && this.refreshGateway) { await this.refreshGateway(); return { ok: true as const, providerId }; }
     const kind=providerId==='openai'?'codex':providerId==='anthropic'?'claude-code':null;
     if(!kind||!this.discover)throw new Error('PROVIDER_DISCOVERY_UNAVAILABLE');
@@ -158,7 +172,7 @@ export class TerminalModelConfig {
       guard();await this.persist({...this.state,disabled});
     });
   }
-  disconnect(id:string,guard:()=>void) {return this.change(async()=>{guard();this.oauth?.cancelProvider?.(id);if(id==='anthropic'&&this.nativeClaude){this.nativeClaude.disconnect();return;}if(id==='xai'&&this.nativeGrok){this.nativeGrok.disconnect();return;}if(id==='openai'&&this.nativeAccounts){this.nativeAccounts.disconnect();return;}if(!this.state.providers.some(p=>p.id===id))throw new Error('PROVIDER_NOT_FOUND');if(this.activeCatalog().providers.find(p=>p.id===id)?.auth.oauth){if(!this.oauth)throw new Error('PROVIDER_CONNECTION_UNAVAILABLE');this.oauth.disconnect(id);}for(const kind of ENGINES){guard();await this.secrets.delete(this.key(id,kind));}});}
+  disconnect(id:string,guard:()=>void) {return this.change(async()=>{guard();this.oauth?.cancelProvider?.(id);if(id==='anthropic'&&this.nativeClaude){this.nativeClaude.disconnect();return;}if(this.grokAccount(id)){this.grokAccount(id)!.disconnect();return;}if(this.openAiAccount(id)){this.openAiAccount(id)!.disconnect();return;}if(!this.state.providers.some(p=>p.id===id))throw new Error('PROVIDER_NOT_FOUND');if(this.activeCatalog().providers.find(p=>p.id===id)?.auth.oauth){if(!this.oauth)throw new Error('PROVIDER_CONNECTION_UNAVAILABLE');this.oauth.disconnect(id);}for(const kind of ENGINES){guard();await this.secrets.delete(this.key(id,kind));}});}
   connectGateway(read: () => { apiKey: string; endpoint: string } | null, refresh?: () => Promise<void>, rejected?: (key: string | null | undefined) => void) { this.gateway = read; this.refreshGateway = refresh; this.rejectGateway = rejected; }
   gatewayCredentials() { return this.gateway?.() ?? null; }
   reportGatewayRejection(key: string | null | undefined) { this.rejectGateway?.(key); }
@@ -175,20 +189,20 @@ export class TerminalModelConfig {
     await this.pending;
     const connected: Record<string, boolean> = {};
     for (const provider of this.state.providers) {
-      connected[provider.id] = provider.auth?.method === 'oauth' ? Boolean(this.oauth?.connected(provider.id)) : provider.auth?.method === 'none' || (await Promise.all(ENGINES.map(kind => this.secrets.get(this.key(provider.id, kind))))).some(Boolean);
+      connected[provider.id] = provider.auth?.method === 'oauth' ? provider.auth.native === 'codex' ? Boolean(this.openAiAccount(provider.id)?.connected()) : provider.auth.native === 'xai' ? Boolean(this.grokAccount(provider.id)?.connected()) : Boolean(this.oauth?.connected(provider.id)) : provider.auth?.method === 'none' || (await Promise.all(ENGINES.map(kind => this.secrets.get(this.key(provider.id, kind))))).some(Boolean);
     }
     for (const provider of this.activeCatalog().providers) if (provider.auth.oauth) connected[provider.id] = Boolean(this.oauth?.connected(provider.id));
-    const statuses = await Promise.all(['claude-code', 'codex'].map(async kind => [kind, kind === 'codex' && this.nativeAccounts ? { authenticated: this.nativeAccounts.connected() } : kind === 'claude-code' && this.nativeClaude ? await this.nativeClaude.state() : await this.nativeStatus(kind as AgentKind)] as const));
+    const statuses = await Promise.all(['claude-code', 'codex'].map(async kind => [kind, kind === 'codex' && this.openAiAccount() ? { authenticated: this.openAiAccount()!.connected() } : kind === 'claude-code' && this.nativeClaude ? await this.nativeClaude.state() : await this.nativeStatus(kind as AgentKind)] as const));
     connected.anthropic = statuses[0][1].authenticated;
     connected.openai = statuses[1][1].authenticated;
     connected.xd = Boolean(this.gateway?.());
-    connected.xai = Boolean(this.nativeGrok?.connected());
-    if (connected.xai) await this.nativeGrok!.models().catch(() => {});
-    if (connected.openai && this.nativeAccounts) {
-      const models = await this.nativeAccounts.models().catch(() => this.nativeModels);
-      if (models && models !== this.nativeModels) { this.catalogRuntime.setDiscoveredCodexModels(models); this.nativeModels = models; }
+    connected.xai = Boolean(this.grokAccount()?.connected());
+    for (const provider of this.activeCatalog().providers) {
+      if (!connected[provider.id]) continue;
+      if (this.grokAccount(provider.id)) await this.grokAccount(provider.id)!.models().catch(() => {});
+      if (this.openAiAccount(provider.id)) await this.discoverOpenAi(provider.id).catch(() => {});
     }
-    if (this.discover) await Promise.all(statuses.filter(([kind, state]) => state.authenticated && !(kind === 'codex' && this.nativeAccounts)).map(async ([kind]) => {
+    if (this.discover) await Promise.all(statuses.filter(([kind, state]) => state.authenticated && !(kind === 'codex' && this.openAiAccount())).map(async ([kind]) => {
       let pending = this.discovery.get(kind as AgentKind);
       if (!pending) {
         pending = this.discover!(kind as AgentKind).then(models => {
@@ -223,9 +237,9 @@ export class TerminalModelConfig {
     // Built-in subscriptions use the original vendor CLI. Cross-harness OAuth
     // needs a separately authorized credential bridge, never a copied login.
     if (selection.providerId === 'xd' && this.catalogRuntime.isXdGatewayPaymentRequiredRoute(selection.model, selection.agentKind)) throw new Error('MODEL_PAYMENT_REQUIRED');
-    if (route.provider.source !== 'user' && !(selection.providerId === 'xd' && this.gateway?.()) && !(route.provider.auth.oauth && this.oauth?.connected(selection.providerId)) && !(selection.providerId === 'openai' && this.nativeAccounts?.connected()) && !(selection.providerId === 'xai' && this.nativeGrok?.connected()) && !((selection.agentKind === 'claude-code' && selection.providerId === 'anthropic') || (selection.agentKind === 'codex' && selection.providerId === 'openai'))) throw new Error('MODEL_ROUTE_REQUIRES_SUPPORTED_CONNECTION');
+    if (route.provider.source !== 'user' && !(selection.providerId === 'xd' && this.gateway?.()) && !(route.provider.auth.oauth && this.oauth?.connected(selection.providerId)) && !(this.openAiAccount(selection.providerId)?.connected()) && !(this.grokAccount(selection.providerId)?.connected()) && !((selection.agentKind === 'claude-code' && selection.providerId === 'anthropic') || (selection.agentKind === 'codex' && selection.providerId === 'openai'))) throw new Error('MODEL_ROUTE_REQUIRES_SUPPORTED_CONNECTION');
     const custom = this.state.providers.find(p => p.id === selection.providerId);
-    if (custom && custom.auth?.method !== 'none' && !await this.credential(selection.providerId, selection.agentKind)) throw new Error('MODEL_CREDENTIAL_REQUIRED');
+    if (custom && !custom.auth?.native && custom.auth?.method !== 'none' && !await this.credential(selection.providerId, selection.agentKind)) throw new Error('MODEL_CREDENTIAL_REQUIRED');
     if (modelRevision !== this.revision() || this.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
     return { selection: structuredClone(selection), route, modelRevision };
   }
@@ -313,7 +327,7 @@ export class TerminalModelConfig {
     const keys = new Map<string, string | null>();
     const catalog = structuredClone(this.activeCatalog());
     for (const provider of catalog.providers) {
-      if (provider.source !== 'user') continue;
+      if (provider.source !== 'user' || provider.auth.native) continue;
       for (const kind of provider.agents) {
         keys.set(`${provider.id}:${kind}`, await this.credential(provider.id, kind));
         const routing = provider.routing[kind];

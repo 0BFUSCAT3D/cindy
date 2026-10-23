@@ -3,6 +3,7 @@ import { buildUserProvider } from '@cindy/model-providers';
 import type { GenericOAuthRuntimeHost } from '@cindy/model-providers/provider-auth/generic-oauth';
 import type { TerminalDurableSecrets } from '../contracts.js';
 import type { TerminalClaudeAuthorization } from './claude-terminal.js';
+import type { TerminalSubscriptions } from './subscriptions.js';
 import type { TerminalGrokLogin } from './grok-login.js';
 import type { TerminalNativeAccounts } from './native-accounts.js';
 import type { TerminalModelConfig, ModelOAuthConnection } from './config.js';
@@ -34,6 +35,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
   constructor(
     private readonly options: {
       models: TerminalModelConfig;
+      subscriptions?: TerminalSubscriptions;
       native?: TerminalNativeAccounts;
       grok?: TerminalGrokLogin;
       claude?: TerminalClaudeAuthorization;
@@ -127,6 +129,8 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     this.current();
     for (const [requestId, entry] of this.logins)
       if (entry.providerId === id) this.cancel(requestId);
+    const account = this.options.subscriptions?.connection(id);
+    if (account) return account.removeReversibly();
     const restore = this.runtime.removeGenericOAuthCredentialsReversibly(id);
     if (!restore) throw new Error('PROVIDER_DISCONNECT_FAILED');
     return () => {
@@ -168,7 +172,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     deadline: number,
   ): ProviderLoginState {
     current();
-    const native = providerId === 'openai' ? this.options.native : providerId === 'xai' ? this.options.grok : providerId === 'anthropic' ? this.options.claude : undefined;
+    const native = this.options.subscriptions?.connection(providerId) ?? (providerId === 'openai' ? this.options.native : providerId === 'xai' ? this.options.grok : providerId === 'anthropic' ? this.options.claude : undefined);
     if (native) { this.nativeLogins.set(id, native); return native.begin(id, current, deadline); }
     const provider = this.provider(providerId);
     const old = this.logins.get(id);
@@ -281,7 +285,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     if (status !== 'expired') this.logins.delete(id);
   }
   cancelProvider(providerId: string) {
-    const native = providerId === 'anthropic' ? this.options.claude : providerId === 'openai' ? this.options.native : providerId === 'xai' ? this.options.grok : undefined;
+    const native = this.options.subscriptions?.connection(providerId) ?? (providerId === 'anthropic' ? this.options.claude : providerId === 'openai' ? this.options.native : providerId === 'xai' ? this.options.grok : undefined);
     for (const [id, connection] of this.nativeLogins) if (connection === native) this.cancel(id);
     for (const [id, login] of this.logins) if (login.providerId === providerId) this.cancel(id);
   }
@@ -291,6 +295,7 @@ export class TerminalProviderLogin implements ModelOAuthConnection {
     const work = [...this.logins.values()].map((entry) => entry.work);
     for (const id of this.logins.keys()) this.cancel(id);
     this.runtime.close();
+    await this.options.subscriptions?.close();
     await this.options.native?.close();
     await this.options.grok?.close();
     await this.options.claude?.close();

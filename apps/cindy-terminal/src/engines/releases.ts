@@ -5,8 +5,16 @@ export const enginePlatform = (platform = process.platform, arch = process.arch)
 const triples: Record<string, string> = { 'darwin-arm64': 'aarch64-apple-darwin', 'darwin-x64': 'x86_64-apple-darwin', 'linux-arm64': 'aarch64-unknown-linux-musl', 'linux-x64': 'x86_64-unknown-linux-musl', 'win32-arm64': 'aarch64-pc-windows-msvc', 'win32-x64': 'x86_64-pc-windows-msvc' };
 
 async function json(url: string, signal?: AbortSignal): Promise<any> {
-  const response = await fetch(url, { signal: AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]), headers: { Accept: 'application/json', 'User-Agent': 'Cindy-Terminal' } });
-  if (!response.ok || Number(response.headers.get('content-length') ?? 0) > 4_000_000) throw new EngineError('release_unavailable');
+  const token = process.env.CINDY_GITHUB_API_TOKEN;
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]), headers: {
+    Accept: 'application/json', 'User-Agent': 'Cindy-Terminal',
+    ...(new URL(url).origin === 'https://api.github.com' && token ? { Authorization: `Bearer ${token}` } : {}),
+  } });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new EngineError(response.status === 429 || response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0' ? 'release_rate_limited' : `release_http_${response.status}`);
+  }
+  if (Number(response.headers.get('content-length') ?? 0) > 4_000_000) { await response.body?.cancel(); throw new EngineError('release_response_too_large'); }
   const data = await response.text();
   if (data.length > 4_000_000) throw new EngineError('release_unavailable');
   return JSON.parse(data);

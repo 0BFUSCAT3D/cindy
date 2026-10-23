@@ -4,11 +4,12 @@ import {
   type ProxyHandle,
   type LocalRequestHandler,
 } from '@cindy/anthropic-compat-proxy';
-import { createResponsesHandler } from '@cindy/anthropic-responses-bridge';
+import { createResponsesHandler, type BridgeSessionPrefs } from '@cindy/anthropic-responses-bridge';
 import { createResponsesAnthropicHandler } from '@cindy/responses-anthropic-bridge';
-import { createResponsesChatHandler } from '@cindy/responses-chat-bridge';
+import { createResponsesChatHandler, type ChatBridgeCapabilities } from '@cindy/responses-chat-bridge';
 import {
   providerRoutingForModel,
+  providerModelRecord,
   type AgentKind,
   type ResolvedRoute,
 } from '@cindy/model-providers';
@@ -22,6 +23,7 @@ async function createBoundProviderProxy(
   extraHeaders: Record<string, string>,
   authorize?: (model: string) => Promise<boolean>,
   onUnauthorized?: (key: string | null) => void,
+  preferences?: (model: string) => BridgeSessionPrefs,
 ) {
   const token = randomBytes(32).toString('base64url');
   const handles: ProxyHandle[] = [];
@@ -29,6 +31,11 @@ async function createBoundProviderProxy(
   const protocol =
     route.routing.wireProtocol ??
     (kind === 'claude-code' ? 'anthropic-messages' : 'openai-responses');
+  const thinkingFormat = providerModelRecord(route.model.id, route.routing.upstream, protocol)?.execution.pi.compat?.thinkingFormat;
+  const chatCapabilities: ChatBridgeCapabilities = {
+    ...(route.model.supportsImageInput ? { imageInput: 'image_url' as const } : {}),
+    reasoningField: thinkingFormat === 'qwen' ? 'enable_thinking' : thinkingFormat === 'zai' ? 'thinking.type' : 'reasoning_effort',
+  };
   // Account credentials publish the gateway root. Native SDKs differ: Claude
   // appends /v1/messages, while Codex and Pi append an unversioned resource.
   // Resolve the gateway path here; custom endpoints retain their exact paths.
@@ -158,6 +165,7 @@ async function createBoundProviderProxy(
       const bridge = createResponsesChatHandler(
         {
           upstreamBase: upstream,
+          capabilities: chatCapabilities,
           ...(requestPath ? { chatCompletionsPath: requestPath } : {}),
           buildHeaders: async () => headers(),
         },
@@ -174,6 +182,7 @@ async function createBoundProviderProxy(
         const bridge = createResponsesChatHandler(
           {
             upstreamBase: upstream,
+            capabilities: chatCapabilities,
             ...(requestPath ? { chatCompletionsPath: requestPath } : {}),
             buildHeaders: async () => headers(),
           },
@@ -207,7 +216,7 @@ async function createBoundProviderProxy(
           },
         ],
       });
-      handler = (args) => bridge.handle({ ...args, prefs: {} });
+      handler = (args) => bridge.handle({ ...args, prefs: preferences?.(route.model.id) ?? {} });
     }
     const main = await proxy(upstream, handler);
     return {
@@ -235,6 +244,7 @@ export async function createProviderProxy(
   authorize?: (model: string) => Promise<boolean>,
   onUnauthorized?: (key: string | null) => void,
   resolveCredential?: () => Promise<string | null>,
+  preferences?: (model: string) => BridgeSessionPrefs,
 ) {
   const token = randomBytes(32).toString('base64url');
   let closed = false;
@@ -291,6 +301,7 @@ export async function createProviderProxy(
           extraHeaders,
           authorize,
           onUnauthorized,
+          preferences,
         );
         targets.set(targetKey, target);
       }

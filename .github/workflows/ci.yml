@@ -95,7 +95,7 @@ jobs:
       - name: Typecheck terminal
         run: pnpm --filter cindy-terminal typecheck
       - name: Existing SuperGrok device login, discovery and recovery
-        run: pnpm exec vitest run apps/desktop/src/main/maker-host/__tests__/grokDeviceLogin.test.ts apps/desktop/src/main/maker-host/__tests__/grokDeviceLoginOwnerSwitch.test.ts apps/desktop/src/main/maker-host/__tests__/grokAuthRejectionRecovery.test.ts apps/desktop/src/main/maker-host/__tests__/grokOauthCallbackListener.test.ts apps/desktop/src/main/maker-host/__tests__/xaiModelDiscovery.test.ts apps/desktop/src/main/maker-host/__tests__/xaiBridgeAuthInvalidation.test.ts --maxWorkers=1 --minWorkers=1
+        run: pnpm exec vitest run apps/desktop/src/main/maker-host/__tests__/grokDeviceLogin.test.ts apps/desktop/src/main/maker-host/__tests__/grokDeviceLoginOwnerSwitch.test.ts apps/desktop/src/main/maker-host/__tests__/grokAuthRejectionRecovery.test.ts apps/desktop/src/main/maker-host/__tests__/grokOauthCallbackListener.test.ts apps/desktop/src/main/maker-host/__tests__/xaiModelDiscovery.test.ts apps/desktop/src/main/maker-host/__tests__/xaiBridgeAuthInvalidation.test.ts apps/desktop/src/main/maker-host/__tests__/xaiSyncImport.test.ts --maxWorkers=1 --minWorkers=1
       - name: Real bundled engines preserve provider and subscription boundaries
         env:
           CINDY_TEST_MANAGED_PI: '1'
@@ -112,11 +112,15 @@ jobs:
         run: node apps/cindy-terminal/scripts/diagnose-platform-start.mjs
       - name: Run real installed CLI, daemon, engines, PTY and WebRTC
         if: runner.os != 'Linux'
+        env:
+          CINDY_GITHUB_API_TOKEN: ${{ github.token }}
         timeout-minutes: 12
         shell: bash
         run: node apps/cindy-terminal/scripts/platform-acceptance.mjs "$CINDY_ACCEPTANCE_OUTPUT" "$CINDY_ACCEPTANCE_REPORT"
       - name: Run installed Linux runtime with a real systemd user manager
         if: runner.os == 'Linux'
+        env:
+          CINDY_GITHUB_API_TOKEN: ${{ github.token }}
         timeout-minutes: 15
         shell: bash
         run: bash apps/cindy-terminal/scripts/linux-platform-acceptance.sh

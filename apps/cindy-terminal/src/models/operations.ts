@@ -1,6 +1,7 @@
 import { appendProviderRequestPath, type AgentKind, type ProviderWireProtocol } from '@cindy/model-providers';
 import { collectModelDiscoveryPages } from '@cindy/model-providers';
 import { classifyProviderError } from '@cindy/maker-shared/provider-errors';
+import { createChatgptProxy, createGrokProxy } from './subscription-proxy.js';
 import { createProviderProxy } from './proxy.js';
 import { ENGINES, TerminalModelConfig } from './config.js';
 
@@ -41,7 +42,12 @@ export async function testConnection(models:TerminalModelConfig,input:unknown,gu
     const config={id,name:'Probe',auth:{method:spec.authMethod},runtimes:{[kind]:{baseUrl:endpoint(spec.baseUrl),wireProtocol:spec.wireProtocol,models:[{id:String(spec.modelId??''),name:String(spec.modelId??'')}]}}};
     const provider=models.previewProvider(config);chosen={route:provider.route,selection:provider.selection};key=typeof spec.apiKey==='string'?spec.apiKey:null;extra=headers(spec.headers);
   }else throw new Error('INVALID_PROVIDER_INPUT');
-  guard();const proxy=await createProviderProxy(chosen.route,kind,key,extra,async()=>{guard();return true;});
+  guard();
+  const authorize = async () => { guard(); return true; };
+  const openai = models.openAiAccount(chosen.selection.providerId), grok = models.grokAccount(chosen.selection.providerId);
+  const proxy = openai ? await createChatgptProxy({ route: chosen.route, kind, taskId: 'provider-test', accounts: openai, authorize })
+    : grok ? await createGrokProxy({ route: chosen.route, kind, taskId: 'provider-test', accounts: grok, authorize })
+    : await createProviderProxy(chosen.route,kind,key,extra,authorize);
   try {
     guard();const wire=kind==='claude-code'?'anthropic-messages':kind==='codex'?'openai-responses':chosen.route.routing.wireProtocol??'openai-chat';const response=await fetch(appendProviderRequestPath(proxy.url,wire==='anthropic-messages'?'/v1/messages':wire==='openai-chat'?'/chat/completions':'/responses'),{method:'POST',headers:{authorization:`Bearer ${proxy.token}`,'content-type':'application/json'},body:JSON.stringify(wire==='anthropic-messages'?{model:chosen.selection.model,max_tokens:1,messages:[{role:'user',content:'ping'}],stream:false}:wire==='openai-chat'?{model:chosen.selection.model,max_tokens:16,messages:[{role:'user',content:'ping'}],stream:false}:{model:chosen.selection.model,input:'ping',max_output_tokens:16,stream:false,store:false}),signal:AbortSignal.any([AbortSignal.timeout(10_000),...(signal?[signal]:[])])});
     const body=response.headers.get('content-type')?.includes('text/event-stream')?await firstEvent(response):await json(response);guard();if(!response.ok||object(body).error)return {...failure(new Error('Provider probe failed'),response.status),latencyMs:Date.now()-started};
@@ -51,6 +57,7 @@ export async function testConnection(models:TerminalModelConfig,input:unknown,gu
 
 export async function fetchModels(models:TerminalModelConfig,input:unknown,guard:()=>void,signal?:AbortSignal){
   const spec=object(input);const kind=agent(spec.agent);let base=endpoint(spec.baseUrl);let protocol=spec.wireProtocol as ProviderWireProtocol|undefined;let key=typeof spec.apiKey==='string'?spec.apiKey:null;let extra=headers(spec.headers);let modelsUrl=typeof spec.modelsUrl==='string'?endpoint(spec.modelsUrl):undefined;
+  if(spec.savedProviderId && (models.openAiAccount(String(spec.savedProviderId)) || models.grokAccount(String(spec.savedProviderId)))) { await models.refresh(String(spec.savedProviderId)); guard(); const provider=(await models.views()).find(p=>p.id===spec.savedProviderId); return {ok:true,models:provider?.models[kind]??[]}; }
   if(spec.savedProviderId){const config=models.snapshot().providers.find(p=>p.id===spec.savedProviderId);const runtime=config?.runtimes[kind];if(!runtime)throw new Error('PROVIDER_RUNTIME_REQUIRED');base=runtime.baseUrl;modelsUrl=runtime.modelsUrl;protocol=runtime.wireProtocol;key=await models.credential(config!.id,kind);extra={...await models.headers(config!.id,kind),...extra};}
   if(spec.authMethod==='oauth'&&!spec.savedProviderId)throw new Error('SAVED_PROVIDER_REQUIRED');
   const url=modelsUrl&&(spec.savedProviderId||new URL(modelsUrl).origin===new URL(base).origin)?modelsUrl:appendProviderRequestPath(base,'/models');

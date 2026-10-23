@@ -182,7 +182,18 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   async function addProvider() {
     const presets=array((await readModelConfiguration(client,device)).presets);
     const names=presets.map(p=>`${label(locale==='zh-TW'?p.nameZhTW:locale.startsWith('zh')?p.name:p.nameEn,label(p.name))} · ${label(p.id)}`);
-    edit(t.addProvider,[{key:'source',label:modelText.source,choices:[modelText.custom,...names]}],async values=>{
+    edit(t.addProvider,[{key:'source',label:modelText.source,choices:[modelText.custom,'ChatGPT · OAuth','SuperGrok · OAuth',...names]}],async values=>{
+      if (values.source === 'ChatGPT · OAuth' || values.source === 'SuperGrok · OAuth') {
+        const openai = values.source === 'ChatGPT · OAuth';
+        edit(t.addProvider, [{ key: 'name', label: t.providerName, value: openai ? 'ChatGPT' : 'SuperGrok' }], async values => {
+          const id = `${openai ? 'openai' : 'xai'}-${randomUUID()}`;
+          await saveModelProvider(client, { id, name: values.name, auth: { method: 'oauth', native: openai ? 'codex' : 'xai' },
+            runtimes: { codex: { baseUrl: openai ? 'https://chatgpt.com/backend-api/codex' : 'https://api.x.ai/v1', wireProtocol: 'openai-responses', models: [] } },
+          }, {}, false, device);
+          setForm(null); setProviderLogin(id); await load();
+        });
+        return;
+      }
       const preset=presets[names.indexOf(values.source)];
       if(!preset){providerForm();return;}
       const oauth=providerPresetOAuth(String(preset.id));
@@ -227,7 +238,8 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     const id=label(provider.id);
     const custom=array((await readModelConfiguration(client,device)).providers).find(p=>p.id===id);
     const common=[provider.suspended?modelText.enable:modelText.disable,modelText.reset];
-    const options=custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[...(['openai','xai','anthropic'].includes(id)?[t.login,modelText.disconnect]:[]),t.refresh,...common];
+    const native = Boolean(record(custom?.auth).native);
+    const options=custom&&native?[t.login,modelText.edit,t.refresh,modelText.test,modelText.disconnect,modelText.remove,...common]:custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[...(['openai','xai','anthropic'].includes(id)?[t.login,modelText.disconnect]:[]),t.refresh,...common];
     edit(label(provider.name,id),[{key:'action',label:t.commands,choices:options}],async values=>{
       const selected=values.action;
       if(selected===t.login){setForm(null);setProviderLogin(id);return;}
@@ -237,6 +249,12 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
       if(!custom)throw new Error('PROVIDER_NOT_FOUND');
       if(selected===modelText.disconnect||selected===modelText.remove){
         edit(selected,[{key:'confirm',label:label(custom.name,id),choices:[t.cancel,t.yes]}],async value=>{if(value.confirm===t.yes)await invokeModelConfiguration(client,selected===modelText.remove?'remove':'disconnect',{providerId:id},device);setForm(null);await load();});return;
+      }
+      if (native && selected === modelText.edit) {
+        edit(modelText.edit, [{ key: 'name', label: t.providerName, value: label(custom.name) }], async values => {
+          await saveModelProvider(client, { ...custom, name: values.name }, {}, true, device);
+          setForm(null); await load();
+        }); return;
       }
       const runtimes=record(custom.runtimes);
       edit(selected,[{key:'engine',label:t.engine,choices:Object.keys(runtimes)}],async value=>{

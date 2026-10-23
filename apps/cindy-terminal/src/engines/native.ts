@@ -20,6 +20,8 @@ export function nativeEngineCandidates(kind: EngineKind, env = process.env, plat
  * through a single environment expansion, not interpolated shell syntax; args
  * are restricted to the non-secret vendor commands built below. */
 export function nativeCommand(binary: string, args: string[], env: NodeJS.ProcessEnv = process.env, platform = process.platform): NativeCommand {
+  // Release lookup credentials are host-only, never needed by vendor programs.
+  env = Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== 'CINDY_GITHUB_API_TOKEN'));
   if (platform !== 'win32' || !/\.(cmd|bat)$/i.test(binary)) return { command: binary, args, env: { ...env } };
   if (/["\r\n\x00]/.test(binary) || args.some(arg => !/^[a-zA-Z0-9_./:@+-]+$/.test(arg))) throw new EngineError('unsupported_native_argument');
   return {

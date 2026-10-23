@@ -15,6 +15,9 @@ import { registerModelConfigurationResources } from './resources.js';
 import { createProviderProxy } from './proxy.js';
 import * as platform from '../platform.js';
 import { TerminalClaudeLogin } from './claude-login.js';
+import { encodeCatalogModelPin } from '@cindy/model-providers/catalogModelPin';
+import { TerminalUtilityModels } from './utility.js';
+import { TerminalSubscriptions } from './subscriptions.js';
 import { TerminalNativeAccounts } from './native-accounts.js';
 import { runNative } from '../engines/native.js';
 import { TerminalClaudeAuthorization, type ProviderTerminalFrame } from './claude-terminal.js';
@@ -32,7 +35,7 @@ afterEach(async () => {
 // Integration: headless provider login must survive another computer's browser
 // callback without putting the code/token on the generic remote wire. Use the
 // actual controller cryptography, PKCE, encrypted vault and request proxy.
-async function fixture(grokFetch?: typeof fetch, claudeSetup?: { run: typeof runNative; spawn: PtySpawnFn }) {
+async function fixture(grokFetch?: typeof fetch, claudeSetup?: { run: typeof runNative; spawn: PtySpawnFn }, independent = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-provider-login-'));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const secrets = new TerminalSecretStore(root);
@@ -109,7 +112,8 @@ async function fixture(grokFetch?: typeof fetch, claudeSetup?: { run: typeof run
     {},
     true,
   );
-  const grok = grokFetch ? new TerminalGrokLogin({ root, models, secrets, assertCurrent: guard, changed: () => models.gatewayChanged(), fetch: grokFetch }) : undefined;
+  const subscriptions = independent ? new TerminalSubscriptions({ root, models, secrets, binary: async () => process.execPath, assertCurrent: guard, changed: () => models.gatewayChanged(), fetch: grokFetch }) : undefined;
+  const grok = subscriptions ? subscriptions.grokAccount() : grokFetch ? new TerminalGrokLogin({ root, models, secrets, assertCurrent: guard, changed: () => models.gatewayChanged(), fetch: grokFetch }) : undefined;
   const claudeAuth = claudeSetup ? new TerminalClaudeLogin({ owner: 'owner', binary: async () => process.execPath,
     readBinding: () => secrets.getSync('terminal:native:anthropic-binding'),
     writeBinding: value => value === null ? secrets.deleteSync('terminal:native:anthropic-binding') : secrets.setSync('terminal:native:anthropic-binding', value),
@@ -118,7 +122,7 @@ async function fixture(grokFetch?: typeof fetch, claudeSetup?: { run: typeof run
   if (claudeAuth) models.nativeClaude = claudeAuth;
   const claude = claudeAuth ? new TerminalClaudeAuthorization({ auth: claudeAuth, binary: async () => process.execPath, assertCurrent: guard, spawn: claudeSetup!.spawn }) : undefined;
   const login = new TerminalProviderLogin({
-    grok, claude,
+    grok, claude, subscriptions,
     models,
     secrets,
     assertCurrent: guard,
@@ -218,6 +222,7 @@ async function fixture(grokFetch?: typeof fetch, claudeSetup?: { run: typeof run
     root,
     secrets,
     grok,
+    subscriptions,
     claudeAuth,
     login,
     models,
@@ -436,7 +441,7 @@ async function nativeFixture() {
     },
   });
   cleanup.push(() => accounts.close());
-  return { root, vault, token, expires, calls, accounts, grant, visible, changed, fetchLocal, guard,
+  return { root, vault, token, expires, calls, accounts, grant, visible, changed, fetchLocal, guard, runner,
     refreshes: () => refreshes, beforeRefresh: (fn: () => Promise<void>) => { beforeRefresh = fn; }, revoke: () => { active = false; } };
 }
 
@@ -541,7 +546,7 @@ it('authorizes SuperGrok through a protected remote controller and revokes every
       return Response.json({ access_token: refreshes ? 'grok-private-refreshed' : 'grok-private-access', refresh_token: 'grok-private-refresh', expires_in: 3600 });
     }
     if (address.includes('/v1/user')) return Response.json({ userId: 'synthetic-grok-user' });
-    if (address.endsWith('/v1/models')) return Response.json({ data: [{ id: 'grok-fixture', name: 'Grok Fixture', context_window: 128000, max_completion_tokens: 4096 }] });
+    if (address.endsWith('/v1/models')) return Response.json({ data: ['grok-fixture','grok-4.7','grok-4.7-build-fast'].map(id=>({id,name:id,context_window:128000,max_completion_tokens:4096})) });
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     calls.push({ url: address, headers: new Headers(init?.headers), body });
     if (reject) return Response.json({ code: 'unauthenticated:bad-credentials' }, { status: 403 });
@@ -562,7 +567,8 @@ it('authorizes SuperGrok through a protected remote controller and revokes every
   for (const kind of ['claude-code', 'codex', 'pi'] as const) {
     const model = provider.models[kind]!.find(m => m.id.endsWith('grok-fixture'))!;
     const chosen = await f.models.select({ providerId: 'xai', agentKind: kind, model: model.id });
-    const proxy = await createGrokProxy({ route: chosen.route, kind, taskId: 'grok-task', accounts: f.grok!, fetch: upstream });
+    const prefs = { fast: false, reasoningEffort: 'low' };
+    const proxy = await createGrokProxy({ route: chosen.route, kind, taskId: 'grok-task', accounts: f.grok!, fetch: upstream, preferences:()=>prefs });
     cleanup.push(() => proxy.close()); handles.push(proxy);
     const response = await fetch(proxy.url + (kind === 'claude-code' ? '/v1/messages' : '/responses'), {
       method: 'POST', headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
@@ -572,6 +578,17 @@ it('authorizes SuperGrok through a protected remote controller and revokes every
     expect(calls.at(-1)!.headers.get('authorization')).toBe('Bearer grok-private-access');
     expect(calls.at(-1)!.body.model).toBe('grok-fixture');
     expect(calls.at(-1)!.body.tools).toContainEqual({ type: 'x_search' });
+    const fastParent=provider.models[kind]!.find(m=>m.id.endsWith('grok-4.7'))!;
+    for(const enabled of [true,false]){
+      prefs.fast=enabled;
+      const response=await fetch(proxy.url+(kind==='claude-code'?'/v1/messages':'/responses'),{
+        method:'POST',headers:{authorization:`Bearer ${proxy.token}`,'content-type':'application/json'},
+        body:JSON.stringify(kind==='claude-code'?{model:fastParent.id,max_tokens:512,messages:[{role:'user',content:'fast probe'}]}:{model:fastParent.id,input:'fast probe'}),
+      });
+      expect(response.status).toBe(200);await response.text();
+      expect(calls.at(-1)!.body.model).toBe(enabled?'grok-4.7-build-fast':'grok-4.7');
+      expect(calls.at(-1)!.body.service_tier).toBeUndefined();
+    }
   }
   const request = () => fetch(handles[1].url + '/responses', { method: 'POST', headers: { authorization: `Bearer ${handles[1].token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: provider.models.codex![0].id, input: 'probe' }) });
   reject = true; const rejected = await request(); expect(rejected.status).toBe(403); await rejected.text();
@@ -637,4 +654,149 @@ it('runs the original Claude login on the selected host over its protected contr
   expect(killed).toBe(1); expect(commands).toHaveLength(3);
   const publicData = JSON.stringify({ wire: f.wire, events: f.events, files: await readFile(path.join(f.root, 'secrets.enc'), 'utf8') });
   expect(publicData).not.toContain('native-private-code'); expect(publicData).not.toContain('native-private-input');
+});
+
+// Integration: account selection is an authorization boundary. Real native
+// staging, encrypted persistence and dispatch must keep two connections apart,
+// including a failed config write and a daemon restart.
+it('keeps independent ChatGPT accounts isolated through login, rollback, removal and restart', async () => {
+  const f = await nativeFixture();
+  const models = new TerminalModelConfig(f.root, f.vault, async () => ({ authenticated: false }));
+  await models.open();
+  for (const id of ['openai-a', 'openai-b']) await models.saveProvider({ id, name: id,
+    auth: { method: 'oauth', native: 'codex' },
+    runtimes: { codex: { baseUrl: 'https://chatgpt.com/backend-api/codex', wireProtocol: 'openai-responses', models: [] } },
+  }, {}, true);
+  const create = (models: TerminalModelConfig) => new TerminalSubscriptions({ root: f.root, models, secrets: f.vault,
+    binary: async () => process.execPath, assertCurrent: f.guard, changed: () => models.gatewayChanged(), fetch: f.fetchLocal,
+    run: async (_binary, args, opts) => {
+      expect(args).toEqual(['login', '--device-auth']);
+      const result = await runNative(process.execPath, [f.runner], opts);
+      const file = path.join(opts!.env!.CODEX_HOME!, 'auth.json');
+      const auth = JSON.parse(await readFile(file, 'utf8'));
+      auth.tokens.account_id = opts!.cwd!.includes('openai-a') ? 'workspace-a' : 'workspace-b';
+      await writeFile(file, JSON.stringify(auth), { mode: 0o600 });
+      return result;
+    },
+  });
+  const subscriptions = create(models);
+  const login = new TerminalProviderLogin({ subscriptions, models, secrets: f.vault, assertCurrent: f.guard,
+    changed: () => models.gatewayChanged(), log: { info() {}, warn() {} } });
+  cleanup.push(() => login.close());
+  for (const id of ['openai-a', 'openai-b']) login.begin(id, id, f.guard, Date.now() + 60_000);
+  await vi.waitFor(() => { for (const id of ['openai-a', 'openai-b']) expect(login.read(id)).toMatchObject({ userCode: 'ABCD-12345' }); });
+  f.grant.resolve();
+  await vi.waitFor(() => { for (const id of ['openai-a', 'openai-b']) expect(login.read(id).status).toBe('success'); });
+  expect((await models.views()).filter(p => p.connected).map(p => p.id)).toEqual(expect.arrayContaining(['openai-a', 'openai-b']));
+  expect(models.openAiAccount()!.connected()).toBe(false);
+  const a = models.openAiAccount('openai-a')!, b = models.openAiAccount('openai-b')!;
+  expect((await a.credential()).accountId).toBe('workspace-a');
+  expect((await b.credential()).accountId).toBe('workspace-b');
+  for (const id of ['openai-a', 'openai-b']) {
+    expect(await readdir(path.join(f.root, 'provider-accounts', id, 'provider-login'))).toEqual([]);
+    for (const kind of ['claude-code', 'codex', 'pi'] as const) {
+      const provider = (await models.views()).find(p => p.id === id)!;
+      const model = provider.models[kind]!.find(m => m.id.endsWith('gpt-fixture'))!;
+      const { route } = await models.select({ providerId: id, agentKind: kind, model: model.id });
+      const proxy = await createChatgptProxy({ route, kind, taskId: id, accounts: models.openAiAccount(id)!, fetch: f.fetchLocal });
+      cleanup.push(() => proxy.close());
+      const response = await fetch(proxy.url + (kind === 'claude-code' ? '/v1/messages' : '/responses'), {
+        method: 'POST', headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(kind === 'claude-code' ? { model: model.id, max_tokens: 16, messages: [{ role: 'user', content: 'probe' }] } : { model: model.id.replace(/^chatgpt\//, ''), input: 'probe' }),
+      });
+      expect(response.status).toBe(200); await response.text();
+      expect(f.calls.at(-1)!.headers['chatgpt-account-id']).toBe(id === 'openai-a' ? 'workspace-a' : 'workspace-b');
+    }
+  }
+  const utility = new TerminalUtilityModels({ root: f.root, models, assertCurrent: f.guard, changed() {},
+    log: { debug() {}, info() {}, warn() {} }, fetch: f.fetchLocal,
+    native: { listAvailableAgents: () => [], getAgentAuthState: async () => ({ authenticated: false }), oneShot: async () => { throw new Error('NATIVE_FALLBACK_NOT_EXPECTED'); } },
+  }); cleanup.push(() => utility.close());
+  utility.configureConnections(subscriptions.utilityConnections());
+  await utility.update({ models: [encodeCatalogModelPin({ providerId: 'openai-b', agentKind: 'codex', model: 'gpt-fixture' })] });
+  expect(await utility.request('Short auxiliary request')).toMatchObject({ ok: true, text: 'NATIVE_BRIDGE_OK' });
+  expect(f.calls.at(-1)!.headers['chatgpt-account-id']).toBe('workspace-b');
+  const write = vi.spyOn(platform, 'atomicPrivateWrite').mockRejectedValueOnce(new Error('SYNTHETIC_DISK_FAILURE'));
+  try { await expect(models.deleteProvider('openai-a')).rejects.toThrow('SYNTHETIC_DISK_FAILURE'); } finally { write.mockRestore(); }
+  expect(a.connected()).toBe(true); expect(b.connected()).toBe(true);
+  const retainedB = await b.credential();
+  await models.deleteProvider('openai-a');
+  expect(retainedB.canDispatch()).toBe(true);
+  expect(f.vault.getSync('terminal:subscription:openai-a:terminal:native:openai')).toBeNull();
+  await expect(a.credential()).rejects.toThrow('PROVIDER_AUTHORIZATION_CHANGED');
+  await login.close();
+  const reopened = new TerminalModelConfig(f.root, f.vault, async () => ({ authenticated: false })); await reopened.open();
+  const restored = create(reopened); cleanup.push(() => restored.close());
+  expect(restored.openAiAccount('openai-a')).toBeUndefined();
+  expect((await restored.openAiAccount('openai-b')!.credential()).accountId).toBe('workspace-b');
+  expect(await readFile(path.join(f.root, 'models.json'), 'utf8')).not.toContain(f.token);
+  expect(await readFile(path.join(f.root, 'secrets.enc'), 'utf8')).not.toContain('workspace-b');
+});
+
+// Integration: remote device-code leases must select the saved account id,
+// including its discovery snapshot and auth-rejection/revocation boundary.
+it('keeps two protected SuperGrok device logins and model catalogs independent', async () => {
+  let code = 0;
+  const dispatches: string[] = [];
+  const upstream: typeof fetch = async (url, init) => {
+    const address = String(url), authorization = new Headers(init?.headers).get('authorization') ?? '';
+    if (address.includes('openid-configuration')) return Response.json({});
+    if (address.endsWith('/device/code')) { const id = ++code; return Response.json({ device_code: `private-${id}`, user_code: `CODE-${id}`, verification_uri: 'https://auth.x.ai/device', expires_in: 120, interval: 5 }); }
+    if (address.endsWith('/oauth2/token')) {
+      const id = new URLSearchParams(String(init?.body)).get('device_code')!.slice(-1);
+      return Response.json({ access_token: `grok-private-${id}`, refresh_token: `grok-refresh-${id}`, expires_in: 3600 });
+    }
+    if (address.includes('/v1/user')) return Response.json({ userId: authorization });
+    if (address.endsWith('/v1/models')) return Response.json({ data: [{ id: `grok-account-${authorization.slice(-1)}`, context_window: 128000 }] });
+    dispatches.push(authorization);
+    return Response.json({ id: 'r', object: 'response', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ACCOUNT_OK' }] }], usage: { input_tokens: 1, output_tokens: 1 } });
+  };
+  const f = await fixture(upstream, undefined, true);
+  for (const id of ['xai-a', 'xai-b']) await f.models.saveProvider({ id, name: id, auth: { method: 'oauth', native: 'xai' },
+    runtimes: { codex: { baseUrl: 'https://api.x.ai/v1', wireProtocol: 'openai-responses', models: [] } },
+  }, {}, true);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  const leases: string[] = [];
+  for (const providerId of ['xai-a', 'xai-b']) {
+    const { id } = await f.controller.channelRegistration({ command: 'begin', providerId, deviceId: 'host' }, 'providers'); leases.push(id);
+    await vi.waitFor(async () => expect((await f.controller.channelRegistration({ command: 'read', id }, 'providers')).state).toMatchObject({ status: 'pending', userCode: `CODE-${leases.length}` }));
+  }
+  await vi.advanceTimersByTimeAsync(5000);
+  for (const id of leases) await vi.waitFor(async () => expect((await f.controller.channelRegistration({ command: 'read', id }, 'providers')).state).toMatchObject({ status: 'success' }));
+  vi.useRealTimers();
+  expect(f.models.grokAccount()!.connected()).toBe(false);
+  for (const [index, id] of ['xai-a', 'xai-b'].entries()) {
+    const provider = (await f.models.views()).find(p => p.id === id)!;
+    expect(provider.connected).toBe(true);
+    for (const kind of ['claude-code', 'codex', 'pi'] as const) {
+      const members = provider.models[kind]!.filter(m => m.id.includes('grok-account-'));
+      expect(members.map(m => m.id)).toEqual([expect.stringMatching(`grok-account-${index + 1}$`)]);
+      const model = members[0];
+      const chosen = await f.models.select({ agentKind: kind, providerId: id, model: model.id });
+      const proxy = await createGrokProxy({ route: chosen.route, kind, taskId: id, accounts: f.models.grokAccount(id)!, fetch: upstream }); cleanup.push(() => proxy.close());
+      const response = await fetch(proxy.url + (kind === 'claude-code' ? '/v1/messages' : '/responses'), { method: 'POST', headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(kind === 'claude-code' ? { model: model.id, max_tokens: 16, messages: [{ role: 'user', content: 'probe' }] } : { model: model.id, input: 'probe' }),
+      });
+      expect(response.status).toBe(200); await response.text(); expect(dispatches.at(-1)).toBe(`Bearer grok-private-${index + 1}`);
+    }
+  }
+  const utility = new TerminalUtilityModels({ root: f.root, models: f.models, assertCurrent() {}, changed() {},
+    log: { debug() {}, info() {}, warn() {} }, fetch: upstream,
+    native: { listAvailableAgents: () => [], getAgentAuthState: async () => ({ authenticated: false }), oneShot: async () => { throw new Error('NATIVE_FALLBACK_NOT_EXPECTED'); } },
+  }); cleanup.push(() => utility.close());
+  utility.configureConnections(f.subscriptions!.utilityConnections());
+  const auxiliaryModel = (await f.models.views()).find(p => p.id === 'xai-b')!.models.codex!.find(m => m.id.endsWith('grok-account-2'))!.id;
+  await utility.update({ models: [encodeCatalogModelPin({ providerId: 'xai-b', agentKind: 'codex', model: auxiliaryModel })] });
+  expect(await utility.request('Short auxiliary request')).toMatchObject({ ok: true, text: 'ACCOUNT_OK' });
+  expect(dispatches.at(-1)).toBe('Bearer grok-private-2');
+  const b = f.models.grokAccount('xai-b')!, retained = await b.credential();
+  const write = vi.spyOn(platform, 'atomicPrivateWrite').mockRejectedValueOnce(new Error('SYNTHETIC_DISK_FAILURE'));
+  try { await expect(f.models.deleteProvider('xai-a')).rejects.toThrow('SYNTHETIC_DISK_FAILURE'); } finally { write.mockRestore(); }
+  expect(f.models.grokAccount('xai-a')!.connected()).toBe(true);
+  await f.models.deleteProvider('xai-a');
+  expect(b.connected()).toBe(true); expect(retained.canDispatch()).toBe(true);
+  expect(f.secrets.getSync('terminal:subscription:xai-a:terminal:native:xai')).toBeNull();
+  const wire = JSON.stringify({ wire: f.wire, events: f.events });
+  expect(wire).not.toContain('grok-private-'); expect(wire).not.toContain('CODE-');
+  f.revoke(); expect(retained.canDispatch()).toBe(false);
 });

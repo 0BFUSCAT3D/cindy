@@ -161,9 +161,9 @@ export class TerminalUtilityModels {
         if (provider.id === 'xd')
           return Boolean(this.options.models.gatewayCredentials());
         if (isOpenAiSubscriptionProvider(provider))
-          return Boolean(this.options.models.nativeAccounts?.connected());
-        if (provider.auth.native === 'xai')
-          return Boolean(this.options.models.nativeGrok?.connected());
+          return Boolean(this.options.models.openAiAccount(provider.id)?.connected());
+        if (provider.id === 'xai' || provider.auth.native === 'xai')
+          return Boolean(this.options.models.grokAccount(provider.id)?.connected());
         if (provider.auth.method === 'oauth')
           return Boolean(
             this.connections.readCachedGenericOAuthAccessToken?.(

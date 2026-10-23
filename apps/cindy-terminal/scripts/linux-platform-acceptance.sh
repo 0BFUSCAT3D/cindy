@@ -25,5 +25,5 @@ sudo mkdir "$test_home/report"
 sudo chown -R "$test_user:$test_user" "$test_home"
 sudo loginctl enable-linger "$test_user"
 sudo systemctl start "user@$test_uid.service"
-sudo -u "$test_user" env XDG_RUNTIME_DIR="/run/user/$test_uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$test_uid/bus" CINDY_ACCEPTANCE_SYSTEMD=1 \
+sudo --preserve-env=CINDY_GITHUB_API_TOKEN -u "$test_user" env XDG_RUNTIME_DIR="/run/user/$test_uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$test_uid/bus" CINDY_ACCEPTANCE_SYSTEMD=1 \
   "$test_home/runtime/runtime/node" "$test_home/platform-acceptance.mjs" "$test_home/runtime" "$test_home/report"

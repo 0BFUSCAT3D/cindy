@@ -1481,6 +1481,7 @@ describe('terminal task host', () => {
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address() as { port: number };
     let proxy: Awaited<ReturnType<typeof createProviderProxy>> | undefined;
+    let claudeProxy: Awaited<ReturnType<typeof createProviderProxy>> | undefined;
     try {
       await host.invoke('maker:provider:custom:create', [{ id: 'chatfixture', name: 'Chat', runtimes: { codex: { baseUrl: `http://127.0.0.1:${addr.port}`, wireProtocol: 'openai-chat', headers: { 'X-Private': 'secret-header-value' }, models: [{ id: 'test-model', name: 'Test' }] } } }, { codex: 'secret-key-value' }]);
       expect(await readFile(path.join(root, 'models.json'), 'utf8')).not.toMatch(/secret-header-value|secret-key-value/);
@@ -1495,13 +1496,26 @@ describe('terminal task host', () => {
       expect(received.path).toBe('/chat/completions');
       expect(received.headers).toMatchObject({ authorization: 'Bearer secret-key-value', 'x-private': 'secret-header-value' });
       expect(received.body).toMatchObject({ messages: [{ role: 'user', content: 'hello' }] });
+      // Claude's Messages protocol omits non-Anthropic effort. The host must
+      // carry live preferences through both bridge layers into the Chat API.
+      await host.invoke('maker:provider:custom:create', [{ id:'claudechat',name:'Claude Chat',runtimes:{'claude-code':{baseUrl:`http://127.0.0.1:${addr.port}`,wireProtocol:'openai-chat',models:[{id:'test-model',name:'Test',reasoning:true,reasoningEfforts:['low','high'],reasoningDefaultEffort:'high'}]}}},{'claude-code':'private-claude-key'}]);
+      const claudeRoute=(await host.models.select({agentKind:'claude-code',providerId:'claudechat',model:'test-model'})).route;
+      let effort='low';
+      claudeProxy=await createProviderProxy(claudeRoute,'claude-code','private-claude-key',{},undefined,undefined,undefined,()=>({reasoningEffort:effort}));
+      for(const selected of ['low','high']){
+        effort=selected;
+        const reply=await fetch(`${claudeProxy.url}/v1/messages`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${claudeProxy.token}`},body:JSON.stringify({model:'test-model',max_tokens:128,stream:false,messages:[{role:'user',content:'hello'}]})});
+        expect(reply.status).toBe(200);await reply.text();
+        expect(received.body?.reasoning_effort).toBe(selected);
+        expect(received.headers?.authorization).toBe('Bearer private-claude-key');
+      }
       expect(await host.invoke('maker:provider:test-connection',[{kind:'saved',providerId:'chatfixture',agent:'codex'}])).toMatchObject({ok:true});
       await host.invoke('maker:model-disable:set',[{kind:'model',providerId:'chatfixture',modelIds:['test-model'],disabled:true}]);
       await expect(host.models.select({agentKind:'codex',providerId:'chatfixture',model:'test-model'})).rejects.toThrow('MODEL_ROUTE_UNAVAILABLE');
       await host.invoke('maker:model-disable:set',[{kind:'reset',providerId:'chatfixture'}]);
       expect((await host.models.select({agentKind:'codex',providerId:'chatfixture',model:'test-model'})).selection.model).toBe('test-model');
 
-    } finally { await proxy?.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
+    } finally { await proxy?.close(); await claudeProxy?.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 
   it('accepts the production queue client and preserves delayed file/media input across restart', async () => {

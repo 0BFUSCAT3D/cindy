@@ -6,6 +6,7 @@ import type { Locale } from './i18n.js';
 import { authenticationText } from './authenticationText.js';
 import { Input, terminalText } from './input.js';
 import type { ProviderLoginState } from '../models/login.js';
+import { readModelConfiguration } from '../models/client.js';
 
 const labels = {
   en: ['Create and connect', 'Connected', 'Created · connecting', 'Connected on another device', 'Enter to return'],
@@ -26,6 +27,16 @@ export function ChannelRegistration({ client, device, service, providerId, local
   const [callback, setCallback] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [callbackError, setCallbackError] = useState(false);
+  const [providerName, setProviderName] = useState('');
+  useEffect(() => {
+    let current = true;
+    setProviderName(providerId ? ({ openai: 'ChatGPT', xai: 'SuperGrok', anthropic: 'Claude' } as Record<string, string>)[providerId] ?? '' : '');
+    if (providerId) void readModelConfiguration(client, device).then(configuration => {
+      const provider = configuration.providers.find(p => p.id === providerId);
+      if (current && provider) setProviderName(provider.name);
+    }).catch(() => {});
+    return () => { current = false; };
+  }, [client, device, providerId]);
   const channel = providerId ? 'terminal:provider-login' : 'terminal:channel-registration';
   const id = useRef<string | undefined>(undefined);
   const terminal = useRef(onTerminal); terminal.current = onTerminal;
@@ -70,6 +81,7 @@ export function ChannelRegistration({ client, device, service, providerId, local
   const failed = status === 'error' || state?.verdict === 'error';
   return <Box flexDirection="column" gap={rows < 28 ? 0 : 1}>
     <Text bold>{providerId ? ({en:'Connect provider','zh-CN':'连接供应商','zh-TW':'連接供應商',ja:'プロバイダーに接続',ko:'공급자 연결'})[locale] : l[0]}</Text>
+    {providerName && <Text wrap="truncate-end">{terminalText(providerName)}</Text>}
     {(!state || status === 'pending' && !state.verificationUrl) && <Text>{t.loading}</Text>}
     {status === 'pending' && state?.verificationUrl && <>
       <Text>{t.openBrowser}</Text>

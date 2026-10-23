@@ -99,3 +99,15 @@ there is no plaintext fallback.
 Ordinary CLI actions accept JSON from `--stdin`; keep secrets out of shell
 arguments, scripts checked into Git, and task messages. Plugin HTML settings and
 declarative credential forms use the same target vault.
+
+
+Independent ChatGPT and SuperGrok accounts can be added from **Models → Add
+connection**. Each entry keeps its own encrypted credentials and discovered
+models on the selected computer; disconnecting one leaves other accounts intact.
+Claude subscriptions continue to use the original Claude Code login.
+
+For automated engine updates behind a shared GitHub egress address,
+`CINDY_GITHUB_API_TOKEN` can supply a short-lived read-only token to the update
+command. It is sent only to `https://api.github.com` release metadata requests,
+never release downloads or native CLI children. `RELEASE_RATE_LIMITED` means the
+lookup must be retried after GitHub's quota resets; existing engines are retained.

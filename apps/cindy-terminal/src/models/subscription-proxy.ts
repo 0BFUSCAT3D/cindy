@@ -8,7 +8,8 @@ import {
   sanitizeXaiModelInputBody,
   type LocalRequestHandler,
 } from "@cindy/anthropic-compat-proxy";
-import { createResponsesHandler } from "@cindy/anthropic-responses-bridge";
+import { createResponsesHandler, type BridgeSessionPrefs } from "@cindy/anthropic-responses-bridge";
+import { createModelFastMode } from '@cindy/model-providers/modelFastMode';
 import { buildChatgptBridgeHeaders } from "@cindy/model-providers/provider-auth/chatgpt-bridge-headers";
 import type { AgentKind, ResolvedRoute } from "@cindy/model-providers";
 import { xaiServerSideTools } from "@cindy/model-providers/provider-auth/xai-server-side-tools";
@@ -22,6 +23,7 @@ type CommonOptions = {
   taskId: string;
   authorize?: (model: string) => Promise<boolean>;
   fetch?: typeof fetch;
+  preferences?: (model: string) => BridgeSessionPrefs;
 };
 export function createChatgptProxy(
   options: CommonOptions & { accounts: TerminalNativeAccounts },
@@ -64,6 +66,7 @@ async function createSubscriptionProxy(
   const abort = new AbortController();
   let closed = false;
   const models = options.route.provider.models[options.kind] ?? [];
+  const fast = createModelFastMode(() => ({ providers: [options.route.provider] }));
   const allowed = (id: string) =>
     models.find(
       (model) =>
@@ -151,10 +154,7 @@ async function createSubscriptionProxy(
                 ),
               strictFunctionTools: () => true,
               serverSideTools: xaiServerSideTools,
-              fastModel: (model: string) =>
-                models
-                  .find((entry) => entry.id === `xai/${model}`)
-                  ?.fastModelId?.replace(/^xai\//, "") ?? undefined,
+              fastModel: (model: string) => fast.fastModelId(options.route.provider.id, options.kind, `xai/${model}`)?.replace(/^xai\//, ''),
             }
           : { fastServiceTier: "priority" }),
         supportedReasoningEfforts: (model) =>
@@ -227,7 +227,15 @@ async function createSubscriptionProxy(
           .replace(grok ? /^xai\// : /^chatgpt\//, "")
           .replace(/\[1m\]$/, ""),
       };
+      const prefs = options.preferences?.(entry.id);
+      if (!grok && prefs) {
+        if (prefs.fast === true) outgoing.service_tier = 'priority';
+        else if (prefs.fast === 'ultrafast' && entry.supportsUltrafastMode) outgoing.service_tier = 'ultrafast';
+        else if (outgoing.service_tier === 'priority' || outgoing.service_tier === 'ultrafast') delete outgoing.service_tier;
+      }
       if (grok) {
+        const rewritten = fast.rewriteFastModel(options.route.provider.id, options.kind, { ...outgoing, model: entry.id }, prefs?.fast ?? false);
+        if (rewritten) outgoing = { ...rewritten, model: String(rewritten.model).replace(/^xai\//, '') };
         outgoing = sanitizeXaiModelInputBody(outgoing) ?? outgoing;
         outgoing = withNativeXaiServerSideTools(outgoing, protocol) ?? outgoing;
       }
@@ -298,7 +306,7 @@ async function createSubscriptionProxy(
       return {
         localHandler:
           options.kind === "claude-code"
-            ? (args) => bridge.handle({ ...args, prefs: {} })
+            ? (args) => bridge.handle({ ...args, prefs: options.preferences?.(entry!.id) ?? {} })
             : native,
         dispatchGenerationValid: () => !closed && options.accounts.connected(),
       };
