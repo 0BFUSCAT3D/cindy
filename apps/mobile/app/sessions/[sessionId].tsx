@@ -1026,7 +1026,7 @@ export default function SessionScreen() {
     ?? remoteSessionStore.getSessionDeviceId(sessionId) ?? '';
   const session = useRemoteSessionDetail(deviceId, sessionId);
   return (
-    <SideChatTaskBoundary key={`${deviceId}:${sessionId}`} deviceId={deviceId}
+    <SideChatTaskBoundary deviceId={deviceId}
       sessionId={sessionId} enabled={session?.source === 'side-chat'}>
       <CindyMakeSessionGate sessionId={sessionId} deviceId={deviceId || undefined} ownsSessionSubscription>
         <SessionScreenContent />
