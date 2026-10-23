@@ -1326,7 +1326,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
           name: memberName(m), avatar: m.groupAvatar ? '' : p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
-      }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
+      }), organizerBotId: ((id?: string) => id ? localBot(id)?.id ?? id : null)(s.room.organizer_id ?? s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id), projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
         preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null, ...(open.kind ? { kind: open.kind } : {}) } : null,
@@ -1435,7 +1435,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   /** The user wrote the card, so it starts at once; each step still stops for 继续 (§7.4). */
   async function openWrittenPlan(s: Snapshot, sourceId: string, request: string, steps: PlanStepDraft[], intent: PlanIntent) {
     if (!current() || planIntents.get(s.room.id) !== intent) return;
-    const organizerId = steps.some(step => step.botId === s.room.organizer_id) ? s.room.organizer_id! : steps[0]!.botId;
+    // The organizer settings show: the chosen one, else the first companion.
+    const shown = s.room.organizer_id ?? s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id;
+    const organizerId = steps.some(step => step.botId === shown) ? shown! : steps[0]!.botId;
     let plan: ServerPlan;
     try {
       plan = await api<ServerPlan>(`/conversations/${s.room.id}/plans`, 'POST', {

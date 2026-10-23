@@ -1683,7 +1683,7 @@ describe('Chat Server result delivery and refresh', () => {
       ['mention-only mid-turn: unmentioned words stay ordinary messages', 'running', `/conversations/${roomId}/messages`, 'talk', 'mentioned'],
       ['of a 分工 waiting for 继续: a redo for its teammate', 'waiting', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`, 'work'],
       ['of a 分工 waiting for 继续 in a mention-only group: an ordinary message', 'waiting', `/conversations/${roomId}/messages`, 'work', 'mentioned'],
-    ] as const)('with an open card %s', async (_label, status, route, kind: string = 'talk', responseMode: string = 'all') => {
+    ] as const)('with an open card %s', async (_label, status, route, kind: 'talk' | 'work' = 'talk', responseMode: 'all' | 'mentioned' = 'all') => {
       const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
         creator_id: selfId, note_message_ids: [], status, current_step: 0, kind, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
         steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
@@ -1876,6 +1876,8 @@ describe('Chat Server result delivery and refresh', () => {
     await service.listGroups();
     const result = await service.getGroup(roomId);
     expect(result.ok && result.group.members[0]).toMatchObject({ botId: 'local-bot', isOwned: true, homeDeviceId: 'home-pc' });
+    // No organizer chosen yet: settings select the first companion, so it must be its local ID.
+    expect(result.ok && result.group.organizerBotId).toBe('local-bot');
   });
   it('projects hidden paused local companions with their real local identity and never claims work for them', async () => {
     fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', status: 'paused', hiddenAt: 1 }];
