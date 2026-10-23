@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { humanizeRemoteError } from '@/device-link/remoteStatus';
-import { isExplicitRemoteNotFoundError } from '@/session/newSessionWorktree';
+import { isExplicitRemoteNotFoundError, isWorktreeChannelNotAllowedError } from '@/session/newSessionWorktree';
 import { createMobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { markSessionScheduleRunsRead } from '@/session/scheduleRunRead';
 import { sessionMayHaveScheduleRuns } from '@/session/scheduleIndex';
@@ -265,7 +265,10 @@ export function useSessionListActions(options?: {
       return;
     }
     const maker = createMobileMakerTransport({ deviceId: devices.rpcDeviceId, invoke });
-    const writes: Promise<unknown>[] = [maker.clearSessionAttention(session.id, 'explicit')];
+    const writes: Promise<unknown>[] = [maker.clearSessionAttention(session.id, 'explicit').catch((err: unknown) => {
+      // Older Hosts lack this channel. Preserve schedule-read below and surface real failures.
+      if (!isWorktreeChannelNotAllowedError(err)) throw err;
+    })];
     if (sessionMayHaveScheduleRuns(devices.rpcDeviceId, session.id, session.source)) {
       writes.push(markSessionScheduleRunsRead(maker, session.id, devices.rpcDeviceId));
     }
