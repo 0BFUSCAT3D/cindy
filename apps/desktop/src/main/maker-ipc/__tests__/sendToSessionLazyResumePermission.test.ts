@@ -270,6 +270,28 @@ describe('companion internal delivery after automation', () => {
     if (timing === 'already-shadowed') expect(reconcile).not.toHaveBeenCalled();
   });
 
+  // #6895: hand-over may finish while restore awaits, before a turn exists.
+  // Exercise both consumers of the post-restore routing decision, without timers.
+  it.each(['live', 'queued'] as const)('rejects %s delivery when demoted during restoration', async (path) => {
+    let shadowed = false;
+    const dbChain = { from: () => dbChain, where: () => dbChain,
+      limit: async () => [{ role: 'canonical', botId: 'companion' }] };
+    const enqueue = vi.fn(async () => undefined);
+    const h = botTaskDispatchHarness({ child: { permissionMode: 'auto', planModeEnabled: false } }, {
+      child: { id: 'child', agentKind: 'pi', isTurnRunning: () => false, getStatus: () => 'active' },
+    }, {
+      getDbClient: () => ({ drizzle: { select: () => dbChain } }),
+      isShadowedCompanionCanonical, isCompanionShadowed: () => shadowed,
+      scheduledModelScope: { restore: async () => { shadowed = true; } },
+      inputCoordinator: { ensureQueueRestored: async () => undefined, shouldQueueNewTurn: () => path === 'queued' },
+      enqueueSendToSessionMessage: enqueue,
+    });
+    expect(await h.dispatchBotSessionMessage({ targetSessionId: 'child', message: 'Arrived during hand-over' }))
+      .toMatchObject({ ok: false, errorCode: 'AGENT_NOT_READY' });
+    expect(h.sentTo).toEqual([]);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it.each(['live', 'resumed'] as const)('restores before %s dispatch reads its model', async (path) => {
     const saved = { agentKind: 'pi' as const, model: 'saved-model', providerId: 'fixture-provider', effort: null, fastMode: false };
     let current = { ...saved, agentKind: 'codex' as 'codex' | 'pi', model: 'temporary-model' };
