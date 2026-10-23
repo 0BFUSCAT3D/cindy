@@ -8782,6 +8782,7 @@
         "task": "작업 실행",
         "service": "계정 및 모델"
       },
+      "sessionDetail": "작업: {{title}}",
       "services": {
         "audio": "오디오 서비스",
         "network": "네트워크 서비스",

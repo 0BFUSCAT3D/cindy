@@ -448,6 +448,11 @@ export interface LocalAgentProcessRegistration {
   pid: number;
   kind: 'claude' | 'pi';
   role: 'task-host' | 'control-plane-service';
+  /**
+   * 承载本进程的宿主 session id,供资源监视器显示归属任务;离线 fork 等控制面
+   * 进程填来源 session。远端 transport 不触发登记,宿主可忽略。
+   */
+  sessionId?: string | null;
 }
 
 export interface CodexLocalCredentialModeSwitchContext {

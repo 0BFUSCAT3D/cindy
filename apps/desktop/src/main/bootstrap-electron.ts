@@ -52,6 +52,7 @@ import {
 } from './worktree/recycleMaintenance';
 import { requestWorktreeRecycle } from './worktree/managedRecycle';
 import {
+  getSessionRowSnapshot,
   patchSessionMetaInDb,
   recycleSessionWorktreeForStatusChange,
 } from './localDb/ipc/sessions';
@@ -554,6 +555,7 @@ import { reapClaudeOrphansSync } from './claude-orphan-reaper';
 import { reapCodexToolTreesSync } from './codex-tool-tree-reaper';
 import { startAgentProcessPriorityWatcher } from './agent-process-priority';
 import { registerProcessMonitorIpc } from './process-monitor/ipc.js';
+import { createSessionLabelResolver } from './process-monitor/session-label.js';
 import { disposeWindowsProcessScanWorkers } from './process-monitor/windowsProcessScanWorkerClient.js';
 import {
   initAppBadgeService,
@@ -2506,6 +2508,9 @@ registerMenubarIpc();
 // 本产品 spawn 的 agent 根进程。见 main/process-monitor/。
 registerProcessMonitorIpc({
   allowsSampling: (sender) => resourceUsageWindowController.allowsProcessMonitorSampling(sender),
+  // agent 行显示承载任务标题；标题在本地库里，经 TTL 缓存解耦采样周期。见
+  // main/process-monitor/session-label.ts。
+  resolveSessionLabel: createSessionLabelResolver(),
 });
 
 // ── 主界面布局树存储 IPC──────────────────────────────────────────────

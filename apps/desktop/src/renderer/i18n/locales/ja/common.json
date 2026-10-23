@@ -8782,6 +8782,7 @@
         "task": "タスク実行",
         "service": "アカウントとモデル"
       },
+      "sessionDetail": "タスク：{{title}}",
       "services": {
         "audio": "オーディオサービス",
         "network": "ネットワークサービス",

@@ -52,6 +52,11 @@ export interface ProcessMonitorSamplerDeps {
   classify(cmdLineLower: string): MonitoredAgentKind | null;
   /** 本地根进程的 spawn-generation 登记；未知时返回 null，并按不可终止处理。 */
   resolveAgentProcessRegistration?(pid: number): AgentProcessRegistration | null;
+  /**
+   * 登记 session id → 用户可见任务标题；解析失败或任务已删返回 null。样本内
+   * 只在有归属的 agent 条目上调用，调用方自行缓存。
+   */
+  resolveSessionLabel?(sessionId: string): Promise<string | null> | string | null;
   selfPid: number;
   log: SamplerLogger;
   /** OS 扫描的最小间隔;快 tick 之间复用缓存。 */
@@ -165,10 +170,10 @@ export function createProcessMonitorSampler(
     return /(?:^|[\\/])conhost\.exe(?:\s|$)/i.test(row.cmdLineLower);
   }
 
-  function collectAgentEntries(): ProcessUsageEntry[] {
+  async function collectAgentEntries(): Promise<ProcessUsageEntry[]> {
     const { rows, childrenByParent } = cachedSnapshot;
     const rowByPid = new Map(rows.map((r) => [r.pid, r]));
-    const entries: ProcessUsageEntry[] = [];
+    const collected: Array<{ entry: ProcessUsageEntry; sessionId: string | null }> = [];
     for (const row of rows) {
       if (row.ppid !== deps.selfPid) continue;
       const kind = deps.classify(row.cmdLineLower);
@@ -189,20 +194,43 @@ export function createProcessMonitorSampler(
       }
       const terminable =
         row.startIdentity != null && registrationMatchesKind && registeredRole === 'task-host';
-      entries.push({
-        pid: row.pid,
-        kind: AGENT_KIND_TO_USAGE_KIND[kind],
-        label: null,
-        cpuPercent,
-        memoryKb,
-        processCount,
-        // 终止授权使用每次实际 spawn 的随机 generation，而不是秒级 POSIX lstart。
-        terminable,
-        ...(terminable && registration ? { processInstanceId: registration.instanceId } : {}),
-        ...(agentRole ? { agentRole } : {}),
+      collected.push({
+        sessionId: registrationMatchesKind ? registration?.sessionId ?? null : null,
+        entry: {
+          pid: row.pid,
+          kind: AGENT_KIND_TO_USAGE_KIND[kind],
+          label: null,
+          cpuPercent,
+          memoryKb,
+          processCount,
+          // 终止授权使用每次实际 spawn 的随机 generation，而不是秒级 POSIX lstart。
+          terminable,
+          ...(terminable && registration ? { processInstanceId: registration.instanceId } : {}),
+          ...(agentRole ? { agentRole } : {}),
+        },
       });
     }
-    return entries;
+    // 任务标题在本地库（异步 transport）里；聚合后按去重后的 id 统一解析，
+    // 单条失败或已删除只丢标题，不影响 CPU / 内存。
+    const labelBySession = new Map<string, string | null>();
+    const sessionIds = new Set(
+      collected.map((c) => c.sessionId).filter((v): v is string => v != null),
+    );
+    if (deps.resolveSessionLabel && sessionIds.size > 0) {
+      await Promise.all(
+        [...sessionIds].map(async (sessionId) => {
+          try {
+            labelBySession.set(sessionId, (await deps.resolveSessionLabel!(sessionId)) ?? null);
+          } catch {
+            labelBySession.set(sessionId, null);
+          }
+        }),
+      );
+    }
+    return collected.map(({ entry, sessionId }) => {
+      const label = sessionId ? labelBySession.get(sessionId) : null;
+      return label ? { ...entry, sessionLabel: label } : entry;
+    });
   }
 
   function chromiumKind(type: string): ProcessUsageKind {
@@ -250,7 +278,7 @@ export function createProcessMonitorSampler(
       if (deps.deferOsScan) void refresh;
       else await refresh;
       const atMs = now();
-      const agentEntries = collectAgentEntries();
+      const agentEntries = await collectAgentEntries();
       const agentPids = new Set<number>();
       for (const entry of agentEntries) {
         for (const pid of collectDescendantPids(entry.pid, cachedSnapshot.childrenByParent)) {

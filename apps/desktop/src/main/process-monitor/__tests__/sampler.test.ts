@@ -74,7 +74,7 @@ function makeHarness(overrides: HarnessOverrides = {}) {
             ? 'pi'
             : null;
       return kind
-        ? { kind, role: 'task-host', instanceId: `start:${pid}` }
+        ? { kind, role: 'task-host', sessionId: null, instanceId: `start:${pid}` }
         : null;
     },
     selfPid: SELF_PID,
@@ -141,6 +141,7 @@ describe('createProcessMonitorSampler', () => {
         resolveAgentProcessRegistration: (pid) => ({
           kind: 'codex',
           role: pid === 701 ? 'task-host' : 'control-plane-service',
+          sessionId: null,
           instanceId: `instance:${pid}`,
         }),
       },
@@ -212,6 +213,43 @@ describe('createProcessMonitorSampler', () => {
       cpuPercent: 5,
       memoryKb: 120,
     });
+  });
+
+  it('agent 条目解析归属任务标题:仅登记了 sessionId 的条目,失败只丢标题', async () => {
+    const lookups: string[] = [];
+    const { sampler } = makeHarness({
+      snapshot: snapshotOf([
+        osRow({ pid: 901, ppid: SELF_PID, cmdLineLower: 'pi-marker one' }),
+        osRow({ pid: 902, ppid: SELF_PID, cmdLineLower: 'pi-marker two' }),
+        // 无归属(如 Codex 共享服务):不查询也不带标题。
+        osRow({ pid: 903, ppid: SELF_PID, cmdLineLower: 'pi-marker three' }),
+      ]),
+      deps: {
+        resolveAgentProcessRegistration: (pid) =>
+          pid === 901
+            ? { kind: 'pi', role: 'task-host', sessionId: 'session-1', instanceId: `i:${pid}` }
+            : pid === 902
+              ? { kind: 'pi', role: 'task-host', sessionId: 'session-2', instanceId: `i:${pid}` }
+              : { kind: 'pi', role: 'task-host', sessionId: null, instanceId: `i:${pid}` },
+        resolveSessionLabel: (sessionId) => {
+          lookups.push(sessionId);
+          if (sessionId === 'session-1') return Promise.resolve('修复登录页');
+          if (sessionId === 'session-2') return Promise.reject(new Error('db busy'));
+          return Promise.resolve(null);
+        },
+      },
+    });
+    expect(entryByPid(await sampler.sample(), 901)).toMatchObject({
+      sessionLabel: '修复登录页',
+    });
+    // 同 id 去重只查一次;解析失败/空标题的条目不带 sessionLabel 字段。
+    expect(lookups).toEqual(['session-1', 'session-2']);
+    expect(entryByPid(await sampler.sample(), 902)?.sessionLabel).toBeUndefined();
+    expect(entryByPid(await sampler.sample(), 903)?.sessionLabel).toBeUndefined();
+    // 采样器自身不缓存(缓存属生产装配层),每轮都对登记的 id 重新解析。
+    const afterFirstRound = lookups.length;
+    await sampler.sample();
+    expect(lookups.slice(afterFirstRound)).toEqual(['session-1', 'session-2']);
   });
 
   it('OS 扫描按周期缓存:未过期不重扫,过期后重扫', async () => {
