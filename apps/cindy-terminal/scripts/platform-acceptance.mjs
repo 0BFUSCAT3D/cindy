@@ -43,17 +43,22 @@ async function run(args, { input = '', timeout = 30_000, raw = false } = {}) {
 let server;
 let registered = false;
 let tuiOutput = '';
+let startupOutput = '';
+let startupProbeError = '';
 try {
   const version = await run(['--version']); assert.equal(typeof version, 'string'); record('bundled Node + CLI version', 'PASS', version);
   const help = await run(['--help']); assert.match(help, /Cindy/); record('bundled CLI help', 'PASS');
   server = spawn(node, [cli, 'serve', '--state-dir', profile], { env, cwd: home, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  let startupOutput = '';
   server.stdout.on('data', chunk => { startupOutput += chunk; }); server.stderr.on('data', chunk => { startupOutput += chunk; });
   let available = false;
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (server.exitCode !== null) throw new Error(`Service exited before ready: ${startupOutput}`);
-    try { const state = await run(['status'], { timeout: 2000 }); if (state.deviceId && state.version) { available = true; break; } } catch { /* Service is not ready yet. */ }
+    // Each probe starts the installed CLI. Hosted Intel Macs took 2.6–3 s
+    // even for --help/--version; a 2 s subprocess limit killed every healthy
+    // probe before it could reach IPC. Keep the same overall ready deadline.
+    try { const state = await run(['status'], { timeout: Math.min(10_000, Math.max(1, deadline - Date.now())) }); if (state.deviceId && state.version) { available = true; break; } }
+    catch (error) { startupProbeError = String(error.message); }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(available, 'Local IPC service must start'); record('real daemon + authenticated local socket/pipe', 'PASS');
@@ -172,6 +177,11 @@ try {
 } catch (error) {
   record('platform acceptance', 'FAIL', String(error.message)); process.exitCode = 1;
   // This entire profile contains synthetic acceptance data only.
+  if (server) {
+    const startup = { output: startupOutput, probeError: startupProbeError, exitCode: server.exitCode, signalCode: server.signalCode };
+    await writeFile(path.join(report, 'startup-diagnostic.json'), JSON.stringify(startup, null, 2));
+    console.log('SYNTHETIC_STARTUP_DIAGNOSTIC', JSON.stringify(startup));
+  }
   console.log('SYNTHETIC_SERVICE_DIAGNOSTIC', await readFile(path.join(profile, 'service.log'), 'utf8').catch(() => 'No service log'));
   if(realUserManager){
     const installation=JSON.parse(await readFile(path.join(profile,'service-installation.json'),'utf8').catch(()=>'null'));

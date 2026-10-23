@@ -2,6 +2,7 @@ import type { TerminalPluginTask } from '../plugins/mcp.js';
 import type { PluginTaskContext } from '../plugins/permissions.js';
 import type { TerminalPluginSetup } from '../plugins/setup.js';
 import { parseGhostSetupInlineSubmitRequest } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
+import { createGhostSetupInteractionSurface } from '@cindy/plugin-runtime/ghostSetupInteractionSurface';
 import { createHash, randomUUID } from 'node:crypto';
 import { stat, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -41,9 +42,17 @@ import { createChannelTurnSignals } from '@cindy/im-runtime/channelTurnSignal';
 import { createRuntimeRecoveryNotices } from '@cindy/im-runtime/runtimeRecoveryNotice';
 import { createSessionPermissionChanges } from '@cindy/im-runtime/sessionPermissionChange';
 import { changeSessionPermissionMode } from '@cindy/im-runtime/permissionModeControl';
+import { buildAutoTitlePrompt } from '@cindy/im-runtime/titlePrompt';
+import { validateTitleOutput } from '@cindy/im-runtime/titleOutputValidation';
+import { fbotTitle } from '@cindy/im-runtime/title';
+import { isCredentialModeSwitchBusyError } from '@cindy/im-runtime/credentialModeSwitchError';
+import { TerminalTaskContext } from './context.js';
+import { AUTO_TITLE_MAX_CHARS } from '@cindy/maker-shared/session-title';
+import type { Locale } from '../ui/i18n.js';
 import { redactToolInputForUntrustedBoundary } from '@cindy/remote-agent/host/toolInputRedaction';
 
 export const TERMINAL_TASK_CHANNELS = [
+  'maker:generate-title',
   ...CAPABILITY_CHANNELS,
   ...TASK_CHANGE_CHANNELS,
   'maker:plugin-setup:submit-inline',
@@ -70,6 +79,7 @@ export interface TerminalTaskHostOptions extends InputHost {
   defaultTitle?: string | (() => string);
   silentStopMessage?: () => string;
   runtimeRecoveryMessage?: () => string;
+  language?: () => Locale;
   protectedInput?: import('../protected-input.js').TerminalProtectedInput;
   beforeTaskUnavailable?: (sessionId:string)=>Promise<void>;
   authorizeHostedRequest?: (input: {sessionId:string;providerId:string;model:string}) => Promise<boolean>;
@@ -111,7 +121,10 @@ export class TerminalTaskHost {
   readonly turnLifecycle: TerminalTurnLifecycle;
   readonly channelSignals: ReturnType<typeof createChannelTurnSignals>;
   readonly channelRecovery: ReturnType<typeof createRuntimeRecoveryNotices>;
+  readonly taskContext: TerminalTaskContext;
   private readonly permissionChanges = createSessionPermissionChanges();
+  private readonly utilityAbort = new AbortController();
+  private readonly utilityWork = new Set<Promise<unknown>>();
   private readonly storageReady: Promise<void>;
   readonly media: TerminalTaskMedia;
   readonly capabilities: TerminalCapabilities;
@@ -123,6 +136,7 @@ export class TerminalTaskHost {
   private readonly starts = new Map<string, Promise<LiveTask>>();
   private pluginFactory?: (context:PluginTaskContext)=>Promise<TerminalPluginTask>;
   private pluginSetup?:TerminalPluginSetup;
+  private readonly channelPluginSurface = createGhostSetupInteractionSurface();
   private knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>;
   private schedulerDeps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps;
   private readonly taskObservers = new Map<string,Set<(event:AgentEvent)=>void>>();
@@ -130,6 +144,8 @@ export class TerminalTaskHost {
   private readonly engineCapabilities = new Map<AgentKind, Capabilities>();
   private readonly channelVendorOptions = new Map<string, Record<string, unknown>>();
   private channelMaker?: ReturnType<ImTurnHost['getMaker']>;
+  private channelHost?: ImTurnHost;
+  private readonly channelHydration = new Map<string, { providerId?: string | null; effort?: import('@cindy/maker-core').Effort; fastMode?: boolean | 'ultrafast' }>();
   private readonly pending = new Map<string, Pending>();
   private readonly queuedSubmissions = new Map<string, Array<{ requestId: string; message: UserMessage; context: TaskInvocationContext; sendAtMs?: number }>>();
   private readonly queuePaused = new Set<string>();
@@ -168,6 +184,7 @@ export class TerminalTaskHost {
     if (!path.isAbsolute(options.profileDir)) throw new Error('PROFILE_DIRECTORY_MUST_BE_ABSOLUTE');
     this.media = new TerminalTaskMedia(options.profileDir);
     this.storage = new TerminalTaskStorage(path.join(options.profileDir, 'tasks'));
+    this.taskContext = new TerminalTaskContext({ storage: this.storage, assertCurrent: () => this.guard({ source: 'local' }), messages: (id, limit) => this.contextMessages(id, limit), warn: message => options.logger.warn(message) });
     this.changes = new TerminalTaskChanges({
       profileDir: options.profileDir, storage: this.storage, logger: options.logger,
       assertCurrent: () => this.guard({ source: 'local' }),
@@ -327,9 +344,101 @@ export class TerminalTaskHost {
         const row = await this.storage.get(input.id);
         if (!row || row.deleted || row.archived) throw new Error('TASK_NOT_FOUND');
         this.guard({source:'local'});
+        const hydrated = this.channelHydration.get(input.id);
+        this.channelHydration.delete(input.id);
+        // The committed task is authoritative. A stale channel attachment may
+        // not overwrite a model selection changed by GUI while it was loading.
+        if (hydrated && (hydrated.providerId !== undefined && hydrated.providerId !== (row.providerId ?? null)
+          || hydrated.effort !== undefined && hydrated.effort !== (row.effort ?? 'high')
+          || hydrated.fastMode !== undefined && hydrated.fastMode !== (row.fastMode ?? false))) throw new Error('CHANNEL_TASK_ROUTE_CHANGED');
         if (this.live.get(input.id)?.session.getStatus() !== 'active' && input.vendorOptions) this.channelVendorOptions.set(input.id, input.vendorOptions);
         return (await this.ensureLive(input.id)).session;
       },
+    };
+  }
+  private async contextMessages(id: string, limit: number): ReturnType<ImTurnHost['listMessagesForAgentHandoff']> {
+    const rows = await this.messages(id, { limit }, true);
+    return rows.reverse().map(row => {
+      let content: unknown = row.content;
+      if (row.role === 'tool_use') { try { content = JSON.parse(row.content); } catch { /* historical plain text */ } }
+      return { clientId: row.clientId, role: row.role, content, createdAt: Date.parse(row.createdAt), agentMeta: row.agentMeta };
+    });
+  }
+  channelTurnHost(): ImTurnHost {
+    const guard = () => this.guard({ source: 'local' });
+    const hydrate = (id: string, patch: NonNullable<ReturnType<typeof this.channelHydration.get>>) => {
+      guard(); this.channelHydration.set(id, { ...this.channelHydration.get(id), ...patch });
+    };
+    const update = async (id: string, patch: Partial<TerminalTaskMeta>) => {
+      guard();
+      const row = await this.storage.updateIf(id, current => !current.deleted, patch, guard);
+      guard();
+      if (!row) throw new Error('TASK_NOT_FOUND');
+      this.emit('local-db:sessions:patched', { sessionId: id, patch: this.guiSession(row) });
+    };
+    return this.channelHost ??= {
+      getMaker: () => this.channelRuntime(),
+      createLogger: scope => this.options.logger.child(scope),
+      readSession: async id => {
+        await this.ready; guard();
+        const row = await this.storage.get(id); guard();
+        return row ? { id: row.id, agentKind: row.agentKind, workingDir: row.workDir, title: row.title, status: row.deleted ? 'deleted' : row.archived ? 'archived' : 'active', orcaRole: null,
+          model: row.model, providerId: row.providerId ?? null, agentDeviceId: row.agentDeviceId ?? null, remoteHostId: null,
+          sdkSessionId: row.sdkSessionId ?? null, effort: row.effort ?? 'high', fastMode: row.fastMode ?? false,
+          permissionMode: permission(row.permissionMode === 'default' ? 'ask' : row.permissionMode ?? 'ask'), workspaceKind: row.workspaceKind ?? 'project' } : null;
+      },
+      persistSdkSessionId: (id, value) => update(id, { sdkSessionId: value }),
+      listProviders: () => this.models.views(),
+      readImRemoteProviderRoute: route => readRemoteProviderRoute(route, async (device, channel, args) => {
+        guard(); if (!this.options.remoteInvoke) throw new Error('REMOTE_TRANSPORT_UNAVAILABLE');
+        const result = await this.options.remoteInvoke(device, channel, args); guard(); return result;
+      }),
+      readXdGatewayApiKey: async () => { guard(); const key = await this.models.credential('xd', 'claude-code'); guard(); return key; },
+      hasCustomProviderKey: async (provider, kind) => { guard(); const key = await this.models.credential(provider, kind); guard(); return Boolean(key); },
+      isCredentialModeSwitchBusyError,
+      hydrateSessionProvider: (id, providerId) => hydrate(id, { providerId }),
+      setSessionEffort: (id, effort) => hydrate(id, { effort }),
+      setSessionFastMode: (id, fastMode) => hydrate(id, { fastMode }),
+      wireSessionToIpcExternal: session => { guard(); if (this.live.get(session.id)?.session !== session) throw new Error('TASK_RUNTIME_REPLACED'); },
+      repoTouchUserSent: id => update(id, { userSendAt: Date.now() }),
+      readPermissionMode: async id => { guard(); const row = await this.storage.get(id); guard(); return row && !row.deleted ? permission(row.permissionMode === 'default' ? 'ask' : row.permissionMode ?? 'ask') : null; },
+      updatePermissionMode: (id, mode) => update(id, { permissionMode: mode }),
+      bindingStore: this.channelBindings.store,
+      persistUserMessage: args => this.persistChannelMessage(args),
+      adoptStagedInboundFiles: (...args) => this.channelFiles.adoptStagedInboundFiles(...args),
+      beginTurnChangeSetAtDispatch: (session, anchor) => this.changes.begin(session, anchor),
+      clearPendingTurnChangeSets: id => this.changes.store.clearPendingTurnChangeSets(id),
+      takePendingInteractionsForSession: id => this.takeChannelInteractions(id),
+      noteSilentStopUserSend: id => this.turnLifecycle.noteUserSend(id),
+      stopSessionTurnExplicitly: async id => { guard(); const session = this.live.get(id)?.session; if (session) await this.turnLifecycle.stop(session); },
+      onSilentStopSettled: (id, callback) => this.turnLifecycle.onSettled(id, callback),
+      agentHandoffPending: this.taskContext.handoff,
+      enqueueDurableWrite: (label, write) => this.taskContext.enqueue(label, write),
+      listMessagesForAgentHandoff: (id, limit) => this.contextMessages(id, limit),
+      peekGoalInactiveNote: id => this.taskContext.peekGoalInactiveNote(id),
+      isSilencedSchedulerTurn: origin => origin?.kind === 'scheduler' && Boolean(origin.runId) && this.schedulerDeps?.getScheduler().isRunSilenced(origin.runId!) === true,
+      beginHeadlessGhostSetupTurn: id => {
+        guard(); return (this.pluginSetup?.surface ?? this.channelPluginSurface).beginHeadlessGhostSetupTurn(id);
+      },
+      bindRuntimeRecoveryNotice: (...args) => this.channelRecovery.bindRuntimeRecoveryNotice(...args),
+      redactToolInputForUntrustedBoundary,
+      generateAndPersistFbotTitle: async (id, text, prefix) => {
+        const generated = await this.generateTaskTitle({ sessionId: id, message: text });
+        if (!generated) return null;
+        const title = fbotTitle(generated, prefix); await update(id, { title }); return title;
+      },
+      generateImSessionTitleText: (id, text) => this.generateTaskTitle({ sessionId: id, message: text }),
+      persistGeneratedSessionTitle: (id, title) => update(id, { title }),
+      resolveSessionErrorContext: async id => {
+        guard(); const row = await this.storage.get(id); if (!row || row.deleted) return {};
+        const providers = row.agentDeviceId && this.options.remoteInvoke ? await readDeviceProviderViews(this.options.remoteInvoke, row.agentDeviceId) : await this.models.views();
+        guard(); const provider = providers.find(provider => provider.id === row.providerId);
+        return { taskLabel: row.title, providerLabel: provider?.name, modelLabel: provider?.models[row.agentKind]?.find(model => model.id === row.model)?.name ?? row.model };
+      },
+      resolveCindyMediaUrl: url => this.media.resolveMediaUrl(url),
+      resolveXdtImageUrl: url => this.media.resolveLegacyImageUrl(url),
+      materializeLocalMarkdownImages: args => this.materializeChannelImages(args),
+      changeSessionPermissionMode: args => this.changeChannelPermission(args),
     };
   }
   async persistChannelMessage(args: Parameters<ImTurnHost['persistUserMessage']>[0]): ReturnType<ImTurnHost['persistUserMessage']> {
@@ -384,6 +493,54 @@ export class TerminalTaskHost {
       captureAccount: () => ({ assertCurrent: () => this.guard({ source: 'local' }), isCurrent: () => !this.closed }),
       withSessionPermissionChange: (id, operation) => this.permissionChanges.withSessionPermissionChange(id, operation),
     });
+  }
+  generateTaskTitle(input: { message: string; sessionId?: string; agentKind?: AgentKind }): Promise<string | null> {
+    const operation = this.runTaskTitle(input);
+    this.utilityWork.add(operation);
+    void operation.finally(() => this.utilityWork.delete(operation)).catch(() => {});
+    return operation;
+  }
+  private async runTaskTitle(input: { message: string; sessionId?: string; agentKind?: AgentKind }): Promise<string | null> {
+    let agent: BaseAgent | undefined;
+    const utilityId = `title-${randomUUID()}`;
+    try {
+      await this.ready; this.guard({ source: 'local' });
+      if (!input.message.trim()) return null;
+      const row = input.sessionId ? await this.storage.get(input.sessionId) : null;
+      if (input.sessionId && (!row || row.deleted)) return null;
+      const revision = this.models.revision();
+      const current = async () => {
+        if (this.closed || revision !== this.models.revision()) return false;
+        if (!row) return true;
+        const latest = await this.storage.get(row.id);
+        return !this.closed && Boolean(latest && !latest.deleted && latest.agentKind === row.agentKind && latest.providerId === row.providerId && latest.model === row.model && latest.agentDeviceId === row.agentDeviceId && latest.clearedAt === row.clearedAt);
+      };
+      if (row?.agentDeviceId) {
+        if (!this.options.remoteInvoke) return null;
+        const response = await this.options.remoteInvoke(row.agentDeviceId, 'maker:generate-title', [{ message: input.message.slice(0, 200), agentKind: row.agentKind }]);
+        return response.ok && await current() ? validateTitleOutput((response.result as { title?: string } | undefined)?.title, AUTO_TITLE_MAX_CHARS) : null;
+      }
+      const chosen = await this.selection(row ? { agentKind: row.agentKind, providerId: row.providerId, model: row.model } : input.agentKind ? { agentKind: input.agentKind } : {});
+      if (!await current()) return null;
+      const binary = this.binaries.get(chosen.selection.agentKind);
+      if (!binary) return null;
+      // The automatic same-agent fallback uses the user's actual selected
+      // provider/model. It does not require a second account or expose tools.
+      agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: utilityId, ...chosen, binaryPath: binary, models: this.models, logger: this.options.logger });
+      if (!await current()) return null;
+      const output = await agent.oneShot(buildAutoTitlePrompt(input.message.trim().slice(0, 200), this.options.language?.() ?? 'en'), {
+        model: chosen.selection.model, maxTokens: AUTO_TITLE_MAX_CHARS * 4, timeoutMs: 12_000,
+        signal: this.utilityAbort.signal, beforeDispatch: current,
+        responseInstructions: 'Output only the short conversation title requested by the user message, without quotation marks or ending punctuation.',
+      });
+      if (!await current()) return null;
+      const title = validateTitleOutput(output, 256);
+      return title ? Array.from(title).slice(0, AUTO_TITLE_MAX_CHARS).join('') : null;
+    } catch { return null; }
+    finally {
+      await agent?.dispose().catch(() => this.options.logger.warn('Title runtime cleanup failed'));
+      await rm(path.join(this.options.profileDir, 'engines', 'codex', utilityId), { recursive: true, force: true }).catch(() => {});
+    }
   }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
   async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<(import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot & {autoReviewOwner:'native'|'cindy'})|null>{
@@ -777,6 +934,11 @@ export class TerminalTaskHost {
     }
     if(CAPABILITY_CHANNELS.includes(channel))return this.capabilities.invoke(channel,args,context);
     switch (channel) {
+      case 'maker:generate-title': {
+        const input = record(args[0]);
+        if (typeof input.message !== 'string' || input.agentKind !== undefined && !ENGINES.includes(input.agentKind as AgentKind)) throw new Error('INVALID_ARGUMENT');
+        return { title: await this.generateTaskTitle({ message: input.message, ...(input.sessionId ? { sessionId: string(input.sessionId) } : {}), ...(input.agentKind ? { agentKind: input.agentKind as AgentKind } : {}) }) };
+      }
       case 'maker:input:stop': {
         const id=string(args[0]),opts=args[1]?record(args[1]):{};this.queuePaused.add(id);
         await this.storage.update(id,{queuePaused:opts.pauseQueue!==false});
@@ -896,10 +1058,13 @@ export class TerminalTaskHost {
           const payload = context.scheduler ? appendInputText(message, `[Scheduled run context]\nschedule: ${JSON.stringify(context.scheduler.scheduleName)} (schedule_id: ${context.scheduler.scheduleId})\nrun_id: ${context.scheduler.runId}\nfiredAtUtc: ${new Date(context.scheduler.firedAt??Date.now()).toISOString()}`) : agentMeta ? appendInputText(message, 'sourceDevice' in agentMeta && agentMeta.sourceDevice ? buildClientDeviceNote(agentMeta.sourceDevice) : buildMessageSourceNote(messageSourceSenderFromMeta(agentMeta)) ?? '') : message;
           let changeSetStarted = false;
           try {
-            const result = await this.channelSignals.withChannelTurnSource(id, this.channelSignals.channelTurnSourceFor(agentMeta?.origin, false), () => task.session.send(payload, {
+            const outgoing = await this.taskContext.prepareHandoff(id, payload);
+            this.guard(context);
+            const result = await this.channelSignals.withChannelTurnSource(id, this.channelSignals.channelTurnSourceFor(agentMeta?.origin, false), () => task.session.send(outgoing.message, {
               ...(context.scheduler ? { origin: context.scheduler } : {}),
               onAccepted: async () => { this.guard(context); this.turnLifecycle.noteUserSend(id); await this.changes.begin(task.session, stored.clientId!); changeSetStarted = true; },
             }));
+            if (result.accepted) outgoing.accepted();
             if (!result.accepted && changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id);
             return result;
           } catch (error) { if (changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id); throw error; }
@@ -909,7 +1074,7 @@ export class TerminalTaskHost {
       case 'maker:get-context-usage': return (await this.ensureLive(string(args[0]))).session.getContextUsage();
       case 'maker:set-model': {
         const id = string(args[0]); const row = await this.storage.get(id); if (!row) throw new Error('TASK_NOT_FOUND');
-        if (this.live.get(id)?.session.isTurnRunning()) throw new Error('SESSION_RUNNING');
+        if (this.isTurnRunning(id)) throw new Error('SESSION_RUNNING');
         const opts = args[2] === undefined ? {} : record(args[2]);
         const chosen = await this.selection({ agentKind: row.agentKind, model: string(args[1]), providerId: opts.providerId ?? row.providerId, effort: opts.effort });
         await this.closeTask(id); await this.storage.setSelection(id, chosen.selection); await this.ensureLive(id, chosen); return { success: true };
@@ -1187,15 +1352,19 @@ export class TerminalTaskHost {
   }
   private async shutdown() {
     this.closed = true;
+    this.utilityAbort.abort();
     this.turnLifecycle.close();
     for (const timer of this.queueTimers.values()) clearTimeout(timer); this.queueTimers.clear();
     // Initializers have all settled even when one failed. Close the stores and
     // native handles that did open; the start caller retains the original error.
     await this.ready.catch(()=>{});
+    await Promise.allSettled(this.utilityWork);
     await Promise.allSettled(this.starts.values());
     await Promise.all([...this.live.keys()].map(id => this.closeTask(id)));
     this.makerObservers.clear();
     this.channelVendorOptions.clear();
+    this.channelHydration.clear();
+    await this.taskContext.close();
     await this.channelBindings.close();
     await this.channelDefaults.close();
     await this.capabilities.close();

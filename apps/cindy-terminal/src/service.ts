@@ -299,7 +299,7 @@ export class TerminalService {
       },
     });
     await this.protectedInput.prepare();
-    this.tasks=new TerminalTaskHost({profileDir:ownerDir,logger,silentStopMessage:()=>silentStopMessage(this.settings.snapshot().effective.language),runtimeRecoveryMessage:()=>runtimeRecoveryMessage(this.settings.snapshot().effective.language),deferPendingTasks:true,protectedInput:this.protectedInput,resolveAttachment:async(reference,context,sessionId)=>{
+    this.tasks=new TerminalTaskHost({profileDir:ownerDir,logger,language:()=>this.settings.snapshot().effective.language,silentStopMessage:()=>silentStopMessage(this.settings.snapshot().effective.language),runtimeRecoveryMessage:()=>runtimeRecoveryMessage(this.settings.snapshot().effective.language),deferPendingTasks:true,protectedInput:this.protectedInput,resolveAttachment:async(reference,context,sessionId)=>{
       if(reference.startsWith('xdt-oss-attach:')||reference.startsWith('cindy-oss-attach:')||reference.startsWith('cindy-peer-attach:'))return this.media.resolve(reference,context);
       const url=path.isAbsolute(reference)?`xdt-file://open?path=${encodeURIComponent(reference)}`:reference;
       if(context.sharedTask&&url.startsWith('cindy-media:')){

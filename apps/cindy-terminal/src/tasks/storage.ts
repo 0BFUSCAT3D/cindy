@@ -8,7 +8,16 @@ import type { ModelSelection } from '../models/config.js';
 import type { ImBindingRow } from '@cindy/im-runtime/binding';
 import { validateImBindingRow } from '../im/bindings.js';
 
-export type TerminalTaskMeta = SessionMeta & { providerId?: string; archived?: boolean; deleted?: boolean; pinnedAt?: number | null; agentDeviceId?: string; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding; queuePaused?: boolean; queueExpanded?: boolean; clearedAt?: number; source?: string; imBotContextId?: string; imUserId?: string; imScopeKey?: string; imDefaultRoute?: string | null; workspaceKind?: 'project' | 'dialogue'; userSendAt?: number; usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number } };
+export type TerminalTaskMeta = SessionMeta & {
+  providerId?: string; archived?: boolean; deleted?: boolean; pinnedAt?: number | null; agentDeviceId?: string;
+  groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding;
+  queuePaused?: boolean; queueExpanded?: boolean; clearedAt?: number; source?: string;
+  imBotContextId?: string; imUserId?: string; imScopeKey?: string; imDefaultRoute?: string | null;
+  workspaceKind?: 'project' | 'dialogue'; userSendAt?: number;
+  pendingHandoff?: { id: string; text: string; createdAt: number } | null;
+  goalContinuation?: import('@cindy/im-runtime/goalInactiveNote').GoalContinuationState | null;
+  usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number };
+};
 export type NewTerminalTaskMeta = Omit<TerminalTaskMeta, 'createdAt' | 'updatedAt'>;
 type ChannelRotation = { version: 1; rows: TerminalTaskMeta[]; bindings: ImBindingRow[] };
 export type Submission = { requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
@@ -145,6 +154,19 @@ export class TerminalTaskStorage implements SessionStorage {
       await atomicPrivateWrite(this.file(id), JSON.stringify(next));
       this.rows.set(id, next);
       return true;
+    });
+  }
+  /** The predicate is evaluated inside the task's write lane, so accepting an
+   * older turn cannot consume a handoff committed by a later model switch. */
+  updateIf(id: string, predicate: (row: Readonly<TerminalTaskMeta>) => boolean, patch: Partial<TerminalTaskMeta>, guard: () => void): Promise<TerminalTaskMeta | null> {
+    return this.enqueue(id, async () => {
+      guard();
+      const row = this.rows.get(id);
+      if (!row || !predicate(row)) return null;
+      const next = { ...row, ...patch, id: row.id, createdAt: row.createdAt, updatedAt: Date.now() };
+      await atomicPrivateWrite(this.file(id), JSON.stringify(next));
+      this.rows.set(id, next);
+      return structuredClone(next);
     });
   }
   delete(id: string): Promise<void> {

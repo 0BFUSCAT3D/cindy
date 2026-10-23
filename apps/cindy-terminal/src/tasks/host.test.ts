@@ -28,6 +28,11 @@ import { TerminalPluginMarket } from '../plugins/market.js';
 import { TerminalPluginAccount } from '../plugins/account.js';
 import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
 import type { SharedPermission } from '@cindy/im-runtime/sharedPermission';
+import { createTurnRunner } from '@cindy/im-runtime/turnRunner';
+import { createCardBuilders } from '@cindy/im-runtime/cardBuilders';
+import type { ImChannelAdapter } from '@cindy/im-runtime/types';
+import type { TextChannelIM, ImFinalOutput } from '@cindy/im';
+import { ui as wechatUi } from '../../../desktop/src/main/im/wechat/uiText';
 
 const logger: Logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child: () => logger };
 const roots: string[] = [];
@@ -41,10 +46,13 @@ function engine() {
   const inputs: RuntimeInput[] = [];
   const decisions: InteractionDecision[] = [];
   const permissionModes: import('@cindy/maker-core').PermissionMode[] = [];
+  const title = { reply: async () => '"Server task"' };
+  const titleRequests: Array<{ prompt: string; options?: import('@cindy/maker-core').OneShotOptions }> = [];
   const sent: import('@cindy/maker-core').UserMessage[] = [];
   const create = async (input: RuntimeInput) => {
     inputs.push(input);
     const agent = new ClaudeCodeAgent({ binaryPath: process.execPath, auth: { getState: async () => ({ authenticated: true }), getAuthEnv: async () => ({}), triggerLogin: async () => ({ authenticated: true }), logout: async () => {} }, runtimeConfig: {}, logger });
+    agent.oneShot = async (prompt, options) => { titleRequests.push({ prompt, options }); return title.reply(); };
     agent.startSession = async options => {
       starts.push(options);
       let running = false;
@@ -99,7 +107,7 @@ function engine() {
     };
     return agent;
   };
-  return { create, starts, decisions, inputs, sent, permissionModes };
+  return { create, starts, decisions, inputs, sent, permissionModes, title, titleRequests };
 }
 
 async function setup(native = engine()) {
@@ -122,6 +130,85 @@ async function setup(native = engine()) {
 }
 
 describe('terminal task host', () => {
+  // Integration: use the real shared channel runner, Maker, task journal and
+  // restart recovery. Only network delivery and the native vendor are replaced.
+  it('resumes a GUI task through the shared channel runner after restart and consumes its durable handoff once', async () => {
+    const { host, create, native, root } = await setup();
+    const task = await host.invoke('maker:create-session', [{ title: 'Existing GUI task' }]) as { id: string };
+    await host.invoke('maker:send', [task.id, { text: 'before restart' }]);
+    await host.storage.update(task.id, { pendingHandoff: { id: 'route-boundary', text: 'Preserved route context', createdAt: Date.now() } });
+    await host.close();
+    const resumed = create(); await resumed.ready;
+    await resumed.channelBindings.store.attach({ channel: 'wechat', botContextId: 'bot', userId: 'owner' }, task.id);
+    const delivered: ImFinalOutput[] = [];
+    const notices: string[] = [];
+    const im: TextChannelIM = {
+      name: 'wechat', getStatus: () => ({ kind: 'connected', appId: 'bot', botName: 'Test' }),
+      onMessage: () => () => {}, onStatusChange: () => () => {},
+      sendText: async (_user, text) => { notices.push(text); return { messageId: String(notices.length) }; },
+      sendMarkdownText: async (_user, text) => { notices.push(text); return { messageId: String(notices.length) }; },
+      sendFile: async () => ({ ok: true, messageId: 'file' }),
+    };
+    const adapter: ImChannelAdapter = {
+      channel: 'wechat', im, output: { kind: 'chunked-text', im, commitFinal: async output => { delivered.push(output); } },
+      config: { agentKind: 'claude-code', defaultModel: 'test-model', defaultPermissionMode: 'ask' }, ui: wechatUi,
+      sessions: { source: 'wechat', sessionIdFor: (bot, user) => `wechat_${bot}_${user}`, defaultTitle: () => 'Channel task', ensureWorkingDir: () => root, extraInsertColumns: () => ({}) },
+      processingEmoji: '', buildVendorOptions: () => ({ source: 'wechat' }),
+    };
+    const repo = resumed.channelRepository(adapter.config, adapter.sessions);
+    const runner = createTurnRunner(adapter, repo, createCardBuilders(adapter.ui, repo.getDefaultEffortFor), {}, resumed.channelTurnHost());
+    let dispatches = 0;
+    try {
+      for (const text of ['continue remotely', 'next message']) {
+        const result = await runner.dispatchAgentTurn({ botContextId: 'bot', userId: 'owner', userMessageId: text, text, attachments: [], queueMode: 'external', beforeProviderStart: async () => { dispatches++; } });
+        expect(result.kind).toBe('accepted');
+        if (result.kind !== 'accepted') throw new Error(result.reason);
+        expect(result.sessionId).toBe(task.id);
+        expect((await result.terminal).kind).toBe('done');
+      }
+      expect(dispatches).toBe(2);
+      expect(delivered).toHaveLength(2);
+      expect(JSON.stringify(delivered[0])).toContain('continue remotely');
+      expect(native.starts.at(-1)?.resumeSessionId).toBe(`native-${task.id}`);
+      expect(native.starts.at(-1)?.providerId).toBe('fixture');
+      expect(JSON.stringify(native.sent.at(-2))).toContain('Preserved route context');
+      expect(JSON.stringify(native.sent.at(-1))).not.toContain('Preserved route context');
+      await resumed.taskContext.enqueue('read after acceptance', () => resumed.storage.flush());
+      expect((await resumed.storage.get(task.id))?.pendingHandoff).toBeNull();
+      const messages = await resumed.invoke('local-db:messages:list', [task.id, { limit: 20 }]) as Array<{ role: string; content: string; agentMeta: Record<string, unknown> | null }>;
+      expect(messages.filter(row => row.role === 'user').map(row => row.content)).toEqual(['next message', 'continue remotely', 'before restart']);
+      expect(messages.find(row => row.content === 'continue remotely')?.agentMeta?.imSource).toBeDefined();
+      expect(notices).toEqual([]);
+    } finally { await runner.disposeAllSessions(); }
+    await resumed.close();
+    const restarted = create(); await restarted.ready;
+    expect(await restarted.channelTurnHost().agentHandoffPending.peek(task.id)).toBeNull();
+  });
+  // A late accepted send may only retire its own context boundary. The next
+  // GUI send must still receive a newer committed boundary after restart.
+  it('keeps a newer handoff when an older dispatch settles and rejects stale channel hydration', async () => {
+    const { host, root, create, native } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    await host.storage.update(task.id, { pendingHandoff: { id: 'old', text: 'old handoff', createdAt: Date.now() } });
+    expect(await host.channelTurnHost().agentHandoffPending.peek(task.id)).toBe('old handoff');
+    await host.storage.update(task.id, { pendingHandoff: { id: 'new', text: 'new handoff', createdAt: Date.now() } });
+    host.channelTurnHost().agentHandoffPending.consume(task.id);
+    await host.taskContext.enqueue('accepted context flush', () => host.storage.flush());
+    expect((await host.storage.get(task.id))?.pendingHandoff?.id).toBe('new');
+    await host.close();
+    const resumed = create(); await resumed.ready;
+    const ports = resumed.channelTurnHost();
+    ports.hydrateSessionProvider(task.id, 'fixture'); ports.setSessionEffort(task.id, 'high');
+    await resumed.storage.update(task.id, { effort: 'low' });
+    await expect(ports.getMaker().createSession({ id: task.id, agentKind: 'claude-code', workingDir: root, model: 'test-model' })).rejects.toThrow('CHANNEL_TASK_ROUTE_CHANGED');
+    await resumed.invoke('maker:send', [task.id, { text: 'GUI continues' }]);
+    expect(JSON.stringify(native.sent.at(-1))).toContain('new handoff');
+    expect(JSON.stringify(native.sent.at(-1))).not.toContain('old handoff');
+    await resumed.taskContext.enqueue('flush GUI acceptance', () => resumed.storage.flush());
+    expect((await resumed.storage.get(task.id))?.pendingHandoff).toBeNull();
+    const messages = await resumed.invoke('local-db:messages:list', [task.id, { limit: 10 }]) as Array<{ role: string; content: string }>;
+    expect(messages.find(row => row.role === 'user')?.content).toBe('GUI continues');
+  });
   // Regression: vendor silent-stop previously completed the terminal receipt
   // immediately and could leave a shared IM turn waiting forever. Real Maker
   // drives generation, terminal and abort callbacks; only its transport is fake.
@@ -516,6 +603,26 @@ describe('terminal task host', () => {
     expect(host.channelRuntime().getSession(task.id)!.stablePermissionModeState?.mode).toBe('ask');
     expect(await host.invoke('maker:set-permission-mode', [task.id, 'acceptEdits'])).toEqual({ success: true });
     expect((await host.storage.get(task.id))!.permissionMode).toBe('acceptEdits');
+  });
+
+  // Behavior: a GUI title request must use the terminal owner's configured
+  // route without creating another task; settings changes invalidate late text.
+  it('generates titles on the selected route and rejects a stale model result', async () => {
+    const { host, native } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    expect(await host.invoke('maker:generate-title', [{ message: 'Configure my server', sessionId: task.id, agentKind: 'claude-code' }])).toEqual({ title: 'Server task' });
+    expect(native.titleRequests[0].options?.model).toBe('test-model');
+    expect(native.inputs.at(-1)?.selection.providerId).toBe('fixture');
+    expect(native.starts).toHaveLength(1);
+    expect(await host.storage.list()).toHaveLength(1);
+    let entered!: () => void, finish!: (text: string) => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    native.title.reply = () => { entered(); return new Promise<string>(resolve => { finish = resolve; }); };
+    const pending = host.invoke('maker:generate-title', [{ message: 'A late reply', sessionId: task.id }]);
+    await started;
+    await host.invoke('terminal:models:reset-default');
+    finish('Old model result');
+    expect(await pending).toEqual({ title: null });
   });
 
   // Behavior: attaching a channel after the native permission is already open
