@@ -19,6 +19,7 @@ type ModelAccessStatusPayload = import('../shared/modelAccess').ModelAccessStatu
 type AnalyticsSettingsPayload = import('../shared/analyticsSettings').AnalyticsSettingsPayload;
 type LogUploadSettingsPayload = import('../shared/logUpload').LogUploadSettingsPayload;
 type LogUploadResult = import('../shared/logUpload').LogUploadResult;
+type StartupGateStallSnapshot = import('../shared/startupGateStall').StartupGateStallSnapshot;
 type CustomProviderUpdateOptions =
   import('../shared/customProviderUpdate').CustomProviderUpdateOptions;
 type CustomProviderUpdateResult =
@@ -1225,6 +1226,9 @@ interface ElectronAPI {
     scope: string,
     msg: string,
   ) => void;
+
+  /** 开屏卡住时上报一次启动门快照;main 校验字段后写进可上传的诊断日志。仅主窗 preload 提供。 */
+  reportStartupGateStall?: (snapshot: StartupGateStallSnapshot) => void;
 
   localThemes: {
     listSync: () => LocalThemesResult;

@@ -30,6 +30,10 @@ import {
   type LoginItemState,
 } from '../shared/loginItem';
 import type { BotToolsetContext } from '../shared/botRemoteCapabilities';
+import {
+  STARTUP_GATE_STALL_CHANNEL,
+  type StartupGateStallSnapshot,
+} from '../shared/startupGateStall';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { createChatFolderUpload } from './chatFolderUpload';
 import { DESKTOP_LOCAL, type RemoteDesktopApi } from '../shared/remoteDesktop';
@@ -1225,6 +1229,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scope: string,
     msg: string,
   ): void => ipcRenderer.send('renderer:log', level, scope, msg),
+
+  /** 开屏卡住时上报一次启动门快照;main 校验字段后写进可上传的诊断日志。 */
+  reportStartupGateStall: (snapshot: StartupGateStallSnapshot): void =>
+    ipcRenderer.send(STARTUP_GATE_STALL_CHANNEL, snapshot),
 
   localThemes: {
     listSync: (): LocalThemesResult => {
