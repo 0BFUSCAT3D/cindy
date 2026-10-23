@@ -11878,9 +11878,6 @@ function createRemoteHistoryView(sessionId: string) {
           new Set(state.messages.filter((row) => !row.isPendingPersist).map((row) => row.clientId)));
         return messages === state.messages ? state : { ...state, messages };
       });
-      if (view.isActive()) {
-        void reconcileRemoteMessages(sessionId, { force: true }).catch(() => undefined);
-      }
       return;
     }
     if (!snapshot.ready) return;
@@ -11912,9 +11909,14 @@ function createRemoteHistoryView(sessionId: string) {
     if (persistTimer) clearTimeout(persistTimer);
     if (!isCurrent() || !sessions.has(sessionId)) return;
     const snapshot = view.getSnapshot();
-    const isLoadingMore = view.isLoadingOlder();
-    setState(sessionId, (state) => state.isLoadingMore === isLoadingMore
-      ? state : { ...state, isLoadingMore });
+    if (!snapshot.ready && view.isActive() && isHistoryViewUnavailable(snapshot.error)) {
+      void reconcileRemoteMessages(sessionId, { force: true }).catch(() => undefined);
+    }
+    if (snapshot.ready) {
+      const isLoadingMore = view.isLoadingOlder();
+      setState(sessionId, (state) => state.isLoadingMore === isLoadingMore
+        ? state : { ...state, isLoadingMore });
+    }
     if (isHistoryViewUnavailable(snapshot.error)) writeCache = undefined;
     else if (snapshot.ready && !snapshot.loading && !snapshot.error && writeCache) {
       const writer = writeCache;
