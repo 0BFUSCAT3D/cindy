@@ -409,6 +409,10 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
     width: 0,
   });
   const contentLayerRef = useRef<HTMLDivElement | null>(null);
+  // 虚拟窗口变化（纵向滚动挂载 / 回收行）也要重测：仅靠 rows 变化触发时，
+  // 首次滚到更宽的深层行不会记入 extent，滚开后范围缩回、scrollLeft 被拉回
+  // （评审 P2）。测得值单调不减，重测本身廉价（读一次 scrollWidth）。
+  const virtualItems = virtualizer.getVirtualItems();
   useLayoutEffect(() => {
     if (extent.storeKey !== tree.storeKey) {
       setExtent({ storeKey: tree.storeKey, width: 0 });
@@ -418,7 +422,7 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
     if (!inner) return;
     const measured = inner.scrollWidth;
     if (measured > extent.width) setExtent({ storeKey: tree.storeKey, width: measured });
-  }, [rows, tree.storeKey, extent]);
+  }, [rows, tree.storeKey, extent, virtualItems]);
 
   // 滚动位置：onScroll 持续记录锚点；挂载 / 换 store / 重新激活时自动恢复。
   // treeIdentityKey 单独传入：hook 用它区分「同树换视口」（可继承位置）与
@@ -641,7 +645,7 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
               style={{ width: extent.width }}
             />
           )}
-          {virtualizer.getVirtualItems().map((vi) => {
+          {virtualItems.map((vi) => {
             const row = rows[vi.index];
             if (!row) return null;
             let content: ReactNode;
@@ -1009,81 +1013,3 @@ function InlineTreeRow({
   );
 }
 
-interface PendingInputRowProps {
-  pending: PendingCreate;
-  depth: number;
-  onSubmit?: (name: string) => void;
-  onCancel?: () => void;
-}
-
-function PendingInputRow({ pending, depth, onSubmit, onCancel }: PendingInputRowProps) {
-  const [value, setValue] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-  const committedRef = useRef(false);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  const Icon = pending.kind === 'folder' ? Folder : File;
-  const paddingLeft = depth * 16 + 8;
-
-  const commit = () => {
-    if (committedRef.current) return;
-    committedRef.current = true;
-    const trimmed = value.trim();
-    if (!trimmed) {
-      onCancel?.();
-    } else {
-      onSubmit?.(trimmed);
-    }
-  };
-
-  const cancel = () => {
-    if (committedRef.current) return;
-    committedRef.current = true;
-    onCancel?.();
-  };
-
-  const handleKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      commit();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      cancel();
-    }
-  };
-
-  return (
-    <div
-      style={{ paddingLeft }}
-      className={cn(
-        // 同 FileTreeRow:深层的新建输入框不能被缩进挤没,行宽由输入框自身宽度决定。
-        'flex h-7 w-full min-w-max shrink-0 items-center gap-1.5 rounded-md pr-2',
-        'bg-sidebar-item-active text-sidebar-item-active-foreground',
-      )}
-    >
-      <span aria-hidden className="inline-block w-3 shrink-0" />
-      <Icon
-        size={14}
-        strokeWidth={1.75}
-        className="shrink-0 text-[var(--cmd-palette-item-meta)]"
-      />
-      <input
-        ref={inputRef}
-        type="text"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={handleKey}
-        onBlur={commit}
-        placeholder={pending.kind === 'folder' ? 'new-folder' : 'untitled'}
-        className={cn(
-          'min-w-0 flex-1 bg-transparent text-13 leading-none outline-none',
-          'border border-[var(--cmd-palette-item-meta)] rounded-sm px-1 py-0.5',
-          'text-sidebar-item-active-foreground placeholder:text-[var(--text-placeholder)]',
-        )}
-      />
-    </div>
-  );
-}
