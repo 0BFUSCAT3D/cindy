@@ -34,6 +34,12 @@ export interface BotSettingsHostDeps {
 /** Codes whose message is written for the user's page and is safe to hand to the controller. */
 const FORWARDED_CODES = new Set(['PRECONDITION_FAILED', 'INVALID_PARAMS', 'NOT_FOUND', 'ALREADY_EXISTS', 'UNSUPPORTED_CAPABILITY']);
 const BOT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/**
+ * Host-wide operations that still name a teammate in their arguments. The named teammate is held to
+ * the same visibility as a teammate-scoped call, so a controller cannot reach a hidden or archived one
+ * through them (e.g. make it the follow-up teammate).
+ */
+const HOST_OP_BOT_ARGS: Partial<Record<BotSettingsOp, string>> = { 'autonomy.set': 'schedulerBotId' };
 const MAX_MESSAGE = 300;
 
 const failure = (code: string, message: string): BotSettingsResult => ({ ok: false, code, message: message.slice(0, MAX_MESSAGE) });
@@ -71,6 +77,12 @@ export function createBotRemoteSettingsHost(deps: BotSettingsHostDeps) {
       const handler = deps.ops[op];
       if (!handler) return failure('UNSUPPORTED_CAPABILITY', 'Update Cindy on the teammate’s computer');
       if (botId && !(await deps.botVisible(botId))) {
+        assertCurrent();
+        return failure('NOT_FOUND', 'Teammate unavailable');
+      }
+      const namedArg = HOST_OP_BOT_ARGS[op];
+      const named = namedArg ? (args as Record<string, unknown>)[namedArg] : null;
+      if (typeof named === 'string' && !(BOT_ID.test(named) && await deps.botVisible(named))) {
         assertCurrent();
         return failure('NOT_FOUND', 'Teammate unavailable');
       }
