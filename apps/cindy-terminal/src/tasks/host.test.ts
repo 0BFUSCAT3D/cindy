@@ -9,9 +9,11 @@ import { TerminalImBindings } from '../im/bindings.js';
 import { TerminalImConnections } from '../im/connections.js';
 import { registerImResources } from '../im/resources.js';
 import { TerminalGroupWindows } from '../im/group-window.js';
+import Database from 'better-sqlite3';
+import { GROUP_WINDOW_SCHEMA_SQL } from '../im/group-window-schema.js';
 import { TerminalConfiguration } from '../configuration.js';
 import { TerminalSecretStore } from '../secrets.js';
-import { access, appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentEvent, type AgentSessionHandle, type InteractionDecision, type InteractionResolver, type Logger, type StartSessionOptions } from '@cindy/maker-core';
@@ -48,7 +50,7 @@ const hosts: TerminalTaskHost[] = [];
 afterEach(async () => { for(const scheduler of schedulers.splice(0))await scheduler.close(); for (const host of hosts.splice(0)) await host.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 /** Native transport substitute: all task lifecycle/approval behavior remains in real Maker. */
-function engine() {
+function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions) => Promise<void>) {
   const starts: StartSessionOptions[] = [];
   const inputs: RuntimeInput[] = [];
   const decisions: InteractionDecision[] = [];
@@ -64,6 +66,7 @@ function engine() {
     const agent = new Agent({ binaryPath: process.execPath, auth: { getState: async () => ({ authenticated: true }), getAuthEnv: async () => ({}), triggerLogin: async () => ({ authenticated: true }), logout: async () => {} }, runtimeConfig: {}, logger });
     agent.oneShot = async (prompt, options) => { titleRequests.push({ prompt, options }); return title.reply(); };
     agent.startSession = async options => {
+      await beforeStart?.(input, options);
       starts.push(options);
       if (options.resumeSessionId && resumeFailures.delete(options.resumeSessionId)) throw new Error('fixture native transcript expired');
       let running = false;
@@ -150,6 +153,9 @@ describe('terminal task host', () => {
   // bot namespace rules, including a daemon restart between inbound turns.
   it('persists group history and compensated cursors without mixing bot identities', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-terminal-group-test-')); roots.push(root);
+    await mkdir(path.join(root, 'im'));
+    const original = new Database(path.join(root, 'im', 'history.sqlite'));
+    original.exec(GROUP_WINDOW_SCHEMA_SQL); original.pragma('user_version = 1'); original.close();
     let store = new TerminalGroupWindows(root, () => {}, logger);
     try {
       let window = store.channel('wecom-personal');
@@ -214,7 +220,9 @@ describe('terminal task host', () => {
     } }, { discord: { gatewayFactory: handlers => {
       inbound = handlers;
       return { appId: 'test-app', botTag: 'test#0001', client: client as unknown as ReturnType<GatewayFactory>['client'],
-        connect: async token => { connected.push(token); handlers.onStatus({ kind: 'connected', appId: 'test#0001' }); }, destroy: async () => {} };
+        connect: async token => { connected.push(token); handlers.onStatus({ kind: 'connected', appId: 'test#0001' }); }, destroy: async () => {
+          if (host.channelControl.account.captureImAccountGeneration() === null) expect(connections.transport.host.secrets.write('discord-bot-token', 'late-token')).toBe(false);
+        } };
     } } });
     const configuration = new TerminalConfiguration(host.capabilities, undefined, {
       revision: () => connections.version(), save: async (id, value, context) => { expect(id).toBe('discord'); context.assertCurrent?.(); await connections.invoke('discordBot:set-config', value); },
@@ -239,7 +247,10 @@ describe('terminal task host', () => {
       await vi.waitFor(() => expect(JSON.stringify(output)).toContain('Echo:'));
       expect(native.sent).toHaveLength(1);
       expect((await host.storage.list()).find(row => row.source === 'discord')).toMatchObject({ imUserId: 'owner', imBotContextId: 'test-app', workspaceKind: 'dialogue' });
+      secrets.setSync('discord-bot-runtime-active', 'synthetic-active-marker');
       await connections.close(); current = false;
+      expect(secrets.getSync('discord-bot-runtime-active')).toBeNull();
+      expect(secrets.getSync('discord-bot-token')).toBe(token);
       await expect(media.cacheImage({ integration: 'discord', token: 'late', buffer: png, mimeType: 'image/png' })).rejects.toThrow('IM_ACCOUNT_SCOPE_CLOSED');
       await expect(connections.invoke('discordBot:set-config', { token: 'late', ownerUserId: 'intruder' })).rejects.toThrow('IM_ACCOUNT_SCOPE_CLOSED');
     } finally { await connections.close(); configuration.close(); secrets.lock(); }
@@ -315,6 +326,73 @@ describe('terminal task host', () => {
       const settings = new TerminalTelegramSettings(root, () => {}); await settings.ready;
       expect(settings.persona().botName).toBe('Terminal helper'); expect(settings.behavior().emojiReactions).toBe('off'); await settings.close();
     } finally { await connections.close(); configuration.close(); secrets.lock(); }
+  });
+  // Integration: actual Feishu adapter/orchestrator, task runtime and SQLite
+  // receipts. SDK sends/history and native engine processes are the I/O seams.
+  it('routes Feishu history and durable notification replies through the terminal host', async () => {
+    const { host, native, root, vault } = await setup(engine(async (input, options) => {
+      const provider = input.tools?.providers.find(item => item.name === 'cindy_feishu_bot');
+      if (provider) await provider.toClaudeSdkConfig!({ sessionId: options.sessionId, workingDir: root, agentKind: 'claude-code' });
+    }));
+    await host.channelDefaults.update({ agentKind: 'claude-code', agents: { 'claude-code': { model: 'test-model', providerId: 'fixture', effort: 'high' } } }, 'feishu');
+    native.title.reply = async () => 'RELATED';
+    const connections = new TerminalImConnections({ tasks: host, root, logger, assertCurrent() {}, emit() {}, secrets: {
+      getSync: key => vault.get(key) ?? null, setSync: (key, value) => { vault.set(key, value); }, deleteSync: key => { vault.delete(key); }, available: () => true,
+    } });
+    const im = connections.feishu, output: string[] = [];
+    const spies = [
+      vi.spyOn(im, 'getStatus').mockReturnValue({ kind: 'connected', appId: 'cli_fixture' }),
+      vi.spyOn(im, 'getOwnerOpenId').mockReturnValue('ou_owner'),
+      vi.spyOn(im, 'getChatName').mockResolvedValue('Terminal group'),
+      vi.spyOn(im, 'reactToMessage').mockResolvedValue(null),
+      vi.spyOn(im, 'sendText').mockImplementation(async (_id, text) => { output.push(text); return { messageId: 'sent' }; }),
+      vi.spyOn(im, 'sendMarkdownText').mockImplementation(async (_id, text) => { output.push(text); return { messageId: 'sent' }; }),
+      vi.spyOn(im, 'startStreamingText').mockImplementation(async () => ({ messageId: 'stream', append() {}, replace() {}, close() {}, finalize: async text => { output.push(text); } })),
+      vi.spyOn(im, 'fetchChatHistoryPage').mockResolvedValue({ messages: [{ messageId: 'om_history', threadId: '', senderName: 'Alice', senderOpenId: 'ou_member', senderIsBot: false, text: 'feishu-context-violet-83', attachments: [], createTimeMs: Date.now() }], nextPageToken: null }),
+      vi.spyOn(im, 'sendNotification').mockResolvedValue({ messageId: 'om_notification', chatId: 'oc_owner' }),
+    ];
+    const event = (text: string): IMMessageEvent => ({ channelName: 'feishu', senderId: 'g/oc_group', contextId: 'cli_fixture', chatId: 'oc_group', messageId: 'om_trigger', text, attachments: [], unsupported: [], speaker: { id: 'ou_owner', name: 'Owner', isOwner: true } });
+    try {
+      await connections.start();
+      im.scope.events.emit('message', event('recall the previous group message'));
+      await vi.waitFor(() => expect(output.some(text => text.includes('Echo:'))).toBe(true));
+      expect(JSON.stringify(native.sent)).toContain('feishu-context-violet-83');
+      expect(native.titleRequests.some(request => request.prompt.includes('RELATED'))).toBe(true);
+      const task = (await host.storage.list()).find(row => row.source === 'feishu')!;
+      expect(task).toMatchObject({ imUserId: 'g/oc_group', imBotContextId: 'cli_fixture' });
+      expect(native.inputs.find(input => input.taskId === task.id)?.tools?.providers.map(provider => provider.name)).toContain('cindy_feishu_bot');
+      await expect(connections.notifications.sendFeishuSessionNotification(im, task.id, 'finished')).resolves.toMatchObject({ sessionLinked: true });
+      const reply = { ...event('continue original notification task'), senderId: 'ou_owner', chatId: 'oc_owner', speaker: undefined, messageId: 'om_reply', replyThread: { rootMessageId: 'om_notification', threadId: 'omt_notification' } };
+      im.scope.events.emit('message', reply);
+      await vi.waitFor(() => expect(output.some(text => text.includes('continue original notification task'))).toBe(true));
+      expect(await host.storage.list()).toHaveLength(1);
+      const originalSdk = task.sdkSessionId;
+      expect((await host.storage.get(task.id))?.sdkSessionId).toBe(originalSdk);
+      const ordinary = await host.invoke('maker:create-session', [{ workingDir: root }]) as { id: string };
+      const tools = native.inputs.find(input => input.taskId === ordinary.id)!.tools!;
+      const provider = tools.providers.find(item => item.name === 'cindy_feishu_bot')!;
+      const sdk = await provider.toClaudeSdkConfig!({ sessionId: ordinary.id, workingDir: root, agentKind: 'claude-code' }) as { instance: McpServer };
+      const [left, right] = InMemoryTransport.createLinkedPair();
+      const client = new McpClient({ name: 'feishu-terminal-test', version: '1' });
+      await sdk.instance.connect(left); await client.connect(right);
+      try {
+        expect((await client.listTools()).tools.map(tool => tool.name)).toContain('send_text');
+        vi.mocked(im.sendNotification).mockResolvedValueOnce({ messageId: 'om_mcp', chatId: 'oc_owner' });
+        const result = await client.callTool({ name: 'call_tool', arguments: { name: 'send_message_to_user', args: { text: 'terminal task completed' } } });
+        expect(JSON.stringify(result)).toContain('om_mcp'); expect(result.isError).not.toBe(true);
+        expect(await connections.notifications.resolveFeishuNotificationReply(im, { ...reply, replyThread: { ...reply.replyThread!, rootMessageId: 'om_mcp' } })).toBe(ordinary.id);
+      } finally { await client.close(); }
+      // Keep receipts across a daemon restart and isolate another bot
+      // even when it returns the same message and owner identifiers.
+      await connections.close();
+      const restored = new TerminalGroupWindows(root, () => {}, logger);
+      try {
+        const store = restored.notificationStore(async id => { const row = await host.storage.get(id); return row ? { workingDir: row.workDir, status: 'active' } : null; });
+        expect(await store.find({ channel: 'feishu', botContextId: 'cli_fixture', userId: 'ou_owner', messageId: 'om_notification', chatId: 'oc_owner' })).toEqual({ sessionId: task.id });
+        expect(await store.find({ channel: 'feishu', botContextId: 'another-bot', userId: 'ou_owner', messageId: 'om_notification', chatId: 'oc_owner' })).toBeNull();
+      } finally { await restored.close(); }
+      await expect(connections.notifications.resolveFeishuNotificationReply(im, reply)).rejects.toThrow('account changed');
+    } finally { await connections.close(); for (const spy of spies) spy.mockRestore(); }
   });
   // The transport callbacks enter the production command/card/turn composition.
   // Regression: a successful picker must affect the next native turn and remain
@@ -1315,6 +1393,42 @@ describe('terminal task host', () => {
 
   });
 
+  // Integration: configured notification resources must feed the real
+  // scheduler completion, preserve the originating task and redact the URL.
+  it('delivers scheduled results through Feishu and the configured WeCom group', async () => {
+    const { host, root, vault } = await setup(), webhooks: string[] = [], notices: unknown[] = [];
+    const connections = new TerminalImConnections({ tasks: host, root, logger, assertCurrent() {}, emit: (channel, payload) => { if (channel === 'terminal:notification') notices.push(payload); }, secrets: {
+      getSync: key => vault.get(key) ?? null, setSync: (key, value) => { vault.set(key, value); }, deleteSync: key => { vault.delete(key); }, available: () => true,
+    } }, { wecomGroupFetch: async (_url, init) => { webhooks.push(String(init?.body)); return new Response('{"errcode":0}', { headers: { 'content-type': 'application/json' } }); } });
+    const spies = [vi.spyOn(connections.feishu, 'getStatus').mockReturnValue({ kind: 'connected', appId: 'cli_schedule' }),
+      vi.spyOn(connections.feishu, 'getOwnerOpenId').mockReturnValue('ou_owner'),
+      vi.spyOn(connections.feishu, 'sendNotification').mockResolvedValue({ messageId: 'om_schedule', chatId: 'oc_owner' })];
+    const configuration = new TerminalConfiguration(host.capabilities, undefined, { revision: () => connections.version(), save: (id, input) => connections.saveConfiguration(id, input) });
+    const registry = new RemoteResourceRegistry(); registerImResources(registry, connections, host, configuration);
+    const ref = { collectionId: 'channels', kind: 'im-channel', id: 'wecom-group' }, context = { controllerDeviceId: 'terminal' }, client = { protocolVersion: 1, primitives: ['text', 'form', 'actions'], locale: 'en' };
+    const scheduler = new TerminalSchedulerHost({ profileDir: root, tasks: host, logger, emit() {}, notify: (schedule, run) => connections.notify(schedule, run) }); schedulers.push(scheduler);
+    try {
+      await connections.start();
+      const webhookUrl = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-test-webhook-key';
+      await configuration.save({ collectionId: 'channels', resourceId: ref.id, actionId: 'edit' }, { webhookUrl, testMessage: 'configured group test' }, { source: 'local' });
+      const resource = await registry.get(context, { ref, client });
+      expect(JSON.stringify(resource)).not.toContain(webhookUrl);
+      expect(resource.actions?.find(action => action.id === 'edit')?.fields?.[0].kind).toBe('secret');
+      expect(webhooks).toHaveLength(1);
+      const scheduled = await scheduler.invoke('maker:schedule:create', [{ name: 'Channel completion', prompt: 'scheduled notification fixture', kind: 'cron', cronExpr: '0 * * * *', timezone: 'UTC', recurring: true, manual: true,
+        agentKind: 'claude-code', providerId: 'fixture', model: 'test-model', workspaceKind: 'dialogue', useWorktree: false, persistentSession: true, notify: { desktop: true, feishu: true, wecomGroup: true } }]) as { id: string };
+      await scheduler.invoke('maker:schedule:run-now', [scheduled.id]);
+      await vi.waitFor(() => expect(webhooks).toHaveLength(2));
+      expect(webhooks[1]).toContain('scheduled notification fixture'); expect(notices).toHaveLength(1);
+      expect(connections.feishu.sendNotification).toHaveBeenCalledWith('ou_owner', expect.stringContaining('scheduled notification fixture'));
+      const [run] = await scheduler.invoke('maker:schedule:list-runs', [scheduled.id]) as Array<{ sessionId: string }>;
+      expect(await connections.notifications.resolveFeishuNotificationReply(connections.feishu, { senderId: 'ou_owner', contextId: 'cli_schedule', chatId: 'oc_owner', replyThread: { rootMessageId: 'om_schedule', threadId: 'omt_schedule' } } as IMMessageEvent)).toBe(run.sessionId);
+      await registry.invoke(context, { client, collectionId: 'channels', resourceRef: ref, actionId: 'enabled', input: { enabled: false } });
+      expect(connections.wecomGroup.getState().enabled).toBe(false);
+      await expect(connections.wecomGroup.publishMarkdown('disabled notification')).rejects.toThrow('WECOM_GROUP_NOTIFICATIONS_DISABLED');
+      expect(webhooks).toHaveLength(2);
+    } finally { await scheduler.close(); await connections.close(); configuration.close(); for (const spy of spies) spy.mockRestore(); }
+  });
   it('runs and resumes owner-scoped schedules through the real engine and persists script completion', async () => {
     const { host, root } = await setup();
     const scheduler = new TerminalSchedulerHost({profileDir:root,tasks:host,logger,emit(){}});schedulers.push(scheduler);

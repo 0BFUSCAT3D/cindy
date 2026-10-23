@@ -377,7 +377,7 @@ export class TerminalService {
     this.resources=new TerminalResources(this.tasks);
     registerKnowledgeResources(this.resources.registry,this.knowledge);
     const guardIm = () => { if (this.ownerKey !== owner || this.ownerGeneration !== generation || this.closing) throw new Error('OWNER_CHANGED'); };
-    const im = new TerminalImConnections({ tasks: this.tasks, root: ownerDir, logger, assertCurrent: guardIm, knowledge: this.knowledge,
+    const im = new TerminalImConnections({ tasks: this.tasks, root: ownerDir, logger, assertCurrent: guardIm, knowledge: this.knowledge, language: () => this.settings.snapshot().effective.language,
       secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key, value) => this.secrets.setSync(`${owner}:${key}`, value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`), available: () => !this.secrets.status().locked },
       emit: (channel, payload) => { guardIm(); if (this.ownerSuspended) return; this.transport.publish(channel, [payload]); void this.remote?.publish(channel, payload).catch(() => {}); },
     });
@@ -435,7 +435,7 @@ export class TerminalService {
     this.ssh.registerResources(this.resources.registry);
     const binaries=await this.engines.allStatus();
     await this.tasks.refreshBinaries(Object.fromEntries(binaries.filter(status=>status.binary).map(status=>[status.kind,status.binary!])));
-    this.scheduler=new TerminalSchedulerHost({profileDir:ownerDir,tasks:this.tasks,logger,companions:()=>this.companions,
+    this.scheduler=new TerminalSchedulerHost({profileDir:ownerDir,tasks:this.tasks,logger,companions:()=>this.companions, notify:(schedule,run)=>im.notify(schedule,run),
       canDispatch:()=>this.ownerKey===owner&&this.ownerGeneration===generation&&!this.ownerSuspended&&!this.closing,
       emit:(channel,args)=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.ownerSuspended||this.closing)return;this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
     this.scheduler.registerResources(this.resources.registry);

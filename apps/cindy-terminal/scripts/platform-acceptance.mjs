@@ -66,7 +66,7 @@ try {
   record('passphrase vault setup', 'PASS');
   const tasks = await run(['tasks', 'list']); assert.ok(tasks); record('daemon command through authenticated IPC', 'PASS');
   const channels = await run(['channels', 'list']);
-  assert.deepEqual(channels.items.map(item => item.ref.id).sort(), ['dingtalk', 'discord', 'telegram', 'wecom']);
+  assert.deepEqual(channels.items.map(item => item.ref.id).sort(), ['dingtalk', 'discord', 'feishu', 'telegram', 'wecom', 'wecom-group']);
   const telegram = await run(['channels', 'get', 'telegram']);
   assert.equal(telegram.ref.id, 'telegram');
   assert.ok(telegram.actions.some(action => action.id === 'persona'));

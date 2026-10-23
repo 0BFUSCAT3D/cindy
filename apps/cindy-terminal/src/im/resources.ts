@@ -1,4 +1,5 @@
 import type { RemoteResourceRegistry, RemoteText, RemoteCollectionItem, RemoteActionDescriptor } from '@cindy/device-link';
+import { notificationItem, notificationResource, notificationRef } from './notification-resources.js';
 import type { TerminalConfiguration } from '../configuration.js';
 import { TERMINAL_IM_CHANNELS, type TerminalImChannel, type TerminalImConnections } from './connections.js';
 import type { TerminalTaskHost } from '../tasks/host.js';
@@ -13,9 +14,14 @@ const statusLabels = {
 };
 
 const names: Record<TerminalImChannel, RemoteText> = {
-  discord: 'Discord', wecom: label('WeCom', '企业微信', '企業微信', 'WeCom', 'WeCom'), dingtalk: label('DingTalk', '钉钉', '釘釘', 'DingTalk', 'DingTalk'), telegram: 'Telegram',
+  feishu: label('Feishu / Lark', '飞书 / Lark', '飛書 / Lark', 'Feishu / Lark', 'Feishu / Lark'), discord: 'Discord', wecom: label('WeCom', '企业微信', '企業微信', 'WeCom', 'WeCom'), dingtalk: label('DingTalk', '钉钉', '釘釘', 'DingTalk', 'DingTalk'), telegram: 'Telegram',
 };
 const credentialFields: Record<TerminalImChannel, NonNullable<RemoteActionDescriptor['fields']>> = {
+  feishu: [
+    { id: 'service', kind: 'select', label: label('Service', '服务', '服務', 'サービス', '서비스'), required: true, options: [{ value: 'feishu', label: label('Feishu', '飞书', '飛書', 'Feishu', 'Feishu') }, { value: 'lark', label: 'Lark' }] },
+    { id: 'appId', kind: 'text', label: 'App ID', required: true },
+    { id: 'appSecret', kind: 'secret', label: 'App Secret', required: true },
+  ],
   discord: [
     { id: 'token', kind: 'secret', label: label('Bot token', '机器人令牌', '機器人權杖', 'Bot トークン', '봇 토큰'), required: true },
     { id: 'ownerUserId', kind: 'text', label: label('Your Discord user ID', '你的 Discord 用户 ID', '你的 Discord 使用者 ID', 'あなたの Discord ユーザー ID', '내 Discord 사용자 ID'), required: true },
@@ -45,8 +51,9 @@ export function registerImResources(registry: RemoteResourceRegistry, connection
   });
   registry.register({
     collection: { id: 'channels', resourceKind: 'im-channel', title: label('Channels', '聊天渠道', '聊天渠道', 'チャット連携', '채팅 채널'), placement: 'settings' },
-    list: async () => ({ collectionId: 'channels', revision: String(connections.version()), items: TERMINAL_IM_CHANNELS.map(item) }),
+    list: async () => ({ collectionId: 'channels', revision: String(connections.version()), items: [...TERMINAL_IM_CHANNELS.map(item), notificationItem(connections)] }),
     get: async (_context, request) => {
+      if (request.ref.id === notificationRef.id) return notificationResource(connections);
       const id = connections.channel(request.ref.id);
       const status = await connections.readConfiguration(id) as Record<string, unknown>;
       const values = Object.fromEntries(credentialFields[id].filter(field => field.kind !== 'secret').map(field => [field.id, status[field.id] ?? '']));
@@ -56,7 +63,7 @@ export function registerImResources(registry: RemoteResourceRegistry, connection
       const persona = id === 'telegram' ? connections.telegramSettings.persona() : undefined;
       const groups = id === 'telegram' ? await connections.groups.channel('telegram-personal').listKnownGroups(connections.telegram.botContextId) : [];
       const routes = (await tasks.models.views()).filter(provider => provider.connected && !provider.suspended).flatMap(provider =>
-        Object.entries(provider.models).flatMap(([agentKind, models]) => (models ?? []).filter(model => !model.disabled).map(model => ({
+        Object.entries(provider.models).flatMap(([agentKind, models]) => (models ?? []).filter(model => !model.disabled && model.defaultEnabled !== false).map(model => ({
           value: JSON.stringify({ agentKind, providerId: provider.id, model: model.id }), label: `${provider.name} / ${model.name} · ${agentKind}`,
         }))));
       return { ...item(id), blocks: [
@@ -81,6 +88,12 @@ export function registerImResources(registry: RemoteResourceRegistry, connection
     },
     invoke: async (context, request) => {
       context.assertCurrent?.();
+      if (request.resourceRef?.id === notificationRef.id) {
+        if (request.actionId === 'edit') throw new Error('PROTECTED_INPUT_REQUIRED');
+        if (request.actionId === 'configuration:open') return { effects: [], result: configuration.open({ collectionId: 'channels', resourceId: notificationRef.id, actionId: 'edit' }, { source: 'local', deviceId: context.controllerDeviceId, assertCurrent: context.assertCurrent }) };
+        await connections.notificationAction(request.actionId, request.input);
+        return { effects: [{ kind: 'refresh-resource', ref: notificationRef }, { kind: 'refresh-collection', collectionId: 'channels' }] };
+      }
       const id = connections.channel(request.resourceRef?.id ?? '');
       if (request.actionId === 'edit') throw new Error('PROTECTED_INPUT_REQUIRED');
       if (request.actionId === 'configuration:open') {

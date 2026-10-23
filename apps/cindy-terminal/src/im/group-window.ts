@@ -9,6 +9,7 @@ import { createGroupWindowCore, DEFAULT_GROUP_WINDOW_RETENTION } from '@cindy/im
 import { createGroupWindowMaintenance } from '@cindy/im-runtime/groupWindowMaintenance';
 import { createChannelGroupWindow, type ChannelGroupWindow } from '@cindy/im-runtime/channelGroupWindow';
 import { createGroupHistorySearch } from '@cindy/im-runtime/groupHistorySearch';
+import type { FeishuNotificationStore } from '@cindy/im-runtime/channels/feishu/notificationOrigin';
 import * as schema from '@cindy/im-runtime/groupWindowSchema';
 import { privateDirectory } from '../platform.js';
 import { GROUP_WINDOW_SCHEMA_SQL } from './group-window-schema.js';
@@ -60,13 +61,41 @@ export class TerminalGroupWindows {
     }
     this.guard();
     const database = this.native = new Database(file);
-    database.pragma('journal_mode = WAL');
-    const version = database.pragma('user_version', { simple: true });
-    if (version === 0) database.transaction(() => { database.exec(GROUP_WINDOW_SCHEMA_SQL); database.pragma('user_version = 1'); })();
-    else if (version !== 1) throw new Error('IM_HISTORY_VERSION_UNSUPPORTED');
-    if (process.platform !== 'win32') await chmod(file, 0o600);
-    this.guard(); this.db = drizzle(database, { schema });
+    try {
+      database.pragma('journal_mode = WAL');
+      let version = database.pragma('user_version', { simple: true });
+      if (version === 0) {
+        database.transaction(() => { database.exec(GROUP_WINDOW_SCHEMA_SQL); database.pragma('user_version = 1'); })();
+        version = 1;
+      }
+      if (version === 1) database.transaction(() => {
+        database.exec(`CREATE TABLE im_notification_origins (
+          channel TEXT NOT NULL, bot_context_id TEXT NOT NULL, user_id TEXT NOT NULL,
+          message_id TEXT NOT NULL, chat_id TEXT NOT NULL, session_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+          PRIMARY KEY (channel, bot_context_id, user_id, message_id)
+        )`);
+        database.pragma('user_version = 2');
+      })();
+      else if (version !== 2) throw new Error('IM_HISTORY_VERSION_UNSUPPORTED');
+      if (process.platform !== 'win32') await chmod(file, 0o600);
+      this.guard(); this.db = drizzle(database, { schema });
+    } catch (error) { database.close(); this.native = undefined; throw error; }
   }
+  notificationStore(session: FeishuNotificationStore['session']): FeishuNotificationStore {
+    this.guard();
+    return {
+      insert: origin => this.track(async () => {
+        this.native!.prepare(`INSERT INTO im_notification_origins
+          (channel,bot_context_id,user_id,message_id,chat_id,session_id,created_at) VALUES (?,?,?,?,?,?,?)`)
+          .run(origin.channel,origin.botContextId,origin.userId,origin.messageId,origin.chatId,origin.sessionId,origin.createdAt);
+      }),
+      find: key => this.track(async () => this.native!.prepare(`SELECT session_id AS sessionId FROM im_notification_origins
+        WHERE channel=? AND bot_context_id=? AND user_id=? AND message_id=? AND chat_id=? LIMIT 1`)
+        .get(key.channel,key.botContextId,key.userId,key.messageId,key.chatId) as { sessionId: string } | undefined ?? null),
+      session: id => this.track(() => session(id)),
+    };
+  }
+
   private track<T>(action: () => Promise<T>): Promise<T> {
     const work = (async () => {
       this.guard(); await this.ready; this.guard();

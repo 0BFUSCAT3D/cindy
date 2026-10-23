@@ -1,6 +1,14 @@
 import fs from 'node:fs';
+import type { Schedule, ScheduleRun } from '@cindy/maker-scheduler';
+import { WecomGroupNotificationService } from '@cindy/im-runtime/wecomGroupNotification';
+import { renderExternalMessage } from '@cindy/im-runtime/scheduleNotification';
 import path from 'node:path';
-import { createDiscordIM, createWecomIM, createDingTalkIM, createTelegramIM, type TelegramIMOptions, type DiscordIMOptions, type BaseIM, type TextChannelIM } from '@cindy/im';
+import { createDiscordIM, createWecomIM, createDingTalkIM, createTelegramIM, createFeishuIM, type TelegramIMOptions, type DiscordIMOptions, type BaseIM, type FeishuIM } from '@cindy/im';
+import { buildFeishuAdapter } from '@cindy/im-runtime/channels/feishu/adapter';
+import { createFeishuUiText } from '@cindy/im-runtime/channels/feishu/uiText';
+import { createFeishuNotifications } from '@cindy/im-runtime/channels/feishu/notificationOrigin';
+import { createTerminalFeishuTools } from './feishu-tools.js';
+import { channelPermissionUnavailable, type Locale } from '../ui/i18n.js';
 import { buildTelegramAdapter } from '@cindy/im-runtime/channels/telegram/adapter';
 import { telegramUiText } from '@cindy/im-runtime/channels/telegram/uiText';
 import { createTelegramSpeakerRegistration } from '@cindy/im-runtime/channels/telegram/contacts';
@@ -16,9 +24,10 @@ import { discordUiText } from '@cindy/im-runtime/channels/discord/uiText';
 import { IM_DEFAULT_SETTINGS, IM_DEFAULT_EFFORT_OVERRIDES } from '@cindy/im-runtime/imDefaultSettings';
 import { TerminalImTransportHost } from './transport-host.js';
 import { TerminalGroupWindows } from './group-window.js';
-export const TERMINAL_IM_CHANNELS = ['discord', 'wecom', 'dingtalk', 'telegram'] as const;
+export const TERMINAL_IM_CHANNELS = ['discord', 'wecom', 'dingtalk', 'telegram', 'feishu'] as const;
 export type TerminalImChannel = typeof TERMINAL_IM_CHANNELS[number];
 const configurationChannels = {
+  feishu: { read: 'feishuBot:get-state', save: 'feishuBot:save', disconnect: 'feishuBot:clear' },
   discord: { read: 'discordBot:get-status', save: 'discordBot:set-config', disconnect: 'discordBot:disconnect' },
   wecom: { read: 'wecomBot:get-status', save: 'wecomBot:set-config', disconnect: 'wecomBot:disconnect' },
   dingtalk: { read: 'dingtalkBot:get-state', save: 'dingtalkBot:save', disconnect: 'dingtalkBot:clear' },
@@ -29,26 +38,38 @@ const configurationChannels = {
  * task runtime. No transport module imports Electron or starts a renderer. */
 export class TerminalImConnections {
   readonly transport: TerminalImTransportHost;
+  readonly feishu;
+  readonly notifications;
+  readonly wecomGroup;
   readonly discord;
   readonly wecom;
   readonly dingtalk;
   readonly telegram;
   readonly telegramSettings: TerminalTelegramSettings;
   readonly groups: TerminalGroupWindows;
-  private readonly connections: Array<BaseIM & TextChannelIM>;
+  private readonly connections: Array<BaseIM & Pick<FeishuIM, 'onStatusChange'>>;
   private readonly subscriptions: Array<() => void> = [];
   private revision = 0;
   private closing?: Promise<void>;
   private starting?: Promise<void>;
-  constructor(private readonly options: ConstructorParameters<typeof TerminalImTransportHost>[0] & { knowledge?: TerminalKnowledge }, native: { discord?: DiscordIMOptions; telegram?: TelegramIMOptions } = {}) {
+  constructor(private readonly options: ConstructorParameters<typeof TerminalImTransportHost>[0] & { knowledge?: TerminalKnowledge; language?: () => Locale }, native: { discord?: DiscordIMOptions; telegram?: TelegramIMOptions; wecomGroupFetch?: typeof fetch } = {}) {
     this.transport = new TerminalImTransportHost(options);
+    this.wecomGroup = new WecomGroupNotificationService(native.wecomGroupFetch ?? fetch, this.transport.host.secrets, { account: options.tasks.channelControl.account, log: options.logger });
     this.groups = new TerminalGroupWindows(options.root, options.assertCurrent, options.logger);
-    options.tasks.configureChannelTools(context => {
+    this.notifications = createFeishuNotifications({ account: options.tasks.channelControl.account, log: options.logger,
+      captureStore: () => this.groups.notificationStore(async id => {
+        const row = await options.tasks.storage.get(id);
+        return row ? { workingDir: row.workDir, status: row.deleted ? 'deleted' : row.archived ? 'archived' : 'active' } : null;
+      }),
+    });
+    this.feishu = createFeishuIM(this.transport.host);
+    options.tasks.configureChannelTools((context, metadata) => {
       const getSessionContext = () => {
         if (this.closing) throw new Error('IM_ACCOUNT_SCOPE_CLOSED');
         options.assertCurrent(); return context();
       };
       return {
+        cindy_feishu_bot: () => createTerminalFeishuTools({ getSessionContext, source: metadata.source, tasks: options.tasks, personal: this.feishu, notifications: this.notifications }),
         cindy_telegram_bot: () => createTelegramBotMcpServer({ getSessionContext }, options.logger),
         cindy_group_history: () => createGroupHistoryMcpServer({ getSessionContext, search: this.groups.search }, options.logger),
       };
@@ -67,9 +88,20 @@ export class TerminalImConnections {
       resolveImageUrl: url => { const file = this.transport.host.media!.resolveMediaUrl(url); if (!file) throw new Error('INVALID_MEDIA_URL'); return file; },
       expiredCardNotice: telegramUiText.expiredCardNotice, behavior: () => this.telegramSettings.behavior(),
     });
-    this.connections = [this.discord, this.wecom, this.dingtalk, this.telegram];
+    this.connections = [this.discord, this.wecom, this.dingtalk, this.telegram, this.feishu];
     const config = { agentKind: IM_DEFAULT_SETTINGS.agentKind, defaultModel: IM_DEFAULT_SETTINGS.agents[IM_DEFAULT_SETTINGS.agentKind].model,
       defaultPermissionMode: IM_DEFAULT_SETTINGS.permissionMode, effortOverrides: IM_DEFAULT_EFFORT_OVERRIDES };
+    options.tasks.channelOrchestrators.attach(buildFeishuAdapter(this.feishu, config, {
+      log: options.logger, ui: createFeishuUiText(() => channelPermissionUnavailable(options.language?.() ?? 'en')),
+      readImDefaultSettings: channel => options.tasks.channelDefaults.read(channel),
+      resolveFeishuNotificationReply: this.notifications.resolveFeishuNotificationReply,
+      requestUtilityText: (prompt, opts) => options.tasks.requestChannelUtilityText('feishu', prompt, opts),
+      ensureWorkingDir: appId => {
+        options.assertCurrent(); if (!/^[\w-]{1,128}$/.test(appId)) throw new Error('INVALID_IM_CONTEXT');
+        const directory = path.join(options.root, 'im-working-dir', appId);
+        fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); return directory;
+      },
+    }));
     options.tasks.channelOrchestrators.attach(buildDiscordAdapter(this.discord, config, appId => {
       options.assertCurrent();
       if (!/^[\w-]{1,128}$/.test(appId)) throw new Error('INVALID_IM_CONTEXT');
@@ -161,8 +193,52 @@ export class TerminalImConnections {
   status(id: TerminalImChannel) { return this[id].getStatus(); }
   readConfiguration(id: TerminalImChannel) { return this.invoke(configurationChannels[id].read, undefined); }
   async saveConfiguration(id: string, input: unknown) {
-    const result = await this.invoke(configurationChannels[this.channel(id)].save, input) as { saveErrorStatus?: unknown; status?: { kind?: string } };
-    if (result.saveErrorStatus || result.status?.kind === 'error') throw new Error('IM_CONFIGURATION_SAVE_FAILED');
+    if (id === 'wecom-group') {
+      if (!input || typeof input !== 'object') throw new Error('INVALID_CONFIGURATION');
+      const value = input as { webhookUrl?: unknown; testMessage?: unknown };
+      if (typeof value.webhookUrl !== 'string' || typeof value.testMessage !== 'string') throw new Error('INVALID_CONFIGURATION');
+      await this.withAccount(generation => this.wecomGroup.saveAndTest(value.webhookUrl as string, value.testMessage as string,
+        () => this.options.tasks.channelControl.account.isImAccountGenerationCurrent(generation)));
+      this.revision += 1; this.options.emit('maker:remote-resources:changed', { collectionId: 'channels' }); return;
+    }
+    const result = await this.invoke(configurationChannels[this.channel(id)].save, input) as { saveErrorStatus?: unknown; status?: { kind?: string }; verdict?: string };
+    if (result.saveErrorStatus || result.status?.kind === 'error' || result.verdict === 'error' || result.verdict === 'conflict') throw new Error('IM_CONFIGURATION_SAVE_FAILED');
+  }
+  withAccount<T>(operation: (generation: number) => Promise<T>): Promise<T> {
+    this.options.assertCurrent();
+    const account = this.options.tasks.channelControl.account, generation = account.captureImAccountGeneration();
+    if (generation === null || this.closing) throw new Error('IM_ACCOUNT_SCOPE_CLOSED');
+    return account.runInImAccountGeneration(generation, () => operation(generation));
+  }
+  async notificationAction(action: string, input: unknown) {
+    const values = input && typeof input === 'object' ? input as Record<string, unknown> : {};
+    await this.withAccount(async generation => {
+      if (action === 'enabled' && typeof values.enabled === 'boolean') this.wecomGroup.setEnabled(values.enabled);
+      else if (action === 'disconnect') this.wecomGroup.clear();
+      else if (action === 'test' && typeof values.testMessage === 'string') await this.wecomGroup.test(values.testMessage, () => this.options.tasks.channelControl.account.isImAccountGenerationCurrent(generation));
+      else throw new Error('INVALID_ACTION');
+    });
+    this.revision += 1; this.options.emit('maker:remote-resources:changed', { collectionId: 'channels' });
+  }
+  async notify(schedule: Schedule, run: ScheduleRun): Promise<void> {
+    await this.withAccount(async generation => {
+      const current = () => { this.options.assertCurrent(); if (!this.options.tasks.channelControl.account.isImAccountGenerationCurrent(generation)) throw new Error('IM_ACCOUNT_SCOPE_CLOSED'); };
+      current();
+      if (schedule.notify.desktop) this.options.emit('terminal:notification', { id: run.id, title: schedule.name, text: run.resultText ?? run.errorMsg ?? run.status, sessionId: run.sessionId });
+      const text = renderExternalMessage(schedule, run), operations: Promise<unknown>[] = [];
+      if (schedule.notify.feishu) operations.push((async () => {
+        current();
+        if (run.sessionId) await this.notifications.sendFeishuSessionNotification(this.feishu, run.sessionId, text);
+        else {
+          const owner = this.feishu.getOwnerOpenId();
+          if (!owner || this.feishu.getStatus().kind !== 'connected') throw new Error('FEISHU_NOTIFICATION_NOT_READY');
+          await this.feishu.sendMarkdownText(owner, text);
+        }
+      })());
+      if (schedule.notify.wecomGroup) operations.push(this.wecomGroup.publishMarkdown(text));
+      const results = await Promise.allSettled(operations);
+      if (results.some(result => result.status === 'rejected')) throw new Error('SCHEDULE_NOTIFICATION_FAILED');
+    });
   }
   disconnect(id: TerminalImChannel) { return this.invoke(configurationChannels[id].disconnect, undefined); }
   accepts(channel: string) { return this.transport.channels().includes(channel); }
@@ -180,15 +256,15 @@ export class TerminalImConnections {
     return this.closing = (async () => {
       const results = await Promise.allSettled([
         this.options.tasks.channelOrchestrators.close(),
-        ...this.connections.map(connection => connection.dispose()),
+        ...this.connections.map(connection => this.transport.disposeConnection(() => connection.dispose())),
       ]);
       // Initialization may have been waiting on network I/O when shutdown
       // began. Drain it and dispose any late connection before releasing data.
       await this.starting?.catch(() => {});
-      results.push(...await Promise.allSettled(this.connections.map(connection => connection.dispose())));
+      results.push(...await Promise.allSettled(this.connections.map(connection => this.transport.disposeConnection(() => connection.dispose()))));
       await handlers;
       this.transport.close();
-      await Promise.all([this.groups.close(), this.telegramSettings.close()]);
+      await Promise.all([this.groups.close(), this.telegramSettings.close(), this.wecomGroup.close()]);
       const errors = results.filter(result => result.status === 'rejected').map(result => result.reason);
       if (errors.length) throw new AggregateError(errors, 'IM_CONNECTION_CLEANUP_FAILED');
     })();

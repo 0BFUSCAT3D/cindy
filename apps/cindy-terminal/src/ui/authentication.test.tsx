@@ -278,6 +278,24 @@ it('edits resource defaults and returns to the collection after deletion',async(
   expect(removed).toBe(true);expect(actionInputs.delete).toEqual({__revision:'rev-1'});expect(screen.latest()).toContain('Records');expect(screen.latest()).not.toContain('Saved record');
 });
 
+// Unit: channel forms return both refresh effects. The list refresh must not
+// erase the explicitly refreshed detail, while collection-only actions exit it.
+it('keeps the edited resource when the host explicitly refreshes its detail', async () => {
+  const host = fakeClient();
+  const ref = { collectionId: 'channels', kind: 'im-channel', id: 'fixture' };
+  let saved = false;
+  host.handle(channel => {
+    if (channel === 'maker:remote-resources:manifest') return { collections: [{ id: 'channels', resourceKind: 'im-channel', title: 'Channels' }] };
+    if (channel === 'maker:remote-resources:list') return { items: [{ ref, revision: '1', display: { title: 'My channel' }, links: [] }] };
+    if (channel === 'maker:remote-resources:get') return { ref, revision: '1', display: { title: 'My channel' }, links: [],
+      blocks: [{ id: 'state', primitive: 'text', fallbackMarkdown: saved ? 'Updated configuration' : 'Initial configuration' }], actions: [{ id: 'save', label: 'Save' }] };
+    if (channel === 'maker:remote-resources:invoke') { saved = true; return { effects: [{ kind: 'refresh-resource', ref }, { kind: 'refresh-collection', collectionId: 'channels' }] }; }
+  });
+  const screen = await mount(host.client, { node: <Resources client={host.client} locale="en" initialCollection="channels" onTask={() => {}} /> });
+  await screen.press('\r'); await screen.press('\r');
+  expect(screen.latest()).toContain('My channel'); expect(screen.latest()).toContain('Updated configuration');
+});
+
 // Unit: settings forms previously sent raw secrets to generic remote resources.
 // Exercise the real keyboard path and assert the local-only protected entry.
 it('saves remote plugin credentials through the local protected controller without echo',async()=>{

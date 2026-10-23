@@ -157,7 +157,7 @@ export class TerminalTaskHost {
   private pluginSetup?:TerminalPluginSetup;
   private readonly channelPluginSurface = createGhostSetupInteractionSurface();
   private knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>;
-  private channelTools?: (context: () => import('@cindy/mcps').LiziMcpSessionContext) => NonNullable<Parameters<typeof createTaskTools>[0]['extraFactories']>;
+  private channelTools?: (context: () => import('@cindy/mcps').LiziMcpSessionContext, metadata: { source?: string }) => NonNullable<Parameters<typeof createTaskTools>[0]['extraFactories']>;
   private schedulerDeps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps;
   private readonly taskObservers = new Map<string,Set<(event:AgentEvent)=>void>>();
   private readonly makerObservers = new Set<MakerEventListener>();
@@ -692,6 +692,40 @@ export class TerminalTaskHost {
       withSessionPermissionChange: (id, operation) => this.permissionChanges.withSessionPermissionChange(id, operation),
     });
   }
+  requestChannelUtilityText(channel: import('@cindy/im-runtime/imDefaultSettings').ImDefaultSettingsChannel, prompt: string, opts: import('@cindy/model-providers/utilityTextRequest').UtilityTextRequestOptions): Promise<import('@cindy/model-providers/utilityTextResult').UtilityTextResult> {
+    const operation = (async (): Promise<import('@cindy/model-providers/utilityTextResult').UtilityTextResult> => {
+      let agent: BaseAgent | undefined;
+      const id = `utility-${randomUUID()}`;
+      try {
+        await this.ready; this.guard({ source: 'local' });
+        const defaults = this.channelDefaults.read(channel), selected = defaults.agents[defaults.agentKind];
+        // Use the channel's configured account/model; never borrow another
+        // subscription or dispatch on this computer for a remote-only route.
+        if (selected.agentDeviceId) return { ok: false, reason: 'no_candidate', attempts: [] };
+        const revision = this.models.revision(), snapshot = JSON.stringify(defaults);
+        const chosen = await this.selection({ agentKind: defaults.agentKind, providerId: selected.providerId ?? undefined, model: selected.model });
+        const current = async () => !this.closed && revision === this.models.revision()
+          && snapshot === JSON.stringify(this.channelDefaults.read(channel))
+          && (!opts.beforeDispatch || await opts.beforeDispatch(chosen.selection));
+        const binary = this.binaries.get(chosen.selection.agentKind);
+        if (!binary || !await current()) return { ok: false, reason: 'no_candidate', attempts: [] };
+        agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, ...chosen, binaryPath: binary, models: this.models, logger: this.options.logger });
+        if (!await current()) return { ok: false, reason: 'no_candidate', attempts: [] };
+        const text = await agent.oneShot(prompt, { ...opts, model: chosen.selection.model,
+          signal: AbortSignal.any([this.utilityAbort.signal, ...(opts.signal ? [opts.signal] : [])]), beforeDispatch: current });
+        if (!await current() || !text.trim() || opts.validateResponse && !opts.validateResponse(text)) return { ok: false, reason: 'empty_response', attempts: [] };
+        return { ok: true, text, providerId: chosen.selection.providerId, model: chosen.selection.model,
+          transport: chosen.selection.agentKind === 'codex' ? 'codex-responses' : 'litellm-chat-completions' };
+      } catch { return { ok: false, reason: 'all_candidates_failed', attempts: [] }; }
+      finally {
+        await agent?.dispose().catch(() => this.options.logger.warn('UTILITY_RUNTIME_CLEANUP_FAILED'));
+        await rm(path.join(this.options.profileDir, 'engines', 'codex', id), { recursive: true, force: true }).catch(() => {});
+      }
+    })();
+    this.utilityWork.add(operation);
+    void operation.finally(() => this.utilityWork.delete(operation)).catch(() => {});
+    return operation;
+  }
   generateTaskTitle(input: { message: string; sessionId?: string; agentKind?: AgentKind }): Promise<string | null> {
     const operation = this.runTaskTitle(input);
     this.utilityWork.add(operation);
@@ -936,8 +970,8 @@ export class TerminalTaskHost {
         if (!isCurrent()) throw new Error('TASK_TOOLS_REVOKED');
         const session = this.live.get(id)?.session;
         if (!session) throw new Error('TASK_NOT_ACTIVE');
-        return { sessionId: id, sessionInstanceId: session.instanceId, workingDir: row.workDir, agentKind: chosen.selection.agentKind };
-      })},
+        return { sessionId: id, sessionInstanceId: session.instanceId, workingDir: row.workDir, agentKind: chosen.selection.agentKind, vendorOptions: { source: row.source, ...(row.source === 'feishu' && row.imUserId ? { feishuChatId: row.imUserId } : {}) } };
+      }, { source: row.source })},
       isCurrent,
       scheduler: this.schedulerDeps,
       helper: this.helperDeps({sessionId:id,workingDir:row.workDir,agentKind:chosen.selection.agentKind,title:()=>row.title}),

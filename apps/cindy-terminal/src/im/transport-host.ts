@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IMHost } from '@cindy/im';
 import type { Logger } from '@cindy/maker-core';
 import { fetchPublicImageBytes } from '@cindy/im-runtime/publicImageFetch';
@@ -9,6 +10,7 @@ export class TerminalImTransportHost {
   private readonly handlers = new Map<string, (payload?: unknown) => unknown>();
   private readonly abort = new AbortController();
   private closed = false;
+  private readonly cleanup = new AsyncLocalStorage<boolean>();
   constructor(private readonly options: {
     tasks: TerminalTaskHost;
     root: string;
@@ -19,14 +21,21 @@ export class TerminalImTransportHost {
   }) {
     const account = options.tasks.channelControl.account;
     const guard = () => this.guard();
+    // Discord's shutdown receipt distinguishes a clean stop from an interrupted
+    // offline announcement. Keep its original owner-bound marker writable while
+    // admission is revoked; credentials never inherit this cleanup capability.
+    const markerGuard = (key: string) => {
+      if (!this.closed && this.cleanup.getStore() && key === 'discord-bot-runtime-active') return;
+      guard();
+    };
     this.host = {
       createLogger: scope => options.logger.child(scope),
       secrets: {
-        read: key => { try { guard(); return options.secrets.getSync(key); } catch { return null; } },
-        readResult: key => { try { guard(); const value = options.secrets.getSync(key); return value === null ? { kind: 'missing' } : { kind: 'value', value }; } catch { return { kind: 'error' }; } },
-        write: (key, value) => { try { guard(); options.secrets.setSync(key, value); return true; } catch { options.logger.warn('IM_SECRET_WRITE_FAILED'); return false; } },
-        remove: key => { guard(); options.secrets.deleteSync(key); },
-        isAvailable: () => { try { guard(); return options.secrets.available(); } catch { return false; } },
+        read: key => { try { markerGuard(key); return options.secrets.getSync(key); } catch { return null; } },
+        readResult: key => { try { markerGuard(key); const value = options.secrets.getSync(key); return value === null ? { kind: 'missing' } : { kind: 'value', value }; } catch { return { kind: 'error' }; } },
+        write: (key, value) => { try { markerGuard(key); options.secrets.setSync(key, value); return true; } catch { options.logger.warn('IM_SECRET_WRITE_FAILED'); return false; } },
+        remove: key => { markerGuard(key); options.secrets.deleteSync(key); },
+        isAvailable: () => { try { if (!this.closed && this.cleanup.getStore()) return options.secrets.available(); guard(); return options.secrets.available(); } catch { return false; } },
       },
       accountScope: {
         capture: () => { try { guard(); return account.captureImAccountGeneration(); } catch { return null; } },
@@ -66,6 +75,7 @@ export class TerminalImTransportHost {
     this.options.assertCurrent();
   }
   channels() { return [...this.handlers.keys()]; }
+  disposeConnection(operation: () => Promise<void>) { return this.cleanup.run(true, operation); }
   async invoke(channel: string, payload: unknown) {
     this.guard(); await this.options.tasks.ready; this.guard();
     const handler = this.handlers.get(channel);

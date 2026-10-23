@@ -32,15 +32,19 @@ Desktop 的原路径保留兼容导出或宿主接线。`ImTurnHost` / `ImComman
 恢复的执行责任仍留在宿主。渠道适配器只有接入完整 `ImTurnHost` / `ImCommandHost` /
 `ImCardHost` 并通过实际收发验收后才算支持，单独抽出共用模块不算渠道交付。
 
-终端 `TerminalImConnections` 装配官方纯 Node 的 Discord、企业微信、钉钉与 Telegram
+终端 `TerminalImConnections` 装配官方纯 Node 的 Discord、企业微信、钉钉、Telegram 与飞书 / Lark
 transport。这些渠道的适配器位于 `im-runtime/channels`，Desktop 只注入原有的目录、
 设置和存储，不改变渠道行为。终端的群历史使用当前账号私有 SQLite；消息入窗、全文
 检索、已读游标及受理失败补偿复用同一实现。关闭宿主先停止入站，再等待已受理操作及
 连接初始化退出；游标补偿持有原账号数据库，不能被数据库提前关闭打断。
 
 Telegram 的人格、回复行为、群参与设置与在线开关可通过 Remote Resources 表单操作。
-`cindy_telegram_bot` 与 `cindy_group_history` 仍依赖当前任务实例的逐轮作用域，
-已结束、重建或已换账号的实例不能借新实例继续调用。平台网络替身下的组合测试只证明
+`cindy_telegram_bot`、`cindy_feishu_bot` 与 `cindy_group_history` 仍依赖当前任务实例的逐轮作用域，
+已结束、重建或已换账号的实例不能借新实例继续调用。飞书通知收据按账号、机器人、主人、群和消息定位原任务；快速回复等待对应在途收据，
+重启后继续使用持久映射。已归档或删除的原任务不得悄悄转成新任务。
+终端定时任务复用外部通知正文，将结果发送至飞书 / Lark 或配置好的企业微信群；
+群 Webhook 仅经受保护配置表单保存，资源投影只显示已配置状态和掩码。
+平台网络替身下的组合测试只证明
 接线和持久化，不替代各平台上的真实渠道连接、附件和授权验收。
 
 | 步骤 | 个人 IM 现状 | 官方 hook 现状 | 目标归属 |

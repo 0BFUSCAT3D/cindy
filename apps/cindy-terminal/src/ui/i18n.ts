@@ -152,3 +152,12 @@ const serviceMessages:Record<Locale,{activate:string;running:string;boot:string}
  ko:{activate:'상주 서비스 지금 시작',running:'시스템 서비스로 실행 중',boot:'부팅 시 시작 (시스템 인증 필요)'},
 };
 export function getServiceMessages(locale:Locale){return serviceMessages[locale];}
+
+const channelPermissionMessages: Record<Locale, string> = {
+  "en": "The current Agent cannot run on this channel in this permission mode, so messages cannot be processed. Send /permission to choose a supported mode.",
+  "zh-CN": "当前 Agent 不支持以此权限模式在该渠道运行，消息将无法处理。请发送 /permission 调整权限模式。",
+  "zh-TW": "目前 Agent 不支援以此權限模式在該渠道執行，訊息將無法處理。請傳送 /permission 調整權限模式。",
+  "ja": "現在の Agent はこの権限モードではこのチャンネルを利用できないため、メッセージを処理できません。/permission を送信して対応する権限モードに変更してください。",
+  "ko": "현재 Agent는 이 권한 모드로 이 채널에서 실행할 수 없어 메시지를 처리할 수 없습니다. /permission을 보내 지원되는 권한 모드로 변경하세요."
+};
+export function channelPermissionUnavailable(locale: Locale) { return channelPermissionMessages[locale]; }

@@ -64,7 +64,8 @@ export function Resources({ client, device, locale, initialCollection, initialRe
       else if(effect.kind==='navigate'){if(effect.target.kind==='session')onTask(effect.target.sessionId);else await open(effect.target.ref);}
       else if(effect.kind==='refresh-resource'&&resource)await open(effect.ref);
       else if(effect.kind==='refresh-collection'&&effect.collectionId===collection.id){
-        if(resource){
+        const keepsDetail=resource&&result.effects?.some(next=>next.kind==='refresh-resource'&&next.ref.collectionId===resource.ref.collectionId&&next.ref.id===resource.ref.id);
+        if(keepsDetail){
           const result=await call<{items:RemoteCollectionItem[];nextCursor?:string}>('list',{collectionId:collection.id,limit:100});
           setItems(result.items);setCursor(result.nextCursor);
         }else await list(collection);
