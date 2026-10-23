@@ -817,6 +817,30 @@ describe('useFileTree showIgnoredDirs option', () => {
     view.unmount();
   });
 
+  it('根请求失败后 refresh 仍会重新请求根目录', async () => {
+    // 根失败会清空 entries（含根键）；只遍历现有键的 refresh 就永远不会重试根，
+    // 连接恢复后点「重试 / 刷新」也没用。
+    let failRoot = true;
+    mocks.listDir.mockImplementation((args: { relPath?: string }) => {
+      if (failRoot && (args.relPath ?? '') === '') return Promise.reject(new Error('boom'));
+      return Promise.resolve([]);
+    });
+
+    const view = renderHook(() => useFileTree({ workdir: '/workdir-retry-root' }));
+    await waitFor(() => expect(view.result.current.loadError).toBe('load-failed'));
+    expect(view.result.current.entries.size).toBe(0);
+
+    failRoot = false;
+    mocks.listDir.mockClear();
+    await act(async () => {
+      await view.result.current.refresh();
+    });
+
+    expect(mocks.listDir).toHaveBeenCalledWith(expect.objectContaining({ relPath: '' }));
+    await waitFor(() => expect(view.result.current.loadError).toBeNull());
+    view.unmount();
+  });
+
   /**
    * 评审 P2：切开关后新 matcher 的根请求失败时，seed 借来的树**不代表当前视图**
    * —— 留着它会让「开关已按下 + 树还是隐藏态旧数据」在 UI 上看起来像加载成功

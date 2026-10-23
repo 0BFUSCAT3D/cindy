@@ -92,8 +92,11 @@ export function useFileBrowserPreference(): {
     if (listeners.size === 0) {
       memoryValue = null;
       memoryCustomized = null;
-      sync();
     }
+    // 每个订阅者注册时都同步一次：只听首个订阅者会让后来者（如开关与文件树分别
+    // 挂载）拿首帧旧值，而第一个订阅者已更新缓存、后来者又跳过 sync，两边就一直
+    // 不一致（开关已打开、目录仍隐藏）。
+    sync();
     listeners.add(sync);
     const onStorage = (e: StorageEvent) => {
       if (e.key !== STORAGE_KEY) return;

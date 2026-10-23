@@ -779,8 +779,10 @@ function collapseAll(store: FileTreeStore): void {
 }
 
 async function refresh(store: FileTreeStore): Promise<void> {
-  const targets = [...store.snapshot.entries.keys()];
-  await Promise.all(targets.map((p) => fetchDir(store, p)));
+  // 根目录必须恒在请求列表里：根请求失败会清空 entries（含 ROOT_KEY），
+  // 而只遍历现有键时根就永远不会被重试，连接恢复后点「重试 / 刷新」也没用。
+  const targets = new Set<string>([ROOT_KEY, ...store.snapshot.entries.keys()]);
+  await Promise.all([...targets].map((p) => fetchDir(store, p)));
 }
 
 async function expandToPath(store: FileTreeStore, relPath: string): Promise<void> {
