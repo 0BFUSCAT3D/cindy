@@ -38,6 +38,43 @@ afterEach(() => {
 });
 
 describe('ChatImageView', () => {
+  // #6796, unit: existing coverage only exercised loading/errors and click routing.
+  // A 100x301 user attachment must expose the crop warning; 100x300 must not.
+  // Source replacement must not inherit the previous image's crop decision.
+  it.each([
+    ['user-attached', 100, 301, true],
+    ['user-attached', 100, 300, false],
+    ['user-attached', 100, 200, false],
+    ['user-attached', 200, 100, false],
+    ['user-attached', 0, 600, false],
+    ['tool-output', 100, 600, false],
+  ] as const)('%s %sx%s announces a partial preview: %s', (variant, width, height, cropped) => {
+    render(React.createElement(ChatImageView, { src: 'data:image/png;base64,test', filename: 'sample.png', variant }));
+    const image = screen.getByAltText('sample.png');
+    expect(image.getAttribute('aria-describedby')).toBeNull();
+    Object.defineProperties(image, { naturalWidth: { value: width }, naturalHeight: { value: height } });
+    fireEvent.load(image);
+    const description = image.getAttribute('aria-describedby');
+    expect(Boolean(description)).toBe(cropped);
+    if (description) expect(document.getElementById(description)?.textContent).toBe('chat.media.longImagePreview');
+  });
+
+  it('forgets the crop warning on source replacement and keeps keyboard preview available', () => {
+    const props = { filename: 'sample.png', variant: 'user-attached' as const };
+    const { rerender } = render(React.createElement(ChatImageView, { ...props, src: 'first.png' }));
+    const image = screen.getByAltText('sample.png');
+    Object.defineProperties(image, { naturalWidth: { value: 100 }, naturalHeight: { value: 600 } });
+    fireEvent.load(image);
+    expect(image.getAttribute('aria-describedby')).toBeTruthy();
+    fireEvent.keyDown(image, { key: 'Enter' });
+    expect(screen.getByTestId('image-lightbox')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('image-lightbox'));
+    expect(document.activeElement).toBe(image);
+    rerender(React.createElement(ChatImageView, { ...props, src: 'next.png' }));
+    expect(screen.getByAltText('sample.png').getAttribute('aria-describedby')).toBeNull();
+    expect(screen.queryByText('chat.media.longImagePreview')).toBeNull();
+  });
+
   describe.each(['user-attached', 'tool-output'] as const)('%s diagnostics', (variant) => {
     it('keeps a loading frame until decode and resets it for a different source', async () => {
       const props = { filename: 'a.png', variant };
