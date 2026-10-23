@@ -16,7 +16,7 @@ import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostS
 /** Native integration tier: exercises the product's real consent, encrypted
  * vault, installed receipt and browser→Node route. Source-byte/owner changes
  * must revoke a pending approval; keys must never appear in resource responses. */
-import {beforeAll,afterAll,expect,it} from 'vitest';
+import {beforeAll,afterAll,expect,it,vi} from 'vitest';
 import {mkdtemp,writeFile,readFile,copyFile,rm,readdir,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -172,7 +172,8 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
       const publisher=new TerminalPluginPublisher({stagingDirectory:path.join(directory,'publish'),host,account,owner:()=>({mode:'local',dataOwnerId:'fixture',generation:1}),assertCurrent:options.assertCurrent});
       const visibility={translate:(key:string)=>key,listGhosts:()=>host.native.list(),isAvailableForActiveSession:()=>true,isDisabledForWorkdir:(id:string,dir:string|null)=>preferences.disabled(id,dir)};
       const setup=new TerminalPluginSetup(host,{visibility,owner:()=>directory,remoteAvailable:()=>true,assertCurrent:options.assertCurrent,translate:key=>key,navigate:()=>{},emit:()=>{}});
-      const taskContext={sessionId:'fixture-task',workingDir:directory,instanceId:()=> 'fixture-incarnation',assertCurrent:options.assertCurrent,snapshot:options.fs.getSessionSnapshot,confirm:options.fs.requestWriteConfirm};
+      let readOnly=false;
+      const taskContext={sessionId:'fixture-task',workingDir:directory,instanceId:()=> 'fixture-incarnation',assertCurrent:options.assertCurrent,snapshot:async()=>({...await options.fs.getSessionSnapshot(),planModeEnabled:readOnly}),confirm:options.fs.requestWriteConfirm};
       const pluginTask=createTerminalPluginTask({host,setup,preferences,visibility,context:taskContext,media,deposits:new DirDepositVault(),saves:new SaveDepositVault(),forge:createTerminalPluginForge({root:options.root,runtimeDirectory:runtime,host,account,publisher,context:taskContext,media,requestPermission:async()=>null,translate:key=>key})});
       const server=pluginTask.factories.cindy_ghosts(),client=new McpClient({name:'terminal-native-acceptance',version:'1.0.0'});
       const [clientTransport,serverTransport]=InMemoryTransport.createLinkedPair();
@@ -185,6 +186,20 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
         await preferences.set(directory,instance,true);
         expect(payload(await client.callTool({name:'ghost_info',arguments:{ghost_id:'terminal-fixture'}}))).toMatchObject({ok:false,errorCode:'GHOST_DISABLED_IN_WORKDIR'});
         await preferences.set(directory,instance,false);
+        // Native integration regression: the MCP consumer must distinguish bad
+        // file input, actual denial and worker failure. The previous catch-all
+        // reported every exception as permission denial (and suggested the
+        // wrong recovery). No existing successful worker test covers this.
+        expect(payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{},dir:file}}))).toMatchObject({ok:false,errorCode:'DIRECTORY_REQUIRED'});
+        readOnly=true;
+        expect(payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{},save_dir:directory}}))).toMatchObject({ok:false,errorCode:'PERMISSION_DENIED'});
+        readOnly=false;
+        const failedWorker=vi.spyOn(host,'callTool').mockRejectedValueOnce(new Error('Network failure with synthetic-private-details'));
+        try{
+          const failure=payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{}}}));
+          expect(failure).toMatchObject({ok:false,errorCode:'PLUGIN_CALL_FAILED'});
+          expect(JSON.stringify(failure)).not.toContain('synthetic-private-details');
+        }finally{failedWorker.mockRestore();}
         called=payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{}}}));
         expect(called, runtimeDiagnostics.join('\n')).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true,downloaded:artifact}},saved:{ok:true},library:{ok:true}}});
       }finally{await client.close();await server.close();pluginTask.close();setup.close();publisher.close();account.close();}

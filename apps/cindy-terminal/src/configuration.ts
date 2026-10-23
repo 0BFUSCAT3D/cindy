@@ -13,7 +13,7 @@ import type { TerminalCapabilities } from "./tasks/capabilities.js";
 export const CONFIGURATION_ID = "__cindy_configuration__";
 const LIFETIME_MS = 5 * 60_000;
 type Operation = {
-  collectionId: "mcp";
+  collectionId: "mcp" | "providers";
   actionId: "create" | "edit";
   resourceId?: string;
 };
@@ -30,7 +30,7 @@ export function configurationOperation(raw: unknown): Operation {
     throw new Error("INVALID_CONFIGURATION");
   const value = raw as Record<string, unknown>;
   if (
-    value.collectionId !== "mcp" ||
+    !["mcp", "providers"].includes(String(value.collectionId)) ||
     !["create", "edit"].includes(String(value.actionId)) ||
     (value.resourceId !== undefined &&
       (typeof value.resourceId !== "string" ||
@@ -41,7 +41,7 @@ export function configurationOperation(raw: unknown): Operation {
   )
     throw new Error("INVALID_CONFIGURATION");
   return {
-    collectionId: "mcp",
+    collectionId: value.collectionId as Operation["collectionId"],
     actionId: value.actionId as Operation["actionId"],
     ...(value.resourceId ? { resourceId: value.resourceId as string } : {}),
   };
@@ -52,7 +52,24 @@ export function configurationOperation(raw: unknown): Operation {
 export class TerminalConfiguration {
   private readonly leases = new Map<string, Lease>();
   private closed = false;
-  constructor(private readonly capabilities: TerminalCapabilities) {}
+  constructor(
+    private readonly capabilities: TerminalCapabilities,
+    private readonly providers?: {
+      revision(): number;
+      save(
+        action: "create" | "edit",
+        provider: unknown,
+        keys: unknown,
+        context: InvocationContext,
+      ): Promise<unknown>;
+    },
+  ) {}
+
+  private revision(operation: Operation) {
+    if (operation.collectionId === "mcp") return this.capabilities.revision();
+    if (!this.providers) throw new Error("PROTECTED_CONFIGURATION_UNAVAILABLE");
+    return this.providers.revision();
+  }
 
   open(raw: unknown, context: InvocationContext) {
     if (this.closed || context.sharedTask) throw new Error("OWNER_REQUIRED");
@@ -65,7 +82,7 @@ export class TerminalConfiguration {
     this.leases.set(id, {
       operation,
       context,
-      revision: this.capabilities.revision(),
+      revision: this.revision(operation),
       expiresAt: Date.now() + LIFETIME_MS,
       state: "open",
     });
@@ -83,7 +100,7 @@ export class TerminalConfiguration {
     return (
       lease.state === "saved" ||
       lease.state === "failed" ||
-      lease.revision === this.capabilities.revision()
+      lease.revision === this.revision(lease.operation)
     );
   }
 
@@ -153,6 +170,25 @@ export class TerminalConfiguration {
     if (!input || typeof input !== "object" || Array.isArray(input))
       throw new Error("INVALID_CONFIGURATION");
     const value = input as Record<string, unknown>;
+    if (operation.collectionId === "providers") {
+      if (
+        !this.providers ||
+        !value.provider ||
+        typeof value.provider !== "object" ||
+        Array.isArray(value.provider)
+      )
+        throw new Error("INVALID_CONFIGURATION");
+      const provider = value.provider as Record<string, unknown>;
+      if (operation.resourceId && provider.id !== operation.resourceId)
+        throw new Error("INVALID_CONFIGURATION");
+      await this.providers.save(
+        operation.actionId,
+        provider,
+        value.keys ?? {},
+        context,
+      );
+      return;
+    }
     const config = {
       ...value,
       ...(operation.resourceId ? { id: operation.resourceId } : {}),

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readModelConfiguration, saveModelProvider, invokeModelConfiguration } from './models/client.js';
 import { inputHandoffPresentation, INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, type InputHandoffSnapshot } from '@cindy/device-link';
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
@@ -359,37 +360,34 @@ async function main() {
     if(command==='models'&&subcommand){
       if(subcommand==='list')print(await call('maker:provider:list'));
       else if(subcommand==='use'||subcommand==='default')print(await setDefaultModel(client,{model:required(rest[0]),providerId:required(str('provider')),agentKind:str('engine')??'pi'},device));
-      else if(subcommand==='refresh')print(await call('maker:provider:models-refresh',[required(str('provider')??rest[0])]));
+      else if(subcommand==='refresh')print(await invokeModelConfiguration(client,'refresh',{providerId:required(str('provider')??rest[0])},device));
       else if(subcommand==='show'){
         const raw=unwrap(await call('maker:provider:list'));
         const providers=Array.isArray(raw)?raw:object(raw).providers;
         if(!Array.isArray(providers))throw new Error('INVALID_RESPONSE');
         print(providers.filter(p=>!str('provider')||p.id===str('provider')).flatMap(p=>Object.entries(p.models??{}).flatMap(([engine,models])=>Array.isArray(models)?models.filter(m=>m.id===required(rest[0])&&(!str('engine')||engine===str('engine'))).map(model=>({providerId:p.id,engine,...model})):[])));
       }else if(['enable','disable','reset'].includes(subcommand)){
-        if(device)throw new Error('LOCAL_CONFIGURATION_REQUIRED');
-        print(await call('maker:model-disable:set',[{providerId:required(str('provider')),kind:subcommand==='reset'?'reset':'model',modelIds:rest,disabled:subcommand==='disable'}],false));
+        print(await invokeModelConfiguration(client,'disabled',{providerId:required(str('provider')),kind:subcommand==='reset'?'reset':'model',modelIds:rest,disabled:subcommand==='disable'},device));
       }
       else throw new Error('UNKNOWN_COMMAND');return;
     }
     if(command==='providers'&&subcommand){
       if(subcommand==='list')print(await call('maker:provider:list'));
-      else if(subcommand==='presets')print(await call('maker:provider:presets'));
+      else if(subcommand==='presets')print({presets:(await readModelConfiguration(client,device)).presets});
       else if(subcommand==='add'){
-        if(device&&values['key-stdin'])throw new Error('PROTECTED_SECRET_SUBMISSION_REQUIRED');
         const id=str('provider')??`custom-${randomUUID()}`;const engine=str('engine')??'pi';
         const key=values['key-stdin']?(await stdin(64*1024)).replace(/\r?\n$/,''):'';
-        print(await call('maker:provider:custom:create',[{id,name:required(str('name')),auth:{method:key?'apiKey':'none'},runtimes:{[engine]:{baseUrl:required(str('url')),wireProtocol:str('protocol')??'openai-chat',models:[{id:required(str('model')),name:str('model')}]}}},{[engine]:key}]));
-      }else if(subcommand==='remove')print(await call('maker:provider:custom:delete',[required(rest[0])]));
-      else if(subcommand==='disconnect')print(await call('maker:provider:custom:disconnect',[required(rest[0])]));
+        print(await saveModelProvider(client,{id,name:required(str('name')),auth:{method:key?'apiKey':'none'},runtimes:{[engine]:{baseUrl:required(str('url')),wireProtocol:str('protocol')??'openai-chat',models:[{id:required(str('model')),name:str('model')}]}}},{[engine]:key},false,device));
+      }else if(subcommand==='remove')print(await invokeModelConfiguration(client,'remove',{providerId:required(rest[0])},device));
+      else if(subcommand==='disconnect')print(await invokeModelConfiguration(client,'disconnect',{providerId:required(rest[0])},device));
       else if(subcommand==='edit'||subcommand==='test'||subcommand==='discover'){
-        if(device)throw new Error('LOCAL_CONFIGURATION_REQUIRED');
-        const id=required(rest[0]);const state=object(await call('terminal:models:get',[],false));
+        const id=required(rest[0]);const state=await readModelConfiguration(client,device);
         const provider=(state.providers as Array<Record<string,any>>).find(p=>p.id===id);if(!provider)throw new Error('PROVIDER_NOT_FOUND');
         const engine=str('engine')??Object.keys(provider.runtimes)[0];const runtime=provider.runtimes[engine];if(!runtime)throw new Error('PROVIDER_RUNTIME_REQUIRED');
         if(subcommand==='edit'){
           const key=values['key-stdin']?(await stdin(64*1024)).replace(/\r?\n$/,''):undefined;
-          print(await call('maker:provider:custom:update',[{...provider,name:str('name')??provider.name,runtimes:{...provider.runtimes,[engine]:{...runtime,baseUrl:str('url')??runtime.baseUrl,wireProtocol:str('protocol')??runtime.wireProtocol}}},key===undefined?{}:{[engine]:key}],false));
-        }else print(await call(subcommand==='test'&&values.generate?'maker:provider:test-connection':'maker:provider:models-fetch',[subcommand==='test'&&values.generate?{kind:'saved',agent:engine,providerId:id}:{agent:engine,baseUrl:runtime.baseUrl,wireProtocol:runtime.wireProtocol,authMethod:provider.auth?.method??'apiKey',savedProviderId:id}],false));
+          print(await saveModelProvider(client,{...provider,name:str('name')??provider.name,runtimes:{...provider.runtimes,[engine]:{...runtime,baseUrl:str('url')??runtime.baseUrl,wireProtocol:str('protocol')??runtime.wireProtocol}}},key===undefined?{}:{[engine]:key},true,device));
+        }else print(await invokeModelConfiguration(client,subcommand==='test'&&values.generate?'test':'discover',{providerId:id,agentKind:engine},device));
       }
       else throw new Error('UNKNOWN_COMMAND');return;
     }

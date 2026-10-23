@@ -12,6 +12,7 @@ import { fetchSingleHopWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf
 import { TerminalCompanionRoutines } from './remote/companions/routines.js';
 import { TerminalProtectedInput } from './protected-input.js';
 import { TerminalConfiguration, configurationOperation } from './configuration.js';
+import { registerModelConfigurationResources } from './models/resources.js';
 import { INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, PLUGIN_OAUTH_CHANNEL } from '@cindy/device-link';
 import { TerminalCompanionCloud } from './remote/companions/cloud.js';
 import { TerminalCompanionHost } from './remote/companions/host.js';
@@ -370,9 +371,10 @@ export class TerminalService {
     this.tasks.configureKnowledge(this.knowledge);
     this.resources=new TerminalResources(this.tasks);
     registerKnowledgeResources(this.resources.registry,this.knowledge);
-    this.configuration=new TerminalConfiguration(this.tasks.capabilities);
+    this.configuration=new TerminalConfiguration(this.tasks.capabilities,{revision:()=>this.tasks.models.revision(),save:(action,provider,keys,context)=>this.tasks.configureProvider(action,provider,keys,context)});
     this.protectedInput.configureSettings(this.configuration);
     this.tasks.registerCapabilityResources(this.resources.registry,this.configuration);
+    registerModelConfigurationResources(this.resources.registry,this.tasks.models,this.configuration,(channel,args,context)=>this.tasks.invoke(channel,args,context));
     const guardPlugin=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
     this.pluginAccount=new TerminalPluginAccount({endpoints,membership:()=>this.auth.snapshot().session?.membership??null,token:()=>this.auth.getAccessToken(),refresh:()=>this.auth.refresh(),assertCurrent:guardPlugin,onOrganization:organization=>this.plugins?.identity.rememberOrganization(organization)});
     const pluginAbort=new AbortController();

@@ -107,6 +107,20 @@ async function setup(native = engine()) {
 }
 
 describe('terminal task host', () => {
+  // Regression from native CI: a fresh computer has no agent binaries yet.
+  // Starting the host and showing model/permission choices must precede engine
+  // installation. The normal fixture has a provisioned Claude binary.
+  it('starts on a fresh computer before any native engine is installed', async () => {
+    const root=await mkdtemp(path.join(os.tmpdir(),'cindy-terminal-no-engines-'));roots.push(root);
+    const missing=path.join(root,'not-installed');
+    const host=new TerminalTaskHost({profileDir:root,logger,binaryPaths:{'claude-code':missing,codex:missing,pi:missing},secretStore:{get:async()=>null,set:async()=>{},delete:async()=>{}},emit(){}});hosts.push(host);
+    await host.ready;
+    for(const kind of ['claude-code','codex','pi']) {
+      const capabilities=await host.invoke('maker:get-capabilities',[kind]) as {permissionModes:Array<{id:string}>};
+      expect(capabilities.permissionModes.length).toBeGreaterThan(0);
+    }
+    expect(await host.invoke('terminal:tasks:list',[])).toEqual([]);
+  });
   // Integration / im-turn-flow: Desktop's mocked SQL tests do not cover the
   // terminal owner's atomic file or daemon retirement. Two identities claiming
   // one real task must survive restart, and a stale card must not revoke the new

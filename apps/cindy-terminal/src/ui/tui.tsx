@@ -1,3 +1,4 @@
+import { readModelConfiguration, saveModelProvider, invokeModelConfiguration } from '../models/client.js';
 import { PluginSetupView } from './plugin-setup.js';
 import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
 import { ProtectedInputView } from './protected-input.js';
@@ -168,8 +169,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     });
   }
   async function addProvider() {
-    if(device)throw new Error('LOCAL_CONFIGURATION_REQUIRED');
-    const presets=array(record(await call('maker:provider:presets',[],false)).presets);
+    const presets=array((await readModelConfiguration(client,device)).presets);
     const names=presets.map(p=>`${label(locale==='zh-TW'?p.nameZhTW:locale.startsWith('zh')?p.name:p.nameEn,label(p.name))} · ${label(p.id)}`);
     edit(t.addProvider,[{key:'source',label:modelText.source,choices:[modelText.custom,...names]}],async values=>{
       const preset=presets[names.indexOf(values.source)];
@@ -197,38 +197,38 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
       let headers:unknown;
       if(values.headers){try{headers=JSON.parse(values.headers);}catch{throw new Error('INVALID_PROVIDER_HEADER');}}
       const models=existing?array(runtime.models):array(template.models).some(m=>m.id===values.model)?array(template.models):[{id:values.model,name:values.model}];
-      await call(existing?'maker:provider:custom:update':'maker:provider:custom:create',[{
+      await saveModelProvider(client,{
         ...existing,id:providerId,name:values.name,auth:{method:values.auth===modelText.none?'none':'apiKey'},
         runtimes:{...existingRuntimes,[agentKind]:{...runtime,baseUrl:values.baseUrl,wireProtocol:values.protocol,models,...(headers===undefined?{}:{headers})}},
-      },values.apiKey?{[agentKind]:values.apiKey}:{}],false);
-      if(!existing)await setDefaultModel(client,{providerId,agentKind,model:values.model});
+      },values.apiKey?{[agentKind]:values.apiKey}:{},Boolean(existing),device);
+      if(!existing)await setDefaultModel(client,{providerId,agentKind,model:values.model},device);
       setForm(null);await load();
     });
   }
   async function manageProvider(provider:Data){
     const id=label(provider.id);
-    const custom=array(record(await call('terminal:models:get',[],false)).providers).find(p=>p.id===id);
+    const custom=array((await readModelConfiguration(client,device)).providers).find(p=>p.id===id);
     const common=[provider.suspended?modelText.enable:modelText.disable,modelText.reset];
     const options=custom?[modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[t.refresh,...common];
     edit(label(provider.name,id),[{key:'action',label:t.commands,choices:options}],async values=>{
       const selected=values.action;
-      if(common.includes(selected)){await call('maker:model-disable:set',[{providerId:id,kind:selected===modelText.reset?'reset':'provider',disabled:selected===modelText.disable}],false);setForm(null);await load();return;}
-      if(selected===t.refresh){await call('maker:provider:models-refresh',[id],false);setForm(null);await load();return;}
+      if(common.includes(selected)){await invokeModelConfiguration(client,'disabled',{providerId:id,kind:selected===modelText.reset?'reset':'provider',disabled:selected===modelText.disable},device);setForm(null);await load();return;}
+      if(selected===t.refresh){await invokeModelConfiguration(client,'refresh',{providerId:id},device);setForm(null);await load();return;}
       if(!custom)throw new Error('PROVIDER_NOT_FOUND');
       if(selected===modelText.disconnect||selected===modelText.remove){
-        edit(selected,[{key:'confirm',label:label(custom.name,id),choices:[t.cancel,t.yes]}],async value=>{if(value.confirm===t.yes)await call(selected===modelText.remove?'maker:provider:custom:delete':'maker:provider:custom:disconnect',[id],false);setForm(null);await load();});return;
+        edit(selected,[{key:'confirm',label:label(custom.name,id),choices:[t.cancel,t.yes]}],async value=>{if(value.confirm===t.yes)await invokeModelConfiguration(client,selected===modelText.remove?'remove':'disconnect',{providerId:id},device);setForm(null);await load();});return;
       }
       const runtimes=record(custom.runtimes);
       edit(selected,[{key:'engine',label:t.engine,choices:Object.keys(runtimes)}],async value=>{
         const kind=value.engine,runtime=record(runtimes[kind]);
         if(selected===modelText.edit){providerForm(custom,kind);return;}
         if(selected===modelText.test){
-          const result=record(await call('maker:provider:test-connection',[{kind:'saved',agent:kind,providerId:id}],false));
+          const result=record(await invokeModelConfiguration(client,'test',{providerId:id,agentKind:kind},device));
           if(result.ok===false)throw new Error(label(result.code,'PROVIDER_TEST_FAILED'));
           edit(modelText.testPassed,[{key:'done',label:`${result.latencyMs} ms`,choices:[t.done]}],async()=>setForm(null));return;
         }
         if(selected===modelText.discover){
-          const result=record(await call('maker:provider:models-fetch',[{agent:kind,baseUrl:runtime.baseUrl,authMethod:record(custom.auth).method,wireProtocol:runtime.wireProtocol,savedProviderId:id}],false));
+          const result=record(await invokeModelConfiguration(client,'discover',{providerId:id,agentKind:kind},device));
           const found=array(result.models);if(!found.length)throw new Error('NO_MODELS_DISCOVERED');
           edit(modelText.addModel,[{key:'model',label:t.modelId,choices:found.map(m=>label(m.id))}],async values=>{await saveModel(found.find(m=>m.id===values.model)!);});return;
         }
@@ -237,7 +237,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
             const model=array(runtime.models).find(m=>m.id===values.model)!;
             const view=array(record(provider.models)[kind]).find(m=>m.id===model.id);
             edit(label(model.name,label(model.id)),[{key:'action',label:t.commands,choices:[modelText.edit,view?.disabled?modelText.enable:modelText.disable]}],async selected=>{
-              if(selected.action!==modelText.edit){await call('maker:model-disable:set',[{providerId:id,kind:'model',modelIds:[model.id],disabled:selected.action===modelText.disable}],false);setForm(null);await load();return;}
+              if(selected.action!==modelText.edit){await invokeModelConfiguration(client,'disabled',{providerId:id,kind:'model',modelIds:[model.id],disabled:selected.action===modelText.disable},device);setForm(null);await load();return;}
               modelForm(model);
             });
           });return;
@@ -252,7 +252,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
           });
         }
         async function saveModel(model:Data,previousId?:unknown){
-          await call('maker:provider:custom:update',[{...custom,runtimes:{...runtimes,[kind]:{...runtime,models:[...array(runtime.models).filter(m=>m.id!==model.id&&m.id!==previousId),model]}}}],false);
+          await saveModelProvider(client,{...custom,runtimes:{...runtimes,[kind]:{...runtime,models:[...array(runtime.models).filter(m=>m.id!==model.id&&m.id!==previousId),model]}}},{},true,device);
           setForm(null);await load();
         }
       });

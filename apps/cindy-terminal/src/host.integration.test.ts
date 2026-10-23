@@ -27,6 +27,10 @@ import { TerminalService } from './service.js';
 import { socketPath, privateDirectory, windowsSystemCommand, windowsPowerShellEnv } from './platform.js';
 import { TerminalProtectedInput } from './protected-input.js';
 import { TerminalConfiguration } from './configuration.js';
+import { TerminalModelConfig } from './models/config.js';
+import { registerModelConfigurationResources } from './models/resources.js';
+import { readModelConfiguration, saveModelProvider, invokeModelConfiguration } from './models/client.js';
+import type { TerminalClient } from './contracts.js';
 import { TerminalCapabilities } from './tasks/capabilities.js';
 import { registerCapabilityResources } from './tasks/capability-resources.js';
 import { inputHandoffPresentation, type InputHandoffSnapshot } from '@cindy/device-link';
@@ -272,15 +276,23 @@ it('delivers protected input through the signed exchange without recording its v
 // Integration: MCP create/edit used to forward tokens and headers over generic
 // resource invoke. Existing protected-input coverage had no configuration
 // persistence or stale-form boundary. One secret-bearing form is the regression.
-it('saves MCP configuration through a controller-bound encrypted lease and rejects stale forms', async () => {
+it('saves MCP and provider configuration on the selected host through controller-bound encrypted leases', async () => {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'cindy-protected-configuration-'));
   const secrets=new Map<string,string>(),wire:unknown[]=[],events:unknown[]=[];
   const vault={get:async(key:string)=>secrets.get(key)??null,set:async(key:string,value:string)=>{secrets.set(key,value);},delete:async(key:string)=>{secrets.delete(key);}};
   let active=true,changeBeforeHandshake=false,wrongPeer=false;
   const guard=()=>{if(!active)throw new Error('OWNER_CHANGED');};
   const capabilities=new TerminalCapabilities({root,secrets:vault,assertCurrent:guard,changed(){},workingDirs:async()=>[root]});
-  const configuration=new TerminalConfiguration(capabilities),registry=new RemoteResourceRegistry();
+  const models=new TerminalModelConfig(root,vault,async()=>({authenticated:false}));
+  await models.open();
+  const configuration=new TerminalConfiguration(capabilities,{revision:()=>models.revision(),save:(action,provider,keys,context)=>models.saveProvider(provider,keys,action==='create',context.assertCurrent)}),registry=new RemoteResourceRegistry();
   registerCapabilityResources(registry,capabilities,configuration);
+  registerModelConfigurationResources(registry,models,configuration,async(channel,args,context)=>{
+    if(channel==='maker:model-disable:set')return models.setDisabled(args[0],context.assertCurrent!);
+    if(channel==='maker:provider:custom:delete')return models.deleteProvider(String(args[0]),context.assertCurrent);
+    if(channel==='maker:provider:custom:disconnect')return models.disconnect(String(args[0]),context.assertCurrent!);
+    throw new Error('UNEXPECTED_MODEL_OPERATION');
+  });
   const make=(deviceId:string):TerminalProtectedInput=>new TerminalProtectedInput({root:path.join(root,deviceId),secrets:vault,
     scope:()=>({realm:'global',membershipId:'owner',deviceId}),assertCurrent:guard,remoteEnabled:()=>true,taskExists:async()=>true,
     emit:(channel,payload)=>events.push({channel,payload}),
@@ -288,13 +300,30 @@ it('saves MCP configuration through a controller-bound encrypted lease and rejec
       wire.push({channel,args});
       if(channel==='maker:remote-resources:invoke'){
         const result=await registry.invoke({controllerDeviceId:deviceId,assertCurrent:guard},args[0] as Parameters<typeof registry.invoke>[1]);
-        if(changeBeforeHandshake)await capabilities.invoke('maker:mcp:custom:refresh',[],{source:'local'});
+        if(changeBeforeHandshake){
+          if((args[0] as {collectionId:string}).collectionId==='providers')await models.resetDefault(guard);
+          else await capabilities.invoke('maker:mcp:custom:refresh',[],{source:'local'});
+        }
         return {ok:true,result};
       }
       return {ok:true,result:await host.request(wrongPeer?'different-controller':deviceId,args[0])};
     },
   });
   const host=make('host'),controller=make('controller');host.configureSettings(configuration);
+  const client:TerminalClient={subscribe:()=>()=>{},close(){},async invoke<T>(channel:string,args:unknown[]=[],device?:string):Promise<T>{
+    if(channel==='terminal:configuration'){
+      expect(device).toBeUndefined();
+      const value=args[0] as {deviceId:string;input:unknown};
+      expect(value.deviceId).toBe('host');
+      await controller.saveRemoteConfiguration(value.deviceId,value,value.input);
+      return {saved:true} as T;
+    }
+    // Selecting a remote computer must never read or mutate the controller's
+    // local model configuration, even when provider IDs coincide.
+    expect(device).toBe('host');expect(channel).toBe('maker:remote-resources:invoke');
+    wire.push({channel,args});
+    return await registry.invoke({controllerDeviceId:'controller',assertCurrent:guard},args[0] as Parameters<typeof registry.invoke>[1]) as T;
+  }};
   const input={id:'test-mcp',name:'Fixture',transport:'http',url:'https://example.test/mcp',scope:'user',token:'synthetic-mcp-token',headers:JSON.stringify({'X-Test':'synthetic-header-value'})};
   try{
     await capabilities.ready;
@@ -304,6 +333,30 @@ it('saves MCP configuration through a controller-bound encrypted lease and rejec
     const publicState=await fs.readFile(path.join(root,'capabilities.json'),'utf8');
     expect(publicState).toContain('test-mcp');
     for(const value of [input.token,'synthetic-header-value'])expect(JSON.stringify({wire,events,publicState})).not.toContain(value);
+    const provider={id:'remote-fixture',name:'Remote fixture',auth:{method:'apiKey'},runtimes:{pi:{baseUrl:'https://models.example.invalid/v1',wireProtocol:'openai-chat',models:[{id:'test-model',name:'Test model'}],headers:{'X-Test':'synthetic-provider-header'}}}};
+    await expect(registry.invoke({controllerDeviceId:'controller'},{client:{protocolVersion:1,primitives:['text']},collectionId:'providers',actionId:'create',input:{provider}})).rejects.toThrow('PROTECTED_INPUT_REQUIRED');
+    await saveModelProvider(client,provider,{pi:'synthetic-provider-key'},false,'host');
+    expect(secrets.get('terminal:provider:remote-fixture:pi')).toBe('synthetic-provider-key');
+    const remoteState=await readModelConfiguration(client,'host');
+    const saved=remoteState.providers.find(item=>item.id===provider.id)!;
+    expect(saved.name).toBe('Remote fixture');
+    await saveModelProvider(client,{...saved,name:'Edited remotely'},{},true,'host');
+    expect(models.snapshot().providers[0].name).toBe('Edited remotely');
+    expect(secrets.get('terminal:provider:remote-fixture:pi')).toBe('synthetic-provider-key');
+    expect(secrets.get('terminal:provider:remote-fixture:pi:headers')).toContain('synthetic-provider-header');
+    for(const value of ['synthetic-provider-key','synthetic-provider-header'])expect(JSON.stringify({wire,events,remoteState,publicState:await fs.readFile(path.join(root,'models.json'),'utf8')})).not.toContain(value);
+    await invokeModelConfiguration(client,'disabled',{providerId:provider.id,kind:'provider',disabled:true},'host');
+    expect((await models.views()).find(item=>item.id===provider.id)?.suspended).toBe(true);
+    await expect(controller.saveRemoteConfiguration('host',{collectionId:'providers',actionId:'edit',resourceId:provider.id},{provider:{...saved,id:'different-provider'},keys:{}})).rejects.toThrow('CONFIGURATION_SAVE_FAILED');
+    changeBeforeHandshake=true;
+    await expect(saveModelProvider(client,{...saved,name:'Stale overwrite'},{pi:'must-not-save'},true,'host')).rejects.toThrow();
+    expect(models.snapshot().providers[0].name).toBe('Edited remotely');
+    expect(secrets.get('terminal:provider:remote-fixture:pi')).toBe('synthetic-provider-key');
+    changeBeforeHandshake=false;
+    await invokeModelConfiguration(client,'disconnect',{providerId:provider.id},'host');
+    expect(secrets.has('terminal:provider:remote-fixture:pi')).toBe(false);
+    await invokeModelConfiguration(client,'remove',{providerId:provider.id},'host');
+    expect(models.snapshot().providers).toEqual([]);
     changeBeforeHandshake=true;
     await expect(controller.saveRemoteConfiguration('host',{collectionId:'mcp',actionId:'edit',resourceId:'test-mcp'},{...input,token:'replacement'})).rejects.toThrow();
     changeBeforeHandshake=false;wrongPeer=true;

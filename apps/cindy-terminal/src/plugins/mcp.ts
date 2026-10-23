@@ -12,6 +12,20 @@ import type { TerminalTaskMedia } from '../tasks/media.js';
 import type { PluginTaskContext } from './permissions.js';
 import { grantPluginCall } from './grants.js';
 
+/** Do not expose arbitrary exception text: worker/network errors may contain
+ * private paths or request data. Only known host codes select recovery advice. */
+function pluginCallFailure(error: unknown, signal: AbortSignal) {
+  if(signal.aborted)return {ok:false as const,errorCode:'CANCELLED',message:'The plugin call was cancelled.'};
+  const code=error instanceof Error?error.message:'';
+  if(['PLUGIN_FILE_HANDOFF_DENIED','PLAN_MODE_READ_ONLY','TASK_PERMISSION_CHANGED','PLUGIN_PATH_CHANGED'].includes(code))return {ok:false as const,errorCode:'PERMISSION_DENIED',message:'The current task or file permission does not allow this plugin call.'};
+  if(code==='PLUGIN_CHANGED')return {ok:false as const,errorCode:code,message:'The plugin changed before the call completed. Check its current configuration and retry.'};
+  if(['ABSOLUTE_PATH_REQUIRED','DIRECTORY_REQUIRED','DIRECTORY_DEPOSIT_INVALID','ATTACHMENT_INVALID','UNRECOGNIZED_MEDIA_TYPE','TOO_MANY_ATTACHMENTS','ATTACHMENTS_TOO_LARGE'].includes(code))return {ok:false as const,errorCode:code,message:'Check the supplied files or directories before retrying.'};
+  const fsCode=error&&typeof error==='object'&&'code' in error?error.code:null;
+  if(fsCode==='ENOENT'||fsCode==='ENOTDIR')return {ok:false as const,errorCode:'FILE_NOT_FOUND',message:'A supplied file or directory is no longer available. Select it again before retrying.'};
+  if(fsCode==='EACCES'||fsCode==='EPERM')return {ok:false as const,errorCode:'FILE_ACCESS_DENIED',message:'The operating system denied file access. Check access to the supplied files before retrying.'};
+  return {ok:false as const,errorCode:'PLUGIN_CALL_FAILED',message:'The plugin call failed. Retry the operation or inspect the plugin diagnostics.'};
+}
+
 export interface TerminalPluginTaskOptions {
   host:TerminalPlugins;setup:TerminalPluginSetup;preferences:TerminalPluginPreferences;
   visibility:GhostVisibilityDeps;context:PluginTaskContext;media:TerminalTaskMedia;
@@ -69,7 +83,7 @@ export function createTerminalPluginTask(options:TerminalPluginTaskOptions){
         if(target.manifest.sessionContext===true)granted.args.session_context=deriveGhostSessionContext(context.sessionId,context.workingDir,live?{workingDir:live.workingDir,remoteHostId:live.remoteHostId,workdirIsReadOnly:workdirWriteVerdict(live.permissionMode,live.planModeEnabled)==='deny'}:null);
         if(host.assessment(instance).state!=='ready')return {ok:false,errorCode:'SETUP_REQUIRED',message:'Plugin setup changed before dispatch.'};
         granted.assertCurrent();return await host.callTool(instance,{tool:request.tool,args:granted.args,signal,agentToolUseId:request.agentToolUseId},{sessionId:context.sessionId,sessionInstanceId:context.instanceId(),remoteHostId:live?.remoteHostId??null,assertCurrent:granted.assertCurrent});
-      }catch{return {ok:false,errorCode:'PERMISSION_DENIED',message:'The plugin call was cancelled or its current file/task permission was not granted.'};}
+      }catch(error){return pluginCallFailure(error,signal);}
     },
   };
   return {deps,factories:{cindy_ghosts:()=>createCindyGhostsMcpServer(deps)},getGhostRosterPrompt:()=>buildGhostRosterPrompt(roster()),close:()=>{abort.abort();options.setup.bridge.cleanupForSession(context.sessionId,'session_closed');}};

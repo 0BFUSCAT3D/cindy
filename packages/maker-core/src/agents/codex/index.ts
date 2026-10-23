@@ -1919,6 +1919,9 @@ function composeTurnDiffBlocks(
 // ── Agent 实现 ────────────────────────────────────────────────────────────────
 
 export class CodexAgent extends BaseAgent {
+  /** Capability discovery is available before the host installs a binary. */
+  static getDeclaredCapabilities(): Capabilities { return structuredClone(CAPABILITIES); }
+
   readonly kind = 'codex' as const;
   readonly capabilities: Capabilities;
 

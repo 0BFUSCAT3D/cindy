@@ -176,7 +176,7 @@ export class TerminalProtectedInput {
     const target=await resolveOauthPeerIdentity({scope:this.options.scope,invoke:this.options.invoke},device,assertCurrent);
     const opened=await this.options.invoke(device,'maker:remote-resources:invoke',[{
       client:{protocolVersion:1,primitives:['text','actions']},collectionId:operation.collectionId,actionId:'configuration:open',
-      ...(operation.resourceId?{resourceRef:{collectionId:operation.collectionId,kind:'mcp-server',id:operation.resourceId}}:{}),
+      ...(operation.resourceId?{resourceRef:{collectionId:operation.collectionId,kind:operation.collectionId==='mcp'?'mcp-server':'provider',id:operation.resourceId}}:{}),
       input:{actionId:operation.actionId},
     }]);
     assertCurrent();

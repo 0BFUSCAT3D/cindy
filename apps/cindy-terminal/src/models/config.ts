@@ -149,6 +149,8 @@ export class TerminalModelConfig {
     return buildRegistry(this.activeCatalog(), connected, {}, this.state.disabled);
   }
   snapshot() { return structuredClone(this.state); }
+  private generation = 0;
+  revision() { return this.generation; }
   async select(input?: unknown): Promise<{ selection: ModelSelection; route: ResolvedRoute }> {
     await this.pending;
     const views = await this.views();
@@ -171,7 +173,7 @@ export class TerminalModelConfig {
     return { selection: structuredClone(selection), route };
   }
   private change(operation: () => Promise<void>): Promise<void> {
-    const result = this.pending.then(operation);
+    const result = this.pending.then(async () => { try { await operation(); } finally { this.generation += 1; } });
     this.pending = result.catch(() => undefined);
     return result;
   }

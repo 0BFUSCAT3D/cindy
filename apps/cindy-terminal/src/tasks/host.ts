@@ -158,11 +158,7 @@ export class TerminalTaskHost {
       const identity = this.channelBindings.store.findByTarget(id);
       if (identity && (!row || row.deleted || row.archived)) await this.channelBindings.store.detachIfTarget(identity, id);
     }
-    for (const kind of ENGINES) {
-      const agent = this.capabilityAgent(kind);
-      this.engineCapabilities.set(kind, agent.capabilities);
-      await agent.dispose();
-    }
+    for (const kind of ENGINES) this.engineCapabilities.set(kind, ({'claude-code':ClaudeCodeAgent,codex:CodexAgent,pi:PiAgent}[kind]).getDeclaredCapabilities());
     const hostedFile=await readPrivateFile(path.join(this.options.profileDir,'hosted-runtimes.json'));
     if(hostedFile){const ids=JSON.parse(hostedFile.toString());if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(id)))throw new Error('INVALID_HOSTED_RUNTIME_INDEX');for(const id of ids)this.hostedRuntimeIds.add(id);}
     for (const row of await this.storage.list()) {
@@ -204,6 +200,13 @@ export class TerminalTaskHost {
     };
   }
   resolveManaged(url: string, sessionId?: string) { return this.media.resolveManaged(url, sessionId); }
+  async configureProvider(action:'create'|'edit',provider:unknown,keys:unknown,context:InvocationContext) {
+    await this.ready;
+    this.guard(context);
+    await this.models.saveProvider(provider,keys,action==='create',()=>this.guard(context));
+    this.emit('maker:provider:changed',{});
+    return {success:true};
+  }
   registerCapabilityResources(registry:import('@cindy/device-link').RemoteResourceRegistry,configuration:import('../configuration.js').TerminalConfiguration) { registerCapabilityResources(registry,this.capabilities,configuration); }
   /** Reuse media adoption for independently persisted companion transcripts.
    * The caller supplies its own profileDir to normalizeTaskInput, owns acceptance
@@ -255,9 +258,6 @@ export class TerminalTaskHost {
         return (await this.ensureLive(input.id)).session;
       },
     };
-  }
-  private capabilityAgent(kind: AgentKind) {
-    return new ({'claude-code':ClaudeCodeAgent,codex:CodexAgent,pi:PiAgent}[kind])({binaryPath:this.binaries.get(kind)??'',logger:this.options.logger,runtimeConfig:{},auth:{getState:async()=>({authenticated:false}),getAuthEnv:async()=>({}),triggerLogin:async()=>({authenticated:false}),logout:async()=>{}}});
   }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
   async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<(import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot & {autoReviewOwner:'native'|'cindy'})|null>{
@@ -733,7 +733,7 @@ export class TerminalTaskHost {
       case 'terminal:models:get': return this.models.snapshot();
       case 'terminal:models:set-default': await this.models.setDefault(args[0], () => this.guard(context)); return this.models.snapshot();
       case 'terminal:models:reset-default': await this.models.resetDefault(() => this.guard(context)); return this.models.snapshot();
-      case 'maker:provider:custom:create': case 'maker:provider:custom:update': await this.models.saveProvider(args[0], args[1] ?? {}, channel.endsWith(':create'), () => this.guard(context)); this.emit('maker:provider:changed', {}); return { success: true };
+      case 'maker:provider:custom:create': case 'maker:provider:custom:update': return this.configureProvider(channel.endsWith(':create')?'create':'edit',args[0],args[1]??{},context);
       case 'maker:provider:custom:delete': await this.models.deleteProvider(string(args[0]), () => this.guard(context)); this.emit('maker:provider:changed', {}); return { success: true };
       default: throw new Error(`UNSUPPORTED_CHANNEL:${channel}`);
     }
