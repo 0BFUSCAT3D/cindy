@@ -78,6 +78,7 @@ vi.mock('../PcmSpeechPlayer', () => ({
 }));
 
 import { CompanionVoiceSettings } from '../CompanionVoiceSettings';
+import { resolveVoiceConfiguration } from '../voiceConfiguration';
 const sessionState = vi.hoisted(() => ({ value: {} }));
 vi.mock('@/lib/makerChatStore', () => ({
   makerChatStore: { subscribeLight: () => () => {}, getLightSnapshot: () => sessionState.value },
@@ -432,6 +433,35 @@ it('reconciles the saved speed on model changes and keeps it when changing the v
   expect(screen.queryByRole('slider')).toBeNull();
   const saved = vi.mocked(window.electronAPI.voiceConversation.setPreference).mock.calls.at(-1)![1];
   expect(saved).not.toHaveProperty('speed');
+});
+
+// OpenRouter uses OpenAI transport, but does not promise OpenAI's speed range.
+// Exercise real settings save/preview and call-start resolution with an old saved speed.
+it('honors route speed limits when reopening, editing and previewing an OpenRouter voice', async () => {
+  const router: VoiceConversationModel = {
+    id: 'elevenlabs/eleven-v3', name: 'Eleven v3', providerId: 'router', agent: 'codex',
+    protocol: 'openai', protocolLocked: true, speedRange: null,
+  };
+  models = [router];
+  const saved = { providerId: 'router', agent: 'codex' as const, modelId: router.id, voice: 'sarah', speed: 1.5 };
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({ selection: saved, customized: true });
+  renderSettings();
+  await screen.findByText('bots.voiceMode.speedUnavailable');
+  expect(screen.queryByRole('slider')).toBeNull();
+  expect(resolveVoiceConfiguration(models, saved).selection).not.toHaveProperty('speed');
+  const voice = await screen.findByLabelText('bots.voiceMode.voiceId');
+  await waitFor(() => expect((voice as HTMLInputElement).disabled).toBe(false));
+  fireEvent.change(voice, { target: { value: 'custom-voice-id' } });
+  fireEvent.blur(voice);
+  await waitFor(() => expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
+    'bot', { providerId: 'router', agent: 'codex', modelId: router.id, voice: 'custom-voice-id' },
+  ));
+  const previewButton = await screen.findByRole('button', { name: 'bots.voiceMode.preview' });
+  await waitFor(() => expect((previewButton as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(previewButton);
+  await waitFor(() => expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalled());
+  expect(vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0]).toMatchObject({ voice: 'custom-voice-id', modelId: router.id });
+  expect(vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0]).not.toHaveProperty('speed');
 });
 
 it('defaults to sentence playback, persists a playback-only change, and restores the default', async () => {
@@ -1252,7 +1282,7 @@ it('keeps a known voice on refresh failure, allows explicit manual input, and pr
   );
 });
 
-it('resets a voice when switching models on the same connection and ignores a late catalog', async () => {
+it('selects the new model first voice and ignores a late catalog from the previous model', async () => {
   models = ['first', 'second'].map((id) => ({
     id,
     name: id,
@@ -1301,9 +1331,116 @@ it('resets a voice when switching models on the same connection and ignores a la
     releaseNew({ source: 'provider', voices: [{ id: 'new', name: 'New voice' }] }),
   );
   expect((await openVoices()).getByRole('button', { name: 'New voice' })).toBeTruthy();
-  expect(voicePicker().value).toBe('');
+  expect(voicePicker().value).toBe('voice:new');
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledExactlyOnceWith(
+    'bot',
+    { providerId: 'mine', agent: 'codex', modelId: 'second', voice: 'new' },
+  );
+});
+
+// Unit regression: the real settings/picker must finish an explicit model switch
+// when its asynchronous catalog has voices but defaultVoice is empty. Existing
+// settings tests only saved static defaults or expected this switch to stay blank.
+const modelSwitchFixture = () => {
+  models = ['first', 'second'].map((id) => ({
+    id, name: id, providerId: 'mine', agent: 'codex', protocol: 'openai', protocolLocked: true,
+  }));
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: { providerId: 'mine', agent: 'codex', modelId: 'first', voice: 'saved' },
+    customized: true,
+  });
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValueOnce({
+    source: 'provider', voices: [{ id: 'saved', name: 'Saved voice' }],
+  });
+};
+const switchToSecondModel = async () => {
+  await screen.findByText('Saved voice');
+  fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
+    target: { value: voiceModelKey(models[1]) },
+  });
+  await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(2));
+};
+
+it.each([
+  { source: 'provider', defaultVoice: '', expected: 'first-voice' },
+  { source: 'reference', defaultVoice: '', expected: 'first-voice' },
+  { source: 'provider', defaultVoice: 'preferred', expected: 'preferred' },
+] as const)('completes a model switch using $source voices and default "$defaultVoice", without previewing or reselecting on refresh', async ({ source, defaultVoice, expected }) => {
+  modelSwitchFixture();
+  models[1].defaultVoice = defaultVoice;
+  const voices = [
+    { id: 'first-voice', name: 'First voice' },
+    { id: 'preferred', name: 'Preferred voice' },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({ source, voices });
+  renderSettings();
+  await switchToSecondModel();
+  await waitFor(() => expect(voicePicker().value).toBe(`voice:${expected}`));
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledExactlyOnceWith(
+    'bot', { providerId: 'mine', agent: 'codex', modelId: 'second', voice: expected },
+  );
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({ source, voices: [...voices].reverse() });
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
+  await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(3));
+  expect(voicePicker().value).toBe(`voice:${expected}`);
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledTimes(1);
+  expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+  expect(start).not.toHaveBeenCalled();
+  expect(audio.start).not.toHaveBeenCalled();
+});
+
+it.each(['empty', 'failed'] as const)('keeps the previous saved route on a %s catalog and fills the pending model after a successful retry', async (outcome) => {
+  modelSwitchFixture();
+  if (outcome === 'failed')
+    vi.mocked(window.electronAPI.voiceConversation.voices).mockRejectedValueOnce(new Error('offline'));
+  else vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValueOnce({ source: 'provider', voices: [] });
+  renderSettings();
+  await switchToSecondModel();
+  expect((await screen.findByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe('');
   expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({
+    source: 'provider', voices: [{ id: 'available', name: 'Available voice' }],
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
+  await waitFor(() => expect(voicePicker().value).toBe('voice:available'));
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledExactlyOnceWith(
+    'bot', { providerId: 'mine', agent: 'codex', modelId: 'second', voice: 'available' },
+  );
+});
+
+it.each(['private-voice', ''])('preserves a manual voice draft "%s" against the pending model catalog', async (manualVoice) => {
+  modelSwitchFixture();
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValueOnce({ source: 'provider', voices: [] });
+  renderSettings();
+  await switchToSecondModel();
+  const input = await screen.findByLabelText('bots.voiceMode.voiceId');
+  let release!: (catalog: SpeechVoiceCatalog) => void;
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
+  await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(3));
+  fireEvent.change(input, { target: { value: 'typing' } });
+  fireEvent.change(input, { target: { value: manualVoice } });
+  await act(async () => release({ source: 'provider', voices: [{ id: 'default', name: 'Default voice' }] }));
+  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(manualVoice);
+  expect(voicePicker().value).toBe('manual');
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+});
+
+it('discards pending automatic selection on reset and does not save defaults on page load', async () => {
+  modelSwitchFixture();
+  let release!: (catalog: SpeechVoiceCatalog) => void;
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+  renderSettings();
+  await switchToSecondModel();
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({
+    source: 'provider', voices: [{ id: 'saved', name: 'Saved voice' }],
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.resetPreference' }));
+  await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledTimes(3));
+  await act(async () => release({ source: 'provider', voices: [{ id: 'late', name: 'Late voice' }] }));
+  expect(voicePicker().value).toBe('');
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledExactlyOnceWith('bot', null, null);
 });
 
 it('flushes a manually typed voice before leaving and keeps the page open on save failure', async () => {
@@ -1364,6 +1501,35 @@ it('blocks preview while the companion is waiting for confirmation', async () =>
     screen.getByRole('button', { name: 'bots.voiceMode.preview' }).hasAttribute('disabled'),
   ).toBe(true);
   expect(start).not.toHaveBeenCalled();
+});
+
+// Review regression: visibility is picker policy, not saved-route eligibility.
+// Existing UI tests had only visible or missing routes (Renderer unit, mock bridge).
+it('does not default to or offer unchecked speech models, while restoring a saved hidden selection', async () => {
+  models = [
+    { id: 'hidden', name: 'Saved hidden speech', pickerVisible: false, defaultVoice: 'alloy' },
+    { id: 'unchecked', name: 'Unchecked speech', pickerVisible: false, defaultVoice: 'alloy' },
+    { id: 'visible', name: 'Visible speech', defaultVoice: 'alloy' },
+  ];
+  expect(resolveVoiceConfiguration(models, null).selection?.modelId).toBe('visible');
+  const saved = { modelId: 'hidden', voice: 'nova' };
+  expect(resolveVoiceConfiguration(models, saved).selection).toEqual(saved);
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({ selection: saved, customized: true });
+  renderSettings();
+  const field = await screen.findByRole('combobox', { name: 'bots.voiceMode.model' });
+  await waitFor(() => expect((field as HTMLSelectElement).value).toBe(voiceModelKey(saved)));
+  // The saved value remains displayed; other unchecked models are not offered.
+  expect(within(field).queryByRole('option', { name: 'Unchecked speech' })).toBeNull();
+  expect(screen.queryByText('bots.voiceMode.modelUnavailable')).toBeNull();
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+});
+
+it('shows setup guidance when all speech models are hidden and there is no saved choice', async () => {
+  models = [{ id: 'unchecked', name: 'Unchecked speech', pickerVisible: false, defaultVoice: 'alloy' }];
+  expect(resolveVoiceConfiguration(models, null).selection).toBeNull();
+  renderSettings();
+  await screen.findByText('bots.voiceMode.noModels');
+  expect(screen.queryByRole('combobox', { name: 'bots.voiceMode.model' })).toBeNull();
 });
 
 // Unit tier, actual settings/preview entry with the host boundary mocked: switching

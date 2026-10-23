@@ -54,8 +54,10 @@ import {
 } from '@cindy/device-link';
 import type { AgentEvent, AgentSessionHandle, DeviceHostedLinkActivity, InteractionRequest, ForkSdkSessionOptions, ForkSdkSessionResult } from '@cindy/maker-core';
 
+import { EXEC_SERVER_WS_PATH } from '../controller/execServerRelay';
 import { RemoteAgentRunClient, type RemoteAgentInvoke, type RemoteAgentPoller } from '../controller/runClient';
 import { EventLog, waitForAny } from '../eventLog';
+import { createExecServerShortcut, type ExecServerShortcutLayout } from './execServerShortcut';
 import { createGuestUsageMeter, type GuestUsageSample } from './guestUsage';
 import {
   GROUP_SWITCH_STATE_KEY,
@@ -92,6 +94,8 @@ import {
   type RemoteAgentControllerTrust,
 } from './guestIsolation';
 import { createRunTunnel, type RunTunnel, type TunnelHttpRequest, type TunnelHttpResponse } from './tunnel';
+import { hostSessionIdFor } from './sessionIdentity.js';
+export { hostSessionIdFor } from './sessionIdentity.js';
 
 const gunzipAsync = promisify(gunzip);
 
@@ -112,6 +116,11 @@ export const GROUP_SWITCH_TOKEN_TTL_MS = 10 * 60_000;
 const GROUP_SWITCH_ROUND_MS = 30 * 60_000;
 /** 打开的结果不明(超时、断链)时，换下一台之前最多等多久请那台关掉同一个任务。 */
 const RELAY_CLOSE_WAIT_MS = 5_000;
+/**
+ * 中转任务的一批帧从收到到推给组内电脑完成超过这么久算慢(每个 Codex 文件请求的回包都要经过这里，
+ * 与控制端中继的慢回推同一口径)。每个任务只记第一次，带排队与推送两段耗时。
+ */
+const RELAY_SLOW_PUSH_MS = 2_000;
 /** 删除受邀者时没通知到的组内电脑(离线等)，多久后再试一次。 */
 const FORGET_RETRY_MS = 10 * 60_000;
 /** 那台上的任务以这些原因结束是正常收尾，不算失败。 */
@@ -124,6 +133,7 @@ const STATE_INTERVAL_MS = 2_000;
 const MAX_REMEMBERED_CALLS = 256;
 
 export interface HostedStartInput {
+  groupProviderId?: string;
   kind: RemoteAgentKind;
   /** 本机侧的任务 id(由控制端与任务 id 派生，恢复同一任务时不变)。 */
   hostSessionId: string;
@@ -173,6 +183,7 @@ export interface OwnerProviderRouteBinding {
 }
 
 export interface RemoteAgentHostDeps {
+  fastPolicy?(controller: string, command: import('@cindy/device-link').RemoteAgentFastPolicy): Promise<unknown>;
   /** Prepare native bytes; retain recovery ownership only for receipted controllers. */
   prepareImageEvent?(hostSessionId: string, event: AgentEvent, upstream: GeneratedImageUpstream | undefined, retainForRecovery: boolean): Promise<AgentEvent>;
   imageArtifacts?(hostSessionId: string, request: Extract<RemoteAgentRequest, { op: 'images' }>): Promise<unknown>;
@@ -292,6 +303,7 @@ export type GroupRelayPlan =
   | { kind: 'unavailable' };
 
 export interface RemoteAgentGroupRelayDeps {
+  bindFastPolicy?(input: { group: string; deviceId?: string | null; sessionId: string; relay?: string }): Promise<void>;
   /**
    * 受邀者的新任务该交给谁；这个供应商没有组返回 null(照常在本机运行)。`reserve`：选中的同一步就计入那台的负载
    * (返回的 `load`)，同时来的几个任务不会全落到同一台；只是问问有没有能接的电脑时不预占。
@@ -343,6 +355,8 @@ interface RelayBackend {
   activity: Record<string, unknown>;
   /** 推帧按任务串行，保证 Codex exec-server 帧的顺序。 */
   pushChain: Promise<void>;
+  /** 已记过一次转发慢(排队加推送超过 RELAY_SLOW_PUSH_MS)。 */
+  slowPushLogged?: boolean;
   model?: string;
   load: GroupRelayLoad;
 }
@@ -360,6 +374,7 @@ interface PendingReverse {
 }
 
 interface Run {
+  groupProviderId?: string;
   id: string;
   controller: string;
   trust: RemoteAgentControllerTrust;
@@ -498,10 +513,6 @@ export function remoteAgentErrorInfo(error: unknown): RemoteAgentErrorInfo {
 }
 
 /** 本机侧的任务 id：控制端设备 + 控制端任务 id 派生，避免与本机自己的任务撞 id。 */
-export function hostSessionIdFor(controller: string, sessionId: string): string {
-  const hex = createHash('sha256').update(`${controller}\0${sessionId}`).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-}
 
 function safeCall<T>(fn: (() => T) | undefined): T | undefined {
   if (!fn) return undefined;
@@ -1051,7 +1062,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     payload: RemoteAgentOpenPayload,
     hostSessionId: string,
     trust: RemoteAgentControllerTrust,
-  ): Promise<{ shadowDir: string; mirrorRoot: string; sessionRoot: string; extraDirs: string[]; writableDirs: string[]; projectText(text: string): string }> {
+  ): Promise<{ shadowDir: string; mirrorRoot: string; shortcutLayout: ExecServerShortcutLayout; sessionRoot: string; extraDirs: string[]; writableDirs: string[]; projectText(text: string): string }> {
     const sessionRoot = shadowSessionRoot(controller, hostSessionId);
     /** 受邀者的说明文件：指向会话目录之外的 `@` 引用不再被当作导入(否则会在本机读文件)。 */
     const instructionBytes = (data: Buffer, fileDir: string): Buffer => (
@@ -1099,13 +1110,38 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     }
     let realParent = payload.workspace.workingDir;
     let virtualParent = shadowDir;
+    /** 控制端有对应目录的各级上级目录在影子里的位置(下标 = 向上几级)。 */
+    const mappedAncestors: string[] = [];
+    const taskAncestors: string[] = [payload.workspace.workingDir];
     for (let up = 1; up <= MAX_ANCESTOR_LEVELS; up += 1) {
       const nextReal = foreignPath.dirname(realParent);
       if (nextReal === realParent) break;
       realParent = nextReal;
       virtualParent = path.dirname(virtualParent);
+      mappedAncestors[up] = virtualParent;
+      taskAncestors[up] = realParent;
       pathAliases.push({ from: realParent, to: virtualParent });
     }
+    // 控制端报来的各级上级目录里不存在的标记名(只认有对应目录的级别；通往工作区的那一级目录名不算)。
+    const ancestorAbsence = payload.virtualWorkspace && payload.ancestorMarkers
+      ? payload.ancestorMarkers.levels.flatMap(({ up, present }) => {
+          const dir = mappedAncestors[up];
+          const towardWorkspace = path.basename(up === 1 ? shadowDir : mappedAncestors[up - 1] ?? '');
+          const absent = payload.ancestorMarkers!.names.filter((name) => !present.includes(name) && name !== towardWorkspace);
+          return dir && absent.length ? [{ dir, absent: new Set(absent) }] : [];
+        })
+      : [];
+    // 镜像外的绝对路径原样交给任务电脑：只复用它已确认不存在的标记，不猜这台电脑上级目录里隐藏文件的存在性。
+    // Windows 与 POSIX 的路径格式不同，不能拿一边的绝对路径直接匹配另一边的 file URI。
+    const samePathFormat = (payload.workspace.platform === 'win32') === (process.platform === 'win32');
+    const taskAncestorAbsence = payload.virtualWorkspace && payload.ancestorMarkers && samePathFormat
+      ? payload.ancestorMarkers.levels.flatMap(({ up, present }) => {
+          const dir = taskAncestors[up];
+          const towardWorkspace = foreignPath.basename(taskAncestors[up - 1] ?? '');
+          const absent = payload.ancestorMarkers!.names.filter((name) => !present.includes(name) && name !== towardWorkspace);
+          return dir && absent.length ? [{ dir, absent: new Set(absent) }] : [];
+        })
+      : [];
     [...payload.workspace.extraDirs, ...payload.workspace.writableDirs].forEach((from, index) => {
       pathAliases.push({ from, to: virtualAll[index] });
     });
@@ -1162,7 +1198,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       await writeNew(target, markdownBytes(projectBytes(Buffer.from(file.data, 'base64')), target));
     }
     if (personal.permissions) await mergeLocalPermissions(path.join(shadowDir, '.claude', 'settings.local.json'), Object.fromEntries(Object.entries(personal.permissions).map(([key, rules]) => [key, rules?.map(projectText)])));
-    return { shadowDir, mirrorRoot, sessionRoot, extraDirs: virtualAll.slice(0, extraCount), writableDirs: virtualAll.slice(extraCount), projectText };
+    // virtualParent 停在控制端有对应目录的最上一级(与控制端 shadowAliases 逐级映射的范围一致)。
+    const shortcutLayout: ExecServerShortcutLayout = { mirrorRoot, mappedRoot: virtualParent, ancestorAbsence, taskAncestorAbsence };
+    return { shadowDir, mirrorRoot, shortcutLayout, sessionRoot, extraDirs: virtualAll.slice(0, extraCount), writableDirs: virtualAll.slice(extraCount), projectText };
   }
 
   async function startRun(run: Run, payload: RemoteAgentOpenPayload): Promise<void> {
@@ -1180,7 +1218,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         guestHome = guestHomeFor(guestScopeOf(run.controller, run.relayKey));
         await fsp.mkdir(guestHome, { recursive: true, mode: 0o700 });
       }
-      const { shadowDir, mirrorRoot, sessionRoot, extraDirs, writableDirs, projectText } = await withShadowLock(hostSessionId, async () => {
+      const { shadowDir, mirrorRoot, shortcutLayout, sessionRoot, extraDirs, writableDirs, projectText } = await withShadowLock(hostSessionId, async () => {
         // 断线后旧实例还没清理就重新打开同一任务时，新旧实例共用同一个影子目录：
         // 先结束旧实例再重建，避免删掉旧 Agent 还在使用的目录，或两个实例争用重建后的目录。
         for (const other of runs.values()) {
@@ -1192,6 +1230,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       });
       run.workspaceDir = sessionRoot;
       run.virtualRoot = payload.virtualWorkspace ? mirrorRoot : undefined;
+      // 虚拟工作区里注定不存在的路径查询由本机直接回答，不再逐条跨设备往返(见 execServerShortcut)。
+      const shortcut = payload.virtualWorkspace ? createExecServerShortcut(shortcutLayout) : null;
+      const execConns = new Set<string>();
       const tunnel = await createRunTunnel({
         http: async (request, signal) => {
           // Pi API-key providers keep their native transports. Their adapter
@@ -1218,11 +1259,20 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         },
         wsOpen: (connId, wsPath) => {
           (run.localWs ??= new Set()).add(connId);
+          if (wsPath.split('?')[0] === EXEC_SERVER_WS_PATH) execConns.add(connId);
           append(run, { t: 'ws', connId, kind: 'open', path: wsPath });
         },
-        wsMessage: (connId, data) => append(run, { t: 'ws', connId, kind: 'message', data }),
+        wsMessage: (connId, data) => {
+          const local = shortcut && execConns.has(connId) ? shortcut(data) : null;
+          if (local !== null) {
+            run.tunnel?.sendWs(connId, local);
+            return;
+          }
+          append(run, { t: 'ws', connId, kind: 'message', data });
+        },
         wsClose: (connId) => {
           run.localWs?.delete(connId);
+          execConns.delete(connId);
           append(run, { t: 'ws', connId, kind: 'close' });
         },
       });
@@ -1271,6 +1321,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           : undefined);
       }
       const handle = await deps.startHosted({
+        ...(run.groupProviderId ? { groupProviderId: run.groupProviderId } : {}),
         kind: run.kind,
         hostSessionId,
         shadowDir,
@@ -1760,6 +1811,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         if (run.hostSessionId) await recordRelayDevice(run.controller, run.hostSessionId, current.agentDeviceId);
         if (run.closing) return;
         openSent = true;
+        await deps.groupRelay?.bindFastPolicy?.({ group: groupProviderId, deviceId: current.agentDeviceId,
+          sessionId: relaySessionIdFor(run.controller, payload.sessionId), relay: relayKeyFor(run.controller) });
+        if (run.closing) return;
         const started = await backend.client.open(run.kind, relayedOpenPayload(run, payload, current));
         if (run.closing) {
           await backend.client.close('close', 'navigation').catch(() => undefined);
@@ -2290,6 +2344,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     const request = parseRemoteAgentRequest(raw);
     if (!deps.isControllerAuthorized(controller)) fail('REMOTE_AGENT_UNAVAILABLE', 'remote control is not allowed');
     switch (request.op) {
+      case 'fast-policy':
+        if (!deps.fastPolicy) fail('REMOTE_AGENT_UNSUPPORTED', 'subscription Fast policy is not supported');
+        return deps.fastPolicy!(controller, request);
       case 'fork': {
         const owner = deps.captureOwner();
         const controllerTrust = trustOf(controller);
@@ -2387,6 +2444,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         const guest = trustOf(controller) === 'guest';
         const limits = deps.readLimits?.() ?? DEFAULT_REMOTE_AGENT_LIMITS;
         const caps: RemoteAgentCaps = {
+          ...(deps.fastPolicy ? { subscriptionFastPolicy: true as const } : {}),
           version: REMOTE_AGENT_VERSION,
           agents: (['claude-code', 'codex', 'pi'] as const).map((kind) => ({
             kind,
@@ -2553,6 +2611,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           throw error;
         }
         const run: Run = {
+          // Routing hints prevent group loops; they are not permission to skip
+          // this executor's policy. Direct and relayed guests inherit its local
+          // group restriction even when the caller says it was already assigned.
+          ...(trust === 'guest' && deps.groupRelay && providerId ? { groupProviderId: providerId } : {}),
           id: request.runId,
           authorizedModel: payload.options.model,
           acceptsImageDeliveryReceipts: payload.acceptsImageDeliveryReceipts === true,
@@ -2646,8 +2708,18 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
             return connId ? [{ ...frame, connId }] : [];
           });
           if (frames.length) {
+            const queuedAt = now();
             relay.pushChain = relay.pushChain
-              .then(() => relay.client.push(frames))
+              .then(async () => {
+                const startedAt = now();
+                await relay.client.push(frames);
+                const waitMs = startedAt - queuedAt;
+                const pushMs = now() - startedAt;
+                if (waitMs + pushMs >= RELAY_SLOW_PUSH_MS && !relay.slowPushLogged) {
+                  relay.slowPushLogged = true;
+                  deps.log?.warn('remote agent relay push slow', { runId: run.id, waitMs, pushMs, frames: frames.length });
+                }
+              })
               .catch((error) => {
                 deps.log?.warn('remote agent relay push failed', { runId: run.id, error: String(error) });
                 // 转发不上：两边都关掉这些连接，Agent 那边按连接断开处理。

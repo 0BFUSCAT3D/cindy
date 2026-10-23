@@ -6,9 +6,12 @@ import {
 import {
   BUNDLED_CATALOG,
   isLoopbackProviderUrl,
+  isModelVisible,
+  providerOAuthContract,
   resolveModelNativeApi,
   type AgentKind,
   type Catalog,
+  type OAuthProviderDescriptor,
   type ProviderMediaModel,
 } from '@cindy/model-providers';
 import {
@@ -21,13 +24,16 @@ import {
 } from '../../shared/voiceConversation.js';
 import { gatewayReferenceSpeechVoices, referenceSpeechVoices } from '../../shared/speechVoices.js';
 import type { SpeechConnection } from './speech.js';
+import { openRouterSpeechBaseUrl } from './openrouter.js';
 
 export type SpeechCatalogDeps = {
   catalog: Catalog;
   gatewayAllowed: boolean;
   disabled(providerId: string, modelId: string): boolean;
+  visibilityOverride?(agent: AgentKind, providerId: string, modelId: string): boolean | undefined;
   gatewayConnection(): { baseUrl: string; apiKey: string };
   readKey(providerId: string, agent: AgentKind): string | null;
+  readOAuthToken?(providerId: string, oauth: OAuthProviderDescriptor): string | null;
 };
 type Binding = { model: VoiceConversationModel; connection: SpeechConnection | null };
 
@@ -112,6 +118,12 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
         (media.availability !== undefined && media.availability !== 'available')
       )
         continue;
+      // Display preferences affect the picker, independently of route admission.
+      // BYOK media keeps the runtime that owns both its key and display override.
+      const pickerVisible = isModelVisible(
+        media.sourceAgent ? deps.visibilityOverride?.(media.sourceAgent, provider.id, media.id) : undefined,
+        media.defaultEnabled,
+      );
       const declared = nativeProtocol(deps.catalog, provider.id, media);
       if (provider.id === 'xd') {
         if (
@@ -130,6 +142,7 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
         result.push({
           model: {
             id: media.id,
+            ...(pickerVisible ? {} : { pickerVisible: false }),
             name: media.name,
             providerId: 'xd',
             providerName: provider.name,
@@ -147,10 +160,12 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
         });
         continue;
       }
+      const oauth = provider.auth.method === 'oauth' ? provider.auth.oauth : undefined;
+      const openRouterOAuth = !!oauth && providerOAuthContract(oauth) === 'openrouter';
       if (
         provider.source !== 'user' ||
         provider.auth.native ||
-        !['apiKey', 'none'].includes(provider.auth.method)
+        (!['apiKey', 'none'].includes(provider.auth.method) && !openRouterOAuth)
       )
         continue;
       const agent = media.sourceAgent;
@@ -161,7 +176,8 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       const base = apiBase(model.route?.baseUrl ?? route.upstream);
       const ownerBase = apiBase(route.upstream);
       if (!base || !ownerBase || base.origin !== ownerBase.origin) continue;
-      const fixedProtocol = endpointProtocol(base, media.id);
+      const openRouterBase = openRouterSpeechBaseUrl(base.toString());
+      const fixedProtocol = openRouterBase ? 'openai' : endpointProtocol(base, media.id);
       const detectedProtocol =
         fixedProtocol ?? (declared === 'openai-audio-speech' ? 'openai' : null);
       // A saved override cannot turn an official endpoint into another provider's API.
@@ -171,11 +187,13 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       // OpenAI proxies keep the configured prefix (including a non-/v1 API base).
       const nativeBase =
         protocol === 'qwen-tts' || protocol === 'dashscope-tts' ? '/api/v1' : '/v1';
-      if (fixedProtocol && fixedProtocol !== 'openai') base.pathname = nativeBase;
+      if (openRouterBase) base.href = openRouterBase;
+      else if (fixedProtocol && fixedProtocol !== 'openai') base.pathname = nativeBase;
       else if (!base.pathname || base.pathname === '/') base.pathname = nativeBase;
       const headers: Record<string, string> = {};
       for (const [name, value] of Object.entries(route.headerOverride ?? {})) {
         const lower = name.toLowerCase();
+        if (openRouterBase && ['anthropic-version', 'anthropic-beta'].includes(lower)) continue;
         if (
           [
             'authorization',
@@ -200,6 +218,14 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       for (const name of route.headerDelete ?? []) delete headers[name.toLowerCase()];
       if (provider.auth.method === 'none') {
         if (route.authStrategy !== 'none' || !isLoopbackProviderUrl(base.toString())) continue;
+      } else if (provider.auth.method === 'oauth') {
+        // OpenRouter PKCE issues an API key into the generic OAuth store. Admit
+        // only that contract on its official API; subscription OAuth stays excluded.
+        if (!openRouterOAuth || !oauth || !openRouterBase ||
+            !openRouterSpeechBaseUrl(ownerBase.toString()) || route.authStrategy !== 'oauth-token') continue;
+        const token = deps.readOAuthToken?.(provider.id, oauth)?.trim();
+        if (!token) continue;
+        headers.authorization = `Bearer ${token}`;
       } else {
         if (route.authStrategy !== 'api-key-header') continue;
         const key = deps.readKey(provider.id, agent)?.trim();
@@ -210,16 +236,25 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       result.push({
         model: {
           id: media.id,
+          ...(pickerVisible ? {} : { pickerVisible: false }),
           name: media.name,
           providerId: provider.id,
           providerName: provider.name,
           agent,
           protocol: detectedProtocol ?? undefined,
           protocolLocked: !!fixedProtocol,
-          defaultVoice: referenceSpeechVoices(media.id, protocol ?? undefined)[0] ?? '',
+          // OpenRouter's voices come from supported_voices, not vendor references.
+          defaultVoice: openRouterBase
+            ? '' : referenceSpeechVoices(media.id, protocol ?? undefined)[0] ?? '',
+          ...(openRouterBase ? { speedRange: null } : {}),
         },
         connection: protocol
-          ? { baseUrl: base.toString().replace(/\/+$/, ''), headers, protocol }
+          ? {
+              baseUrl: base.toString().replace(/\/+$/, ''), headers, protocol,
+              // OpenRouter speed is model/provider-dependent. Keep the provider
+              // default until its route advertises a verified range; many reject overrides.
+              ...(openRouterBase ? { speedRange: null } : {}),
+            }
           : null,
       });
     }
@@ -227,7 +262,8 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
   return result;
 }
 
-/** Registry entries alone never add catalog membership or grant a credential. */
+/** Admitted routes include hidden saved choices; pickerVisible only controls discovery UI.
+ * Registry entries alone never add catalog membership or grant a credential. */
 export function speechModels(deps: SpeechCatalogDeps): VoiceConversationModel[] {
   return bindings(deps).map((binding) => binding.model);
 }
@@ -241,7 +277,9 @@ export function resolveSpeechConnection(
   if (!binding?.connection) throw new Error('model_unavailable');
   if (
     'speed' in selection &&
-    !isSpeechSpeedSupported(selection.modelId, binding.connection.protocol, selection.speed)
+    !isSpeechSpeedSupported(
+      selection.modelId, binding.connection.protocol, selection.speed, binding.connection.speedRange,
+    )
   )
     throw new Error('invalid_speech_speed');
   return binding.connection;
