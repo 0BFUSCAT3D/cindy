@@ -57,6 +57,9 @@ jobs:
       - name: Run real installed CLI, daemon, engines, PTY and WebRTC
         shell: bash
         run: node apps/cindy-terminal/scripts/platform-acceptance.mjs "$CINDY_ACCEPTANCE_OUTPUT" "$CINDY_ACCEPTANCE_REPORT"
+      - name: Diagnose isolated native startup failure
+        if: failure() && runner.os == 'Windows'
+        run: pnpm --filter cindy-terminal exec tsx scripts/diagnose-platform-start.mjs
       - name: Upload platform evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
