@@ -139,7 +139,7 @@ export class TerminalRemoteAgentService {
   async stop(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.host.abortAll('app-quit'); this.host.dispose();
+    await this.host.abortAll('app-quit'); await this.host.dispose();
     this.controllers.clear(); await this.writes;
   }
 }

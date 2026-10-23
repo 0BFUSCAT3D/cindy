@@ -1931,8 +1931,20 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     }
   }
 
+  const runFinishes = new WeakMap<Run, Promise<void>>();
+  const runDisposals = new WeakMap<Run, Promise<void>>();
+  const pendingDisposals = new Set<Promise<void>>();
+  /** Concurrent close, revoke and shutdown callers await the same teardown. */
+  function finishRun(...args: Parameters<typeof finishRunNow>): Promise<void> {
+    const existing = runFinishes.get(args[0]);
+    if (existing) return existing;
+    const work = finishRunNow(...args);
+    runFinishes.set(args[0], work);
+    return work;
+  }
+
   /** 结束任务：关掉 Agent 与隧道，拒掉未完成的反向请求，写收尾事件。 */
-  async function finishRun(
+  async function finishRunNow(
     run: Run,
     reason: string,
     teardown: RemoteAgentTeardownReason,
@@ -1981,7 +1993,17 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     deps.log?.info('remote agent run finished', { runId: run.id, reason, ...(run.idleReclaimed ? { idleReclaimed: true } : {}) });
   }
 
-  async function disposeRun(run: Run): Promise<void> {
+  function disposeRun(run: Run): Promise<void> {
+    const existing = runDisposals.get(run);
+    if (existing) return existing;
+    const work = disposeRunNow(run);
+    runDisposals.set(run, work);
+    pendingDisposals.add(work);
+    void work.then(() => pendingDisposals.delete(work), () => pendingDisposals.delete(work));
+    return work;
+  }
+
+  async function disposeRunNow(run: Run): Promise<void> {
     runs.delete(key(run.controller, run.id));
     await fsp.rm(run.attachmentsDir, { recursive: true, force: true }).catch(() => undefined);
     // 影子工作区(项目说明类文件的副本)在任务收尾后一并清理，不长期留在本机；同一任务的
@@ -2258,6 +2280,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
   let forgetRetrying: Promise<void> | null = null;
   let forgetRetryAgain = false;
   let disposed = false;
+  let disposal: Promise<void> | undefined;
 
   /**
    * 逐台请组内电脑忘掉已删除的受邀者(见 GuestSessionRecord.forgetPending)：通知到的划掉，都通知到的登记删掉；
@@ -2839,14 +2862,18 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     runCount(): number {
       return [...runs.values()].filter((run) => run.closedAt === undefined).length;
     },
-    dispose(): void {
+    dispose(): Promise<void> {
+      if (disposal) return disposal;
       if (sweepTimer) clearInterval(sweepTimer);
       sweepTimer = null;
       disposed = true;
       if (forgetRetryTimer) clearTimeout(forgetRetryTimer);
       forgetRetryTimer = null;
-      // 退出前尽力收尾：影子工作目录含同步过去的项目与个人说明，不能留到下次启动。
-      for (const run of runs.values()) void finishRun(run, 'aborted', 'app-quit').then(() => disposeRun(run));
+      // The terminal owns the process lifetime and awaits this barrier before
+      // releasing its profile. Include cleanup already started by the sweep.
+      disposal = Promise.all([...runs.values()].map(run => finishRun(run, 'aborted', 'app-quit').then(() => disposeRun(run))))
+        .then(async () => { await Promise.all(pendingDisposals); });
+      return disposal;
     },
   };
 }

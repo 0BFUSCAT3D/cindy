@@ -75,6 +75,11 @@ function FormView({ form, submit, cancel, busy, error }: { form: Form; submit: (
   </Box>;
 }
 
+function engineLabel(value: unknown): string {
+  const kind = label(value);
+  return ({ cc: 'Claude Code', 'claude-code': 'Claude Code', codex: 'Codex', pi: 'Pi' } as Record<string, string>)[kind] ?? kind;
+}
+
 function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, initialDevice, initialSso, initialCollection, onExternalAction }: {
   client: TerminalClient; locale: Locale; initialPage?: string; initialTask?: string; initialDevice?: string; initialSso?: boolean;initialCollection?:string; onExternalAction(action:TuiExternalAction):void;
 }) {
@@ -447,10 +452,21 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   const height = Math.max(12,terminalRows);
   const pageSize = Math.max(3,Math.floor((height-10)/3));
   const draftRows=Math.min(Math.max(2,Math.min(5,Math.floor(height/4))),wrapAnsi(draft||' ',Math.max(8,columns-2),{hard:true,trim:false}).split('\n').length);
-  const chatPageSize = Math.max(3,height-12-draftRows-(attachments.length?1:0));
+  const routeLabel = `${label(taskInfo.model)} · ${engineLabel(taskInfo.agentKind)}`;
+  const selectedRoute = taskInfo.agentSwitchIntent ? record(taskInfo.agentSwitchIntent) : null;
+  const routeStatus = terminalText(`${routeLabel}${selectedRoute ? ` → ${label(selectedRoute.model)} · ${engineLabel(selectedRoute.targetAgentKind)}` : ''} · ${running ? t.working : t.ready}${pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}`);
+  const routeRows = wrapAnsi(routeStatus, Math.max(8, columns - 2), { hard: true, trim: false }).split('\n').length;
+  const chatPageSize = Math.max(3,height-11-routeRows-draftRows-(attachments.length?1:0));
   const start = Math.max(0,selected-pageSize+1);
   const title = task ? t.history : page === 'login' ? t.login : page==='engine'?engine:page==='engines'?t.engines:page==='providers'?modelText.manage:t[page as 'tasks'];
-  const chatLines = messages.filter(message=>['user','assistant','error'].includes(label(message.role))).flatMap(message => {
+  const chatLines = messages.filter(message=>['user','assistant','error','agent_switch'].includes(label(message.role))).flatMap(message => {
+    if (message.role === 'agent_switch') {
+      let boundary: Data = {};
+      try { boundary = typeof message.content === 'string' ? record(JSON.parse(message.content)) : record(message.content); } catch { /* Legacy boundary without a structured route. */ }
+      const text = `${t.models}  ${engineLabel(boundary.fromAgentKind)} · ${label(boundary.fromModel)} → ${engineLabel(boundary.toAgentKind)} · ${label(boundary.toModel)}`;
+      return [...wrapAnsi(terminalText(text), Math.max(8, columns - 2), { hard: true, trim: false }).split('\n'), ''];
+    }
+    if (record(message.agentMeta).contextRebuild) return [controls.contextRebuilt, ''];
     const raw=message.content;
     let structured:Data|undefined;
     if(typeof raw==='string'&&raw.startsWith('{')){try{const value=record(JSON.parse(raw));if(typeof value.text==='string')structured=value;}catch{/* Ordinary text remains text. */}}
@@ -474,8 +490,8 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
           submit={submission=>{void action(async()=>{await client.invoke('terminal:plugin-assist',[{...submission,...(device?{deviceId:device}:{})}]);await load();});}}/>
         : task && reviewRequest && pending[0] && pending[0].kind!=='input_handoff' && pending[0].kind!=='plugin_setup' ? <InteractionView key={pending[0].requestId} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)} resolve={decision=>void action(async()=>{ await call('maker:resolve-interaction',[pending[0].requestId,decision]); setReviewRequest(false); await load(); })} />
         : task ? <>
-          <Text bold>{label(taskInfo.title,t.newTask)}</Text>
-          <Text dimColor>{label(taskInfo.model)}{taskInfo.agentSwitchIntent ? ` → ${label(record(taskInfo.agentSwitchIntent).model)}` : ''} · {({cc:'Claude Code','claude-code':'Claude Code',codex:'Codex',pi:'Pi'} as Record<string,string>)[label(taskInfo.agentKind)]??label(taskInfo.agentKind)} · {running ? t.working : t.ready}{pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}</Text>
+          <Text bold wrap="truncate-end">{label(taskInfo.title,t.newTask)}</Text>
+          <Text dimColor>{routeStatus}</Text>
           <Box flexGrow={1} flexDirection="column" overflow="hidden">{chatLines.slice(Math.max(0,chatLines.length-chatPageSize-scroll), Math.max(0,chatLines.length-scroll)).map((line,index)=><Text key={index}>{terminalText(line)||' '}</Text>)}</Box>
           <Text dimColor>{'─'.repeat(Math.max(1,columns-2))}</Text>
           {attachments.length>0&&<Text dimColor>{attachments.map(file=>file.name).join(' · ')}</Text>}

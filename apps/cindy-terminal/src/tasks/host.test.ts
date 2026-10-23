@@ -6,7 +6,7 @@ import { createProviderProxy } from '../models/proxy.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as platform from '../platform.js';
 import { TerminalImBindings } from '../im/bindings.js';
-import { appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentEvent, type AgentSessionHandle, type InteractionDecision, type InteractionResolver, type Logger, type StartSessionOptions } from '@cindy/maker-core';
@@ -140,6 +140,62 @@ async function setup(native = engine(), overrides: Partial<ConstructorParameters
 }
 
 describe('terminal task host', () => {
+  // Real runner/send lane: configuration changes follow, while an explicit
+  // same-value GUI choice persists across restart and ends automatic following.
+  it('follows channel model defaults with context and preserves an explicit task override after restart', async () => {
+    const fixture = await setup();
+    let host = fixture.host;
+    await host.invoke('maker:provider:custom:create', [{ id: 'channel-codex', name: 'Channel Codex', auth: { method: 'none' }, runtimes: { codex: { baseUrl: 'http://127.0.0.1:1', models: [
+      { id: 'channel-one', name: 'One' }, { id: 'channel-two', name: 'Two' },
+    ] } } }]);
+    await host.channelDefaults.update({ agentKind: 'claude-code', agents: { 'claude-code': { model: 'test-model', providerId: 'fixture', effort: 'high' } } }, 'wechat');
+    const im: TextChannelIM = {
+      name: 'wechat', getStatus: () => ({ kind: 'connected', appId: 'bot', botName: 'Test' }),
+      onMessage: () => () => {}, onStatusChange: () => () => {},
+      sendText: async () => ({ messageId: 'notice' }), sendMarkdownText: async () => ({ messageId: 'notice' }),
+      sendFile: async () => ({ ok: true, messageId: 'file' }),
+    };
+    const adapter: ImChannelAdapter = {
+      channel: 'wechat', im, output: { kind: 'chunked-text', im, commitFinal: async () => {} },
+      config: { agentKind: 'claude-code', defaultModel: 'test-model', defaultPermissionMode: 'ask' }, ui: wechatUi,
+      sessions: { source: 'wechat', sessionIdFor: (bot, user) => `wechat_${bot}_${user}`, defaultTitle: () => 'Channel task', ensureWorkingDir: () => fixture.root, extraInsertColumns: () => ({}) },
+      processingEmoji: '', buildVendorOptions: () => ({ source: 'wechat' }),
+    };
+    function openRunner() {
+      const repo = host.channelRepository(adapter.config, adapter.sessions);
+      const runner = createTurnRunner(adapter, repo, createCardBuilders(adapter.ui, repo.getDefaultEffortFor), host.channelTurnDependencies({
+        source: 'wechat', config: adapter.config, isRouteUsable: route => runner.hasAuthForRoute(route),
+      }), host.channelTurnHost());
+      return runner;
+    }
+    let runner = openRunner();
+    async function send(text: string) {
+      const result = await runner.dispatchAgentTurn({ botContextId: 'bot', userId: 'owner', userMessageId: text, text, attachments: [], queueMode: 'external', beforeProviderStart: async () => {} });
+      expect(result.kind).toBe('accepted');
+      if (result.kind !== 'accepted') throw new Error(result.reason);
+      expect((await result.terminal).kind).toBe('done');
+      return result.sessionId;
+    }
+    try {
+      const id = await send('channel context before switching');
+      await host.channelDefaults.update({ agentKind: 'codex', agents: { codex: { model: 'channel-one', providerId: 'channel-codex', effort: 'high' } } }, 'wechat');
+      expect(await send('follow the configured model')).toBe(id);
+      expect((await host.storage.get(id))?.agentKind).toBe('codex');
+      expect(JSON.stringify(fixture.native.sent.at(-1))).toContain('channel context before switching');
+      expect(JSON.parse((await host.storage.get(id))!.imDefaultRoute!).manual).toBeUndefined();
+      await host.invoke('maker:set-model', [id, 'channel-one', 'channel-codex']);
+      await send('keep this explicit model');
+      expect(JSON.parse((await host.storage.get(id))!.imDefaultRoute!).manual).toBe(true);
+      await runner.disposeAllSessions();
+      await host.close();
+      host = fixture.create(); await host.ready;
+      await host.channelDefaults.update({ agents: { codex: { model: 'channel-two', providerId: 'channel-codex', effort: 'high' } } }, 'wechat');
+      runner = openRunner();
+      expect(await send('continue after restart')).toBe(id);
+      expect(fixture.native.inputs.at(-1)?.selection.model).toBe('channel-one');
+      expect((await host.storage.get(id))?.model).toBe('channel-one');
+    } finally { await runner.disposeAllSessions(); }
+  });
   // Real remote-agent controller/host on two isolated task owners. Only the
   // authenticated transport and upstream vendor process are fixture adapters.
   it('moves an existing task to another agent computer and back without moving its workspace', async () => {
@@ -172,6 +228,10 @@ describe('terminal task host', () => {
       expect((await local.host.storage.get(task.id))?.agentDeviceId).toBeUndefined();
       await local.host.close();
     } finally { await agents.stop(); }
+    // Shutdown must drain removal of private hosted instructions before the
+    // profile can be closed or removed, without racing a second filesystem pass.
+    expect(remote.native.starts).toHaveLength(1);
+    await expect(access(remote.native.starts[0].workingDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
   // The released SET_MODEL channel must preserve Codex's native compaction,
   // and rebuild Claude/Pi context before a smaller model receives the next turn.
@@ -314,7 +374,7 @@ describe('terminal task host', () => {
       processingEmoji: '', buildVendorOptions: () => ({ source: 'wechat' }),
     };
     const repo = resumed.channelRepository(adapter.config, adapter.sessions);
-    const runner = createTurnRunner(adapter, repo, createCardBuilders(adapter.ui, repo.getDefaultEffortFor), {}, resumed.channelTurnHost());
+    const runner = createTurnRunner(adapter, repo, createCardBuilders(adapter.ui, repo.getDefaultEffortFor), resumed.channelTurnDependencies(), resumed.channelTurnHost());
     let dispatches = 0;
     try {
       for (const text of ['continue remotely', 'next message']) {

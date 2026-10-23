@@ -32,6 +32,7 @@ import type { ImTurnHost } from '@cindy/im-runtime/turnHost';
 import { createInboundFileStaging } from '@cindy/im-runtime/inboundFileStaging';
 import { TerminalImBindings } from '../im/bindings.js';
 import { TerminalImDefaults } from '../im/defaults.js';
+import { createTerminalChannelRouteFollower, type TerminalChannelRouteConfig } from '../im/routes.js';
 import { createImSessionDefaults } from '@cindy/im-runtime/defaultSessionSettings';
 import { createTerminalImSessionRepo } from '../im/session-repo.js';
 import type { ImOrchestratorConfig, ImSessionNamespace } from '@cindy/im-runtime/types';
@@ -246,6 +247,7 @@ export class TerminalTaskHost {
       storage: this.storage, context: this.taskContext, models: this.models, logger: options.logger,
       assertCurrent: () => this.guard({ source: 'local' }),
       getSession: id => this.live.get(id)?.session,
+      hasPendingInteraction: id => [...this.pending.values()].some(pending => pending.sessionId === id),
       closeSession: id => this.closeTask(id), bootstrap: async id => { await this.ensureLive(id); },
       select: input => this.selection(input), messages: id => this.contextMessages(id, Infinity),
       withCloseSuppressed: async (id, run) => {
@@ -493,8 +495,15 @@ export class TerminalTaskHost {
       changeSessionPermissionMode: args => this.changeChannelPermission(args),
     };
   }
-  channelTurnDependencies(): import('@cindy/im-runtime/turnRunner').ImTurnRunnerDeps {
-    return { acquirePendingAgentSwitch: id => this.routes.acquireForSend(id) };
+  channelTurnDependencies(channel?: TerminalChannelRouteConfig): import('@cindy/im-runtime/turnRunner').ImTurnRunnerDeps {
+    const follower = channel && createTerminalChannelRouteFollower(channel, {
+      storage: this.storage, routes: this.routes, defaults: this.channelSessionDefaults,
+      listProviders: () => this.models.views(), assertCurrent: () => this.guard({ source: 'local' }), logger: this.options.logger,
+    });
+    return { acquirePendingAgentSwitch: (id, options) => this.routes.acquireForSend(id, options?.channelOwned && follower ? () => follower.syncUnderLock(id) : undefined),
+      ...(follower ? { channelDefaultRoute: follower } : {}),
+      prepareUnhealthySession: async id => { await this.routes.withLock(id, () => this.routes.recovery.runtime.prepareUnhealthySession(id)); },
+    };
   }
   async persistChannelMessage(args: Parameters<ImTurnHost['persistUserMessage']>[0]): ReturnType<ImTurnHost['persistUserMessage']> {
     await this.ready;

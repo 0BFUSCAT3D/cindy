@@ -4,8 +4,10 @@ import { shouldApplyExclusiveProviderReroute } from '@cindy/model-providers/mode
 import { dbToMakerAgentKind, makerToDbAgentKind } from '@cindy/maker-shared/agent-kind-conversion';
 import {
   applyPendingAgentSwitchIfIdle, createPendingAgentSwitchRegistry, performSessionAgentSwitch,
-  projectPendingAgentSwitchIntent, type AgentSwitchBoundaryContent, type MakerSessionAgentSwitchHandlerDeps,
+  projectPendingAgentSwitchIntent, settleSystemRouteSwitchIntent, type AgentSwitchBoundaryContent, type MakerSessionAgentSwitchHandlerDeps,
 } from '@cindy/im-runtime/sessionAgentSwitch';
+import { buildImManualRouteOverrideRecord } from '@cindy/im-runtime/channelDefaultRoute';
+import type { ImDefaultRouteHost } from '@cindy/im-runtime/channelDefaultRouteSync';
 import type { TerminalModelConfig, ModelSelection } from '../models/config.js';
 import type { TerminalTaskStorage, TerminalTaskMeta, HistoryRecord } from './storage.js';
 import type { TerminalTaskContext } from './context.js';
@@ -38,6 +40,7 @@ export class TerminalTaskRoutes {
     pendingChanged(id: string, intent: ReturnType<typeof projectPendingAgentSwitchIntent>): void;
     replay: ContextOverflowRolloverDeps['replayUserMessage'];
     hasExternalOwner(id: string): boolean;
+    hasPendingInteraction(id: string): boolean;
   }) {
     this.recovery = new TerminalTaskRecovery({ ...host, withLock: (id, run) => this.withLock(id, run) });
     const current = async (id: string) => { host.assertCurrent(); const row = await host.storage.get(id); host.assertCurrent(); if (!row || row.deleted || row.archived) throw new Error('TASK_NOT_FOUND'); this.providers.set(id, row.providerId ?? null); return row; };
@@ -94,7 +97,10 @@ export class TerminalTaskRoutes {
       readPendingHandoffGeneration: id => host.context.handoff.readGeneration(id),
       bootstrapSwitchedSession: id => host.bootstrap(id),
       onPendingSwitchChanged: host.pendingChanged,
-      onUserRouteSelectionLanded: async id => { await host.storage.updateIf(id, row => !row.deleted, { imDefaultRoute: null }, host.assertCurrent); },
+      onUserRouteSelectionLanded: async id => {
+        const row = await current(id);
+        await host.storage.updateIf(id, row => !row.deleted, { imDefaultRoute: buildImManualRouteOverrideRecord({ agentKind: row.agentKind, model: row.model, providerId: row.providerId ?? null, agentDeviceId: row.agentDeviceId ?? null, effort: row.effort ?? null }) }, host.assertCurrent);
+      },
       selectSameAgentModel: async (id, intent, apply, assertCurrent, beforeMutation) => {
         const row = await current(id);
         const chosen = await resolve(id, row.agentKind, intent.model, intent.providerId, undefined, intent.effort);
@@ -147,6 +153,37 @@ export class TerminalTaskRoutes {
     if (!gate.skipRebuild && target) await this.prepareWindow(id, target);
   }
   intent(id: string) { return projectPendingAgentSwitchIntent(this.pending.get(id)); }
+  pendingRoute: ImDefaultRouteHost['readPendingAgentSwitchRoute'] = id => {
+    const intent = this.pending.get(id);
+    return intent ? { agentKind: intent.targetAgentKind, model: intent.model, providerId: intent.providerId ?? null,
+      agentDeviceId: intent.targetAgentDeviceId, effort: intent.effort ?? null, rev: this.pending.revision?.(id) } : undefined;
+  };
+  cancel(id: string) { this.host.assertCurrent(); this.pending.clear(id); this.host.pendingChanged(id, null); }
+  private idleForSystemRoute(id: string) {
+    const live = this.host.getSession(id);
+    return !live?.isTurnRunning() && !live?.listBackgroundTasks().length && !this.host.hasPendingInteraction(id);
+  }
+  /** Called with the task's send lane held. Follow configuration without
+   * closing a runtime that still owns background work or an interaction. */
+  applySystemUnderLock: ImDefaultRouteHost['applySessionRouteUnderSendLock'] = async (id, route) => {
+    let staged = this.pending.get(id);
+    try {
+      if (route) {
+        await performSessionAgentSwitch(this.deps, { sessionId: id, targetAgentKind: route.agentKind, model: route.model,
+          providerId: route.providerId, agentDeviceId: route.agentDeviceId, effort: route.effort ?? undefined, fastMode: route.fastMode, configStaged: true });
+        staged = this.pending.get(id);
+      }
+      if (!staged) return 'applied';
+      if (!this.idleForSystemRoute(id)) return 'staged';
+      await applyPendingAgentSwitchIfIdle(this.deps, id, { bootstrapAfterSwitch: true });
+    } catch (error) {
+      if (staged && this.pending.get(id) === staged) this.cancel(id);
+      throw error;
+    }
+    const outcome = settleSystemRouteSwitchIntent({ stagedIntent: staged, remainingIntent: this.pending.get(id), sessionIdle: this.idleForSystemRoute(id) });
+    if (outcome === 'failed') { this.cancel(id); throw new Error('TASK_DEFAULT_ROUTE_NOT_APPLIED'); }
+    return outcome;
+  };
   async acquire(id: string): Promise<() => void> {
     this.host.assertCurrent();
     const previous = this.lanes.get(id) ?? Promise.resolve();
@@ -173,14 +210,15 @@ export class TerminalTaskRoutes {
         thinking: options.thinking, confirmedContextWindow: options.confirmedContextWindow, assertSelectionCurrent: guard });
     });
   }
-  async acquireForSend(id: string): Promise<() => void> {
+  async acquireForSend(id: string, synchronize?: () => Promise<boolean>): Promise<() => void> {
     const release = await this.acquire(id);
     try {
-      await applyPendingAgentSwitchIfIdle(this.deps, id);
+      const deferred = await synchronize?.();
+      if (!deferred) await applyPendingAgentSwitchIfIdle(this.deps, id);
       this.host.assertCurrent();
       // The legacy Desktop switch helper retains a failed cross-engine intent.
       // A terminal send must report that state instead of using the old route.
-      if (this.pending.get(id)) throw new Error('TASK_MODEL_SWITCH_NOT_READY');
+      if (!deferred && this.pending.get(id)) throw new Error('TASK_MODEL_SWITCH_NOT_READY');
       await this.recovery.runtime.prepareUnhealthySession(id);
       return release;
     }
