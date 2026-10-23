@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   selects: 0,
   dbRows: [] as unknown[],
   dbError: null as Error | null,
+  dbHang: false,
   removed: [] as string[],
   log: {
     warn: vi.fn(),
@@ -58,7 +59,7 @@ vi.mock('../localDb/client/current', () => ({
     const chain = {
       from: () => chain,
       leftJoin: () => chain,
-      where: () => Promise.resolve(h.dbRows),
+      where: () => (h.dbHang ? new Promise(() => {}) : Promise.resolve(h.dbRows)),
     };
     return { drizzle: { select: () => { h.selects += 1; return chain; } } };
   },
@@ -71,7 +72,7 @@ import {
   readRelaunchBlockingActivity,
   registerRelaunchBusyActivityIpc,
 } from '../relaunchBusyActivityIpc.js';
-import { readRelaunchTurnFacts } from '../relaunchTurnFacts.js';
+import { RELAUNCH_TURN_FACTS_BUDGET_MS, readRelaunchTurnFacts } from '../relaunchTurnFacts.js';
 
 /** 每个来源都记一次读取,用来证明拒绝路径下一个都没被碰。 */
 function countingSources(busy: boolean) {
@@ -97,6 +98,7 @@ beforeEach(() => {
   h.selects = 0;
   h.dbRows = [];
   h.dbError = null;
+  h.dbHang = false;
   h.removed = [];
   h.log.info.mockClear();
 });
@@ -359,6 +361,19 @@ describe('readRelaunchTurnFacts', () => {
       conversation: true,
     });
     expect(h.selects).toBe(1);
+  });
+
+  it('falls back when the teammate name query exceeds its short budget', async () => {
+    vi.useFakeTimers();
+    h.dbHang = true;
+    try {
+      const pending = readRelaunchTurnFacts(['bot-session']);
+      await vi.advanceTimersByTimeAsync(RELAUNCH_TURN_FACTS_BUDGET_MS);
+      await expect(pending).resolves.toBeNull();
+      expect(h.selects).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not call a delegated background task a teammate reply', async () => {

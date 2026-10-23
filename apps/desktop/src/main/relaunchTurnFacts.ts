@@ -15,6 +15,8 @@ import { getDbClient } from './localDb/client/current.js';
 import { botProfiles, botSessionLinks, sessions } from './localDb/schema.js';
 
 const MAX_TURN_FACTS = 32;
+/** 姓名查询只为确认文案。数据库拥塞时不能把「立即重启」卡住几十秒。 */
+export const RELAUNCH_TURN_FACTS_BUDGET_MS = 300;
 
 export async function readRelaunchTurnFacts(
   sessionIds: readonly string[],
@@ -28,8 +30,9 @@ export async function readRelaunchTurnFacts(
   }
   if (ids.length === 0) return { companions: [], conversation: false };
   if (ids.length > MAX_TURN_FACTS) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const rows = await getDbClient().drizzle
+    const query = getDbClient().drizzle
       .select({
         id: sessions.id,
         source: sessions.source,
@@ -44,7 +47,16 @@ export async function readRelaunchTurnFacts(
         and(eq(botSessionLinks.sessionId, sessions.id), isNull(botSessionLinks.archivedAt)),
       )
       .leftJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
-      .where(inArray(sessions.id, ids));
+      .where(inArray(sessions.id, ids))
+      .then((rows) => rows)
+      .catch(() => null);
+    const rows = await Promise.race([
+      query,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), RELAUNCH_TURN_FACTS_BUDGET_MS);
+      }),
+    ]);
+    if (!rows) return null;
     const facts: RelaunchTurnRow[] = rows.map((row) => ({
       id: row.id,
       source: row.source ?? null,
@@ -56,6 +68,8 @@ export async function readRelaunchTurnFacts(
     return classifyRelaunchTurnRows(ids, facts);
   } catch {
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

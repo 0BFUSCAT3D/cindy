@@ -611,13 +611,14 @@ describe('formatRelaunchActivityHint builds a complete sentence', () => {
       'update.banner.activityNameJoiner': '、',
       'update.banner.activityNameJoinerPair': '、',
       'update.banner.activityNameJoinerLast': '、',
-      'update.banner.activity.companionOne': '伙伴 {{names}} 正在回复',
-      'update.banner.activity.companionOther': '伙伴 {{names}} 正在回复',
+      'update.banner.activity.companionOne': '伙伴 {{names}} 的回复',
+      'update.banner.activity.companionOther': '伙伴 {{names}} 的回复',
+      'update.banner.activity.conversation': '正在进行的对话',
       'update.banner.activity.backgroundCommand': '后台命令',
     });
     expect(formatRelaunchActivityHint(t, {
-      categories: ['companion', 'background-command'],
+      categories: ['companion', 'conversation', 'background-command'],
       companionNames: ['Cindy', 'Mika'],
-    })).toBe('重启会中断伙伴 Cindy、Mika 正在回复、后台命令。');
+    })).toBe('重启会中断伙伴 Cindy、Mika 的回复、正在进行的对话、后台命令。');
   });
 });
