@@ -347,11 +347,14 @@ describe('terminal task host', () => {
     const secrets = new TerminalSecretStore(path.join(root, 'vault')); await secrets.open(); await secrets.initialize('machine');
     const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
     let receive: ((updates: unknown[]) => void) | undefined, sequence = 1000;
+    let secondReply!: () => void;
+    const secondReplySent = new Promise<void>(resolve => { secondReply = resolve; });
     const api: import('@cindy/im').TelegramApiClient = {
       fileUrl: file => `https://files.invalid/${file}`,
       callForm: async () => { throw new Error('UNEXPECTED_UPLOAD'); },
       call: async (method, params = {}, signal) => {
         calls.push({ method, params });
+        if (JSON.stringify(params).includes('Echo:') && JSON.stringify(params).includes('new topic task')) secondReply();
         if (method === 'getMe') return { id: 999, is_bot: true, first_name: 'Cindy', username: 'terminal_cindy_bot' } as never;
         if (method === 'getUpdates') return new Promise((resolve, reject) => {
           const abort = () => { receive = undefined; reject(new Error('aborted')); };
@@ -401,7 +404,10 @@ describe('terminal task host', () => {
       await push(3, '/new');
       await vi.waitFor(async () => expect((await host.storage.list()).filter(row => row.source === 'telegram')).toHaveLength(2));
       await push(4, '@terminal_cindy_bot new topic task');
-      await vi.waitFor(() => expect(native.sent).toHaveLength(2));
+      // Observe completion instead of racing a one-second poll against native
+      // task teardown and filesystem work on slower CI hosts.
+      await secondReplySent;
+      expect(native.sent).toHaveLength(2);
       const latest = (await host.storage.list()).filter(row => row.source === 'telegram').find(row => row.id !== first.id)!;
       expect(latest.imUserId).toBe(first.imUserId);
       expect(await connections.invoke('telegramBot:list-groups', undefined)).toMatchObject({ groups: [{ chatId: '-100', activation: 'mention' }] });

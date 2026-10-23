@@ -94,11 +94,13 @@ jobs:
         run: pnpm --filter @cindy/plugin-runtime exec vitest run src/nativeProcess.integration.test.ts --testTimeout=30000 --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal
         run: pnpm --filter cindy-terminal typecheck
+      - name: Existing SuperGrok device login, discovery and recovery
+        run: pnpm exec vitest run apps/desktop/src/main/maker-host/__tests__/grokDeviceLogin.test.ts apps/desktop/src/main/maker-host/__tests__/grokDeviceLoginOwnerSwitch.test.ts apps/desktop/src/main/maker-host/__tests__/grokAuthRejectionRecovery.test.ts apps/desktop/src/main/maker-host/__tests__/grokOauthCallbackListener.test.ts apps/desktop/src/main/maker-host/__tests__/xaiModelDiscovery.test.ts apps/desktop/src/main/maker-host/__tests__/xaiBridgeAuthInvalidation.test.ts --maxWorkers=1 --minWorkers=1
       - name: Real bundled engines preserve provider and subscription boundaries
         env:
           CINDY_TEST_MANAGED_PI: '1'
           CINDY_TEST_NATIVE_SUBSCRIPTIONS: '1'
-        run: pnpm --filter cindy-terminal exec vitest run src/models/runtime.integration.test.ts -t 'real Pi|routes ChatGPT' --maxWorkers=1 --minWorkers=1
+        run: pnpm --filter cindy-terminal exec vitest run src/models/runtime.integration.test.ts -t 'real Pi|routes ChatGPT|routes SuperGrok' --maxWorkers=1 --minWorkers=1
       - name: Build terminal bundle
         run: pnpm --filter cindy-terminal build
       - name: Package official Node and native dependencies

@@ -163,7 +163,7 @@ export class TerminalUtilityModels {
         if (isOpenAiSubscriptionProvider(provider))
           return Boolean(this.options.models.nativeAccounts?.connected());
         if (provider.auth.native === 'xai')
-          return Boolean(this.connections.getGrokAccessToken);
+          return Boolean(this.options.models.nativeGrok?.connected());
         if (provider.auth.method === 'oauth')
           return Boolean(
             this.connections.readCachedGenericOAuthAccessToken?.(

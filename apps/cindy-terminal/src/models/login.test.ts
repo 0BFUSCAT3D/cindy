@@ -17,7 +17,8 @@ import * as platform from '../platform.js';
 import { TerminalClaudeLogin } from './claude-login.js';
 import { TerminalNativeAccounts } from './native-accounts.js';
 import { runNative } from '../engines/native.js';
-import { createChatgptProxy } from './subscription-proxy.js';
+import { TerminalGrokLogin } from './grok-login.js';
+import { createChatgptProxy, createGrokProxy } from './subscription-proxy.js';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -28,7 +29,7 @@ afterEach(async () => {
 // Integration: headless provider login must survive another computer's browser
 // callback without putting the code/token on the generic remote wire. Use the
 // actual controller cryptography, PKCE, encrypted vault and request proxy.
-async function fixture() {
+async function fixture(grokFetch?: typeof fetch) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-provider-login-'));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const secrets = new TerminalSecretStore(root);
@@ -105,7 +106,9 @@ async function fixture() {
     {},
     true,
   );
+  const grok = grokFetch ? new TerminalGrokLogin({ root, models, secrets, assertCurrent: guard, changed: () => models.gatewayChanged(), fetch: grokFetch }) : undefined;
   const login = new TerminalProviderLogin({
+    grok,
     models,
     secrets,
     assertCurrent: guard,
@@ -204,6 +207,7 @@ async function fixture() {
   return {
     root,
     secrets,
+    grok,
     login,
     models,
     controller,
@@ -510,4 +514,64 @@ it('binds Claude usage to one owner and rejects a stale or non-subscription gran
   const consoleTicket = await second.begin(); expect(consoleTicket.needsLogin).toBe(true);
   await expect(second.finish(consoleTicket.id)).rejects.toThrow('NATIVE_SUBSCRIPTION_LOGIN_REQUIRED');
   expect(binding).toBeNull(); expect(calls.every(args => args.join(' ') === 'auth status --json')).toBe(true);
+});
+
+// Integration: SuperGrok must keep device and refresh credentials in the
+// encrypted owner vault while all three engine protocols retain native search.
+it('authorizes SuperGrok through a protected remote controller and revokes every engine route', async () => {
+  const calls: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
+  let reject = false, refreshes = 0;
+  const upstream: typeof fetch = async (url, init) => {
+    const address = String(url);
+    if (address.includes('openid-configuration')) return Response.json({});
+    if (address.endsWith('/device/code')) return Response.json({ device_code: 'grok-private-device', user_code: 'ABCD-EFGH', verification_uri: 'https://auth.x.ai/device', expires_in: 120, interval: 5 });
+    if (address.endsWith('/oauth2/token')) {
+      if (String(init?.body).includes('refresh_token')) refreshes++;
+      return Response.json({ access_token: refreshes ? 'grok-private-refreshed' : 'grok-private-access', refresh_token: 'grok-private-refresh', expires_in: 3600 });
+    }
+    if (address.includes('/v1/user')) return Response.json({ userId: 'synthetic-grok-user' });
+    if (address.endsWith('/v1/models')) return Response.json({ data: [{ id: 'grok-fixture', name: 'Grok Fixture', context_window: 128000, max_completion_tokens: 4096 }] });
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push({ url: address, headers: new Headers(init?.headers), body });
+    if (reject) return Response.json({ code: 'unauthenticated:bad-credentials' }, { status: 403 });
+    return Response.json({ id: 'response-fixture', object: 'response', status: 'completed', model: 'grok-fixture', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'GROK_OK' }] }], usage: { input_tokens: 1, output_tokens: 1 } });
+  };
+  const f = await fixture(upstream);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  const { id } = await f.controller.channelRegistration({ command: 'begin', providerId: 'xai', deviceId: 'host' }, 'providers');
+  await vi.waitFor(async () => expect((await f.controller.channelRegistration({ command: 'read', id }, 'providers')).state).toMatchObject({ status: 'pending', userCode: 'ABCD-EFGH' }));
+  await vi.advanceTimersByTimeAsync(5000);
+  await vi.waitFor(async () => expect((await f.controller.channelRegistration({ command: 'read', id }, 'providers')).state).toMatchObject({ status: 'success' }));
+  vi.useRealTimers();
+  expect(f.grok!.connected()).toBe(true);
+  const views = await f.models.views();
+  const provider = views.find(p => p.id === 'xai')!;
+  expect(provider.connected).toBe(true);
+  const handles: Array<Awaited<ReturnType<typeof createGrokProxy>>> = [];
+  for (const kind of ['claude-code', 'codex', 'pi'] as const) {
+    const model = provider.models[kind]!.find(m => m.id.endsWith('grok-fixture'))!;
+    const chosen = await f.models.select({ providerId: 'xai', agentKind: kind, model: model.id });
+    const proxy = await createGrokProxy({ route: chosen.route, kind, taskId: 'grok-task', accounts: f.grok!, fetch: upstream });
+    cleanup.push(() => proxy.close()); handles.push(proxy);
+    const response = await fetch(proxy.url + (kind === 'claude-code' ? '/v1/messages' : '/responses'), {
+      method: 'POST', headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(kind === 'claude-code' ? { model: model.id, max_tokens: 512, messages: [{ role: 'user', content: 'probe' }] } : { model: model.id, input: 'probe' }),
+    });
+    expect(response.status).toBe(200); await response.text();
+    expect(calls.at(-1)!.headers.get('authorization')).toBe('Bearer grok-private-access');
+    expect(calls.at(-1)!.body.model).toBe('grok-fixture');
+    expect(calls.at(-1)!.body.tools).toContainEqual({ type: 'x_search' });
+  }
+  const request = () => fetch(handles[1].url + '/responses', { method: 'POST', headers: { authorization: `Bearer ${handles[1].token}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: provider.models.codex![0].id, input: 'probe' }) });
+  reject = true; const rejected = await request(); expect(rejected.status).toBe(403); await rejected.text();
+  expect(refreshes).toBe(1); expect(f.grok!.peek()).toBe('grok-private-refreshed');
+  reject = false; const recovered = await request(); expect(recovered.status).toBe(200); await recovered.text();
+  const reopened = new TerminalSecretStore(f.root); await reopened.open();
+  expect(reopened.getSync('terminal:native:xai')).toContain('grok-private-refreshed'); reopened.lock();
+  for (const secret of ['grok-private-device','grok-private-access','grok-private-refresh','grok-private-refreshed','ABCD-EFGH']) expect(JSON.stringify({ wire: f.wire, events: f.events, views })).not.toContain(secret);
+  expect(await readFile(path.join(f.root, 'secrets.enc'), 'utf8')).not.toContain('grok-private');
+  const auth = await f.grok!.credential();
+  await f.models.disconnect('xai', () => {});
+  expect(auth.canDispatch()).toBe(false); expect(f.grok!.connected()).toBe(false);
+  const denied = await request(); expect(denied.status).toBe(403); await denied.text();
 });

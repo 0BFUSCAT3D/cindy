@@ -1,4 +1,4 @@
-import { createChatgptProxy } from './subscription-proxy.js';
+import { createChatgptProxy, createGrokProxy } from './subscription-proxy.js';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
@@ -62,19 +62,20 @@ export interface RuntimeInput {
 export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgent> {
   const { selection, route, binaryPath, models, profileDir, taskId, logger } = input;
   const chatgpt = route.provider.id === 'openai' && Boolean(models.nativeAccounts);
-  const custom = chatgpt || route.provider.source === 'user' || route.provider.id === 'xd' || Boolean(route.provider.auth.oauth);
+  const grok = route.provider.id === 'xai' && Boolean(models.nativeGrok);
+  const custom = grok || chatgpt || route.provider.source === 'user' || route.provider.id === 'xd' || Boolean(route.provider.auth.oauth);
   const key = custom && !input.remote ? await models.credential(selection.providerId, selection.agentKind) : null;
   const codexHome = custom && !input.remote && selection.agentKind === 'codex' ? (input.guestHome ? path.join(input.guestHome,'codex') : path.join(profileDir, 'engines', 'codex', taskId)) : undefined;
   const claudeHome = input.guestHome && selection.agentKind==='claude-code' ? path.join(input.guestHome,'claude') : undefined;
   for(const directory of [codexHome,claudeHome])if(directory)await privateDirectory(directory);
-  const proxy = chatgpt && !input.remote ? await createChatgptProxy({ route, kind: selection.agentKind, taskId, accounts: models.nativeAccounts!, authorize: input.authorizeRequest }) : custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined, route.provider.auth.oauth ? () => models.credential(selection.providerId, selection.agentKind) : undefined) : null;
+  const proxy = grok && !input.remote ? await createGrokProxy({ route, kind: selection.agentKind, taskId, accounts: models.nativeGrok!, authorize: input.authorizeRequest }) : chatgpt && !input.remote ? await createChatgptProxy({ route, kind: selection.agentKind, taskId, accounts: models.nativeAccounts!, authorize: input.authorizeRequest }) : custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined, route.provider.auth.oauth ? () => models.credential(selection.providerId, selection.agentKind) : undefined) : null;
   const runtimeKey = proxy?.token ?? key;
   const endpoint = proxy?.url ?? route.routing.upstream;
   const own = (agent: BaseAgent) => { if (proxy) { const dispose = agent.dispose.bind(agent); agent.dispose = async () => { try { await dispose(); } finally { await proxy.close(); } }; } return agent; };
   const keyless = route.provider.auth.method === 'none';
   const auth: AuthAdapter = {
     async getState() {
-      return custom ? { authenticated: chatgpt ? models.nativeAccounts!.connected() : keyless || Boolean(key), authSource: key ? 'api-key' : undefined } : selection.agentKind === 'claude-code' && models.nativeClaude ? models.nativeClaude.state() : nativeAuthState(selection.agentKind, binaryPath);
+      return custom ? { authenticated: grok ? models.nativeGrok!.connected() : chatgpt ? models.nativeAccounts!.connected() : keyless || Boolean(key), authSource: key ? 'api-key' : undefined } : selection.agentKind === 'claude-code' && models.nativeClaude ? models.nativeClaude.state() : nativeAuthState(selection.agentKind, binaryPath);
     },
     async getAuthEnv() {
       if (!custom) return {};

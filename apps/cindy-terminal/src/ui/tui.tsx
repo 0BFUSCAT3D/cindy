@@ -226,13 +226,13 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     const id=label(provider.id);
     const custom=array((await readModelConfiguration(client,device)).providers).find(p=>p.id===id);
     const common=[provider.suspended?modelText.enable:modelText.disable,modelText.reset];
-    const options=custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[...(id==='openai'?[t.login,modelText.disconnect]:[]),t.refresh,...common];
+    const options=custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[...(['openai','xai'].includes(id)?[t.login,modelText.disconnect]:[]),t.refresh,...common];
     edit(label(provider.name,id),[{key:'action',label:t.commands,choices:options}],async values=>{
       const selected=values.action;
       if(selected===t.login){setForm(null);setProviderLogin(id);return;}
       if(common.includes(selected)){await invokeModelConfiguration(client,'disabled',{providerId:id,kind:selected===modelText.reset?'reset':'provider',disabled:selected===modelText.disable},device);setForm(null);await load();return;}
       if(selected===t.refresh){await invokeModelConfiguration(client,'refresh',{providerId:id},device);setForm(null);await load();return;}
-      if(!custom&&id==='openai'&&selected===modelText.disconnect){await invokeModelConfiguration(client,'disconnect',{providerId:id},device);setForm(null);await load();return;}
+      if(!custom&&['openai','xai'].includes(id)&&selected===modelText.disconnect){await invokeModelConfiguration(client,'disconnect',{providerId:id},device);setForm(null);await load();return;}
       if(!custom)throw new Error('PROVIDER_NOT_FOUND');
       if(selected===modelText.disconnect||selected===modelText.remove){
         edit(selected,[{key:'confirm',label:label(custom.name,id),choices:[t.cancel,t.yes]}],async value=>{if(value.confirm===t.yes)await invokeModelConfiguration(client,selected===modelText.remove?'remove':'disconnect',{providerId:id},device);setForm(null);await load();});return;
@@ -346,7 +346,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         }
       } else if(at.page==='providers'){
         const raw=await call('maker:provider:list');
-        nextItems=array(record(raw).providers??raw).filter(p=>p.source==='user'||p.connected||p.id==='openai').map(provider=>({id:label(provider.id),title:label(provider.name,label(provider.id)),detail:provider.suspended?modelText.disable:provider.connected?t.connected:t.signedOut,run:()=>manageProvider(provider)}));
+        nextItems=array(record(raw).providers??raw).filter(p=>p.source==='user'||p.connected||['openai','xai'].includes(String(p.id))).map(provider=>({id:label(provider.id),title:label(provider.name,label(provider.id)),detail:provider.suspended?modelText.disable:provider.connected?t.connected:t.signedOut,run:()=>manageProvider(provider)}));
       } else if(at.page==='engines'){
         const statuses=array(await call('terminal:engines:list',[],false));
         nextItems=statuses.map(item=>({id:label(item.kind),title:label(item.kind),detail:label(item.version,t.notInstalled),run:()=>{setEngine(label(item.kind) as typeof engine);navigate('engine');}}));
@@ -467,14 +467,18 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   });
 
   const height = Math.max(12,terminalRows);
-  const pageSize = Math.max(3,Math.floor((height-10)/3));
+  const listRows = Math.max(3, height - 9 - (filter ? 1 : 0) - (error ? 1 : 0));
+  const rowHeight = (index: number) => visibleItems[index]?.detail ? 3 : 1;
+  let start = Math.max(0, selected), used = rowHeight(start);
+  while (start > 0 && used + rowHeight(start - 1) <= listRows) used += rowHeight(--start);
+  let end = start, measured = 0;
+  while (end < visibleItems.length && measured + rowHeight(end) <= listRows) measured += rowHeight(end++);
   const draftRows=Math.min(Math.max(2,Math.min(5,Math.floor(height/4))),wrapAnsi(draft||' ',Math.max(8,columns-2),{hard:true,trim:false}).split('\n').length);
   const routeLabel = `${label(taskInfo.model)} · ${engineLabel(taskInfo.agentKind)}`;
   const selectedRoute = taskInfo.agentSwitchIntent ? record(taskInfo.agentSwitchIntent) : null;
   const routeStatus = terminalText(`${routeLabel}${selectedRoute ? ` → ${label(selectedRoute.model)} · ${engineLabel(selectedRoute.targetAgentKind)}` : ''} · ${running ? t.working : t.ready}${pending.length ? ` · ${t.requests} ${pending.length} (Ctrl+R)` : ''}`);
   const routeRows = wrapAnsi(routeStatus, Math.max(8, columns - 2), { hard: true, trim: false }).split('\n').length;
   const chatPageSize = Math.max(3,height-11-routeRows-draftRows-(attachments.length?1:0));
-  const start = Math.max(0,selected-pageSize+1);
   const title = task ? t.history : page === 'login' ? t.login : page==='engine'?engine:page==='engines'?t.engines:page==='providers'?modelText.manage:t[page as 'tasks'];
   const chatLines = messages.filter(message=>['user','assistant','error','agent_switch'].includes(label(message.role))).flatMap(message => {
     if (message.role === 'agent_switch') {
@@ -521,9 +525,9 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         </> : <>
           <Box marginBottom={1}><Text bold>{title}</Text>{busy && <Text dimColor>  {t.loading}</Text>}</Box>
           {filter&&<Text dimColor>/ {terminalText(filter)}</Text>}
-          {visibleItems.slice(start,start+pageSize).map((item,index) => <Box key={item.id} flexDirection="column" marginBottom={item.detail ? 1 : 0}>
-            <Text bold={selected === index+start}>{selected === index+start ? '› ' : '  '}{terminalText(item.title)}</Text>
-            {item.detail && <Text dimColor>  {terminalText(item.detail)}</Text>}
+          {visibleItems.slice(start,end).map((item,index) => <Box key={item.id} flexDirection="column" marginBottom={item.detail ? 1 : 0}>
+            <Text wrap="truncate-end" bold={selected === index+start}>{selected === index+start ? '› ' : '  '}{terminalText(item.title)}</Text>
+            {item.detail && <Text dimColor wrap="truncate-end">  {terminalText(item.detail)}</Text>}
           </Box>)}
         </>}
     </Box>

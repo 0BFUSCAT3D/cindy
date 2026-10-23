@@ -1,3 +1,4 @@
+import { TerminalGrokLogin } from './models/grok-login.js';
 import { TerminalClaudeLogin } from './models/claude-login.js';
 import { TerminalNativeAccounts } from './models/native-accounts.js';
 import { TerminalProviderLogin } from './models/login.js';
@@ -423,13 +424,20 @@ export class TerminalService {
       assertCurrent: guardIm,
       changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); },
     });
-    this.providerLogin = new TerminalProviderLogin({ models: this.tasks.models, native: nativeAccounts,
+    const nativeGrok = new TerminalGrokLogin({ root: ownerDir, models: this.tasks.models,
+      secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
+      assertCurrent: guardIm,
+      changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
+    });
+    this.providerLogin = new TerminalProviderLogin({ models: this.tasks.models, native: nativeAccounts, grok: nativeGrok,
       secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
       assertCurrent: guardIm, log: logger,
       changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
     });
     this.tasks.utility.configureConnections({
       readCachedGenericOAuthAccessToken: id => this.providerLogin!.cachedCredential(id),
+      getGrokAccessToken: async () => (await nativeGrok.credential()).accessToken,
+      getGrokOAuthCredentialGeneration: () => nativeGrok.generation(),
       getChatgptBridgeAuth: async () => nativeAccounts.credential(),
       getChatgptBridgeAuthForDispatch: async () => {
         const auth = await nativeAccounts.credential();

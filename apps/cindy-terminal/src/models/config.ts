@@ -3,6 +3,7 @@ import { BUNDLED_CATALOG, buildRegistry, buildUserProvider, resolveRoute, type A
 import type { TerminalSecrets } from '../contracts.js';
 import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platform.js';
 import { createActiveCatalog } from '@cindy/model-providers/model-plane/activeCatalog';
+import type { TerminalGrokLogin } from './grok-login.js';
 import type { TerminalClaudeLogin } from './claude-login.js';
 import type { TerminalNativeAccounts } from './native-accounts.js';
 import { validateAuthSection } from '@cindy/model-providers/provider-auth/configuration';
@@ -45,6 +46,7 @@ export class TerminalModelConfig {
   private oauth?: ModelOAuthConnection;
   nativeAccounts?: TerminalNativeAccounts;
   nativeClaude?: TerminalClaudeLogin;
+  nativeGrok?: TerminalGrokLogin;
   private nativeModels?: CatalogModel[];
   connectNative(connection: TerminalNativeAccounts) { this.nativeAccounts = connection; this.generation++; }
 
@@ -129,6 +131,7 @@ export class TerminalModelConfig {
   presets() { return structuredClone(this.activeCatalog().presets ?? []); }
   async refresh(providerId:string) {
     if (this.oauth && this.activeCatalog().providers.find(p => p.id === providerId)?.auth.oauth) { await this.oauth.refresh(providerId); return { ok: true as const, providerId }; }
+    if (providerId === 'xai' && this.nativeGrok) { await this.nativeGrok.models(true); this.generation++; return { ok: true as const, providerId }; }
     if (providerId === 'openai' && this.nativeAccounts) { await this.nativeAccounts.models(true); this.generation++; return { ok: true as const, providerId }; }
     if (providerId === 'xd' && this.refreshGateway) { await this.refreshGateway(); return { ok: true as const, providerId }; }
     const kind=providerId==='openai'?'codex':providerId==='anthropic'?'claude-code':null;
@@ -154,7 +157,7 @@ export class TerminalModelConfig {
       guard();await this.persist({...this.state,disabled});
     });
   }
-  disconnect(id:string,guard:()=>void) {return this.change(async()=>{guard();if(id==='openai'&&this.nativeAccounts){this.nativeAccounts.disconnect();return;}if(!this.state.providers.some(p=>p.id===id))throw new Error('PROVIDER_NOT_FOUND');if(this.activeCatalog().providers.find(p=>p.id===id)?.auth.oauth){if(!this.oauth)throw new Error('PROVIDER_CONNECTION_UNAVAILABLE');this.oauth.disconnect(id);}for(const kind of ENGINES){guard();await this.secrets.delete(this.key(id,kind));}});}
+  disconnect(id:string,guard:()=>void) {return this.change(async()=>{guard();if(id==='xai'&&this.nativeGrok){this.nativeGrok.disconnect();return;}if(id==='openai'&&this.nativeAccounts){this.nativeAccounts.disconnect();return;}if(!this.state.providers.some(p=>p.id===id))throw new Error('PROVIDER_NOT_FOUND');if(this.activeCatalog().providers.find(p=>p.id===id)?.auth.oauth){if(!this.oauth)throw new Error('PROVIDER_CONNECTION_UNAVAILABLE');this.oauth.disconnect(id);}for(const kind of ENGINES){guard();await this.secrets.delete(this.key(id,kind));}});}
   connectGateway(read: () => { apiKey: string; endpoint: string } | null, refresh?: () => Promise<void>, rejected?: (key: string | null | undefined) => void) { this.gateway = read; this.refreshGateway = refresh; this.rejectGateway = rejected; }
   gatewayCredentials() { return this.gateway?.() ?? null; }
   reportGatewayRejection(key: string | null | undefined) { this.rejectGateway?.(key); }
@@ -178,6 +181,8 @@ export class TerminalModelConfig {
     connected.anthropic = statuses[0][1].authenticated;
     connected.openai = statuses[1][1].authenticated;
     connected.xd = Boolean(this.gateway?.());
+    connected.xai = Boolean(this.nativeGrok?.connected());
+    if (connected.xai) await this.nativeGrok!.models().catch(() => {});
     if (connected.openai && this.nativeAccounts) {
       const models = await this.nativeAccounts.models().catch(() => this.nativeModels);
       if (models && models !== this.nativeModels) { this.catalogRuntime.setDiscoveredCodexModels(models); this.nativeModels = models; }
@@ -206,7 +211,7 @@ export class TerminalModelConfig {
     let selection = input ? parseSelection(input) : this.state.defaultSelection;
     if (!selection) {
       for (const kind of ENGINES) {
-        const provider = views.find(p => p.connected && !p.suspended && (p.source === 'user' || p.id === 'xd' || kind === 'claude-code' && p.id === 'anthropic' || kind === 'codex' && p.id === 'openai') && p.models[kind]?.some(m => !m.disabled && m.defaultEnabled !== false));
+        const provider = views.find(p => p.connected && !p.suspended && (p.source === 'user' || p.id === 'xd' || p.id === 'xai' || kind === 'claude-code' && p.id === 'anthropic' || kind === 'codex' && p.id === 'openai') && p.models[kind]?.some(m => !m.disabled && m.defaultEnabled !== false));
         const model = provider?.models[kind]?.find(m => !m.disabled && m.defaultEnabled !== false);
         if (provider && model) { selection = { agentKind: kind, providerId: provider.id, model: model.id }; break; }
       }
@@ -217,7 +222,7 @@ export class TerminalModelConfig {
     // Built-in subscriptions use the original vendor CLI. Cross-harness OAuth
     // needs a separately authorized credential bridge, never a copied login.
     if (selection.providerId === 'xd' && this.catalogRuntime.isXdGatewayPaymentRequiredRoute(selection.model, selection.agentKind)) throw new Error('MODEL_PAYMENT_REQUIRED');
-    if (route.provider.source !== 'user' && !(selection.providerId === 'xd' && this.gateway?.()) && !(route.provider.auth.oauth && this.oauth?.connected(selection.providerId)) && !(selection.providerId === 'openai' && this.nativeAccounts?.connected()) && !((selection.agentKind === 'claude-code' && selection.providerId === 'anthropic') || (selection.agentKind === 'codex' && selection.providerId === 'openai'))) throw new Error('MODEL_ROUTE_REQUIRES_SUPPORTED_CONNECTION');
+    if (route.provider.source !== 'user' && !(selection.providerId === 'xd' && this.gateway?.()) && !(route.provider.auth.oauth && this.oauth?.connected(selection.providerId)) && !(selection.providerId === 'openai' && this.nativeAccounts?.connected()) && !(selection.providerId === 'xai' && this.nativeGrok?.connected()) && !((selection.agentKind === 'claude-code' && selection.providerId === 'anthropic') || (selection.agentKind === 'codex' && selection.providerId === 'openai'))) throw new Error('MODEL_ROUTE_REQUIRES_SUPPORTED_CONNECTION');
     const custom = this.state.providers.find(p => p.id === selection.providerId);
     if (custom && custom.auth?.method !== 'none' && !await this.credential(selection.providerId, selection.agentKind)) throw new Error('MODEL_CREDENTIAL_REQUIRED');
     if (modelRevision !== this.revision() || this.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');

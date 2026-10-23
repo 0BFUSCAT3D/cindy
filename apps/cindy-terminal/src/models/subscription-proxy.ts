@@ -5,23 +5,48 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
   createAnthropicCompatProxy,
+  sanitizeXaiModelInputBody,
   type LocalRequestHandler,
 } from "@cindy/anthropic-compat-proxy";
 import { createResponsesHandler } from "@cindy/anthropic-responses-bridge";
 import { buildChatgptBridgeHeaders } from "@cindy/model-providers/provider-auth/chatgpt-bridge-headers";
 import type { AgentKind, ResolvedRoute } from "@cindy/model-providers";
+import { xaiServerSideTools } from "@cindy/model-providers/provider-auth/xai-server-side-tools";
+import { withNativeXaiServerSideTools } from "@cindy/model-providers/provider-auth/xai-native-tools";
+import type { TerminalGrokLogin } from "./grok-login.js";
 import type { TerminalNativeAccounts } from "./native-accounts.js";
 
-/** Native ChatGPT requests and the existing Messages→Responses bridge share
- * one owner-bound credential source. No native CLI sees its access token. */
-export async function createChatgptProxy(options: {
+type CommonOptions = {
   route: ResolvedRoute;
   kind: AgentKind;
   taskId: string;
-  accounts: TerminalNativeAccounts;
   authorize?: (model: string) => Promise<boolean>;
   fetch?: typeof fetch;
-}) {
+};
+export function createChatgptProxy(
+  options: CommonOptions & { accounts: TerminalNativeAccounts },
+) {
+  return createSubscriptionProxy({ ...options, provider: "openai" });
+}
+export function createGrokProxy(
+  options: CommonOptions & { accounts: TerminalGrokLogin },
+) {
+  return createSubscriptionProxy({ ...options, provider: "xai" });
+}
+
+/** Native engines receive only a local capability. Subscription headers,
+ * account revocation and upstream recovery stay in the owner process. */
+async function createSubscriptionProxy(
+  options: CommonOptions &
+    (
+      | { provider: "openai"; accounts: TerminalNativeAccounts }
+      | { provider: "xai"; accounts: TerminalGrokLogin }
+    ),
+) {
+  const grok = options.provider === "xai";
+  const upstream = grok
+    ? "https://api.x.ai/v1"
+    : "https://chatgpt.com/backend-api/codex";
   // Pi's native Codex transport parses a JWT-shaped API key before dispatch.
   // This is only a random loopback capability with a synthetic account claim;
   // it has no validity at OpenAI and carries none of the owner's identity.
@@ -44,7 +69,9 @@ export async function createChatgptProxy(options: {
       (model) =>
         !model.disabled &&
         (model.id === id ||
-          (options.kind === "pi" && model.id === `chatgpt/${id}`)),
+          (options.kind === "pi" && model.id === `chatgpt/${id}`) ||
+          (grok &&
+            model.id.replace(/^xai\//, "") === id.replace(/^xai\//, ""))),
     );
   const denied: LocalRequestHandler = async ({ res }) => {
     res.writeHead(403, { "content-type": "application/json" });
@@ -57,7 +84,16 @@ export async function createChatgptProxy(options: {
       throw new Error("PROVIDER_AUTHORIZATION_CHANGED");
     const headers = new Headers(init?.headers);
     for (const [name, value] of Object.entries(
-      buildChatgptBridgeHeaders({ ...auth, sessionId: options.taskId }),
+      grok
+        ? { authorization: `Bearer ${auth.accessToken}` }
+        : buildChatgptBridgeHeaders({
+            accessToken: auth.accessToken,
+            accountId:
+              "accountId" in auth && typeof auth.accountId === "string"
+                ? auth.accountId
+                : null,
+            sessionId: options.taskId,
+          }),
     ))
       headers.set(name, value);
     headers.delete("x-api-key");
@@ -71,19 +107,60 @@ export async function createChatgptProxy(options: {
         ...(init?.signal ? [init.signal] : []),
       ]),
     });
-    if (response.status === 401) options.accounts.invalidate(auth.accessToken);
+    if (options.provider === "openai") {
+      if (response.status === 401)
+        options.accounts.invalidate(auth.accessToken);
+    } else if (response.status === 401 || response.status === 403) {
+      const reader = response.clone().body?.getReader();
+      const chunks: Buffer[] = [];
+      let size = 0;
+      try {
+        while (reader && size < 8192) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          const kept = Buffer.from(chunk.value.subarray(0, 8192 - size));
+          chunks.push(kept);
+          size += kept.length;
+        }
+      } finally {
+        void reader?.cancel().catch(() => {});
+        reader?.releaseLock();
+      }
+      await options.accounts.invalidate({
+        status: response.status,
+        body: Buffer.concat(chunks).toString("utf8"),
+        failedAccessToken: auth.accessToken,
+      });
+    }
     return response;
   };
   const bridge = createResponsesHandler({
     fetchImpl: dispatch,
     providers: [
       {
-        prefix: "chatgpt/",
+        prefix: grok ? "xai/" : "chatgpt/",
         wireProtocol: "openai-responses",
-        upstreamBase: "https://chatgpt.com/backend-api/codex",
-        fastServiceTier: "priority",
+        upstreamBase: upstream,
+        ...(grok
+          ? {
+              maxOutputTokensSupported: true,
+              supportsReasoning: (model: string) =>
+                !(
+                  model.startsWith("grok-code") ||
+                  model.startsWith("grok-build")
+                ),
+              strictFunctionTools: () => true,
+              serverSideTools: xaiServerSideTools,
+              fastModel: (model: string) =>
+                models
+                  .find((entry) => entry.id === `xai/${model}`)
+                  ?.fastModelId?.replace(/^xai\//, "") ?? undefined,
+            }
+          : { fastServiceTier: "priority" }),
         supportedReasoningEfforts: (model) =>
-          models.find((entry) => entry.id === `chatgpt/${model}`)?.efforts,
+          models.find(
+            (entry) => entry.id === `${grok ? "xai" : "chatgpt"}/${model}`,
+          )?.efforts,
         buildHeaders: async () => ({}),
       },
     ],
@@ -93,7 +170,14 @@ export async function createChatgptProxy(options: {
     const pathname = new URL(ctx.url, "http://127.0.0.1").pathname;
     if (
       ctx.method !== "POST" ||
-      !["/responses", "/codex/responses", "/v1/responses"].includes(pathname)
+      ![
+        "/responses",
+        "/codex/responses",
+        "/v1/responses",
+        ...(grok && options.kind === "pi"
+          ? ["/chat/completions", "/v1/chat/completions"]
+          : []),
+      ].includes(pathname)
     ) {
       res.writeHead(404).end();
       return;
@@ -134,8 +218,21 @@ export async function createChatgptProxy(options: {
     const cancel = () => request.abort();
     res.once("close", cancel);
     try {
+      const protocol = pathname.endsWith("/chat/completions")
+        ? "openai-chat"
+        : "openai-responses";
+      let outgoing: Record<string, unknown> = {
+        ...body,
+        model: String(body.model)
+          .replace(grok ? /^xai\// : /^chatgpt\//, "")
+          .replace(/\[1m\]$/, ""),
+      };
+      if (grok) {
+        outgoing = sanitizeXaiModelInputBody(outgoing) ?? outgoing;
+        outgoing = withNativeXaiServerSideTools(outgoing, protocol) ?? outgoing;
+      }
       const response = await dispatch(
-        "https://chatgpt.com/backend-api/codex/responses",
+        `${upstream}/${protocol === "openai-chat" ? "chat/completions" : "responses"}`,
         {
           method: "POST",
           headers: {
@@ -144,12 +241,7 @@ export async function createChatgptProxy(options: {
           },
           // Pi's specialized transport already supplies the full Codex contract.
           // The UI namespace is never a model name understood by the backend.
-          body: JSON.stringify({
-            ...body,
-            model: String(body.model)
-              .replace(/^chatgpt\//, "")
-              .replace(/\[1m\]$/, ""),
-          }),
+          body: JSON.stringify(outgoing),
           signal: request.signal,
         },
       );
@@ -181,7 +273,7 @@ export async function createChatgptProxy(options: {
     }
   };
   const handle = await createAnthropicCompatProxy({
-    upstream: "https://chatgpt.com/backend-api/codex",
+    upstream,
     transformRequest: [],
     routingTransform: async (body, ctx) => {
       const credential = ctx.headers.authorization ?? ctx.headers["x-api-key"];
