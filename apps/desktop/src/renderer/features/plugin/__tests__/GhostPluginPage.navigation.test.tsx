@@ -874,11 +874,11 @@ describe('plugin use details and independent author management', () => {
     let finish!: (value: ContributionTransferView) => void;
     const status = vi.fn(() => new Promise<ContributionTransferView>(resolve => { finish = resolve; }));
     const error = vi.spyOn(toast, 'error').mockReturnValue('submit-error');
-    Object.assign(window.electronAPI, { pluginContributions: { ...api, status, discard: vi.fn() } });
+    Object.assign(window.electronAPI, { pluginContributions: { ...api, status, discard: vi.fn().mockResolvedValue(undefined) } });
     render(page(`/plugins?ghost=${installed.instanceKey}`));
     await screen.findByRole('heading', { name: 'Local Author Plugin' });
     fireEvent.click(screen.getByText(`${prefix}.versionUpdates`));
-    const submit = await screen.findByRole('button', { name: `${prefix}.submitUpdate` });
+    const submit = await screen.findByRole('button', { name: `${prefix}.submitVersion` });
     fireEvent.click(submit);
     fireEvent.click(submit);
     await waitFor(() => expect(api.submit).toHaveBeenCalledExactlyOnceWith(prepared.preparedId));
@@ -965,7 +965,9 @@ describe('plugin use details and independent author management', () => {
     expect(api.submit).not.toHaveBeenCalled();
   });
 
-  it('enables a new installed version only after all release pages confirm it is unused', async () => {
+  // An unused version can still fail preflight (for example, missing update notes).
+  // Exercise the installed-detail action: it must use the same preview as first publication.
+  it.each([true, false])('preflights an unused installed update before submission (allowed=%s)', async allowed => {
     auth.mode = 'cloud';
     const installed = localAuthorInstallation('2.0.0');
     window.electronAPI.ghosts.listSync = () => ({ ghosts: [installed] });
@@ -974,11 +976,30 @@ describe('plugin use details and independent author management', () => {
     own.plugin.latestSubmission!.reviewStatus = 'approved';
     api.releases.mockResolvedValueOnce({ releases: [own.plugin.latestSubmission!], nextCursor: 'older', queriedAt: own.queriedAt })
       .mockResolvedValueOnce({ releases: [], nextCursor: null, queriedAt: own.queriedAt });
-    Object.assign(window.electronAPI, { pluginContributions: api });
+    const prepared: ContributionTransferView['prepared'] = { preparedId: 'checked-update', instanceId: installed.instanceKey!, pluginId: detail.pluginId,
+      ghostId: detail.ghostId, name: 'Local Author Plugin', description: '', version: '2.0.0', releaseNotes: 'Checked update notes',
+      sha256: 'a'.repeat(64), sizeBytes: 100, expiresAt: '2099-01-01T00:00:00Z',
+      preflight: { subject: { authority: 'https://issuer.test', membershipId: 'member-A' }, queriedAt: own.queriedAt, policyVersion: 2,
+        target: { pluginId: detail.pluginId, ghostId: detail.ghostId, version: '2.0.0', expectedRelease: null }, pendingRelease: null,
+        blockers: allowed ? [] : [{ code: 'RELEASE_NOTES_REQUIRED', message: 'Missing release notes' }], actions: { canSubmit: allowed } } };
+    let finishPreview!: (value: ContributionTransferView['prepared']) => void;
+    api.prepare.mockImplementation(() => new Promise<ContributionTransferView['prepared']>(resolve => { finishPreview = resolve; }));
+    Object.assign(window.electronAPI, { pluginContributions: { ...api, discard: vi.fn().mockResolvedValue(undefined) } });
     render(page(`/plugins?ghost=${installed.instanceKey}`));
-    expect(await screen.findByRole('button', { name: `${prefix}.submitUpdate` })).toHaveProperty('disabled', false);
+    await waitFor(() => expect(api.prepare).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: `${prefix}.submitUpdate` })).toHaveProperty('disabled', true);
+    expect(api.submit).not.toHaveBeenCalled();
+    await act(async () => { finishPreview(prepared); });
+    if (allowed) {
+      expect(await screen.findByRole('button', { name: `${prefix}.submitVersion` })).toHaveProperty('disabled', false);
+      fireEvent.click(screen.getByText(`${prefix}.versionUpdates`));
+      expect(screen.getByText('Checked update notes')).toBeTruthy();
+    } else {
+      expect(await screen.findByText('Missing release notes')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: `${prefix}.submitUpdate` })).toBeNull();
+      expect(screen.queryByRole('button', { name: `${prefix}.submitVersion` })).toBeNull();
+    }
     expect(api.releases).toHaveBeenCalledWith(detail.pluginId, 'older');
-    expect(api.prepare).not.toHaveBeenCalled();
     expect(api.submit).not.toHaveBeenCalled();
   });
   it.each([undefined, { kind: 'unavailable' }, { kind: 'public-market', pluginId: detail.pluginId }] satisfies InstalledGhost['publishingSource'][])(

@@ -1748,7 +1748,7 @@ function LocalGhostPluginPage({
   }, [personalContributor, localContributionKey, showMyPlugins]);
   const canPreparePublication = personalContributor && selectedGhost?.publishingSource?.kind === 'local' &&
     !contributionUnavailableKey && !showMyPlugins && localContributionResult &&
-    !localContributionResult.error && !localContributionResult.plugin;
+    !localContributionResult.error && !localPublishBlocker;
   const currentPublicationDraft = useContributionPreview(localContributionKey,
     canPreparePublication && selectedGhost ? installedGhostStoragePart(selectedGhost) : undefined,
     selectedGhost?.manifest.version,
@@ -1914,7 +1914,7 @@ function LocalGhostPluginPage({
                   : undefined
               }
               onContribute={!showLocalPublishing || contributionUnavailableKey || localPublishBlocker ? undefined : () => void contribute(selectedDetail.id)}
-              contributionUnavailableReason={contributionUnavailableKey === 'officialGithubRequired' || (contributionUnavailableKey === 'reservedId' && selectedGhost?.publishingSource?.kind === 'public-market') ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : !showLocalPublishing ? undefined : contributionUnavailableKey ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : localContributionResult?.error ? t(localContributionResult.error) : localPublishBlocker ? t(`settings.ghosts.contribution.errors.${localPublishBlocker}`) : currentPublicationDraft?.error ? t(currentPublicationDraft.error, { defaultValue: t('settings.ghosts.contribution.loadFailed') }) : currentPublicationDraft?.prepared?.preflight?.blockers[0] ? currentPublicationDraft.prepared.preflight.blockers[0].message : personalContributor && !localContributionResult?.plugin && !currentPublicationDraft?.prepared ? t('settings.ghosts.contribution.preparing') : undefined}
+              contributionUnavailableReason={contributionUnavailableKey === 'officialGithubRequired' || (contributionUnavailableKey === 'reservedId' && selectedGhost?.publishingSource?.kind === 'public-market') ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : !showLocalPublishing ? undefined : contributionUnavailableKey ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : localContributionResult?.error ? t(localContributionResult.error) : localPublishBlocker ? t(`settings.ghosts.contribution.errors.${localPublishBlocker}`) : currentPublicationDraft?.error ? t(currentPublicationDraft.error, { defaultValue: t('settings.ghosts.contribution.loadFailed') }) : currentPublicationDraft?.prepared?.preflight?.blockers[0] ? currentPublicationDraft.prepared.preflight.blockers[0].message : personalContributor && !currentPublicationDraft?.prepared ? t('settings.ghosts.contribution.preparing') : undefined}
               publishingPreview={currentPublicationDraft?.prepared}
               onRefreshPublishing={() => setPublicationRefresh(value => value + 1)}
               contributionUpdate={Boolean(localContributionResult?.plugin || (selectedGhost?.manifest.id && marketItems.some((item) => marketItemMatchesInstalledGhost(item, selectedGhost))))}
