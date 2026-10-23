@@ -1,6 +1,6 @@
 {
   "schemaVersion": 6,
-  "updatedAt": "2026-10-23T18:56:11.521Z",
+  "updatedAt": "2026-10-23T19:45:53.486Z",
   "models": [
     {
       "id": "openai/gpt-6.1-sol",
@@ -6943,9 +6943,7 @@
     },
     {
       "id": "deepseek/deepseek-v4-flash",
-      "aliases": [
-        "deepseek-v4-flash"
-      ],
+      "aliases": [],
       "defaults": {
         "name": "DeepSeek V4 Flash",
         "description": "DeepSeek V4 Flash efficiency-optimized MoE; supports low/high/max effort",
@@ -7449,7 +7447,8 @@
           "high",
           "max"
         ],
-        "defaultEffort": "high"
+        "defaultEffort": "high",
+        "supportsImageInput": true
       },
       "referencePriceGroups": [
         {
@@ -7874,7 +7873,8 @@
     {
       "id": "deepseek/deepseek-v4.1-flash",
       "aliases": [
-        "deepseek-flash"
+        "deepseek-flash",
+        "deepseek-v4-flash"
       ],
       "defaults": {
         "name": "DeepSeek V4.1 Flash",
