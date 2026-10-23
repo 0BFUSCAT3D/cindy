@@ -62,6 +62,8 @@ OpenRouter 的普通 `/api/v1/models` 目录不包含完整语音列表。对未
 识别为 `audio_speech`；`audio` 输入／输出的聊天模型保持聊天分类，已有名称、类型及开关覆盖
 继续生效。额外查询失败时保留已获取的聊天目录；用户指定的过滤参数或代理目录不被改写。
 语音的按字符／时长报价不写入聊天的 token 单价字段。
+登录后的发现与手动刷新均在每次分页／语音补查前复核登录代次及当前账号；取消、关闭登录
+窗口或切换账号后，不再使用已捕获的凭证追加目录请求，迟到结果不写入模型配置。
 
 OpenRouter BYOK 的官方 `/api` 和 `/api/v1` 连接只在语音请求中统一到
 `https://openrouter.ai/api/v1/audio/speech`，使用对应连接的 Bearer key、OpenAI 兼容音频
@@ -69,6 +71,9 @@ OpenRouter BYOK 的官方 `/api` 和 `/api/v1` 连接只在语音请求中统一
 目录读取该型号的 `supported_voices`，不套用 Gateway 或厂商直连的参考音色；缺少该字段时
 保留手动输入，查询失败沿用现有错误／重试行为，不覆盖已选音色。仍可手动输入并试听。
 音色目录仅在内存，不进入公共 Registry 或持久配置。
+官方 OpenRouter OAuth 连接同样可用：只放行已识别的 OpenRouter PKCE contract 与官方
+API 地址，复用当前账号 generic OAuth 凭证库中的 API key；缺少凭证时不可选、不回退到
+API Key 连接的密钥。其他订阅 OAuth、未知 OAuth contract 及代理地址仍不进入此语音路由。
 
 OpenRouter 的 `minimax/speech-*` 型号实测拒绝 PCM，因此直接请求 MP3，不先发起会失败的
 付费 PCM 请求或自动换模型。仅匹配官方 API 地址；Gateway、自定义代理与 MiniMax 原生

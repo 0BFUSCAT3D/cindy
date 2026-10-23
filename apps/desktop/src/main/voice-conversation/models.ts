@@ -7,9 +7,11 @@ import {
   BUNDLED_CATALOG,
   isLoopbackProviderUrl,
   isModelVisible,
+  providerOAuthContract,
   resolveModelNativeApi,
   type AgentKind,
   type Catalog,
+  type OAuthProviderDescriptor,
   type ProviderMediaModel,
 } from '@cindy/model-providers';
 import {
@@ -31,6 +33,7 @@ export type SpeechCatalogDeps = {
   visibilityOverride?(agent: AgentKind, providerId: string, modelId: string): boolean | undefined;
   gatewayConnection(): { baseUrl: string; apiKey: string };
   readKey(providerId: string, agent: AgentKind): string | null;
+  readOAuthToken?(providerId: string, oauth: OAuthProviderDescriptor): string | null;
 };
 type Binding = { model: VoiceConversationModel; connection: SpeechConnection | null };
 
@@ -157,10 +160,12 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
         });
         continue;
       }
+      const oauth = provider.auth.method === 'oauth' ? provider.auth.oauth : undefined;
+      const openRouterOAuth = !!oauth && providerOAuthContract(oauth) === 'openrouter';
       if (
         provider.source !== 'user' ||
         provider.auth.native ||
-        !['apiKey', 'none'].includes(provider.auth.method)
+        (!['apiKey', 'none'].includes(provider.auth.method) && !openRouterOAuth)
       )
         continue;
       const agent = media.sourceAgent;
@@ -213,6 +218,14 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       for (const name of route.headerDelete ?? []) delete headers[name.toLowerCase()];
       if (provider.auth.method === 'none') {
         if (route.authStrategy !== 'none' || !isLoopbackProviderUrl(base.toString())) continue;
+      } else if (provider.auth.method === 'oauth') {
+        // OpenRouter PKCE issues an API key into the generic OAuth store. Admit
+        // only that contract on its official API; subscription OAuth stays excluded.
+        if (!openRouterOAuth || !oauth || !openRouterBase ||
+            !openRouterSpeechBaseUrl(ownerBase.toString()) || route.authStrategy !== 'oauth-token') continue;
+        const token = deps.readOAuthToken?.(provider.id, oauth)?.trim();
+        if (!token) continue;
+        headers.authorization = `Bearer ${token}`;
       } else {
         if (route.authStrategy !== 'api-key-header') continue;
         const key = deps.readKey(provider.id, agent)?.trim();

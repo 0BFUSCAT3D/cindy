@@ -5,6 +5,7 @@ import {
   isAgentSelectableModel,
   mergeDiscoveredRuntimeModels,
   parseModelsListResponse,
+  providerPresetOAuth,
 } from '@cindy/model-providers';
 import { fetchProviderModels } from '../../maker-host/provider-model-fetch.js';
 import { resolveSpeechConnection, speechModels, type SpeechCatalogDeps } from '../models.js';
@@ -38,9 +39,13 @@ const connection: SpeechConnection = {
 const current = () => {};
 
 describe('OpenRouter speech integration', () => {
-  it.each(['claude-code', 'codex', 'pi'] as const)(
-    'discovers speech alongside chat and executes the owning %s connection',
-    async (agent) => {
+  // PR #6900: API-key-only fixtures missed discovered OAuth models being removed
+  // from the picker. Unit: real catalog projection and transport for both logins.
+  it.each((['claude-code', 'codex', 'pi'] as const).flatMap(agent =>
+    (['apiKey', 'oauth'] as const).map(auth => ({ agent, auth }))))(
+    'discovers speech alongside chat and executes the owning $agent/$auth connection',
+    async ({ agent, auth }) => {
+      const oauth = providerPresetOAuth('openrouter')!;
       const baseUrl = agent === 'claude-code' ? 'https://openrouter.ai/api' : connection.baseUrl;
       const fetcher = vi.fn<typeof fetch>(async (url, init) => {
         expect(init?.headers).toEqual({ authorization: 'Bearer test-openrouter-key' });
@@ -64,6 +69,7 @@ describe('OpenRouter speech integration', () => {
       const provider = buildUserProvider({
         id: 'router',
         name: 'My OpenRouter',
+        ...(auth === 'oauth' ? { auth: { method: 'oauth' as const, oauth } } : {}),
         runtimes: {
           [agent]: { baseUrl, models: saved },
         },
@@ -85,6 +91,7 @@ describe('OpenRouter speech integration', () => {
         gatewayAllowed: false,
         disabled: () => false,
         readKey: vi.fn(() => 'test-openrouter-key'),
+        readOAuthToken: vi.fn(() => 'test-openrouter-key'),
         gatewayConnection: () => {
           throw new Error('not Gateway');
         },
@@ -106,7 +113,13 @@ describe('OpenRouter speech integration', () => {
       expect(bound.baseUrl).toBe(connection.baseUrl);
       expect(bound.protocol).toBe('openai');
       expect(bound.headers).toEqual(connection.headers);
-      expect(deps.readKey).toHaveBeenCalledWith('router', agent);
+      if (auth === 'oauth') {
+        expect(deps.readOAuthToken).toHaveBeenCalledWith('router', oauth);
+        expect(deps.readKey).not.toHaveBeenCalled();
+      } else {
+        expect(deps.readKey).toHaveBeenCalledWith('router', agent);
+        expect(deps.readOAuthToken).not.toHaveBeenCalled();
+      }
       expect(provider.routing[agent]?.upstream).toBe(baseUrl);
       expect(() => resolveSpeechConnection(deps, { ...selection, speed: 1.5 })).toThrow(
         'invalid_speech_speed',
@@ -122,6 +135,36 @@ describe('OpenRouter speech integration', () => {
       expect(() =>
         speechRequest(bound, { modelId: speechId, voice: 'sarah', text: 'Hello', speed: 1.5 }),
       ).toThrow();
+    },
+  );
+
+  // Unit boundary: a name/model family or saved API key must not admit another
+  // OAuth contract, a non-official route, or a logged-out OpenRouter connection.
+  it.each(['unknown-oauth', 'subscription', 'native', 'proxy', 'wrong-path', 'wrong-auth', 'logged-out'] as const)(
+    'keeps OAuth speech unavailable for %s', (kind) => {
+      const oauth = kind === 'subscription' ? providerPresetOAuth('minimax')!
+        : { ...providerPresetOAuth('openrouter')!, ...(kind === 'unknown-oauth'
+          ? { tokenUrl: 'https://auth.example/token' } : {}) };
+      const baseUrl = kind === 'proxy' ? 'https://proxy.example/api/v1'
+        : kind === 'wrong-path' ? 'https://openrouter.ai/proxy/v1' : connection.baseUrl;
+      const provider = buildUserProvider({
+        id: 'router', name: 'OpenRouter', auth: { method: 'oauth', oauth },
+        runtimes: { codex: { baseUrl, models: [{ id: speechId, name: speechId, mode: 'audio_speech' }] } },
+      });
+      if (kind === 'native') provider.auth.native = 'codex';
+      if (kind === 'wrong-auth') provider.routing.codex!.authStrategy = 'api-key-header';
+      const deps: SpeechCatalogDeps = {
+        catalog: { ...BUNDLED_CATALOG, providers: [provider] }, gatewayAllowed: false,
+        disabled: () => false, gatewayConnection: () => { throw new Error('not Gateway'); },
+        readKey: vi.fn(() => 'fake-unrelated-key'),
+        readOAuthToken: vi.fn(() => kind === 'logged-out' ? null : 'fake-oauth-key'),
+      };
+      expect(speechModels(deps)).toEqual([]);
+      expect(() => resolveSpeechConnection(deps, {
+        providerId: 'router', agent: 'codex', modelId: speechId, protocol: 'openai',
+      })).toThrow('model_unavailable');
+      expect(deps.readKey).not.toHaveBeenCalled();
+      if (kind !== 'logged-out') expect(deps.readOAuthToken).not.toHaveBeenCalled();
     },
   );
 

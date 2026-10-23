@@ -13,7 +13,7 @@ import { providerPresetOAuth } from '@cindy/model-providers';
  *   - setDiscoveredProviderModels 的 additions-only merge。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import type { OAuthProviderDescriptor, ProviderView } from '@cindy/model-providers';
 import { fetchSavedOAuthProviderModels } from '../provider-model-fetch.js';
@@ -632,6 +632,48 @@ describe('登录流与凭证落盘失败', () => {
 });
 
 describe('discoverGenericOAuthModels', () => {
+  // PR #6900 unit regression: the login follow-up (unlike saved refresh) could
+  // send more Bearer requests after cancellation. Hold a real catalog response
+  // at each async boundary; no subsequent page or late result may escape.
+  it.each(['before-request', 'first-page', 'next-page', 'speech-page', 'active'] as const)(
+    'checks login ownership before every catalog request: %s', async (phase) => {
+      seedBlob('router', { access_token: 'fake-login-key' });
+      const oauth = providerPresetOAuth('openrouter')!;
+      const endpoint = oauth.modelsDiscoveryUrl!;
+      let current = phase !== 'before-request';
+      let release!: (value: unknown) => void;
+      const waiting = new Promise<unknown>(resolve => { release = resolve; });
+      const pausedUrl = phase === 'next-page' ? `${endpoint}?cursor=next`
+        : phase === 'speech-page' ? `${endpoint}?output_modalities=speech` : endpoint;
+      fetchResponder = (url) => {
+        const payload = url.includes('output_modalities=speech')
+          ? { data: [{ id: 'tts', architecture: { output_modalities: ['speech'] } }] }
+          : { data: ['chat'], ...(url === endpoint ? { next_cursor: 'next' } : {}) };
+        const response = new Response(JSON.stringify(payload));
+        if (url === pausedUrl && current && phase !== 'active') {
+          response.json = () => waiting.then(() => payload);
+        }
+        return response;
+      };
+      const pending = discoverGenericOAuthModels('router', oauth, undefined, 'claude-code', () => current);
+      if (phase !== 'before-request' && phase !== 'active') {
+        await vi.waitFor(() => expect(fetchCalls.at(-1)?.url).toBe(pausedUrl));
+        current = false;
+        release(undefined);
+      }
+      const result = await pending;
+      expect(fetchCalls.map(({ url }) => url)).toEqual(
+        phase === 'before-request' ? [] : [endpoint,
+          ...(['next-page', 'speech-page', 'active'].includes(phase) ? [`${endpoint}?cursor=next`] : []),
+          ...(['speech-page', 'active'].includes(phase) ? [`${endpoint}?output_modalities=speech`] : []),
+        ],
+      );
+      for (const request of fetchCalls) expect(request.headers).toEqual({ authorization: 'Bearer fake-login-key' });
+      if (phase === 'active') expect(result?.map(model => model.id)).toEqual(['chat', 'tts']);
+      else expect(result).toBeNull();
+    },
+  );
+
   it('解析 {data:[{id}]} 形状并去重', async () => {
     seedBlob('acme', { access_token: 'at' });
     fetchResponder = () =>
