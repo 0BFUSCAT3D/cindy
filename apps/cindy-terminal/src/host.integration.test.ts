@@ -60,6 +60,21 @@ describe('terminal private host', () => {
     // commands. Keep the local 5s budget while allowing the Windows CI host IO.
   },process.platform==='win32'?30_000:5_000);
 
+  // Failed initialization happens after the private askpass listener starts.
+  // The old catch closed only IPC, leaving a detached daemon alive forever.
+  it('closes private listeners and finishes the host after failed initialization',async()=>{
+    const root=path.join(directory,'failed-start'),owner=path.join(root,'owners',createHash('sha256').update('guest').digest('hex').slice(0,32));
+    await privateDirectory(owner);await fs.writeFile(path.join(owner,'models.json'),'{invalid json', {mode:0o600});
+    const listeners=()=>((process as unknown as {_getActiveHandles():Array<{address?:()=>unknown}>})._getActiveHandles()).flatMap(handle=>{const address=handle.address?.();return typeof address==='string'&&address.includes('cindy-ih-')?[address]:[];});
+    const before=new Set(listeners()),service=new TerminalService(root);let stopped=false;void service.stopped.then(()=>{stopped=true;});
+    try{
+      await expect(service.start()).rejects.toThrow();
+      await new Promise<void>(resolve=>setImmediate(resolve));
+      expect(listeners().filter(socket=>!before.has(socket))).toEqual([]);expect(stopped).toBe(true);
+      await expect(connectTerminal(root)).rejects.toThrow('SERVICE_NOT_RUNNING');
+    }finally{await service.close().catch(()=>{});}
+  },process.platform==='win32'?30_000:5_000);
+
   // Existing GUI attachments use signed OSS URLs. A corrupt or cancelled
   // transfer must never be adopted, and account tokens belong only on the API.
   it('streams verified attachments without forwarding account credentials to storage', async () => {

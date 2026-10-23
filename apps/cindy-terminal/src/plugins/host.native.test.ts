@@ -199,4 +199,6 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
       active=false;await expect(recovered.list()).rejects.toThrow('OWNER_CHANGED');
     }finally{await recovered.close();}
   }finally{await host.close();vault.lock();await media.close();}
-});
+  // Native Windows vault ACL commands run for each durable mutation. Preserve
+  // the local 5s budget while allowing that real OS work on the CI runner.
+},process.platform==='win32'?30_000:5_000);

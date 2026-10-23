@@ -113,7 +113,7 @@ export class TerminalTaskHost {
   private readonly hosted = new Set<import('@cindy/maker-core').AgentSessionHandle>();
   private readonly binaries = new Map<AgentKind, string | null>();
   private readonly authCache = new Map<AgentKind, { at: number; value: Awaited<ReturnType<typeof nativeAuthState>> }>();
-  private readonly ready: Promise<void>;
+  readonly ready: Promise<void>;
   private pendingDispatchReady:boolean;
   private closed = false;
   private closing?: Promise<void>;
@@ -130,7 +130,8 @@ export class TerminalTaskHost {
   }
   private async initialize() {
     await privateDirectory(this.options.profileDir);
-    await Promise.all([this.storage.open(), this.models.open(), this.capabilities.ready, ...ENGINES.map(async kind => this.binaries.set(kind, await findAgentBinary(kind, this.options.binaryPaths?.[kind])))]);
+    const initialized=await Promise.allSettled([this.storage.open(),this.models.open(),this.media.ready,this.capabilities.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
+    const failed=initialized.find((result):result is PromiseRejectedResult=>result.status==='rejected');if(failed)throw failed.reason;
     const hostedFile=await readPrivateFile(path.join(this.options.profileDir,'hosted-runtimes.json'));
     if(hostedFile){const ids=JSON.parse(hostedFile.toString());if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(id)))throw new Error('INVALID_HOSTED_RUNTIME_INDEX');for(const id of ids)this.hostedRuntimeIds.add(id);}
     for (const row of await this.storage.list()) {
@@ -890,7 +891,9 @@ export class TerminalTaskHost {
   private async shutdown() {
     this.closed = true;
     for (const timer of this.queueTimers.values()) clearTimeout(timer); this.queueTimers.clear();
-    await this.ready;
+    // Initializers have all settled even when one failed. Close the stores and
+    // native handles that did open; the start caller retains the original error.
+    await this.ready.catch(()=>{});
     await Promise.allSettled(this.starts.values());
     await Promise.all([...this.live.keys()].map(id => this.closeTask(id)));
     await this.capabilities.close();

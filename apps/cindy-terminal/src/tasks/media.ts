@@ -19,7 +19,7 @@ export class TerminalTaskMedia {
   private native?: Database.Database;
   private db?: ReturnType<typeof drizzle<typeof schema>>;
   private operations: Promise<unknown> = Promise.resolve();
-  private readonly ready: Promise<void>;
+  readonly ready: Promise<void>;
   constructor(private readonly profileDir:string) { this.store=createBlobStore(()=>profileDir); this.ready=this.initialize(); }
   private async initialize() {
     const directory=path.join(this.profileDir,'cindy-media'); await privateDirectory(directory);

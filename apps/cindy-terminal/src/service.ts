@@ -144,7 +144,7 @@ export class TerminalService {
     // A fast client can authenticate while listen is still releasing its lock.
     this.init = (async()=>{
       await this.transport.listen();
-      try { await this.initialize(); } catch (error) { await this.transport.close();throw error; }
+      try { await this.initialize(); } catch (error) { await this.close().catch(()=>logger.warn('SERVICE_START_CLEANUP_FAILED'));throw error; }
     })();
     await this.init;
   }
@@ -306,6 +306,7 @@ export class TerminalService {
       this.transport.publish(channel,args);void this.remote?.publish(channel,args[0]).catch(()=>{});
       if(channel==='maker:status-changed')this.remote?.refreshPresence();
     }});
+    await this.tasks.ready;
     const endpoints=()=>((this.auth.snapshot().session?.realm??this.region)==='cn'?chinaEndpoints:globalEndpoints);
     this.account=new TerminalRemoteAccountService({getApiBaseUrl:()=>endpoints().deviceLinkApiBaseUrl,getAuthBaseUrl:()=>endpoints().authApiBaseUrl,getToken:async()=>this.auth.getAccessToken(),getOwnerScope:()=>this.auth.snapshot().session?scope():null});
     this.crossShares=new TerminalCrossRegionShares({profileDir:ownerDir,account:this.account,region:this.auth.snapshot().session?.realm??this.region,endpoints:{cn:chinaEndpoints.deviceLinkApiBaseUrl,global:globalEndpoints.deviceLinkApiBaseUrl},getOwnerScope:()=>this.auth.snapshot().session?scope():null,deviceId:this.settings.deviceId,getHello:()=>({deviceName:this.settings.snapshot().effective.deviceName,platform:process.platform,appVersion:VERSION,remoteControlEnabled:false,busy:false}),createWebSocket:(url,headers)=>new WebSocket(url,{headers}),directRuntime:createNodeDirectRtcRuntime(wrtc),onPush:push=>this.transport.publish('terminal:remote-event',[push])});
@@ -581,15 +582,24 @@ export class TerminalService {
 
   close(): Promise<void> {
     if(this.closing)return this.closing;
-    this.closing=(async()=>{
-      this.terminals.close();
-      clearInterval(this.refreshTimer);this.remote?.stop();
-      this.files?.stop();this.browser?.stop();this.resources?.close();this.membership?.close();await this.sharedTasks?.close();this.crossShares?.close();this.groupReshare?.stop();await this.reshares?.close();this.guestRoutes?.close();await this.modelGrants?.close();await this.agents?.stop();await this.groups?.close();await this.ssh?.close();
-      await this.auth?.cancel();await this.ownerChange;
-      for(const dispose of this.subscriptions.values())dispose();this.subscriptions.clear();
-      this.pluginTasks?.close();await this.pluginMarket?.close();this.pluginAccount?.close();this.pluginAuthorizations.clear();await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
-        await this.scheduler?.close();await this.tasks?.close();await this.knowledge?.close();await this.projects?.close();await this.pluginBrowser.close();await this.secrets.flush();this.secrets.lock();await this.transport.close();this.stopWait();
-    })();
+    // Publish the closing state before cancellation can emit another owner
+    // transition. An individual cleanup error must not strand later listeners.
+    this.closing=Promise.resolve().then(async()=>{
+      const errors:unknown[]=[];
+      const cleanup=async(action:()=>unknown)=>{try{await action();}catch(error){errors.push(error);}};
+      clearInterval(this.refreshTimer);
+      await cleanup(()=>this.terminals.close());await cleanup(()=>this.remote?.stop());
+      await cleanup(()=>this.files?.stop());await cleanup(()=>this.browser?.stop());await cleanup(()=>this.resources?.close());await cleanup(()=>this.membership?.close());
+      await cleanup(()=>this.sharedTasks?.close());await cleanup(()=>this.crossShares?.close());await cleanup(()=>this.groupReshare?.stop());await cleanup(()=>this.reshares?.close());
+      await cleanup(()=>this.guestRoutes?.close());await cleanup(()=>this.modelGrants?.close());await cleanup(()=>this.agents?.stop());await cleanup(()=>this.groups?.close());await cleanup(()=>this.ssh?.close());
+      await cleanup(()=>this.auth?.cancel());await cleanup(()=>this.ownerChange);
+      for(const dispose of this.subscriptions.values())await cleanup(dispose);this.subscriptions.clear();
+      await cleanup(()=>this.pluginTasks?.close());await cleanup(()=>this.pluginMarket?.close());await cleanup(()=>this.pluginAccount?.close());this.pluginAuthorizations.clear();
+      await cleanup(()=>this.plugins?.close());await cleanup(()=>this.routines?.close());await cleanup(()=>this.protectedInput?.close());await cleanup(()=>this.companionCloud?.close());await cleanup(()=>this.companions?.close());
+      await cleanup(()=>this.scheduler?.close());await cleanup(()=>this.tasks?.close());await cleanup(()=>this.knowledge?.close());await cleanup(()=>this.projects?.close());await cleanup(()=>this.pluginBrowser.close());
+      await cleanup(()=>this.secrets.flush());this.secrets.lock();await cleanup(()=>this.transport.close());this.stopWait();
+      if(errors.length)throw new AggregateError(errors,'SERVICE_CLOSE_FAILED');
+    });
     return this.closing;
   }
 }
