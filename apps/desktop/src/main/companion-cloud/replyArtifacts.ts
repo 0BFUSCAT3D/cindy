@@ -80,6 +80,20 @@ export function toolResultImageUrls(rawContent: string | null): string[] {
   return [...new Set(candidates.filter((url): url is string => typeof url === 'string' && /^cindy-media:\/\/blobs\/[0-9a-f]{64}\.[a-z0-9]+$/.test(url)))];
 }
 
+const ATTACHMENT_NAME_MAX = 60;
+
+/**
+ * The name a stored media blob gets in the room: the alt text the reply gave that image (`![alt](address)`),
+ * else `image-<first 8 of the hash>`, with the address's extension. The address's own last segment is a 64-digit hash.
+ */
+export function blobAttachmentName(url: string, text: string, category: 'image' | 'file'): string {
+  const [, hash = '', ext = ''] = /\/blobs\/([0-9a-f]{64})\.([a-z0-9]+)$/.exec(url) ?? [];
+  const prose = text.replace(/```[\s\S]*?(?:```|$)/g, ' ');
+  const alt = [...prose.matchAll(/!\[([^\]\n]*)\]\(\s*<?([^)>\s]+)/g)].find(match => match[2] === url)?.[1] ?? '';
+  const label = alt.replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, ATTACHMENT_NAME_MAX).replace(/[. ]+$/, '');
+  return `${label || `${category}-${hash.slice(0, 8)}`}.${ext}`;
+}
+
 function safeDecode(value: string): string {
   try { return decodeURIComponent(value); } catch { return value; }
 }
@@ -127,7 +141,8 @@ export async function replyArtifactAttachments(
     try {
       const blob = await deps.blob(url, sessionId);
       if (!blob || blob.size <= 0 || blob.size > deps.maxBytes) continue;
-      out.push({ id: `${row.id}:reply:${out.length}`, name: url.slice(url.lastIndexOf('/') + 1), category: blob.mimeType.startsWith('image/') ? 'image' : 'file',
+      const category = blob.mimeType.startsWith('image/') ? 'image' : 'file';
+      out.push({ id: `${row.id}:reply:${out.length}`, name: blobAttachmentName(url, text, category), category,
         mimeType: blob.mimeType, size: blob.size, url, path: null });
     } catch (error) { deps.log?.warn('Reply media not sent to the room', { code: (error as NodeJS.ErrnoException)?.code ?? 'UNKNOWN' }); }
   }

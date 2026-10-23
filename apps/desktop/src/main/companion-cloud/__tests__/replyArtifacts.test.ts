@@ -103,6 +103,16 @@ describe('images made by tools during the turn', () => {
     });
     expect(plain.map(file => file.url)).toEqual([url('b')]);
   });
+
+  it('names an image by the alt text the reply gave it, else image-<hash prefix>, never the 64-digit hash', async () => {
+    const named = url('a'); const unnamed = url('b'); const tool = url('c'); const messy = url('d');
+    const files = await replyArtifactAttachments({ id: 'm1', createdAt: 100 },
+      `![绿色小青蛙](${named}) ![](${unnamed}) ![a/b:c*"d"](${messy}) ![ignored](https://x/y.png)\n\n\`\`\`\n![in code](${tool})\n\`\`\``, 's1', {
+        roots: async () => [], maxBytes: 1000, blob: async () => ({ mimeType: 'image/png', size: 1 }),
+        turnImages: async () => [tool],
+      });
+    expect(files.map(file => file.name)).toEqual(['绿色小青蛙.png', `image-${'b'.repeat(8)}.png`, 'a b c d.png', `image-${'c'.repeat(8)}.png`]);
+  });
 });
 
 describe('replyTextWithFiles', () => {
