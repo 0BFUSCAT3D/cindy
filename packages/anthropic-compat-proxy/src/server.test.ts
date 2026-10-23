@@ -4184,19 +4184,18 @@ describe('per-thread 已见 id 缓存(codex-connector P1:请求体缺席历史 i
     expect(r2).toMatch(/Bash_210_dup\d+/);
   });
 
-  it('Kimi Code 的 k3 模型 id 同样判定为 kimi 会话(codex-connector P1)', async () => {
+  it.each(['k3', 'k3-256k', 'k3.1-pro', 'k3.1-pro-highspeed'])('Kimi Code 的 %s 首次工具流在 rewind 后仍去重 (#7005)', async (model) => {
     await setupSingleProxy();
-    // catalog 里 moonshot-kimi-code provider 的 claude-code runtime model id 是裸 `k3`
-    // (Kimi K3), 不带 kimi 前缀 —— 修复前 isKimiRequest 对 k3 返回 false → 不接管
+    // Coding ID 不带 kimi 前缀；小数版本也必须记录首个 streamed id。
     const r1 = await postAs('sess-k3', {
-      model: 'k3',
+      model,
       messages: [{ role: 'user', content: '你好' }],
     });
     expect(r1).toContain('"id":"Bash_210"'); // fresh id 透传(无撞车)
 
     // 第二次请求(同 session, 模拟 rewind): 缓存里已有 Bash_210 → 拦截改名
     const r2 = await postAs('sess-k3', {
-      model: 'k3',
+      model,
       messages: [{ role: 'user', content: '继续' }],
     });
     expect(r2).not.toContain('"id":"Bash_210"');

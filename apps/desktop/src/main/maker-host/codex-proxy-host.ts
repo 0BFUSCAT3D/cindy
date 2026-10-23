@@ -1017,6 +1017,8 @@ const MOONSHOT_CHAT_HOSTS = new Set(['api.moonshot.cn', 'api.moonshot.ai']);
 const KIMI_CODING_CHAT_HOST = 'api.kimi.com';
 /** Model ids on the Kimi Code Codex (openai-chat) route verified for image input. */
 const KIMI_CODING_IMAGE_CHAT_MODELS = new Set([
+  'k3.1-pro',
+  'k3.1-pro-highspeed',
   'k3',
   'k3-256k',
   'kimi-for-coding',
@@ -1024,6 +1026,8 @@ const KIMI_CODING_IMAGE_CHAT_MODELS = new Set([
 ]);
 /** Moonshot 开放平台上官方文档确认支持图片输入的 model id。 */
 const MOONSHOT_IMAGE_CHAT_MODELS = new Set([
+  'kimi-k3.1-pro',
+  'kimi-k3.1-pro-highspeed',
   'kimi-k3',
   'kimi-k2.7-code',
   'kimi-k2.7-code-highspeed',

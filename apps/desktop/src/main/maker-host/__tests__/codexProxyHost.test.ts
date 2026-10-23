@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { translateResponsesRequest } from '@cindy/responses-chat-bridge';
 import { TEST_XD_GATEWAY_BASE_URL as XD_GATEWAY_BASE_URL } from '../../../test/vitest/clientEndpointsFixture';
 
 type Registry = {
@@ -880,13 +881,24 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://api.moonshot.ai/v1', 'kimi-k2.7-code'],
     ['https://api.moonshot.cn/v1', 'kimi-k2.7-code-highspeed'],
     ['https://api.moonshot.cn/v1', 'kimi-k2.6'],
-  ])('enables image_url for Kimi on official Moonshot host: %s / %s', async (upstream, model) => {
+    ['https://api.moonshot.cn/v1', 'kimi-k3.1-pro'],
+    ['https://api.moonshot.ai/v1', 'kimi-k3.1-pro-highspeed'],
+    ['https://api.kimi.com/coding/v1', 'k3.1-pro'],
+    ['https://api.kimi.com/coding/v1', 'k3.1-pro-highspeed'],
+  ])('translates image input for Kimi on its official route: %s / %s', async (upstream, model) => {
     const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
-    expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
+    const capabilities = chatBridgeCapabilitiesForRoute(upstream, model);
+    const imageUrl = 'data:image/png;base64,eA==';
+    const translated = translateResponsesRequest({ model, input: [{ type: 'message', role: 'user',
+      content: [{ type: 'input_image', image_url: imageUrl }],
+    }] }, { capabilities });
+    expect(translated.messages).toEqual([{ role: 'user', content: [{ type: 'image_url', image_url: { url: imageUrl } }] }]);
   });
 
   it.each([
     ['https://api.moonshot.cn/v1', 'kimi-k2.5'],
+    ['https://api.kimi.com.evil.example/coding/v1', 'k3.1-pro'],
+    ['https://api.deepseek.com/v1', 'kimi-k3.1-pro'],
     // Kimi Code: non-HTTPS, spoofed subdomain, and models without verified image support stay closed.
     ['http://api.kimi.com/coding/v1', 'k3'],
     ['https://api.kimi.com.evil.example/coding/v1', 'k3'],
