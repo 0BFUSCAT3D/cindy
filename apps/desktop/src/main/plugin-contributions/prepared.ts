@@ -170,6 +170,9 @@ async function prepare(
       sizeBytes: snapshot.bytes.byteLength,
       expiresAt: new Date(expiresAt).toISOString(),
     };
+    // Another caller may have filled the last slot during the asynchronous work.
+    if ([...entries.values()].filter((entry) => entry.owner === owner && !entry.pinned).length >= 8)
+      throwIpcError('PRECONDITION_FAILED', 'Too many prepared contributions');
     entries.set(preparedId, {
       owner,
       approvalToken: approval,

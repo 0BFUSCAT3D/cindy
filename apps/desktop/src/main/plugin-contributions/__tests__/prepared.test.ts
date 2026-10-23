@@ -172,6 +172,33 @@ it('gives concurrent preview callers independent ownership', async () => {
   expect(prepared.getPreparedContribution(second.preparedId).summary).toEqual(second);
 });
 
+// unit，PR #6669：原有顺序上限用例漏掉最后一个名额被两个 prepare 同时读取的时序。
+// 真实入口准备七份再并发两份，只能保留八份；失败目录须清理，释放后仍能正常准备。
+it('keeps the preview limit when concurrent callers compete for the last slot', async () => {
+  const ids: string[] = [];
+  try {
+    for (let i = 0; i < 7; i++) ids.push((await prepared.prepareInstalledContribution('hello')).preparedId);
+    const attempts = await Promise.allSettled([
+      prepared.prepareInstalledContribution('hello'),
+      prepared.prepareInstalledContribution('hello'),
+    ]);
+    const failures: unknown[] = [];
+    for (const attempt of attempts) {
+      if (attempt.status === 'fulfilled') ids.push(attempt.value.preparedId);
+      else failures.push(attempt.reason);
+    }
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ message: expect.stringContaining('Too many prepared contributions') });
+    expect(ids).toHaveLength(8);
+    expect(await fsp.readdir(harness.root)).toHaveLength(8);
+    await prepared.releasePreparedContribution(ids.pop()!);
+    ids.push((await prepared.prepareInstalledContribution('hello')).preparedId);
+    expect(await fsp.readdir(harness.root)).toHaveLength(8);
+  } finally {
+    await Promise.all(ids.map(id => prepared.releasePreparedContribution(id)));
+  }
+});
+
 // unit：真实 prepare 生成文件后执行宿主退出回调；原 TTL 用例漏掉正常退出前不触发定时器的场景。
 // 最小输入：一个预览和一个已接管快照；退出后两份包与内存条目均应释放。
 it('releases both preview and operation-owned package bytes on normal quit', async () => {
