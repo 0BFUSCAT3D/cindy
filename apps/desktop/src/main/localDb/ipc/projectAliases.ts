@@ -1,5 +1,10 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import { desc } from 'drizzle-orm';
+import {
+  PROJECT_ALIASES_GET_CHANNEL,
+  PROJECT_ALIASES_CHANGED_CHANNEL,
+  type HostProjectAliasesSnapshot,
+} from '@cindy/maker-shared/project-alias-sync';
 
 import { normalizeProjectKey, projectKeyComparisonKey } from '../../../shared/projectKeys.js';
 import type { ProjectAlias } from '../../../shared/projectAliases.js';
@@ -7,6 +12,14 @@ import type { DbClient } from '../client/DbClient.js';
 import { getDbClient } from '../client/current';
 import { projectAliases } from '../schema';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate';
+import {
+  captureDataOwnerBroadcastScope,
+  isDataOwnerBroadcastScopeCurrent,
+  tapWindowBroadcast,
+  type DataOwnerBroadcastScope,
+} from '../../device-link/broadcast-tap.js';
+import { assertTrustedAppRendererEvent, isTrustedAppRendererWindow } from '../../security/trustedAppRenderer.js';
+import { isDeviceLinkInvoke } from '../../device-link/invoke-context.js';
 
 const MAX_ALIAS_LENGTH = 80;
 
@@ -39,10 +52,14 @@ function requireProjectKey(raw: unknown): string {
   return normalized;
 }
 
-function broadcastProjectAliasesChanged(): void {
+function broadcastProjectAliasesChanged(scope: DataOwnerBroadcastScope): void {
+  if (!isDataOwnerBroadcastScopeCurrent(scope)) return;
   for (const w of BrowserWindow.getAllWindows()) {
-    if (!w.isDestroyed()) w.webContents.send('local-db:project-aliases:changed');
+    if (isTrustedAppRendererWindow(w)) {
+      w.webContents.send(PROJECT_ALIASES_CHANGED_CHANNEL, {}, scope.ownerStamp);
+    }
   }
+  tapWindowBroadcast(PROJECT_ALIASES_CHANGED_CHANNEL, {}, scope.ownerStamp);
 }
 
 export async function listProjectAliases(client: DbClient = getDbClient()): Promise<ProjectAlias[]> {
@@ -54,12 +71,29 @@ export async function listProjectAliases(client: DbClient = getDbClient()): Prom
   return rows.map(aliasToCamel);
 }
 
+/** Read-only host projection; controller-local overrides never propagate to a third device. */
+export async function readHostProjectAliasesSnapshot(): Promise<HostProjectAliasesSnapshot> {
+  const scope = captureDataOwnerBroadcastScope();
+  const rows = await listProjectAliases();
+  if (!isDataOwnerBroadcastScopeCurrent(scope)) {
+    throwIpcError('PRECONDITION_FAILED', 'active account changed during project alias read');
+  }
+  return {
+    aliases: rows
+      .filter((row) => row.projectKey.startsWith('local:') || row.projectKey.startsWith('remote:'))
+      .map(({ projectKey, alias }) => ({ projectKey, alias })),
+    platform: process.platform,
+    ...(scope.ownerStamp ? { ownerStamp: scope.ownerStamp } : {}),
+  };
+}
+
 export async function upsertProjectAlias(
   projectKeyRaw: unknown,
   aliasRaw: unknown,
   localPlatform: NodeJS.Platform = process.platform,
   scope?: { client: DbClient; assertCurrent: () => void },
 ): Promise<ProjectAlias | null> {
+  const broadcastScope = captureDataOwnerBroadcastScope();
   const projectKey = requireProjectKey(projectKeyRaw);
   const alias = sanitizeAlias(aliasRaw);
   const now = Date.now();
@@ -78,7 +112,7 @@ export async function upsertProjectAlias(
     updatedAt: now,
   });
   scope?.assertCurrent();
-  broadcastProjectAliasesChanged();
+  broadcastProjectAliasesChanged(broadcastScope);
   return saved == null
     ? null
     : {
@@ -96,6 +130,10 @@ export async function deleteProjectAlias(
 }
 
 export function registerProjectAliasesIpc(): void {
+  ipcMain.handle(PROJECT_ALIASES_GET_CHANNEL, async (event) => {
+    if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
+    return readHostProjectAliasesSnapshot();
+  });
   ipcMain.handle('local-db:project-aliases:list', async () => listProjectAliases());
 
   ipcMain.handle('local-db:project-aliases:set', async (_event, input: unknown) => {

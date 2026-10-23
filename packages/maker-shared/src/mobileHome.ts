@@ -15,6 +15,7 @@ import { stripTrailingPathSeparators } from './pathText.js';
 import { normalizeProjectOrderPath } from './projectOrderSync.js';
 import { collapseWorktreeDirForGrouping } from './worktreePaths.js';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from './cindyMakeFeature.js';
+import { resolveProjectAliasForSessions, type ProjectAliasesByDevice } from './projectAliasSync.js';
 
 export const MOBILE_HOME_ALL_DEVICES = 'all';
 
@@ -118,6 +119,7 @@ export interface MobileHomePresentation {
 }
 
 export interface MobileHomeOptions {
+  projectAliases?: ProjectAliasesByDevice;
   devices?: readonly MobileHomeDeviceLike[];
   messagePreviewIndex?: ReadonlyMap<string, string>;
   liveActivityIndex?: ReadonlyMap<string, RemoteSessionLiveActivity>;
@@ -137,6 +139,7 @@ export interface MobileHomeOptions {
 }
 
 export function buildMobileHomePresentation({
+  projectAliases,
   devices = [],
   messagePreviewIndex,
   liveActivityIndex,
@@ -214,6 +217,7 @@ export function buildMobileHomePresentation({
       localizer,
     ),
     devices,
+    projectAliases,
   );
   const overview = summarizeHomeOverview(normalizedSessions, projects, pendingInteractionIndex, normalizedSelectedDeviceId);
   const primaryDevice = pickPrimaryDevice(deviceFilters, normalizedSelectedDeviceId);
@@ -334,6 +338,7 @@ function pickPrimaryDevice(
 function buildProjectGroups(
   items: readonly RemoteSessionListItem[],
   devices: readonly MobileHomeDeviceLike[],
+  projectAliases?: ProjectAliasesByDevice,
 ): MobileHomeProjectGroup[] {
   const deviceNames = new Map(devices.map((device) => [device.deviceId, device.name]));
   const grouped = new Map<string, RemoteSessionListItem[]>();
@@ -369,7 +374,10 @@ function buildProjectGroups(
         sessionCount: group.reduce((sum, item) => sum + (item.automationGroup?.sessionCount ?? 1), 0),
         sessions: group,
         subtitle: [deviceName, workingDir].filter(Boolean).join(' · '),
-        title: cindyMake ? 'Cindy Make' : projectTitle(workingDir),
+        title: cindyMake ? 'Cindy Make' : resolveProjectAliasForSessions(
+          group.flatMap((item) => item.automationGroup?.items.map((member) => member.session) ?? [item.session]),
+          projectAliases,
+        ) ?? projectTitle(workingDir),
         workingDir,
       };
     })

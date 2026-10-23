@@ -20,6 +20,7 @@ import {
   type ConversationSearchStatusFilter,
 } from '@cindy/maker-shared/conversation-search';
 import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
+import { resolveProjectAliasForSessions, type ProjectAliasesByDevice } from '@cindy/maker-shared/project-alias-sync';
 import {
   remoteSessionDisplayTitle,
   sessionRowMessagePreview,
@@ -454,10 +455,12 @@ export function scopedConversationSearchOrigins(
 }
 
 export function listConversationSearchProjects(
-  sessions: readonly Pick<RemoteSession, 'canonicalDeviceId' | 'deviceLinkDeviceId' | 'deviceLinkDeviceName' | 'orcaRole' | 'workingDir' | 'workspaceKind'>[],
+  sessions: readonly Pick<RemoteSession, 'canonicalDeviceId' | 'deviceLinkDeviceId' | 'deviceLinkDeviceName' | 'orcaRole' | 'workingDir' | 'workspaceKind' | 'remoteHostId'>[],
   deviceIds?: ReadonlySet<string>,
+  projectAliases?: ProjectAliasesByDevice,
 ): ConversationSearchProjectOption[] {
   const byKey = new Map<string, ConversationSearchProjectOption>();
+  const groupedSessions = new Map<string, typeof sessions[number][]>();
   for (const session of sessions) {
     if (session.orcaRole === 'worker') continue;
     if (deviceIds && !sessionBelongsToSelectedDevice(session, deviceIds)) continue;
@@ -468,6 +471,9 @@ export function listConversationSearchProjects(
     if (!workingDir) continue;
     const dirKey = collapseWorktreeDirForGrouping(workingDir) ?? workingDir;
     const key = `${deviceId}:${dirKey}`;
+    const group = groupedSessions.get(key) ?? [];
+    group.push(session);
+    groupedSessions.set(key, group);
     const existing = byKey.get(key);
     if (existing) {
       existing.count += 1;
@@ -478,9 +484,14 @@ export function listConversationSearchProjects(
       deviceId,
       deviceName: session.deviceLinkDeviceName ?? null,
       key,
-      title: conversationSearchProjectTitle(workingDir),
+      title: conversationSearchProjectTitle(dirKey),
       workingDir: dirKey,
     });
+  }
+  if (projectAliases) {
+    for (const [key, project] of byKey) {
+      project.title = resolveProjectAliasForSessions(groupedSessions.get(key) ?? [], projectAliases) ?? project.title;
+    }
   }
   return [...byKey.values()].sort((a, b) => (
     a.title.localeCompare(b.title) || a.deviceId.localeCompare(b.deviceId) || a.key.localeCompare(b.key)

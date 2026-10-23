@@ -16,6 +16,15 @@ vi.mock('electron', () => ({
     handle: vi.fn(),
   },
 }));
+vi.mock('../../device-link/broadcast-tap.js', () => ({
+  captureDataOwnerBroadcastScope: () => ({}),
+  isDataOwnerBroadcastScopeCurrent: () => true,
+  tapWindowBroadcast: vi.fn(),
+}));
+vi.mock('../../security/trustedAppRenderer.js', () => ({
+  assertTrustedAppRendererEvent: vi.fn(),
+  isTrustedAppRendererWindow: () => true,
+}));
 
 describe('projectAliases localDb helpers', () => {
   let currentClient: DbClient | null = null;

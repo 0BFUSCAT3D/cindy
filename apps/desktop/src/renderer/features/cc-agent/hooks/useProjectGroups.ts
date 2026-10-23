@@ -6,13 +6,14 @@
  * Row-only patches reuse membership and ordering, keeping unrelated nodes stable.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import { createProjectGroupsSelector } from '../lib/projectGroupsSelector';
 
 import type { Session } from '@/lib/ccAgent.types';
 import { useRemoteSshHosts } from '@/hooks/useRemoteSshHosts';
 import { buildBotSessionOwners } from '@/features/bots/botSessionOwners';
 import { useBotProfiles } from '@/features/bots/botStore';
+import { remoteProjectAliases } from '@/features/device-link/remoteProjectAliases';
 import {
   type PersistentLocalProject,
   type ProjectGroupsResult,
@@ -34,6 +35,7 @@ export function useProjectGroups(
 ): ProjectGroupsResult {
   const sshHosts = useRemoteSshHosts();
   const selectGroups = useMemo(() => createProjectGroupsSelector(), []);
+  const hostProjectAliases = useSyncExternalStore(remoteProjectAliases.subscribe, remoteProjectAliases.getSnapshot);
   /*
     伙伴归属表。会话行本身不带 botId,归属只有伙伴档案知道 —— 档案还没加载完的
     那一瞬间这张表是空的,伙伴任务就走原来的分组落到别处,**不会消失**。
@@ -45,6 +47,7 @@ export function useProjectGroups(
     if (equivalentResult) return equivalentResult;
     return selectGroups(sessions, {
       projectAliases,
+      remoteProjectAliases: hostProjectAliases,
       includePinnedInProjects,
       botOwnerBySessionId,
       persistentLocalProjects,
@@ -55,6 +58,7 @@ export function useProjectGroups(
     selectGroups,
     sessions,
     projectAliases,
+    hostProjectAliases,
     includePinnedInProjects,
     persistentLocalProjects,
     localPlatform,

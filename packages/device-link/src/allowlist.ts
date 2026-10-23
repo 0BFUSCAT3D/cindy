@@ -291,6 +291,8 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   // → CHANNEL_NOT_ALLOWED → 控制端吞掉,回退本机/按时间。
   'sidebar-settings:get-project-order',
   'sidebar-settings:apply-project-order',
+  // Host-owned project names are read-only on controllers. Local overrides and write channels stay local.
+  'sidebar-settings:get-project-aliases',
   // 模型供应商目录(只读):远程会话的模型选择器据此 1:1 镜像被控端的「供应商+模型」结构。
   // 被控端 dispatch 在返回前剥离 routing 等执行字段(见 device-link/dispatch.ts),只回显示用字段。
   'maker:provider:list',
@@ -811,6 +813,7 @@ export const PUSH_FORWARD_ALLOWLIST: ReadonlySet<string> = new Set([
   'local-db:session:error-persisted',
   // 被控端项目手动顺序变化:控制端 / 手机首页按被控端正本重排。
   'sidebar-settings:project-order-changed',
+  'local-db:project-aliases:changed',
   // 被控端「当前 New Maker 草稿」全量变更:被控端草稿 effort/fast/选中 等任意变化时广播,
   // 控制端的远程项目草稿据此实时刷新显示镜像(remoteDraftState)。账号 / 全局级、无 sessionId →
   // topics.ts 的 ACCOUNT_CHANNELS 把它并入 `sessions` topic(控制端按设备订阅 sessions)。

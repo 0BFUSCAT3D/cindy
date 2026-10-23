@@ -58,6 +58,7 @@ function samePersistentProjects(
 function sameOptions(a: GroupSessionsOptions, b: GroupSessionsOptions): boolean {
   return (
     a.projectAliases === b.projectAliases &&
+    a.remoteProjectAliases === b.remoteProjectAliases &&
     a.includePinnedInProjects === b.includePinnedInProjects &&
     a.includeDraftsInProjects === b.includeDraftsInProjects &&
     a.localPlatform === b.localPlatform &&

@@ -9,6 +9,7 @@ import { sessionCollaborationLabel, sessionWorktreeLabel } from './sessionIdenti
 import { isDefaultDraftSessionTitle } from './sessionTitle.js';
 import { getSessionListCollapseView } from './sessionListCollapse.js';
 import { collapseWorktreeDirForGrouping } from './worktreePaths.js';
+import { resolveProjectAliasForSessions, type ProjectAliasesByDevice } from './projectAliasSync.js';
 
 let sessionListCollator: Intl.Collator | undefined;
 /** Call when the host resumes after system locale/region preferences may change. */
@@ -48,6 +49,8 @@ export interface RemoteSessionListSessionLike extends SessionInterruptionState {
   userSendAt?: string | null;
   workspaceKind?: 'project' | 'dialogue' | string | null;
   workingDir: string | null;
+  remoteHostId?: string | null;
+  deviceLinkDeviceId?: string | null;
   worktreePath?: string | null;
   // device-link 会话列表(local-db:sessions:list)带的最近一条 user/assistant 消息纯文本预览,
   // 由桌面 sessionToCamel 产出(已处理 clearedAt / rewind / 角色过滤);idle 会话直接显示,
@@ -170,6 +173,9 @@ export interface RemoteSessionListContext {
 export type RemoteSessionStatusFilter = 'active' | 'waiting' | 'automation' | 'archived' | 'all';
 
 export interface RemoteSessionListOptions {
+  projectAliases?: ProjectAliasesByDevice;
+  /** A single-device detail view may have rows without controller-local device metadata. */
+  projectAliasDeviceId?: string;
   statusFilter?: RemoteSessionStatusFilter;
   messagePreviewIndex?: ReadonlyMap<string, string>;
   liveActivityIndex?: ReadonlyMap<string, RemoteSessionLiveActivity>;
@@ -228,7 +234,7 @@ export function buildRemoteSessionSections(
     sections.push({ key: 'pinned', title: '置顶', data: pinned });
   }
 
-  sections.push(...buildProjectSections(rest, now, groupAutomations, options.localizer));
+  sections.push(...buildProjectSections(rest, now, groupAutomations, options.localizer, options));
 
   return sections;
 }
@@ -391,6 +397,7 @@ function buildProjectSections(
   now: number,
   groupAutomations = true,
   localizer?: PresentationLocalizer,
+  options: RemoteSessionListOptions = {},
 ): RemoteSessionSection[] {
   const dialogue = groupAutomationListItems(items.filter((item) => isDialogueSession(item.session)), now, groupAutomations, undefined, localizer);
   const sections: RemoteSessionSection[] = [];
@@ -411,7 +418,8 @@ function buildProjectSections(
   for (const [workingDir, data] of [...projectGroups].sort(([a], [b]) => compareSessionListStrings(a, b))) {
     sections.push({
       key: `project:${workingDir}`,
-      title: projectTitle(workingDir),
+      title: resolveProjectAliasForSessions(data.map((item) => item.session), options.projectAliases, options.projectAliasDeviceId)
+        ?? projectTitle(workingDir),
       data: groupAutomationListItems(data, now, groupAutomations, undefined, localizer),
     });
   }

@@ -60,6 +60,7 @@
     "./mobile-home": "./src/mobileHome.ts",
     "./tool-process-media": "./src/toolProcessMedia.ts",
     "./payload-summary": "./src/payloadSummary.ts",
+    "./project-alias-sync": "./src/projectAliasSync.ts",
     "./project-order-sync": "./src/projectOrderSync.ts",
     "./path-text": "./src/pathText.ts",
     "./permission-mode": "./src/permissionMode.ts",

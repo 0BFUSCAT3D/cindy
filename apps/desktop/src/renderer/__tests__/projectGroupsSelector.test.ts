@@ -1,3 +1,8 @@
+/**
+ * Alias regression: the production memoized selector must refresh its displayed name when only
+ * the host snapshot changes. Existing option cases never passed a remote alias map. One unchanged
+ * remote session plus rename/delete snapshots reproduces the stale-cache bug. Pure unit tier.
+ */
 import { describe, expect, it } from 'vitest';
 import type { Session } from '@/lib/ccAgent.types';
 import { groupSessions, type GroupSessionsOptions } from '@/features/cc-agent/lib/projectGrouping';
@@ -236,6 +241,21 @@ describe('project grouping projection', () => {
     const updated = [{ ...rows[0], title: 'bot row update' }];
     expect(select(updated, options)).toEqual(groupSessions(updated, options));
     expect(select(updated, options).bots[0].sessions[0]).toBe(updated[0]);
+  });
+
+  // Main's structural reuse must not retain old project names when only the host snapshot changes.
+  it('refreshes a remote project name without requiring its session rows to change', () => {
+    const rows = [session('a', { deviceLinkDeviceId: 'device', workingDir: '/repo' })];
+    const select = createProjectGroupsSelector();
+    expect(select(rows).projects[0].displayName).toBe('repo');
+    const withName = (alias: string): GroupSessionsOptions => ({
+      remoteProjectAliases: new Map([['device', {
+        aliases: [{ projectKey: 'local:/repo', alias }], platform: 'darwin',
+      }]]),
+    });
+    expect(select(rows, withName('Renamed')).projects[0].displayName).toBe('Renamed');
+    expect(select(rows, withName('Changed again')).projects[0].displayName).toBe('Changed again');
+    expect(select(rows, { remoteProjectAliases: new Map() }).projects[0].displayName).toBe('repo');
   });
 
   it('reuses equal persistent catalogues but refreshes changed project metadata', () => {

@@ -42,6 +42,7 @@ import { extractDisplayName, splitPathSegments, tailJoin } from '../../../../sha
 export { extractDisplayName } from '../../../../shared/projectDisplayName';
 
 import type { DeviceLinkConnectionStatus, Session } from '@/lib/ccAgent.types';
+import { resolveProjectAliasForSessions, type ProjectAliasesByDevice } from '@cindy/maker-shared/project-alias-sync';
 import { isOrcaLeadSession, isOrcaWorkerSession } from '@/lib/orcaSessionIdentity';
 import { normalizeWorkingDirForGrouping } from '../../../../shared/workingDir';
 import {
@@ -138,6 +139,7 @@ export interface ProjectGroupsResult {
 
 export interface GroupSessionsOptions {
   projectAliases?: ReadonlyMap<string, string> | Record<string, string>;
+  remoteProjectAliases?: ProjectAliasesByDevice;
   /**
    * Build a project catalogue that also contains individually pinned sessions.
    * The normal sidebar keeps this false so a pinned conversation only appears
@@ -752,7 +754,10 @@ export function groupSessions(
 
     let name: string;
     let segments: number;
-    const alias = aliases.get(projectKeyComparisonKey(projectKey, localPlatform) ?? projectKey);
+    const alias = aliases.get(projectKeyComparisonKey(projectKey, localPlatform) ?? projectKey)
+      ?? (options.remoteProjectAliases
+        ? resolveProjectAliasForSessions(sess, options.remoteProjectAliases)
+        : null);
     if (alias) {
       name = alias;
       segments = 0;

@@ -180,6 +180,7 @@ import {
   shouldReplaceListWithSearchResults,
 } from '@/session/conversationSearch';
 import { useConversationSearch } from '@/session/useConversationSearch';
+import { useRemoteProjectAliases } from '@/session/remoteProjectAliases';
 import {
   buildMobileHomePresentation,
   excludeOrcaWorkerSessions,
@@ -538,6 +539,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   } = useDeviceLink();
   const revokedDevices = useRevokedDevices();
   const sessions = useRemoteHomeSessions();
+  const projectAliases = useRemoteProjectAliases();
   const syncInFlightRef = useRef<Promise<void> | null>(null);
   const syncQueuedRef = useRef<{ visible?: boolean } | null>(null);
   const loadHomeRef = useRef<(options?: { visible?: boolean }) => Promise<void>>(async () => undefined);
@@ -1856,8 +1858,9 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     () => listConversationSearchProjects(
       excludeOrcaWorkerSessions(sessions),
       new Set(searchOrigins.map((origin) => origin.deviceId)),
+      projectAliases,
     ),
-    [searchOrigins, sessions],
+    [projectAliases, searchOrigins, sessions],
   );
   const indexedSearch = useConversationSearch({
     enabled: true,
@@ -2018,6 +2021,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const homeSessions = useMemo(() => excludeOrcaWorkerSessions(sessions), [sessions]);
   const home = useMemo(
     () => buildMobileHomePresentation({
+      projectAliases,
       devices: deviceModels,
       liveActivityIndex,
       messagePreviewIndex,
@@ -2030,12 +2034,13 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       // 未起名会话的显示文案:共享层不兜中文串,由这里给已解析的 i18n 值。
       unnamedLabel: t('session.menu.unnamedTitle'),
     }),
-    [deviceModels, liveActivityIndex, messagePreviewIndex, pendingInteractionIndex, scheduleIndex, searchQuery, selectedDeviceId, homeSessions, statusFilter, t],
+    [projectAliases, deviceModels, liveActivityIndex, messagePreviewIndex, pendingInteractionIndex, scheduleIndex, searchQuery, selectedDeviceId, homeSessions, statusFilter, t],
   );
   // 「筛选 › 项目」的候选:设备范围内的项目全集,不受搜索与任务状态影响——否则已选中的项目
   // 会因搜索没命中或当前状态下没有任务而从菜单里消失,用户无法单独取消它。
   const projectFilterUniverse = useMemo(
     () => buildMobileHomePresentation({
+      projectAliases,
       devices: deviceModels,
       scheduleIndex,
       selectedDeviceId,
@@ -2043,7 +2048,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       statusFilter: 'all',
       unnamedLabel: t('session.menu.unnamedTitle'),
     }),
-    [deviceModels, scheduleIndex, selectedDeviceId, homeSessions, t],
+    [projectAliases, deviceModels, scheduleIndex, selectedDeviceId, homeSessions, t],
   );
   const projectMachineIdentities = useMemo(
     () => buildHomeProjectMachineIdentities(home, deviceConnectionStates),

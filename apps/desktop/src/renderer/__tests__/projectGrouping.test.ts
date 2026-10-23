@@ -1,4 +1,10 @@
 /**
+ * Alias regression coverage uses the production grouping projection: the same remote directory
+ * must display its host alias, retain local overrides, and avoid leaking a name across identities.
+ * Existing grouping tests only supplied controller-local names. Minimal input: one remote session
+ * and its host snapshot (or two host identities sharing a legacy group). Pure unit tier.
+ */
+/**
  * projectGrouping — vitest unit tests
  *
  * 覆盖：normalize、displayName 同名消歧、groupSessions 边界。
@@ -73,6 +79,49 @@ function s(partial: Partial<Session>): Session {
 }
 
 /* ============================== normalizeWorkingDir ============================== */
+
+describe('host project alias display', () => {
+  it('mirrors each host independently and keeps controller-local overrides first', () => {
+    const sessions = [
+      s({ workingDir: '/repo', deviceLinkDeviceId: 'a' }),
+      s({ workingDir: '/repo', deviceLinkDeviceId: 'b' }),
+    ];
+    const remoteProjectAliases = new Map([
+      ['a', { platform: 'darwin', aliases: [{ projectKey: 'local:/repo', alias: 'Host A' }] }],
+      ['b', { platform: 'darwin', aliases: [{ projectKey: 'local:/repo', alias: 'Host B' }] }],
+    ]);
+    const groups = groupSessions(sessions, {
+      remoteProjectAliases,
+      projectAliases: new Map([['device:a:/repo', 'My override']]),
+    });
+    expect(groups.projects.find((project) => project.deviceLinkDeviceId === 'a')?.displayName).toBe('My override');
+    expect(groups.projects.find((project) => project.deviceLinkDeviceId === 'b')?.displayName).toBe('Host B');
+    remoteProjectAliases.set('b', { platform: 'darwin', aliases: [] });
+    expect(groupSessions(sessions, { remoteProjectAliases }).projects.find((project) => project.deviceLinkDeviceId === 'b')?.displayName).not.toBe('Host B');
+  });
+
+  it('matches Windows host aliases without changing the controller project key spelling', () => {
+    const groups = groupSessions([s({ workingDir: 'C:/Repo/.worktrees/branch', deviceLinkDeviceId: 'a' })], {
+      remoteProjectAliases: new Map([['a', {
+        platform: 'win32', aliases: [{ projectKey: 'local:c:/repo', alias: 'Windows project' }],
+      }]]),
+    });
+    expect(groups.projects[0]).toMatchObject({ projectKey: 'device:a:C:/Repo', displayName: 'Windows project' });
+  });
+
+  it('resolves unique SSH identities and does not borrow a name for a mixed local/SSH group', () => {
+    const ssh = s({ workingDir: '/repo', deviceLinkDeviceId: 'a', remoteHostId: 'ssh-a' });
+    const local = s({ workingDir: '/repo', deviceLinkDeviceId: 'a' });
+    const remoteProjectAliases = new Map([['a', {
+      platform: 'darwin', aliases: [
+        { projectKey: 'local:/repo', alias: 'Local host project' },
+        { projectKey: 'remote:ssh-a:/repo', alias: 'SSH project' },
+      ],
+    }]]);
+    expect(groupSessions([ssh], { remoteProjectAliases }).projects[0].displayName).toBe('SSH project');
+    expect(groupSessions([local, ssh], { remoteProjectAliases }).projects[0].displayName).toBe('repo');
+  });
+});
 
 describe('normalizeWorkingDir', () => {
   it('returns null for nullish / empty / whitespace', () => {
