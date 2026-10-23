@@ -459,9 +459,11 @@ export interface BotGroupSummary {
   canStopAll?: boolean;
   /**
    * Server groups whose server gives each request one teammate (the lead when nobody is named)
-   * and arranges turns itself; no reply/speaking modes and no 安排分工 entry (bot-group-chat.md §4).
+   * and arranges turns itself; no speaking modes (bot-group-chat.md §4).
    */
   singleSpeaker?: boolean;
+  /** A single-speaker group whose computer arranges 「安排分工」 (older computers answered it as a queue). */
+  supportsDivision?: boolean;
   selfActorId?: string;
   topic?: string;
   description?: string;

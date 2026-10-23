@@ -741,10 +741,12 @@ describe('group composer', () => {
   });
 
   // bot-group-chat.md §7.0 (2026-10-23): the computer arranges a 分工 in single-speaker rooms too,
-  // so a phone working through it keeps 安排分工; a phone talking to the server directly does not (component tier).
-  it.each([[true, false, true], [false, false, true], [true, true, false]])('offers 安排分工 (singleSpeaker=%s, direct=%s)', async (singleSpeaker, direct, offered) => {
+  // so a phone working through it keeps 安排分工; a phone talking to the server directly does not, nor one
+  // whose older computer would answer the request as a queue (no supportsDivision) (component tier).
+  it.each([[true, true, false, true], [true, false, false, false], [false, false, false, true], [true, true, true, false]])(
+    'offers 安排分工 (singleSpeaker=%s, supportsDivision=%s, direct=%s)', async (singleSpeaker, supportsDivision, direct, offered) => {
     h.chat.server = direct;
-    await render(parseBotGroupChatData(group({ serverBacked: true, singleSpeaker, replyMode: 'mentioned', openPlan: null }))!);
+    await render(parseBotGroupChatData(group({ serverBacked: true, singleSpeaker, ...(supportsDivision ? { supportsDivision } : {}), replyMode: 'mentioned', openPlan: null }))!);
     expect(!!byId('botGroup.composer.menu.action.division')).toBe(offered);
   });
 

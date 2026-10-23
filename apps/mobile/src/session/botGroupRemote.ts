@@ -365,6 +365,7 @@ export function parseBotGroupChatData(value: unknown): BotGroupRemoteChatData | 
     name,
     serverBacked: record.serverBacked === true,
     singleSpeaker: record.singleSpeaker === true,
+    supportsDivision: record.supportsDivision === true,
     archived: record.archived === true,
     dissolvedAt: text(record.dissolvedAt, 64),
     supportsDissolve: record.supportsDissolve === true,

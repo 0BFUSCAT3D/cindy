@@ -183,10 +183,11 @@ describe('Chat Server result delivery and refresh', () => {
         changes: [{ type: 'execution.updated', entityId: execution.id }] }));
       await vi.advanceTimersByTimeAsync(0);
     };
-    async function serve(plan: Record<string, unknown>, settings: { autoContinue?: boolean } | null, onContinue?: () => { status: number; body: unknown }) {
-      if (settings) workspaceSettings.set(roomId, { projectDir: null, plans: {}, ...settings });
+    async function serve(plan: Record<string, unknown>, settings: { autoContinue?: boolean; startedHere?: string[] } | null,
+      onContinue?: () => { status: number; body: unknown }, onRead?: () => void) {
+      if (settings) workspaceSettings.set(roomId, { projectDir: null, plans: {}, startedHere: [planId], ...settings });
       fixture.handle.mockImplementation((route, method) => route === `/conversations/${roomId}/plans/${planId}` && method === 'POST'
-        ? onContinue?.() ?? { body: {} } : route.startsWith(`/conversations/${roomId}/plans`) ? { body: [plan] } : response(route));
+        ? onContinue?.() ?? { body: {} } : route.startsWith(`/conversations/${roomId}/plans`) ? (onRead?.(), { body: [plan] }) : response(route));
       await service.getGroup(roomId);
       await vi.advanceTimersByTimeAsync(2000);
     }
@@ -204,6 +205,8 @@ describe('Chat Server result delivery and refresh', () => {
       ['nothing was chosen on this computer', division(), null],
       ['the step failed and waits for 重试', division({}, 'failed'), { autoContinue: true }],
       ['someone else started the 分工', division({ creator_id: otherHuman }), { autoContinue: true }],
+      // The account is the creator on each of its computers: another one of them asked for this 分工.
+      ['it was asked for on another computer', division(), { autoContinue: true, startedHere: [] }],
       ['it is a discussion queue, not a 分工', division({ kind: 'talk' }), { autoContinue: true }],
       ['the 分工 was stopped', division({ status: 'stopped' }), { autoContinue: true }],
       ['the last step is done', division({ current_step: 1, status: 'waiting', steps: [
@@ -214,7 +217,7 @@ describe('Chat Server result delivery and refresh', () => {
       expect(continues()).toHaveLength(0);
     });
     it('turning it on while a step waits goes on now, and shows the choice on the group and its 分工 card', async () => {
-      await serve(division(), null);
+      await serve(division(), { autoContinue: false });
       const before = await service.getGroup(roomId);
       expect(before.ok && [before.group.autoContinue, before.group.plans[0]?.autoContinue]).toEqual([false, false]);
       expect(await service.updateGroup({ groupId: roomId, autoContinue: true })).toEqual({ ok: true });
@@ -223,6 +226,14 @@ describe('Chat Server result delivery and refresh', () => {
       expect(continues()).toHaveLength(1);
       const after = await service.getGroup(roomId);
       expect(after.ok && [after.group.autoContinue, after.group.plans[0]?.autoContinue]).toEqual([true, true]);
+    });
+    it('does not go on when the switch is turned off while the 分工 is read', async () => {
+      let reads = 0;
+      await serve(division(), { autoContinue: true }, undefined, () => {
+        if (++reads > 1) workspaceSettings.set(roomId, { ...workspaceSettings.get(roomId) as object, autoContinue: false });
+      });
+      await stepEnded('2');
+      expect(continues()).toHaveLength(0);
     });
     it('does not try again after someone else went on first', async () => {
       await serve(division(), { autoContinue: true }, () => ({ status: 409, body: { error: { code: 'REVISION_CONFLICT' } } }));
@@ -1683,6 +1694,32 @@ describe('Chat Server result delivery and refresh', () => {
       expect(deliveries()[0][2]).not.toHaveProperty('continueDiscussion');
     });
 
+    // A queue turn builds on the answer just before it (a 分工 hand-off's 2000 characters); older
+    // answers get a main-group message's 600, so a long queue does not resend every answer in full.
+    it('shortens the earlier answers a queue turn reads', async () => {
+      const planId = '80000000-0000-4000-8000-000000000003';
+      const ids = ['50000000-0000-4000-8000-000000000041', '50000000-0000-4000-8000-000000000042', '50000000-0000-4000-8000-000000000043'];
+      const texts = ['a'.repeat(601), 'b'.repeat(600), 'c'.repeat(2001)];
+      const plan = { id: planId, revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: otherBot, creator_id: selfId,
+        note_message_ids: [], status: 'running', current_step: 3, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        steps: [...ids.map((resultMessageId, position) => ({ position, botId: otherBot, botName: 'Peer', task: '', status: 'done', resultMessageId })),
+          { position: 3, botId, botName: 'Bot', task: '', status: 'running' }] };
+      singleSpeaker(route => {
+        if (route === '/executions/claim' && !claimed) { claimed = true; return { body: { execution: { ...execution, access_mode: 'owner', plan_id: planId, plan_step: 3 } } }; }
+        if (route.includes('/plans?ids=')) return { body: [plan] };
+        if (route.includes('/messages?all=true')) return { body: ids.map((id, index) => message(id, texts[index]!, { authorId: otherBot, author: { kind: 'bot', name: 'Peer' }, origin: 'bot' })) };
+        if (route.endsWith(`/messages/${execution.source_message_id}`)) return { body: message(execution.source_message_id, 'Q') };
+        return undefined;
+      });
+      await start();
+      const block = prompt().split('<untrusted-data>\n').map(part => part.split('\n</untrusted-data>')[0]!).find(part => part.includes('earlierAnswers'))!;
+      expect(JSON.parse(block).earlierAnswers).toEqual([
+        { from: 'Peer', text: `${'a'.repeat(600)}…`, shortened: true },
+        { from: 'Peer', text: 'b'.repeat(600) },
+        { from: 'Peer', text: `${'c'.repeat(2000)}…`, shortened: true },
+      ]);
+    });
+
     // bot-group-chat.md §7.0 (2026-10-23): 「安排分工」 is back on these servers. A request that writes
     // out who does what becomes that card and starts, with no helper model; otherwise the organizer
     // arranges it. The request is held so the server's own queue does not answer it first.
@@ -1714,6 +1751,29 @@ describe('Chat Server result delivery and refresh', () => {
           steps: [{ botId, task: '出方案' }, { botId: otherBot, task: '按方案实现' }] });
         expect(posts().find(([route]) => route === `/conversations/${roomId}/plans/${planId}`)![2]).toMatchObject({ action: 'start', expectedRevision: 1 });
         expect(deps.decidePlan).not.toHaveBeenCalled();
+        // Only a 分工 asked for here follows this computer's 自动交接.
+        expect(workspaceSettings.get(roomId)).toMatchObject({ startedHere: [planId] });
+      });
+
+      it('lets the organizer arrange it when a picked teammate no longer reads in the text', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn(async () => ({ needsPlan: true as const, steps: [{ botId, task: 'design' }, { botId: otherBot, task: 'build' }] }));
+        // Bot was picked as @OldName and renamed before sending: its step must not be dropped.
+        expect(await service.sendMessage({ groupId: roomId, text: '@OldName 出方案，然后 @Nova (Owner) 按方案实现', clientId: 'division-renamed',
+          mentions: { all: false, botIds: [botId, otherBot] }, division: true })).toMatchObject({ ok: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(deps.decidePlan).toHaveBeenCalled();
+        expect(posts().some(([route]) => route === `/conversations/${roomId}/plans/${planId}`)).toBe(false);
+      });
+
+      // The server cannot release a held request, so a newer message must not replace one still being arranged.
+      it('refuses a newer message while the organizer is arranging', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn(() => new Promise<never>(() => {}));
+        await send('Make a draft');
+        expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: 'after-division', mentions: { all: false, botIds: [] } }))
+          .toMatchObject({ ok: false, errorCode: 'PLAN_OPEN' });
+        expect(posts().filter(([route]) => route === `/conversations/${roomId}/messages`)).toHaveLength(1);
       });
 
       it('asks the organizer when the steps are not written out', async () => {

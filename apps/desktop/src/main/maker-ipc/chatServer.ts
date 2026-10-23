@@ -1318,7 +1318,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const lastView = last ? messageView(last, s.members) : null;
     // The sidebar never resolves shares: it names the sharer and never quotes the card's text.
     const lastIsShare = !!last && !!readBotGroupThreadShareCard(last);
-    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, supportsMemberAvatar, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: singleSpeaker && !!managementActor(s), ...(singleSpeaker ? { singleSpeaker: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, supportsMemberAvatar, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: singleSpeaker && !!managementActor(s), ...(singleSpeaker ? { singleSpeaker: true, supportsDivision: true } : {}), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
@@ -1353,7 +1353,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // Same rule as sendMessage's commentPlan: additions are written as the human, so a teammate's role does not count.
         canAdd: plan.creator_id === selfId || members.some(m => m.id === selfId && ['owner', 'admin'].includes(m.role)) } : {}),
       // Only a 分工 started here follows this computer's choice; its 继续 is pressed from here.
-      ...(plan.kind === 'work' && plan.creator_id === selfId ? { autoContinue: workspace?.autoContinue === true } : {}),
+      ...(startedHere(plan, workspace) ? { autoContinue: workspace?.autoContinue === true } : {}),
       createdAt: Date.parse(plan.created_at), updatedAt: Date.parse(plan.updated_at) };
   }
   async function actPlan(input: unknown, action: string) {
@@ -1380,6 +1380,17 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
    * The expected revision keeps a concurrent 继续 or edit from starting a step twice.
    */
   const autoContinueRuns = new Map<string, boolean>();
+  /**
+   * The account is the creator on each of its computers, so the card remembers where it was
+   * asked for (a phone through this computer counts as here).
+   */
+  function startedHere(plan: ServerPlan, workspace: ReturnType<ReturnType<typeof chatServerWorkspaces>['read']>) {
+    return plan.kind === 'work' && plan.creator_id === selfId && workspace?.startedHere?.includes(plan.id) === true;
+  }
+  function markStartedHere(roomId: string, planId: string) {
+    const settings = workspaces().read(roomId) ?? { projectDir: null, plans: {} };
+    workspaces().save(roomId, { ...settings, startedHere: [...(settings.startedHere ?? []).filter(known => known !== planId), planId].slice(-50) });
+  }
   const autoContinued = new Set<string>();
   function autoContinuePlans(roomId: string) {
     if (!current()) return;
@@ -1390,15 +1401,18 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         autoContinueRuns.set(roomId, false);
         if (!workspaces().read(roomId)?.autoContinue) return;
         const plans = await api<ServerPlan[]>(`/conversations/${roomId}/plans`);
+        const workspace = workspaces().read(roomId);
         for (const plan of plans) {
           const at = plan.current_step ?? 0;
-          if (plan.kind !== 'work' || plan.creator_id !== selfId || plan.status !== 'waiting'
+          if (!startedHere(plan, workspace) || plan.status !== 'waiting'
             || plan.steps[at]?.status !== 'done' || at + 1 >= plan.steps.length) continue;
           const key = `${plan.id}:${at}`;
           if (autoContinued.has(key)) continue;
           autoContinued.add(key);
           if (autoContinued.size > 1000) autoContinued.delete(autoContinued.values().next().value!);
           try {
+            // The switch may have been turned off while the plans were read; the revision cannot tell.
+            if (!workspaces().read(roomId)?.autoContinue) { autoContinued.delete(key); return; }
             await api(`/conversations/${roomId}/plans/${plan.id}`, 'POST', { operationId: randomUUID(), expectedRevision: plan.revision, action: 'continue' });
             changed(roomId);
           } catch (error) {
@@ -1436,8 +1450,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         ...(quote ? { requestQuote: { from: quote.authorName, text: quote.excerpt, ...quoteAttachments(quote.attachmentCount, quote.attachmentName) } } : {}) }, controller.signal);
       const request = planRequest(text, quote);
       if (!current() || controller.signal.aborted || planIntents.get(s.room.id) !== intent) return;
-      if (decision?.needsPlan) await api(`/conversations/${s.room.id}/plans`, 'POST', {
-        operationId: `plan:${sourceId}`, sourceMessageId: sourceId, organizerId: organizer.id, request, steps: decision.steps });
+      if (decision?.needsPlan) markStartedHere(s.room.id, (await api<ServerPlan>(`/conversations/${s.room.id}/plans`, 'POST', {
+        operationId: `plan:${sourceId}`, sourceMessageId: sourceId, organizerId: organizer.id, request, steps: decision.steps })).id);
       else if (explicit) await settleExplicitRequest(s.room.id, sourceId, forced && !proposed);
       else await api(`/conversations/${s.room.id}/messages/${sourceId}/continue`, 'POST', { operationId: `discuss:${sourceId}`, ...(groupDiscussionParity ? { automatic: true } : {}) });
     } catch (error) {
@@ -1465,10 +1479,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (answer) await api(`/conversations/${roomId}/messages/${sourceId}/continue`, 'POST', { operationId: `discuss:${sourceId}` });
   }
   /** Steps a 分工 request wrote out (§7.0), as teammates this account may give work to. */
-  function writtenPlanSteps(s: Snapshot, text: string): PlanStepDraft[] | null {
+  function writtenPlanSteps(s: Snapshot, text: string, picked: string[]): PlanStepDraft[] | null {
     const bots = s.members.filter(m => m.kind === 'bot' && m.state === 'joined');
     const written = splitBotGroupRelaySteps(text, { allLabels: [],
       members: bots.map(m => ({ botId: m.id, name: memberName(m), displayName: m.name, nickname: m.nickname })) });
+    // A picked teammate whose name no longer reads in the text (renamed meanwhile) would silently
+    // drop its step: let the organizer arrange it instead.
+    if (written && !picked.every(target => written.some(step => step.botId === target || localBot(step.botId)?.id === target))) return null;
     // A step for a teammate you may not give work to goes to the organizer, not into a neighbour's task.
     const assignable = (botId: string) => bots.some(m => m.id === botId && (m.ownerActorId === selfId || m.guestAccess !== 'none')
       && (!localBot(m.id) || localBot(m.id)?.status === 'active'));
@@ -1484,6 +1501,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     try {
       plan = await api<ServerPlan>(`/conversations/${s.room.id}/plans`, 'POST', {
         operationId: `plan:${sourceId}`, sourceMessageId: sourceId, organizerId, request, steps });
+      markStartedHere(s.room.id, plan.id);
     } catch (error) {
       await settleExplicitRequest(s.room.id, sourceId, true);
       throw error;
@@ -2486,6 +2504,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       quote: z.object({ messageId: id }).strict().optional() }).parse(input);
     i.groupId = await resolveGroup(i.groupId);
     if (!i.text.trim() && !i.attachments?.length) throw new Error('INVALID_INPUT');
+    // A single-speaker server cannot release a held request (no cancel-planning): a newer message
+    // replacing a 分工 still being arranged would leave it to be queued two minutes later. Wait for its card.
+    if (singleSpeaker && planIntents.get(i.groupId)?.sourceId) throw new Error('PLAN_OPEN');
     // An attempted send must not cancel a valid decision until its message exists.
     const intentVersion = ++nextIntentVersion;
     // The reads a send needs share one round trip (none for a snapshot the live subscription
@@ -2579,7 +2600,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             if (settleQueue) await api(`/conversations/${roomId}/plans/${settleQueue.id}`, 'POST', {
               operationId: `settle:${settleQueue.id}:${messageId}`, expectedRevision: settleQueue.revision, action: 'stop' })
               .catch(error => deps.log?.warn('Waiting queue could not be ended', { groupId: roomId, ...chatErrorDiagnostic(error) }));
-            const written = singleSpeaker && i.division && !i.mentions.all ? writtenPlanSteps(s, i.text) : null;
+            const written = singleSpeaker && i.division && !i.mentions.all ? writtenPlanSteps(s, i.text, i.mentions.botIds) : null;
             if (written) await openWrittenPlan(s, messageId, planRequest(i.text, quote), written, intent);
             else await decideArrangement(s, messageId, i.text, i.division === true, prepared?.ok ? prepared.attachments : [], intent, quote);
           };
