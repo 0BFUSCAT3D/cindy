@@ -1,3 +1,4 @@
+import { encodeCatalogModelPin } from '@cindy/model-providers/catalogModelPin';
 import { enqueueMessage, waitForTurn } from '../client-operations.js';
 import type { TerminalClient } from '../contracts.js';
 import { TerminalSchedulerHost } from './scheduler.js';
@@ -153,6 +154,25 @@ async function setup(native = engine(), overrides: Partial<ConstructorParameters
   await host.invoke('maker:provider:custom:create', [{ id: 'fixture', name: 'Fixture', auth: { method: 'apiKey' }, runtimes: { 'claude-code': { baseUrl: 'http://127.0.0.1:1', models: [{ id: 'test-model', name: 'Test model', contextWindow: 200000 }] } } }, { 'claude-code': 'invalid-test-key-only' }]);
   await host.invoke('terminal:models:set-default', [{ agentKind: 'claude-code', providerId: 'fixture', model: 'test-model' }]);
   return { host, root, create, pushes, native, vault, nextPush };
+}
+
+// Real auxiliary HTTP route, shared by the channel/title regressions.
+async function auxiliaryFixture(host: TerminalTaskHost, reply: () => Promise<string>) {
+  const requests: Array<{model: string; messages: Array<{content: string}>}> = [];
+  const api = createServer(async (req, res) => {
+    let body=''; for await (const chunk of req) body+=chunk;
+    requests.push(JSON.parse(body));
+    const text=await reply();
+    res.setHeader('content-type','application/json');
+    res.end(JSON.stringify({choices:[{message:{content:text}}]}));
+  });
+  await new Promise<void>(resolve=>api.listen(0,'127.0.0.1',resolve));
+  const close=async()=>{api.closeAllConnections();await new Promise<void>(resolve=>api.close(()=>resolve()));};
+  try {
+    await host.models.saveProvider({id:'auxiliary-fixture',name:'Auxiliary fixture',auth:{method:'apiKey'},runtimes:{codex:{baseUrl:`http://127.0.0.1:${(api.address() as {port:number}).port}`,wireProtocol:'openai-chat',models:[{id:'test-utility',name:'Utility'}]}}},{codex:'fake-auxiliary-key'},true);
+    await host.utility.update({models:[encodeCatalogModelPin({providerId:'auxiliary-fixture',agentKind:'codex',model:'test-utility'})]});
+    return {requests,close};
+  } catch(error) { await close();throw error; }
 }
 
 describe('terminal task host', () => {
@@ -399,7 +419,7 @@ describe('terminal task host', () => {
       if (provider) await provider.toClaudeSdkConfig!({ sessionId: options.sessionId, workingDir: root, agentKind: 'claude-code' });
     }));
     await host.channelDefaults.update({ agentKind: 'claude-code', agents: { 'claude-code': { model: 'test-model', providerId: 'fixture', effort: 'high' } } }, 'feishu');
-    native.title.reply = async () => 'RELATED';
+    const auxiliary=await auxiliaryFixture(host, async () => 'RELATED');
     const connections = new TerminalImConnections({ tasks: host, root, logger, assertCurrent() {}, emit() {}, secrets: {
       getSync: key => vault.get(key) ?? null, setSync: (key, value) => { vault.set(key, value); }, deleteSync: key => { vault.delete(key); }, available: () => true,
     } });
@@ -421,7 +441,7 @@ describe('terminal task host', () => {
       im.scope.events.emit('message', event('recall the previous group message'));
       await vi.waitFor(() => expect(output.some(text => text.includes('Echo:'))).toBe(true));
       expect(JSON.stringify(native.sent)).toContain('feishu-context-violet-83');
-      expect(native.titleRequests.some(request => request.prompt.includes('RELATED'))).toBe(true);
+      expect(JSON.stringify(auxiliary.requests)).toContain('RELATED');
       const task = (await host.storage.list()).find(row => row.source === 'feishu')!;
       expect(task).toMatchObject({ imUserId: 'g/oc_group', imBotContextId: 'cli_fixture' });
       expect(native.inputs.find(input => input.taskId === task.id)?.tools?.providers.map(provider => provider.name)).toContain('cindy_feishu_bot');
@@ -456,7 +476,7 @@ describe('terminal task host', () => {
         expect(await store.find({ channel: 'feishu', botContextId: 'another-bot', userId: 'ou_owner', messageId: 'om_notification', chatId: 'oc_owner' })).toBeNull();
       } finally { await restored.close(); }
       await expect(connections.notifications.resolveFeishuNotificationReply(im, reply)).rejects.toThrow('account changed');
-    } finally { await connections.close(); for (const spy of spies) spy.mockRestore(); }
+    } finally { await connections.close(); for (const spy of spies) spy.mockRestore(); await auxiliary.close(); }
   });
   // The transport callbacks enter the production command/card/turn composition.
   // Regression: a successful picker must affect the next native turn and remain
@@ -1280,12 +1300,13 @@ describe('terminal task host', () => {
 
   // Behavior: a GUI title request must use the terminal owner's configured
   // route without creating another task; settings changes invalidate late text.
-  it('generates titles on the selected route and rejects a stale model result', async () => {
+  it('generates titles on the auxiliary route and rejects a stale model result', async () => {
     const { host, native } = await setup();
+    const auxiliary=await auxiliaryFixture(host, () => native.title.reply());
+    try {
     const task = await host.invoke('maker:create-session', [{}]) as { id: string };
     expect(await host.invoke('maker:generate-title', [{ message: 'Configure my server', sessionId: task.id, agentKind: 'claude-code' }])).toEqual({ title: 'Server task' });
-    expect(native.titleRequests[0].options?.model).toBe('test-model');
-    expect(native.inputs.at(-1)?.selection.providerId).toBe('fixture');
+    expect(auxiliary.requests[0].model).toBe('test-utility');
     expect(native.starts).toHaveLength(1);
     expect(await host.storage.list()).toHaveLength(1);
     let entered!: () => void, finish!: (text: string) => void;
@@ -1296,6 +1317,7 @@ describe('terminal task host', () => {
     await host.invoke('terminal:models:reset-default');
     finish('Old model result');
     expect(await pending).toEqual({ title: null });
+    } finally { await auxiliary.close(); }
   });
 
   // Behavior: attaching a channel after the native permission is already open

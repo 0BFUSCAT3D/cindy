@@ -8,6 +8,7 @@ import type { OauthCardBinding } from "@cindy/plugin-runtime/authorization/trans
 import type { InvocationContext, TerminalClient } from "./contracts.js";
 import type { TerminalCapabilities } from "./tasks/capabilities.js";
 import type { TerminalFeishuRegistration } from './im/registration.js';
+import type { TerminalProviderLogin } from './models/login.js';
 
 // Host-owned settings use the same authenticated exchange as input handoff and
 // plugin settings. This identifier cannot be supplied by a plugin or a client.
@@ -40,7 +41,7 @@ export function configurationOperation(raw: unknown): Operation {
     (value.actionId === "edit" && !value.resourceId) ||
     (value.actionId === "create" && value.resourceId !== undefined) ||
     (value.collectionId === "channels" && value.actionId !== "edit" && value.actionId !== "connect") ||
-    (value.actionId === "connect" && (value.collectionId !== "channels" || value.resourceId !== "feishu"))
+    (value.actionId === "connect" && !((value.collectionId === "channels" && value.resourceId === "feishu") || (value.collectionId === "providers" && typeof value.resourceId === 'string' && value.resourceId.length > 0)))
   )
     throw new Error("INVALID_CONFIGURATION");
   return {
@@ -58,6 +59,7 @@ export class TerminalConfiguration {
   constructor(
     private readonly capabilities: TerminalCapabilities,
     private readonly providers?: {
+      login?: TerminalProviderLogin;
       revision(): number;
       save(
         action: "create" | "edit",
@@ -95,7 +97,7 @@ export class TerminalConfiguration {
       operation,
       context,
       revision: this.revision(operation),
-      expiresAt: Date.now() + LIFETIME_MS,
+      expiresAt: Date.now() + (operation.collectionId === "providers" && operation.actionId === "connect" ? 20 * 60_000 : LIFETIME_MS),
       state: "open",
     });
     return { id, configurationId: CONFIGURATION_ID };
@@ -150,10 +152,27 @@ export class TerminalConfiguration {
     if (command.kind === "close") {
       // The authenticated envelope still needs to seal its final response.
       this.leases.delete(request.id);
-      if (lease.operation.actionId === 'connect') await this.channels?.registration?.cancel(request.id);
+      if (lease.operation.actionId === 'connect') {
+        if (lease.operation.collectionId === 'providers') this.providers?.login?.cancel(request.id);
+        else await this.channels?.registration?.cancel(request.id);
+      }
       return { status: 204 };
     }
     if (lease.operation.actionId === 'connect') {
+      if (lease.operation.collectionId === 'providers') {
+        const login = this.providers?.login;
+        if (!login || command.kind !== 'fetch' || command.path !== '/connection') throw new Error('INVALID_CONFIGURATION');
+        if (command.method === 'GET') return { status: 200, body: login.read(request.id) };
+        if (command.method !== 'POST' || typeof command.body !== 'string') throw new Error('INVALID_CONFIGURATION');
+        try {
+          const input = JSON.parse(command.body) as { callback?: unknown };
+          const body = Object.hasOwn(input, 'callback') ? login.submit(request.id, input.callback) : login.begin(request.id, lease.operation.resourceId!, () => {
+            if (!this.current(lease)) throw new Error('CONFIGURATION_STALE');
+          }, lease.expiresAt);
+          delete input.callback;
+          return { status: 200, body };
+        } catch { return { status: 400, code: 'PROVIDER_LOGIN_FAILED' }; }
+      }
       const registration = this.channels?.registration;
       if (!registration || command.kind !== 'fetch' || command.path !== '/connection') throw new Error('INVALID_CONFIGURATION');
       if (command.method === 'GET') return { status: 200, body: registration.read(request.id) };

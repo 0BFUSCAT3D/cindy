@@ -12,6 +12,23 @@ The platform acceptance workflow checks the packaged executable, PTY, WebRTC and
 resident service. This package is under development; a passing smoke test does
 not establish full Desktop/Mobile feature parity.
 
+## Provider authorization
+
+In the TUI, choose Models → Add provider, choose a preset and select OAuth
+when offered. The provider can then be connected from its configuration menu.
+`cindy providers login --provider <id>` opens the same login surface;
+`--device <id>` performs authorization on the selected remote host. Device-code
+providers show an authorization URL and code. For browser callbacks completed
+on another computer, paste the final callback URL into the masked input.
+The existing encrypted controller exchange carries that input to the host.
+Access and refresh tokens stay in its account-scoped encrypted vault.
+
+`cindy providers status --provider <id>` reports connection state;
+`cindy providers logout --provider <id>` disconnects that saved provider.
+The positional engine commands, such as `cindy providers login claude-code`,
+continue to invoke the native CLI. Claude subscription credentials are managed
+exclusively by Claude Code.
+
 ## Headless plugin browser
 
 The host, login and model configuration do not need a browser on the server.

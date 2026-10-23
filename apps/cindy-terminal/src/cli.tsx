@@ -231,7 +231,7 @@ async function main() {
     }finally{process.off('SIGINT',stop);process.off('SIGTERM',stop);}
     return;
   }
-  if(command==='engines'||command==='providers'&&['login','logout','status'].includes(subcommand)){
+  if(command==='engines'||command==='providers'&&['login','logout','status'].includes(subcommand)&&(!str('provider')||Boolean(str('engine'))||rest.length>0)){
     if(str('device'))throw new Error('LOCAL_COMMAND_REQUIRES_LOCAL_TARGET');
     const manager=new EngineManager({profileDir:directory});
     if(command==='engines'&&(!subcommand||subcommand==='list')){print(await manager.allStatus());return;}
@@ -370,6 +370,13 @@ async function main() {
         print(await invokeModelConfiguration(client,'disabled',{providerId:required(str('provider')),kind:subcommand==='reset'?'reset':'model',modelIds:rest,disabled:subcommand==='disable'},device));
       }
       else throw new Error('UNKNOWN_COMMAND');return;
+    }
+    if(command==='providers'&&str('provider')&&!str('engine')&&!rest.length&&['login','logout','status'].includes(subcommand)){
+      const id=str('provider')!;
+      if(subcommand==='logout'){print(await invokeModelConfiguration(client,'disconnect',{providerId:id},device));return;}
+      if(subcommand==='status'){const raw=unwrap(await call('maker:provider:list'));const providers=(Array.isArray(raw)?raw:object(raw).providers??[]) as Array<Record<string,unknown>>;const provider=providers.find(p=>p.id===id);if(!provider)throw new Error('PROVIDER_NOT_FOUND');print({providerId:id,connected:provider.connected===true});return;}
+      if(json||values['no-input']||!process.stdin.isTTY||!process.stdout.isTTY)throw new Error('INTERACTIVE_TERMINAL_REQUIRED');
+      await runTui(reconnectingClient(directory,client),{locale,page:'models',device,providerLogin:id});return;
     }
     if(command==='providers'&&subcommand){
       if(subcommand==='list')print(await call('maker:provider:list'));

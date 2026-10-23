@@ -4,7 +4,8 @@ import type { TerminalClient } from '../contracts.js';
 import type { ChannelRegistrationState } from '../im/registration.js';
 import type { Locale } from './i18n.js';
 import { authenticationText } from './authenticationText.js';
-import { terminalText } from './input.js';
+import { Input, terminalText } from './input.js';
+import type { ProviderLoginState } from '../models/login.js';
 
 const labels = {
   en: ['Create and connect', 'Connected', 'Created · connecting', 'Connected on another device', 'Enter to return'],
@@ -16,14 +17,18 @@ const labels = {
 
 /** The local controller owns the encrypted remote exchange. Neither the
  * resource invocation nor a broadcast event carries an authorization code. */
-export function ChannelRegistration({ client, device, service, locale, onDone }: {
-  client: TerminalClient; device?: string; service: string; locale: Locale; onDone(): void;
+export function ChannelRegistration({ client, device, service, providerId, locale, onDone }: {
+  client: TerminalClient; device?: string; service?: string; providerId?: string; locale: Locale; onDone(): void;
 }) {
   const t = authenticationText(locale), l = labels[locale];
-  const [state, setState] = useState<ChannelRegistrationState>();
+  const [state, setState] = useState<ChannelRegistrationState & ProviderLoginState>();
+  const [callback, setCallback] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [callbackError, setCallbackError] = useState(false);
+  const channel = providerId ? 'terminal:provider-login' : 'terminal:channel-registration';
   const id = useRef<string | undefined>(undefined);
   const done = useRef(onDone); done.current = onDone;
-  const cancel = async (requestId: string) => { await client.invoke('terminal:channel-registration', [{ command: 'cancel', id: requestId }]).catch(() => {}); };
+  const cancel = async (requestId: string) => { await client.invoke(channel, [{ command: 'cancel', id: requestId }]).catch(() => {}); };
   useEffect(() => {
     let disposed = false, timer: NodeJS.Timeout | undefined, expiresAt: number | undefined;
     const apply = (next: ChannelRegistrationState) => {
@@ -35,32 +40,45 @@ export function ChannelRegistration({ client, device, service, locale, onDone }:
     const read = async () => {
       if (expiresAt !== undefined && Date.now() >= expiresAt) { apply({ status: 'expired' }); if (id.current) void cancel(id.current); return; }
       try {
-        const result = await client.invoke<{ state: ChannelRegistrationState }>('terminal:channel-registration', [{ command: 'read', id: id.current }]);
+        const result = await client.invoke<{ state: ChannelRegistrationState }>(channel, [{ command: 'read', id: id.current }]);
         apply(result.state);
       } catch { if (!disposed) setState({ status: 'error' }); }
     };
-    void client.invoke<{ id: string; state: ChannelRegistrationState }>('terminal:channel-registration', [{ command: 'begin', service, ...(device ? { deviceId: device } : {}) }]).then(result => {
+    void client.invoke<{ id: string; state: ChannelRegistrationState }>(channel, [{ command: 'begin', ...(providerId ? { providerId } : { service }), ...(device ? { deviceId: device } : {}) }]).then(result => {
       if (disposed) { void cancel(result.id); return; }
       id.current = result.id; apply(result.state);
     }).catch(() => { if (!disposed) setState({ status: 'error' }); });
     return () => { disposed = true; clearTimeout(timer); if (id.current) void cancel(id.current); id.current = undefined; };
-  }, [client, device, service]);
+  }, [client, device, service, providerId]);
   useInput((_input, key) => {
     if (key.eventType === 'release') return;
     if (key.escape || key.return && state && state.status !== 'pending') done.current();
   });
+  async function submitCallback(value: string) {
+    if (!value || value.length > 32768 || submitting) return;
+    setCallback(''); setSubmitting(true); setCallbackError(false);
+    const payload: Record<string, unknown> = { command: 'submit', id: id.current, callback: value };
+    try { const result = await client.invoke<{ state: ProviderLoginState }>(channel, [payload]); setState(result.state); }
+    catch { setCallbackError(true); }
+    finally { delete payload.callback; setSubmitting(false); }
+  }
   const status = state?.status;
   const failed = status === 'error' || state?.verdict === 'error';
   return <Box flexDirection="column" gap={1}>
-    <Text bold>{l[0]}</Text>
+    <Text bold>{providerId ? t.login : l[0]}</Text>
     {!state && <Text>{t.loading}</Text>}
     {status === 'pending' && <>
       <Text>{t.openBrowser}</Text>
       <Text wrap="wrap">{terminalText(state?.verificationUrl ?? '')}</Text>
       <Text bold>{terminalText(state?.userCode ?? '')}</Text>
       <Text dimColor>{t.waitBrowser}</Text>
+      {state?.callbackRequired && <>
+        <Text>{({en:'Paste callback URL', 'zh-CN':'粘贴回调网址', 'zh-TW':'貼上回呼網址', ja:'コールバック URL を貼り付け', ko:'콜백 URL 붙여넣기'})[locale]}</Text>
+        <Input value={callback} onChange={setCallback} onSubmit={value => { void submitCallback(value); }} secret active={!submitting} />
+        {callbackError && <Text color="red">{t.failed}</Text>}
+      </>}
     </>}
-    {status === 'success' && !failed && <Text>{state?.verdict === 'conflict' ? l[3] : state?.verdict === 'connected' ? l[1] : l[2]}</Text>}
+    {status === 'success' && !failed && <Text>{providerId ? l[1] : state?.verdict === 'conflict' ? l[3] : state?.verdict === 'connected' ? l[1] : l[2]}</Text>}
     {status === 'expired' && <Text>{t.browserExpired}</Text>}
     {status === 'cancelled' && <Text>{t.cancelled}</Text>}
     {failed && <Text color="red">{t.failed}</Text>}

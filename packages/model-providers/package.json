@@ -37,7 +37,8 @@
     "./model-access/*": "./src/model-access/*.ts",
     "./modelAccess": "./src/modelAccess.ts",
     "./auxiliaryModelSettings": "./src/auxiliaryModelSettings.ts",
-    "./providerOrder": "./src/providerOrder.ts"
+    "./providerOrder": "./src/providerOrder.ts",
+    "./provider-auth/*": "./src/provider-auth/*.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
@@ -54,6 +55,8 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "@cindy/model-compat": "workspace:*"
+    "@cindy/model-compat": "workspace:*",
+    "@cindy/auth-client": "workspace:*",
+    "@cindy/maker-shared": "workspace:*"
   }
 }

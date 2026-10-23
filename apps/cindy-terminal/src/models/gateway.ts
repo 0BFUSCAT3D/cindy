@@ -117,12 +117,17 @@ export class TerminalGateway {
       (key) => this.rejected(key),
     );
     this.ready = this.open();
+    // Startup and close await this promise; attach a handler immediately while
+    // the host is still assembling the rest of its owner services.
+    void this.ready.catch(() => {});
   }
   private current() {
     if (this.closed) throw new Error('OWNER_CHANGED');
     this.options.assertCurrent();
   }
   private async open() {
+    // A fresh guest profile has no account key and may not have a vault yet.
+    if (!this.options.identity()) return;
     const raw = await this.options.secrets.get('terminal:gateway');
     this.current();
     if (!raw) return;

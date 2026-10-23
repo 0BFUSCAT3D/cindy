@@ -1644,6 +1644,12 @@ importers:
 
   packages/model-providers:
     dependencies:
+      '@cindy/auth-client':
+        specifier: workspace:*
+        version: link:../auth-client
+      '@cindy/maker-shared':
+        specifier: workspace:*
+        version: link:../maker-shared
       '@cindy/model-compat':
         specifier: workspace:*
         version: link:../model-compat

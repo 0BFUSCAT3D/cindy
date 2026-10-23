@@ -1,3 +1,5 @@
+import { providerPresetOAuth, providerPresetOAuthRuntimes, type OAuthProviderDescriptor, type ProviderPreset } from '@cindy/model-providers';
+import { ChannelRegistration } from './channel-registration.js';
 import { readModelConfiguration, saveModelProvider, invokeModelConfiguration } from '../models/client.js';
 import { PluginSetupView } from './plugin-setup.js';
 import type { GhostSetupInteractionSnapshot } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
@@ -82,8 +84,8 @@ function engineLabel(value: unknown): string {
   return ({ cc: 'Claude Code', 'claude-code': 'Claude Code', codex: 'Codex', pi: 'Pi' } as Record<string, string>)[kind] ?? kind;
 }
 
-function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, initialDevice, initialSso, initialCollection, onExternalAction }: {
-  client: TerminalClient; locale: Locale; initialPage?: string; initialTask?: string; initialDevice?: string; initialSso?: boolean;initialCollection?:string; onExternalAction(action:TuiExternalAction):void;
+function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, initialDevice, initialSso, initialCollection, initialProviderLogin, onExternalAction }: {
+  client: TerminalClient; locale: Locale; initialPage?: string; initialTask?: string; initialDevice?: string; initialSso?: boolean;initialCollection?:string; initialProviderLogin?:string; onExternalAction(action:TuiExternalAction):void;
 }) {
   const [locale, setLocale] = useState(initialLocale);
   const t = getMessages(locale);
@@ -116,6 +118,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   const loadingOlder=useRef(false);
   const [taskInfo,setTaskInfo]=useState<Data>({});
   const [draft, setDraft] = useState('');
+  const [providerLogin, setProviderLogin] = useState<string | undefined>(initialProviderLogin);
   const [attachments,setAttachments]=useState<Array<{path:string;name:string}>>([]);
   const [scroll, setScroll] = useState(0);
   const [connected, setConnected] = useState(true);
@@ -181,11 +184,17 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     edit(t.addProvider,[{key:'source',label:modelText.source,choices:[modelText.custom,...names]}],async values=>{
       const preset=presets[names.indexOf(values.source)];
       if(!preset){providerForm();return;}
-      const runtimes=record(preset.runtimes);
-      edit(t.engine,[{key:'engine',label:t.engine,choices:Object.keys(runtimes)}],async values=>providerForm(undefined,values.engine,record(runtimes[values.engine]),label(preset.name),record(preset).authMethod==='none'?'none':'apiKey'));
+      const oauth=providerPresetOAuth(String(preset.id));
+      const configure = (useOAuth: boolean) => {
+        const runtimes=record(useOAuth ? providerPresetOAuthRuntimes(preset as unknown as ProviderPreset) : preset.runtimes);
+        edit(t.engine,[{key:'engine',label:t.engine,choices:Object.keys(runtimes)}],async values=>providerForm(undefined,values.engine,record(runtimes[values.engine]),label(preset.name),useOAuth?'oauth':record(preset).authMethod==='none'?'none':'apiKey',useOAuth?oauth:undefined));
+      };
+      if(oauth)edit(modelText.auth,[{key:'method',label:modelText.auth,choices:['OAuth',modelText.apiKey]}],async values=>configure(values.method==='OAuth'));
+      else configure(false);
     });
   }
-  function providerForm(existing?:Data, selectedEngine?:string, template:Data={}, suggestedName='', authMethod='apiKey') {
+  function providerForm(existing?:Data, selectedEngine?:string, template:Data={}, suggestedName='', authMethod='apiKey', oauth?: OAuthProviderDescriptor) {
+    oauth ??= record(existing?.auth).oauth as OAuthProviderDescriptor | undefined;
     const existingRuntimes=record(existing?.runtimes);
     const chosenEngine=selectedEngine??Object.keys(existingRuntimes)[0]??'pi';
     const runtime=existing?record(existingRuntimes[chosenEngine]):template;
@@ -195,8 +204,8 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
       {key:'protocol',label:t.protocol,choices:['openai-chat','openai-responses','anthropic-messages'],value:label(runtime.wireProtocol,chosenEngine==='codex'?'openai-responses':chosenEngine==='claude-code'?'anthropic-messages':'openai-chat')},
       {key:'baseUrl',label:t.address,value:label(runtime.baseUrl)},
       ...(!existing?[{key:'model',label:t.modelId,value:label(array(runtime.models)[0]?.id)}]:[]),
-      {key:'auth',label:modelText.auth,choices:[modelText.apiKey,modelText.none],value:(existing?record(existing.auth).method:authMethod)==='none'?modelText.none:modelText.apiKey},
-      {key:'apiKey',label:existing?modelText.keepKey:t.apiKey,secret:true,optional:true},
+      {key:'auth',label:modelText.auth,choices:oauth?['OAuth']:[modelText.apiKey,modelText.none],value:oauth?'OAuth':(existing?record(existing.auth).method:authMethod)==='none'?modelText.none:modelText.apiKey},
+      ...(oauth?[]:[{key:'apiKey',label:existing?modelText.keepKey:t.apiKey,secret:true,optional:true}]),
       {key:'headers',label:modelText.headers,secret:true,optional:true},
     ],async values=>{
       const providerId=label(existing?.id,`custom-${randomUUID()}`);
@@ -205,10 +214,11 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
       if(values.headers){try{headers=JSON.parse(values.headers);}catch{throw new Error('INVALID_PROVIDER_HEADER');}}
       const models=existing?array(runtime.models):array(template.models).some(m=>m.id===values.model)?array(template.models):[{id:values.model,name:values.model}];
       await saveModelProvider(client,{
-        ...existing,id:providerId,name:values.name,auth:{method:values.auth===modelText.none?'none':'apiKey'},
+        ...existing,id:providerId,name:values.name,auth:oauth?{method:'oauth',oauth}:{method:values.auth===modelText.none?'none':'apiKey'},
         runtimes:{...existingRuntimes,[agentKind]:{...runtime,baseUrl:values.baseUrl,wireProtocol:values.protocol,models,...(headers===undefined?{}:{headers})}},
       },values.apiKey?{[agentKind]:values.apiKey}:{},Boolean(existing),device);
-      if(!existing)await setDefaultModel(client,{providerId,agentKind,model:values.model},device);
+      if(!existing&&!oauth)await setDefaultModel(client,{providerId,agentKind,model:values.model},device);
+      if(oauth&&!existing)setProviderLogin(providerId);
       setForm(null);await load();
     });
   }
@@ -216,9 +226,10 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     const id=label(provider.id);
     const custom=array((await readModelConfiguration(client,device)).providers).find(p=>p.id===id);
     const common=[provider.suspended?modelText.enable:modelText.disable,modelText.reset];
-    const options=custom?[modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[t.refresh,...common];
+    const options=custom?[...(record(custom.auth).oauth?[t.login]:[]),modelText.edit,modelText.discover,modelText.test,modelText.addModel,modelText.configure,modelText.disconnect,modelText.remove,...common]:[t.refresh,...common];
     edit(label(provider.name,id),[{key:'action',label:t.commands,choices:options}],async values=>{
       const selected=values.action;
+      if(selected===t.login){setForm(null);setProviderLogin(id);return;}
       if(common.includes(selected)){await invokeModelConfiguration(client,'disabled',{providerId:id,kind:selected===modelText.reset?'reset':'provider',disabled:selected===modelText.disable},device);setForm(null);await load();return;}
       if(selected===t.refresh){await invokeModelConfiguration(client,'refresh',{providerId:id},device);setForm(null);await load();return;}
       if(!custom)throw new Error('PROVIDER_NOT_FOUND');
@@ -430,7 +441,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   useInput((input,key) => {
     if (key.eventType === 'release') return;
     if (key.ctrl && input === 'q') { client.close();exit();return; }
-    if (page === 'login' || form || reviewRequest || busy) return;
+    if (page === 'login' || providerLogin || form || reviewRequest || busy) return;
     if(!task&&key.ctrl&&input==='p'){
       const pages=['tasks','models','connections','resources','service'] as const;
       edit(t.commands,[{key:'page',label:t.commands,choices:pages.map(page=>t[page])}],async values=>navigate(pages.find(page=>t[page]===values.page)??'tasks'));return;
@@ -485,6 +496,7 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     <Text dimColor>{'─'.repeat(Math.max(1,columns-2))}</Text>
     <Box flexGrow={1} flexDirection="column" overflow="hidden">
       {page === 'login' ? <Authentication client={client} locale={locale} sso={initialSso} onDone={()=>navigate('tasks')} onNeedsVault={()=>navigate('service')} />
+        : providerLogin ? <ChannelRegistration client={client} device={device} providerId={providerLogin} locale={locale} onDone={()=>{setProviderLogin(undefined);void load();}} />
         : form ? <FormView key={form.id} form={form} busy={busy} error={error} cancel={() => setForm(null)} submit={values => void action(() => form.submit(values))} />
         : page === 'resources' ? <Resources client={client} device={device} locale={locale} initialCollection={initialCollection} initialRef={resourceTarget} onTask={(id,target)=>{if(target)setDevice(target);setTask(id);setPage('tasks');}} />
         : task && reviewRequest && pending[0]?.kind==='input_handoff' ? <ProtectedInputView key={`${pending[0].requestId}:${pending[0].revision}`} request={pending[0]} locale={locale} busy={busy} back={()=>setReviewRequest(false)}
@@ -520,9 +532,9 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
   </Box>;
 }
 
-export async function runTui(client: TerminalClient, options: { locale: Locale; page?: string; task?: string; device?: string; sso?: boolean;collection?:string }) {
+export async function runTui(client: TerminalClient, options: { locale: Locale; page?: string; task?: string; device?: string; sso?: boolean;collection?:string;providerLogin?:string }) {
   let externalAction:TuiExternalAction|undefined;
-  const instance = render(<TerminalApp client={client} locale={options.locale} initialPage={options.page} initialTask={options.task} initialDevice={options.device} initialSso={options.sso} initialCollection={options.collection} onExternalAction={action=>{externalAction=action;}} />, {
+  const instance = render(<TerminalApp client={client} locale={options.locale} initialPage={options.page} initialTask={options.task} initialDevice={options.device} initialSso={options.sso} initialCollection={options.collection} initialProviderLogin={options.providerLogin} onExternalAction={action=>{externalAction=action;}} />, {
     // Full-frame updates keep wrapped CJK lines consistent when a terminal shrinks.
     exitOnCtrlC:false, alternateScreen:true, patchConsole:false,
     kittyKeyboard:{ mode:'auto' },

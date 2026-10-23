@@ -1,5 +1,5 @@
 /** Explicit native acceptance only: never uses a real provider or login.
- * CINDY_CODEX_TEST_BINARY=/absolute/codex vitest run src/models/runtime.native.test.ts
+ * CINDY_CODEX_TEST_BINARY=/absolute/codex vitest run src/models/runtime.integration.test.ts
  * A private fake Responses server + real exec-server prove the guest runtime
  * actually routes requests through the task host, with an isolated CODEX_HOME. */
 import { spawn } from 'node:child_process';
@@ -11,6 +11,7 @@ import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import type { Logger, AgentSessionHandle } from '@cindy/maker-core';
 import { TerminalTaskHost } from '../tasks/host.js';
+import { EngineManager } from '../engines/manager.js';
 
 const binary=process.env.CINDY_CODEX_TEST_BINARY;
 const logger:Logger={trace(){},debug(){},info(){},warn(){},error(){},fatal(){},child(){return logger;}};
@@ -56,9 +57,15 @@ describe.skipIf(!binary)('terminal real Codex guest runtime',()=>{
 // Native regression: a per-model endpoint must remain behind the private
 // credential proxy, and switching a mixed-protocol provider must use the new
 // model's API. No real account or external network is used.
-describe.skipIf(!process.env.CINDY_PI_TEST_BINARY)('terminal real Pi model routes', () => {
+describe.skipIf(!process.env.CINDY_PI_TEST_BINARY && process.env.CINDY_TEST_MANAGED_PI !== '1')('terminal real Pi model routes', () => {
   it('keeps endpoint overrides private and switches between native APIs', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-terminal-pi-route-'));
+    let piBinary = process.env.CINDY_PI_TEST_BINARY;
+    if (!piBinary) {
+      try { piBinary = (await new EngineManager({ profileDir: path.join(root, 'managed') }).install('pi')).binary ?? undefined; }
+      catch (error) { await rm(root, { recursive: true, force: true }); throw error; }
+      if (!piBinary) { await rm(root, { recursive: true, force: true }); throw new Error('MANAGED_PI_UNAVAILABLE'); }
+    }
     const requests: Array<{ path: string; model: string; authorization: string }> = [];
     const server = createServer(async (req, res) => {
       let raw = ''; for await (const chunk of req) raw += chunk;
@@ -84,7 +91,7 @@ describe.skipIf(!process.env.CINDY_PI_TEST_BINARY)('terminal real Pi model route
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
     const secrets = new Map<string, string>();
-    const host = new TerminalTaskHost({ profileDir: path.join(root, 'profile'), logger, emit() {}, binaryPaths: { pi: process.env.CINDY_PI_TEST_BINARY },
+    const host = new TerminalTaskHost({ profileDir: path.join(root, 'profile'), logger, emit() {}, binaryPaths: { pi: piBinary },
       secretStore: { get: async key => secrets.get(key) ?? null, set: async (key, value) => { secrets.set(key, value); }, delete: async key => { secrets.delete(key); } },
       nativeStatus: async () => ({ authenticated: false }),
     });
@@ -116,5 +123,5 @@ describe.skipIf(!process.env.CINDY_PI_TEST_BINARY)('terminal real Pi model route
       await host.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
       await rm(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, process.env.CINDY_TEST_MANAGED_PI === '1' ? 180_000 : 30_000);
 });

@@ -1,3 +1,4 @@
+import { TerminalProviderLogin } from './models/login.js';
 import { TerminalPluginTasks } from './plugins/tasks.js';
 import { TerminalGateway } from './models/gateway.js';
 import { TerminalImConnections } from './im/connections.js';
@@ -106,6 +107,7 @@ export class TerminalService {
   private agents!: TerminalRemoteAgentService;
   private account!: TerminalRemoteAccountService;
   private gateway?: TerminalGateway;
+  private providerLogin?: TerminalProviderLogin;
   private membership!: TerminalMembershipService;
   private sharedTasks!: TerminalSharedTasks;
   private groups!: TerminalProviderGroups;
@@ -266,6 +268,7 @@ export class TerminalService {
     const close = async (operation: () => unknown) => { try { await operation(); } catch (error) { errors.push(error); } };
     await close(() => this.im?.close());
     await close(() => this.gateway?.close());
+    await close(() => this.providerLogin?.close());
     await close(() => this.terminals.close()); await close(() => this.remote?.stop());
     if (logout) await this.sharedTasks?.logout().catch(() => logger.warn('SHARED_TASK_CLOSE_PENDING'));
     await close(() => this.files?.stop()); await close(() => this.browser?.stop());
@@ -402,7 +405,13 @@ export class TerminalService {
       emit: (channel, payload) => { guardIm(); if (this.ownerSuspended) return; this.transport.publish(channel, [payload]); void this.remote?.publish(channel, payload).catch(() => {}); },
     });
     this.im = im;
-    this.configuration=new TerminalConfiguration(this.tasks.capabilities,{revision:()=>this.tasks.models.revision(),save:(action,provider,keys,context)=>this.tasks.configureProvider(action,provider,keys,context)}, {
+    this.providerLogin = new TerminalProviderLogin({ models: this.tasks.models,
+      secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key,value) => this.secrets.setSync(`${owner}:${key}`,value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`) },
+      assertCurrent: guardIm, log: logger,
+      changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
+    });
+    this.tasks.utility.configureConnections({ readCachedGenericOAuthAccessToken: id => this.providerLogin!.cachedCredential(id) });
+    this.configuration=new TerminalConfiguration(this.tasks.capabilities,{login:this.providerLogin,revision:()=>this.tasks.models.revision(),save:(action,provider,keys,context)=>this.tasks.configureProvider(action,provider,keys,context)}, {
       registration: im.registration,
       revision: () => im.version(), save: async (id, input, context) => {
         context.assertCurrent?.(); guardIm();
@@ -500,11 +509,11 @@ export class TerminalService {
     const local=context.source==='local';
     if(this.closing)throw new Error('SERVICE_STOPPING');
     context.assertCurrent?.();
-    if(channel==='terminal:channel-registration'){
+    if(channel==='terminal:channel-registration'||channel==='terminal:provider-login'){
       if(!local || context.sharedTask)throw new Error('LOCAL_ONLY_COMMAND');
       await this.ownerChange; context.assertCurrent?.();
       if(this.ownerSuspended)throw new Error('ACCOUNT_CHANGE_IN_PROGRESS');
-      return this.protectedInput!.channelRegistration(args[0]);
+      return this.protectedInput!.channelRegistration(args[0], channel === 'terminal:provider-login' ? 'providers' : 'channels');
     }
     if(channel==='terminal:configuration'){
       if(!local)throw new Error('LOCAL_ONLY_COMMAND');
@@ -681,6 +690,7 @@ export class TerminalService {
       clearInterval(this.refreshTimer);
       await cleanup(()=>this.im?.close());
       await cleanup(()=>this.gateway?.close());
+      await cleanup(()=>this.providerLogin?.close());
       await cleanup(()=>this.terminals.close());await cleanup(()=>this.remote?.stop());
       await cleanup(()=>this.files?.stop());await cleanup(()=>this.browser?.stop());await cleanup(()=>this.resources?.close());await cleanup(()=>this.membership?.close());
       await cleanup(()=>this.sharedTasks?.close());await cleanup(()=>this.crossShares?.close());await cleanup(()=>this.groupReshare?.stop());await cleanup(()=>this.reshares?.close());

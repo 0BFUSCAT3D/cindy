@@ -52,7 +52,7 @@ export async function testConnection(models:TerminalModelConfig,input:unknown,gu
 export async function fetchModels(models:TerminalModelConfig,input:unknown,guard:()=>void,signal?:AbortSignal){
   const spec=object(input);const kind=agent(spec.agent);let base=endpoint(spec.baseUrl);let protocol=spec.wireProtocol as ProviderWireProtocol|undefined;let key=typeof spec.apiKey==='string'?spec.apiKey:null;let extra=headers(spec.headers);let modelsUrl=typeof spec.modelsUrl==='string'?endpoint(spec.modelsUrl):undefined;
   if(spec.savedProviderId){const config=models.snapshot().providers.find(p=>p.id===spec.savedProviderId);const runtime=config?.runtimes[kind];if(!runtime)throw new Error('PROVIDER_RUNTIME_REQUIRED');base=runtime.baseUrl;modelsUrl=runtime.modelsUrl;protocol=runtime.wireProtocol;key=await models.credential(config!.id,kind);extra={...await models.headers(config!.id,kind),...extra};}
-  if(spec.authMethod==='oauth')throw new Error('NATIVE_LOGIN_REQUIRED');
+  if(spec.authMethod==='oauth'&&!spec.savedProviderId)throw new Error('SAVED_PROVIDER_REQUIRED');
   const url=modelsUrl&&(spec.savedProviderId||new URL(modelsUrl).origin===new URL(base).origin)?modelsUrl:appendProviderRequestPath(base,'/models');
   const authorization={...extra,...(key?(protocol==='anthropic-messages'||!protocol&&kind==='claude-code'?{'x-api-key':key,authorization:`Bearer ${key}`}: {authorization:`Bearer ${key}`}):{}),...(protocol==='anthropic-messages'||!protocol&&kind==='claude-code'?{'anthropic-version':'2023-06-01'}:{})};
   let status:number|undefined;

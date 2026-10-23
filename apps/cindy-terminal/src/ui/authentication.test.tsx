@@ -15,6 +15,7 @@ import type { Locale } from './i18n.js';
 import { Authentication } from './authentication.js';
 import { InteractionView } from './interaction.js';
 import { Resources } from './resources.js';
+import { ChannelRegistration } from './channel-registration.js';
 import type { InteractionRequest } from '@cindy/maker-core';
 import { Input, terminalText } from './input.js';
 
@@ -416,4 +417,23 @@ it('submits a plugin secret through its bound card without rendering the value',
   await screen.press('\r');
   expect(submit).toHaveBeenCalledWith(expect.objectContaining({kind:'secret',ghostId:'fixture',value:'synthetic-tui-secret',action:{requestId:'fixture-setup',actionId:'inline:key',expectedRevision:7}}));
   expect(resolve).not.toHaveBeenCalled();expect(screen.all()).not.toContain('synthetic-tui-secret');
+});
+
+// Unit: remote provider callback is secret input, routed through the local
+// encrypted controller. It must never become a remote generic invocation.
+it('submits an OAuth callback to the selected host without echoing it in the TUI',async()=>{
+  const host=fakeClient(),calls:Array<{command:unknown;providerId?:unknown;deviceId?:unknown;callback?:unknown}>=[];
+  host.handle((channel,args)=>{
+    if(channel!=='terminal:provider-login')throw new Error('UNEXPECTED_CHANNEL');
+    const value=args[0] as Record<string,unknown>;calls.push({...value,command:value.command});
+    return {id:'provider-login-fixture',state:value.command==='submit'?{status:'success'}:{status:'pending',verificationUrl:'https://idp.example/authorize',callbackRequired:true,expiresAt:Date.now()+60_000}};
+  });
+  const screen=await mount(host.client,{node:<ChannelRegistration client={host.client} device="remote-host" providerId="fixture" locale="en" onDone={()=>{}}/>});
+  await screen.press('http://127.0.0.1:3000/callback?code=synthetic-private-callback&state=fixture');
+  expect(screen.all()).not.toContain('synthetic-private-callback');
+  await screen.press('\r');
+  expect(calls[0]).toMatchObject({command:'begin',providerId:'fixture',deviceId:'remote-host'});
+  expect(calls.find(call=>call.command==='submit')?.callback).toContain('synthetic-private-callback');
+  expect(screen.latest()).toContain('Connected');
+  expect(screen.all()).not.toContain('synthetic-private-callback');
 });

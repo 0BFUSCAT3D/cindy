@@ -211,14 +211,14 @@ export class TerminalProtectedInput {
     return { id, invoke, assertCurrent };
   }
 
-  async channelRegistration(raw: unknown): Promise<{ id: string; state?: ChannelRegistrationState }> {
+  async channelRegistration(raw: unknown, collection: 'channels'|'providers' = 'channels'): Promise<{ id: string; state?: ChannelRegistrationState }> {
     this.guard();
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('INVALID_CONFIGURATION');
     const value = raw as Record<string, unknown>;
     if (value.command === 'begin') {
-      if (!['feishu', 'lark'].includes(String(value.service)) || value.deviceId !== undefined && (typeof value.deviceId !== 'string' || !value.deviceId)) throw new Error('INVALID_CONFIGURATION');
-      const { id, invoke, assertCurrent } = await this.openConfiguration({ collectionId: 'channels', resourceId: 'feishu', actionId: 'connect' }, value.deviceId as string | undefined);
-      const timer = setTimeout(() => { void this.closeChannelRegistration(id); }, 5 * 60_000); timer.unref();
+      if ((collection === 'channels' ? !['feishu', 'lark'].includes(String(value.service)) : typeof value.providerId !== 'string' || !value.providerId) || value.deviceId !== undefined && (typeof value.deviceId !== 'string' || !value.deviceId)) throw new Error('INVALID_CONFIGURATION');
+      const { id, invoke, assertCurrent } = await this.openConfiguration({ collectionId: collection, resourceId: collection === 'channels' ? 'feishu' : String(value.providerId), actionId: 'connect' }, value.deviceId as string | undefined);
+      const timer = setTimeout(() => { void this.closeChannelRegistration(id); }, (collection === 'providers' ? 20 : 5) * 60_000); timer.unref();
       this.channelRegistrations.set(id, { invoke, current: assertCurrent, timer });
       try {
         const response = await invoke({ op: 'settings', id, command: { kind: 'fetch', path: '/connection', method: 'POST', body: JSON.stringify({ service: value.service }) } }) as { status?: number; body?: ChannelRegistrationState };
@@ -230,9 +230,10 @@ export class TerminalProtectedInput {
     if (typeof value.id !== 'string') throw new Error('INVALID_CONFIGURATION');
     const entry = this.channelRegistrations.get(value.id);
     if (value.command === 'cancel') { await this.closeChannelRegistration(value.id); return { id: value.id }; }
-    if (!entry || value.command !== 'read') throw new Error('REGISTRATION_STALE');
+    if (!entry || !['read','submit'].includes(String(value.command))) throw new Error('REGISTRATION_STALE');
     entry.current();
-    const response = await entry.invoke({ op: 'settings', id: value.id, command: { kind: 'fetch', path: '/connection', method: 'GET' } }) as { status?: number; body?: ChannelRegistrationState };
+    const response = await entry.invoke({ op: 'settings', id: value.id, command: { kind: 'fetch', path: '/connection', method: value.command === 'submit' ? 'POST' : 'GET', ...(value.command === 'submit' ? {body: JSON.stringify({callback:value.callback})} : {}) } }) as { status?: number; body?: ChannelRegistrationState };
+    if (value.command === 'submit') delete value.callback;
     entry.current();
     if (response.status !== 200 || !response.body) throw new Error('REGISTRATION_FAILED');
     return { id: value.id, state: response.body };

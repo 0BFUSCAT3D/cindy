@@ -71,12 +71,12 @@ export interface RuntimeInput {
  * changing another task's provider cannot redirect an in-flight request. */
 export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgent> {
   const { selection, route, binaryPath, models, profileDir, taskId, logger } = input;
-  const custom = route.provider.source === 'user' || route.provider.id === 'xd';
+  const custom = route.provider.source === 'user' || route.provider.id === 'xd' || Boolean(route.provider.auth.oauth);
   const key = custom && !input.remote ? await models.credential(selection.providerId, selection.agentKind) : null;
   const codexHome = custom && !input.remote && selection.agentKind === 'codex' ? (input.guestHome ? path.join(input.guestHome,'codex') : path.join(profileDir, 'engines', 'codex', taskId)) : undefined;
   const claudeHome = input.guestHome && selection.agentKind==='claude-code' ? path.join(input.guestHome,'claude') : undefined;
   for(const directory of [codexHome,claudeHome])if(directory)await privateDirectory(directory);
-  const proxy = custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined) : null;
+  const proxy = custom && !input.remote ? await createProviderProxy(route, selection.agentKind, key, await models.headers(selection.providerId, selection.agentKind), input.authorizeRequest, route.provider.id === 'xd' ? key => models.reportGatewayRejection(key) : undefined, route.provider.auth.oauth ? () => models.credential(selection.providerId, selection.agentKind) : undefined) : null;
   const runtimeKey = proxy?.token ?? key;
   const endpoint = proxy?.url ?? route.routing.upstream;
   const own = (agent: BaseAgent) => { if (proxy) { const dispose = agent.dispose.bind(agent); agent.dispose = async () => { try { await dispose(); } finally { await proxy.close(); } }; } return agent; };

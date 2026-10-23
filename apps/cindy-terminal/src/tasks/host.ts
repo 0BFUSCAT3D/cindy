@@ -270,7 +270,7 @@ export class TerminalTaskHost {
       assertCurrent: () => this.guard({ source: 'local' }),
       changed: () => this.emit('maker:remote-resources:changed', { collectionId: 'auxiliary-models' }),
       native: {
-        listAvailableAgents: () => ENGINES.filter(kind => Boolean(this.binaries.get(kind))),
+        listAvailableAgents: () => this.binaries.has('codex') ? ['codex'] : [],
         getAgentAuthState: async kind => { await this.ready; return this.authState(kind); },
         oneShot: (kind, prompt, opts) => this.nativeUtilityText(kind, prompt, opts),
       },
@@ -713,6 +713,7 @@ export class TerminalTaskHost {
   }
   private async nativeUtilityText(kind: AgentKind, prompt: string, opts: Parameters<UtilityNativeAgents['oneShot']>[2]) {
     await this.ready; this.guard({ source: 'local' });
+    if (kind !== 'codex') throw new Error('UTILITY_NATIVE_ROUTE_UNAVAILABLE');
     const id = `utility-${randomUUID()}`;
     const chosen = await this.models.select({ agentKind: kind, providerId: kind === 'codex' ? 'openai' : 'anthropic', model: opts?.model });
     const revision = this.models.revision();
@@ -739,8 +740,6 @@ export class TerminalTaskHost {
     return operation;
   }
   private async runTaskTitle(input: { message: string; sessionId?: string; agentKind?: AgentKind }): Promise<string | null> {
-    let agent: BaseAgent | undefined;
-    const utilityId = `title-${randomUUID()}`;
     try {
       await this.ready; this.guard({ source: 'local' });
       if (!input.message.trim()) return null;
@@ -758,27 +757,17 @@ export class TerminalTaskHost {
         const response = await this.options.remoteInvoke(row.agentDeviceId, 'maker:generate-title', [{ message: input.message.slice(0, 200), agentKind: row.agentKind }]);
         return response.ok && await current() ? validateTitleOutput((response.result as { title?: string } | undefined)?.title, AUTO_TITLE_MAX_CHARS) : null;
       }
-      const chosen = await this.selection(row ? { agentKind: row.agentKind, providerId: row.providerId, model: row.model } : input.agentKind ? { agentKind: input.agentKind } : {});
-      if (!await current()) return null;
-      const binary = this.binaries.get(chosen.selection.agentKind);
-      if (!binary) return null;
-      // The automatic same-agent fallback uses the user's actual selected
-      // provider/model. It does not require a second account or expose tools.
-      agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: utilityId, ...chosen, binaryPath: binary, models: this.models, logger: this.options.logger });
-      if (!await current()) return null;
-      const output = await agent.oneShot(buildAutoTitlePrompt(input.message.trim().slice(0, 200), this.options.language?.() ?? 'en'), {
-        model: chosen.selection.model, maxTokens: AUTO_TITLE_MAX_CHARS * 4, timeoutMs: 12_000,
+      const output = await this.utility.request(buildAutoTitlePrompt(input.message.trim().slice(0, 200), this.options.language?.() ?? 'en'), {
+        maxTokens: AUTO_TITLE_MAX_CHARS * 4, timeoutMs: 12_000,
         signal: this.utilityAbort.signal, beforeDispatch: current,
+        validateResponse: value => Boolean(validateTitleOutput(value, 256)),
         responseInstructions: 'Output only the short conversation title requested by the user message, without quotation marks or ending punctuation.',
       });
+      if (!output.ok) return null;
       if (!await current()) return null;
-      const title = validateTitleOutput(output, 256);
+      const title = validateTitleOutput(output.text, 256);
       return title ? Array.from(title).slice(0, AUTO_TITLE_MAX_CHARS).join('') : null;
     } catch { return null; }
-    finally {
-      await agent?.dispose().catch(() => this.options.logger.warn('Title runtime cleanup failed'));
-      await rm(path.join(this.options.profileDir, 'engines', 'codex', utilityId), { recursive: true, force: true }).catch(() => {});
-    }
   }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
   configureChannelTools(factory: NonNullable<TerminalTaskHost['channelTools']>) { this.channelTools = factory; }
