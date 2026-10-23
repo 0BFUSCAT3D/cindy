@@ -267,24 +267,32 @@ export function useSessionListActions(options?: {
     const activityAtSwipe = remoteSessionStore.getSessionLiveActivity(session.id);
     const runAtSwipe = remoteSessionStore.getSessionRunStatus(session.id);
     const superseded = new Error('RECEIPT_SUPERSEDED');
+    const isCurrent = () => remoteSessionStore.getSessionLiveActivity(session.id) === activityAtSwipe
+      && remoteSessionStore.getSessionRunStatus(session.id) === runAtSwipe;
     const maker = createMobileMakerTransport({
       deviceId: devices.rpcDeviceId,
       invoke: (deviceId, channel, args) => channel !== 'notification:clear-session-attention'
+        && channel !== 'maker:schedule:mark-run-read'
         ? invoke(deviceId, channel, args)
         : invoke(deviceId, channel, args, { preSend: () => {
           // Recheck after reconnect/backpressure. A new run invalidates even an identical completion label.
-          if (remoteSessionStore.getSessionLiveActivity(session.id) !== activityAtSwipe
-            || remoteSessionStore.getSessionRunStatus(session.id) !== runAtSwipe) throw superseded;
+          if (!isCurrent()) throw superseded;
         } }),
     });
-    const writes: Promise<unknown>[] = [maker.clearSessionAttention(session.id, 'explicit').catch((err: unknown) => {
-      // Older Hosts lack this channel. Preserve schedule-read below and surface real failures.
-      if (err !== superseded && !isWorktreeChannelNotAllowedError(err)) throw err;
-    })];
-    if (sessionMayHaveScheduleRuns(devices.rpcDeviceId, session.id, session.source)) {
-      writes.push(markSessionScheduleRunsRead(maker, session.id, devices.rpcDeviceId));
-    }
-    void Promise.all(writes).catch((err: unknown) => {
+    const scheduleRead = sessionMayHaveScheduleRuns(devices.rpcDeviceId, session.id, session.source)
+      ? markSessionScheduleRunsRead(maker, session.id, devices.rpcDeviceId, isCurrent).catch((err: unknown) => {
+        if (!isCurrent()) throw superseded;
+        throw err;
+      }) : Promise.resolve();
+    // Clear attention last: its normal relay echo must not invalidate this gesture's schedule reads.
+    // A schedule lookup failure still permits the independent attention write, and remains reportable.
+    const attentionRead = scheduleRead.catch(() => undefined)
+      .then(() => maker.clearSessionAttention(session.id, 'explicit')).catch((err: unknown) => {
+        // Older Hosts lack this channel; schedule-read has already been attempted.
+        if (err !== superseded && !isWorktreeChannelNotAllowedError(err)) throw err;
+      });
+    void Promise.all([scheduleRead, attentionRead]).catch((err: unknown) => {
+      if (err === superseded) return;
       Alert.alert(t('devices.list.alert.actionFailed'), humanizeRemoteError(err));
     });
   }, [invoke, preferredRpcDeviceId, t]);

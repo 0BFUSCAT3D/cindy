@@ -66,7 +66,7 @@ describe('task list mark-read', () => {
       });
     });
     mount();
-    act(() => actions.sessionSwipeControls.onMarkRead(task));
+    await markRead();
     if (change === 'restart-and-complete') {
       remoteSessionStore.applySessionActivity('host', { sessionId: 'task', phase: 'running' });
       // Same final label and phase: the newer run must still invalidate the old receipt.
@@ -78,6 +78,41 @@ describe('task list mark-read', () => {
     await act(async () => flush());
     expect(send).toHaveBeenCalledTimes(change === 'unchanged' ? 1 : 0);
     expect(remoteSessionStore.getSessionLiveActivity('task')).toBe(latest);
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+
+  // Same receipt invariant across both writes: late index data and queued run
+  // writes cannot consume a completion produced after the gesture. A normal
+  // attention-clear broadcast must not prevent reading the original run.
+  it.each(['index', 'run-write', 'unchanged'])('fences automation reads across %s settling', async (stage) => {
+    remoteSessionStore.applySessionActivity('host', { sessionId: 'task', phase: 'completed', attention: true, compactDetail: 'old' });
+    const sentRunIds: string[] = [];
+    let settle!: () => void;
+    mocks.invoke.mockImplementation(async (_device: string, channel: string, args: unknown[], options?: { preSend?: () => void }) => {
+      if (channel === 'notification:clear-session-attention') {
+        options?.preSend?.();
+        remoteSessionStore.applySessionActivity('host', { sessionId: 'task', phase: 'completed', attention: false });
+      }
+      if (channel === 'maker:schedule:list') return [{ id: 'schedule', name: 'Daily', status: 'active' }];
+      if (channel === 'maker:schedule:list-sidebar-index-runs') throw new Error('[CHANNEL_NOT_ALLOWED] legacy index');
+      if (channel === 'maker:schedule:list-runs') {
+        if (stage === 'index') await new Promise<void>((resolve) => { settle = resolve; });
+        return [{ id: 'run', scheduleId: 'schedule', sessionId: 'task', status: 'success', firedAt: 1 }];
+      }
+      if (channel === 'maker:schedule:mark-run-read') {
+        if (stage === 'run-write') await new Promise<void>((resolve) => { settle = resolve; });
+        options?.preSend?.();
+        sentRunIds.push(args[0] as string);
+      }
+    });
+    mount();
+    await markRead({ ...task, source: 'scheduler' });
+    if (stage !== 'unchanged') {
+      remoteSessionStore.applySessionActivity('host', { sessionId: 'task', phase: 'error', attention: true, compactDetail: 'new' });
+      await act(async () => settle());
+      expect(remoteSessionStore.getSessionLiveActivity('task')).toMatchObject({ phase: 'error', attention: true });
+    }
+    expect(sentRunIds).toEqual(stage === 'unchanged' ? ['run'] : []);
     expect(Alert.alert).not.toHaveBeenCalled();
   });
 
@@ -107,7 +142,7 @@ describe('task list mark-read', () => {
     await markRead({ ...task, source: 'scheduler' });
     expect(mocks.invoke).toHaveBeenCalledWith('host', 'notification:clear-session-attention', ['task', 'explicit'], { preSend: expect.any(Function) });
     expect(mocks.invoke.mock.calls.filter((call) => call[1] === 'maker:schedule:mark-run-read'))
-      .toEqual([['host', 'maker:schedule:mark-run-read', ['unread']]]);
+      .toEqual([['host', 'maker:schedule:mark-run-read', ['unread'], { preSend: expect.any(Function) }]]);
     expect(Alert.alert).not.toHaveBeenCalled();
   });
 
@@ -142,5 +177,15 @@ describe('task list mark-read', () => {
     mount();
     await markRead();
     expect(Alert.alert).toHaveBeenCalledWith('devices.list.alert.actionFailed', 'permission denied');
+  });
+
+  it('reports schedule lookup failure while still clearing the unchanged attention', async () => {
+    mocks.invoke.mockImplementation(async (_device: string, channel: string) => {
+      if (channel === 'maker:schedule:list') throw new Error('schedule unavailable');
+    });
+    mount();
+    await markRead({ ...task, source: 'scheduler' });
+    expect(mocks.invoke).toHaveBeenCalledWith('host', 'notification:clear-session-attention', ['task', 'explicit'], { preSend: expect.any(Function) });
+    expect(Alert.alert).toHaveBeenCalledExactlyOnceWith('devices.list.alert.actionFailed', 'schedule unavailable');
   });
 });
