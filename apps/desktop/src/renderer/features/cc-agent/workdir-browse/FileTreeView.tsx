@@ -421,7 +421,12 @@ export const FileTreeView = forwardRef<FileTreeViewHandle, FileTreeViewProps>(fu
     const inner = contentLayerRef.current;
     if (!inner) return;
     const measured = inner.scrollWidth;
-    if (measured > extent.width) setExtent({ storeKey: tree.storeKey, width: measured });
+    // 短名时 scrollWidth 只是视口宽（w-full 内容层被撑到容器宽、没有真实溢出），
+    // 不能把它记成内容宽 —— 否则面板缩窄后占位仍按旧视口宽撑着，向右滚是空白
+    //（评审 P2）。只在内容真正溢出视口时才增长。
+    if (measured > inner.clientWidth && measured > extent.width) {
+      setExtent({ storeKey: tree.storeKey, width: measured });
+    }
   }, [rows, tree.storeKey, extent, virtualItems]);
 
   // 滚动位置：onScroll 持续记录锚点；挂载 / 换 store / 重新激活时自动恢复。

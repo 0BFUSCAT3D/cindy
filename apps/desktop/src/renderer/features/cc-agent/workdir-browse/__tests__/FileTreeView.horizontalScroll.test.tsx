@@ -387,4 +387,36 @@ describe('globals.css 里的 .tree-hscroll 规则', () => {
       container.querySelector<HTMLElement>('[data-testid="tree-horizontal-extent"]')?.style.width,
     ).toBe('800px');
   });
+
+  it('视口宽度不算内容宽：短名不产生占位，缩窄面板后没有空白横滚', () => {
+    const { container, rerender } = render(
+      <FileTreeView tree={makeTree()} scrollScope="tab-vw" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    const inner = container.querySelector<HTMLElement>('div.relative.w-full')!;
+    // 模拟短名：内容层被容器撑到 400（scrollWidth == clientWidth，没有真实溢出）。
+    Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 400 });
+    Object.defineProperty(inner, 'clientWidth', { configurable: true, value: 400 });
+    rerender(
+      <FileTreeView tree={makeTree()} scrollScope="tab-vw" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    // 旧实现会把视口宽 400 记成内容宽；修复后不产生占位（评审 P2）。
+    expect(container.querySelector('[data-testid="tree-horizontal-extent"]')).toBeNull();
+
+    // 面板缩窄到 200：短名内容跟着缩（仍无真实溢出），没有占位、没有空白横滚。
+    Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 200 });
+    Object.defineProperty(inner, 'clientWidth', { configurable: true, value: 200 });
+    rerender(
+      <FileTreeView tree={makeTree()} scrollScope="tab-vw" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    expect(container.querySelector('[data-testid="tree-horizontal-extent"]')).toBeNull();
+
+    // 内容真的溢出（宽行 500 > 视口 200）：占位照常产生并撑住横向范围。
+    Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 500 });
+    rerender(
+      <FileTreeView tree={makeTree()} scrollScope="tab-vw" selectedPath={null} onSelectFile={vi.fn()} />,
+    );
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="tree-horizontal-extent"]')?.style.width,
+    ).toBe('500px');
+  });
 });
