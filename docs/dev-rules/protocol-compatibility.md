@@ -1290,6 +1290,13 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
 重建只决定原生会话能否复用，不把子任务改送到当前设备。
 Desktop 与 Mobile 沿用 `maker:fork`；共享任务访客与 SSH 工作区的现有边界不变。
 
+运行端上 Agent 原生分叉失败时回 `REMOTE_AGENT_FORK_FAILED`(原始原因只记运行端日志)，但只回给
+`op: fork` 带了可选 `acceptsForkFailed: true` 的控制端；组所在电脑转发时原样带上受邀者的声明，旧控制端
+不带、旧运行端忽略，照旧得到 `REMOTE_AGENT_UNAVAILABLE`。经供应商组转来的请求在组内电脑缺 Agent 时回
+`REMOTE_AGENT_UNAVAILABLE`(位置类，组所在电脑统一成「暂时不可用」)，直接调用方仍得到 `REMOTE_AGENT_UNSUPPORTED`。
+实现见 `apps/desktop/src/main/remote-agent/host/runHost.ts` 与 `controller/fork.ts`，回归见
+`groupRelay.test.ts`、`groupRelayClaudeFork.e2e.test.ts`。
+
 运行端按已认证调用方复核供应商权限；受邀者及转分享还必须拥有来源原生会话。
 存储目录由运行端派生，不接受调用方传入路径。Claude 返回消息 UUID 映射，
 Codex/Pi 在受邀者原有隔离目录分叉；新原生会话登记到既有归属索引，支持继续分叉和恢复。
@@ -2847,7 +2854,10 @@ Claude 原生 `user` 范围投影为 `global`；控制端读取早期 Host 的 `
 沿用现有 account-usage IPC 和账号作用域缓存，所以设置卡片与任务用量提示使用相同来源。
 服务端尚未提供接口（404），或明确返回 501/MODEL_ACCESS_QUOTA_NOT_SUPPORTED（Nova），
 才使用原有网关查询。鉴权失败、上游故障或响应无效均显示不可用，不回退或借用其他身份数据。
-本接口尚无当日统计，todaySpend 为 null；未设周期上限时不伪造有限配额。
+`todaySpend` 为有限且 ≥ 0 的数字时，表示 UTC 当天的消费；缺失、`null` 或非法值均按
+`null` 处理，表示拿不到今日消费，不影响其余额度字段。旧版服务端不返回该字段或固定返回
+`null` 时，客户端照常显示月额度，只是不显示今日消费。未设周期上限时不伪造有限配额的
+原有行为保持不变。
 本地手填网关和个人计费路径保持原协议。无新环境变量或数据库变更。
 
 管理员取消周期上限后，主进程明确清空当前 owner 的配额缓存，并通过现有

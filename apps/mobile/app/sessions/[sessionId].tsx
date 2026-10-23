@@ -229,6 +229,7 @@ import { ComposerRichInput, type ComposerRichInputHandle } from '@/session/Compo
 import { createComposerDraftSource, useComposerVoiceDraftWriter, type ComposerDraftSource } from '@/session/composerDraftSource';
 import { InlineQueueSection } from '@/session/InlineQueueSection';
 import { inputProjectionErrorI18nKey } from '@/session/inputProjectionError';
+import { remoteActionErrorI18nKey } from '@/session/agentErrorI18n';
 import { RewindPreviewPanel } from '@/session/RewindPreviewPanel';
 import { BlurBackdrop, FLOATING_CHROME_BLUR_INTENSITY } from '@/session/BlurBackdrop';
 import { SheetModal } from '@/session/SheetModal';
@@ -7758,6 +7759,24 @@ function SessionScreenContent() {
     });
   };
 
+  const moveQueueItem = useCallback((clientId: string, direction: 'up' | 'down') => {
+    // 菜单打开期间队列可能变化：按最新位置重新判断方向和目标。
+    const projection = remoteSessionStore.getInputProjection(sessionId);
+    const originalIndex = projection.pendingQueue.findIndex((entry) => entry.clientId === clientId);
+    const item = projection.pendingQueue[originalIndex];
+    if (!item) return;
+    const { actions } = buildQueueRowPresentation({
+      busy: queueBusy, item, originalIndex, projection,
+      queueLength: projection.pendingQueue.length,
+      readOnlyReason: queueAvailabilityReason,
+    });
+    const action = actions[direction === 'up' ? 'moveUp' : 'moveDown'];
+    if (action.disabled || action.targetIndex == null) return;
+    const targetIndex = action.targetIndex;
+    setQueueSelectedClientId(null);
+    void runQueueAction(() => maker.input.move(sessionId, clientId, targetIndex));
+  }, [maker, queueAvailabilityReason, queueBusy, runQueueAction, sessionId]);
+
   const setQueueEditLock = useCallback((clientId: string, locked: boolean) => {
     const projectionEpochAtRequestStart =
       remoteSessionStore.captureInputProjectionAuthorityEpoch(sessionId);
@@ -7939,10 +7958,11 @@ function SessionScreenContent() {
         setQueueSelectedClientId(null);
         steerQueueItem(target);
       },
+      onMove: moveQueueItem,
       onRetryOutbox: retryOutboxItem,
       onRemoveOutbox: removeOutboxItem,
     }),
-    [beginQueueEdit, queueBusy, queueSelectedClientId, removeQueueItem, removeOutboxItem, retryOutboxItem, sessionId, steerQueueItem],
+    [beginQueueEdit, moveQueueItem, queueBusy, queueSelectedClientId, removeQueueItem, removeOutboxItem, retryOutboxItem, sessionId, steerQueueItem],
   );
 
   // ⚠️ 临时取证(定位「气泡凭空消失」,定位完成后删):会话页实例身份 + 挂载/卸载。
@@ -9448,8 +9468,9 @@ function SessionScreenContent() {
       });
     } catch (err) {
       const detail = formatRemoteError(err);
-      const projectionKey = inputProjectionErrorI18nKey(detail);
-      setError(projectionKey ? t(projectionKey) : detail);
+      // 远程 Agent 的分叉失败(如 REMOTE_AGENT_FORK_FAILED)用 session.remoteError 的本地化文案，不显示原始错误码。
+      const key = inputProjectionErrorI18nKey(detail) ?? remoteActionErrorI18nKey(detail);
+      setError(key ? t(key) : detail);
     } finally {
       setMessageActionBusy(null);
     }
