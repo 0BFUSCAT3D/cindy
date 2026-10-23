@@ -11747,6 +11747,7 @@
       "imageCopied": "Image copied",
       "copyFailed": "Copy failed",
       "openFolderFailed": "Failed to open folder",
+      "longImagePreview": "Long image · Click to view full image",
       "copyImage": "Copy image",
       "revealImage": "Reveal image in folder",
       "revealImageSidebar": "Reveal in file browser",

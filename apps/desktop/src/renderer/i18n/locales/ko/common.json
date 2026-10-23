@@ -11708,6 +11708,7 @@
       "imageCopied": "이미지를 복사했습니다",
       "copyFailed": "복사에 실패했습니다",
       "openFolderFailed": "폴더를 열지 못했습니다",
+      "longImagePreview": "긴 이미지 · 클릭하여 전체 보기",
       "copyImage": "이미지 복사",
       "revealImage": "이미지 폴더 열기",
       "revealImageSidebar": "파일 브라우저에서 보기",

@@ -11708,6 +11708,7 @@
       "imageCopied": "图片已复制",
       "copyFailed": "复制失败",
       "openFolderFailed": "打开目录失败",
+      "longImagePreview": "长图 · 点击查看完整图片",
       "copyImage": "复制图片",
       "revealImage": "打开图片所在目录",
       "revealImageSidebar": "在文件浏览器中显示",

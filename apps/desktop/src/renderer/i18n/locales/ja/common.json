@@ -11708,6 +11708,7 @@
       "imageCopied": "画像をコピーしました",
       "copyFailed": "コピーに失敗しました",
       "openFolderFailed": "フォルダを開けませんでした",
+      "longImagePreview": "縦長画像 · クリックで全体を表示",
       "copyImage": "画像をコピー",
       "revealImage": "画像のフォルダを開く",
       "revealImageSidebar": "ファイルブラウザで表示",
