@@ -1766,6 +1766,34 @@ describe('Chat Server result delivery and refresh', () => {
         expect(posts().some(([route]) => route === `/conversations/${roomId}/plans/${planId}`)).toBe(false);
       });
 
+      it('answers the request when nobody can arrange it, and later messages still go out', async () => {
+        divisionServer();
+        deps.decidePlan = undefined;
+        await send('Make a draft');
+        expect(posts().some(([route]) => route === `/conversations/${roomId}/messages/${sourceId}/continue`)).toBe(true);
+        expect(await service.sendMessage({ groupId: roomId, text: 'Another thing', clientId: 'after-no-organizer', mentions: { all: false, botIds: [] } }))
+          .toMatchObject({ ok: true });
+      });
+
+      // §4.0: in a mention-only group an unaddressed message wakes nobody, not even the helper revising your proposed card.
+      it.each([['all', true], ['mentioned', false]] as const)('in %s mode, unaddressed words revise your proposed card: %s', async (mode, revises) => {
+        const proposed = { id: planId, revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId, creator_id: selfId,
+          note_message_ids: [], status: 'proposed', current_step: null, kind: 'work', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+          steps: [{ position: 0, botId, botName: 'Bot', task: 'draft', status: 'pending' }] };
+        singleSpeaker((route, method) => {
+          if (route.endsWith('/snapshot')) return { body: { room: { ...room(roomId), response_mode: mode }, members: named(), messages: [], cursor: '1' } };
+          if (route === `/conversations/${roomId}/messages` && method === 'POST') return { body: { id: sourceId } };
+          if (route === `/conversations/${roomId}/plans`) return { body: [proposed] };
+          return undefined;
+        });
+        deps.decidePlan = vi.fn(async () => null);
+        expect(await service.sendMessage({ groupId: roomId, text: 'Make it shorter', clientId: `revise-${mode}`, mentions: { all: false, botIds: [] } }))
+          .toMatchObject({ ok: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/messages`)![2]).toMatchObject({ deferExecution: revises });
+        expect(vi.mocked(deps.decidePlan!).mock.calls.length > 0).toBe(revises);
+      });
+
       // The server cannot release a held request, so a newer message must not replace one still being arranged.
       it('refuses a newer message while the organizer is arranging', async () => {
         divisionServer();

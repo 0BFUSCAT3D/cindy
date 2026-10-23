@@ -1429,7 +1429,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (!current() || planIntents.get(s.room.id) !== intent) return;
     const members = s.members.filter(m => m.kind === 'bot' && m.state === 'joined' && (!localBot(m.id) || localBot(m.id)?.status === 'active') && (m.ownerActorId === selfId || m.guestAccess !== 'none'));
     const organizer = members.find(m => m.id === s.room.organizer_id) ?? members[0];
-    if (!organizer || !deps.decidePlan) throw new Error('MEMBER_UNAVAILABLE');
+    if (!organizer || !deps.decidePlan) {
+      // Nobody can arrange it: release the request now, or every later send would wait for a card that never comes.
+      delete intent.sourceId;
+      if (forced) await settleExplicitRequest(s.room.id, sourceId, true);
+      throw new Error('MEMBER_UNAVAILABLE');
+    }
     planning.get(s.room.id)?.controller.abort();
     const controller = new AbortController();
     const pending = { botId: localBot(organizer.id)?.id ?? organizer.id, controller };
@@ -2544,7 +2549,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     // Single-speaker servers queue turns themselves; only a 分工, or words about your proposed card,
     // wait for the arrangement. A 分工 that writes out its steps needs no helper model.
     const shouldPlan = singleSpeaker
-      ? i.division || (proposed && namesNobody(i.mentions) && !!deps.decidePlan)
+      ? i.division || (canTrigger && proposed && namesNobody(i.mentions) && !!deps.decidePlan)
       : canTrigger && !!deps.decidePlan && (i.division || (!i.mentions.botIds.length && (!proposed || !i.mentions.all)))
         && (!openPlan || proposed);
     const prepared = i.attachments?.length ? await deps.prepareAttachments?.({ groupId: i.groupId, attachments: i.attachments, controllerDeviceId: origin?.controllerDeviceId }) : undefined;
