@@ -2508,8 +2508,8 @@ export interface AgentSessionHandle {
   /** Actual runtime reviewer, not subscription availability. Only applies to harness-dispatched tools. */
   getAutoReviewOwner?(): 'native' | 'cindy';
 
-  /** 运行时切换模型 —— 不支持时抛 NotSupportedError */
-  setModel?(model: string, opts?: { providerId?: string | null; effort?: Effort }): Promise<void>;
+  /** 运行时切换模型 —— 不支持时抛 NotSupportedError。thinkingEnabled = 目标模型的思考开关意图（Pi 用它收敛切模后的 thinking level）。 */
+  setModel?(model: string, opts?: { providerId?: string | null; effort?: Effort; thinkingEnabled?: boolean }): Promise<void>;
 
   /** Read-only Pi preflight before the host changes its persisted route or context. */
   previewModelSwitch?(

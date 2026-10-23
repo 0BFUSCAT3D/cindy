@@ -185,6 +185,7 @@ function botTaskDispatchHarness(
     sessionQueueOriginForDispatcher: noop,
     extractPlainText: (value: unknown) => String(value ?? ''),
     assertReviewExternalInputAllowed: asyncNoop,
+    syncBotLanePermission: asyncNoop,
     reconcileBotModelRoute: asyncNoop,
     scheduledModelScope: { restore: asyncNoop },
     refreshBotCapabilityEpochBeforeSend: asyncNoop,
