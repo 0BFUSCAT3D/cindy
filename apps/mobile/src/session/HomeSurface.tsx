@@ -474,7 +474,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   // The retained page and its visible sidebar must never release each other's subscriptions.
   const HOME_LIST_SUBSCRIPTION_OWNER = `device-list:${useId()}`;
   const embedded = width !== undefined;
-  const residentList = useResidentHomeList();
+  const residentList = useResidentHomeList(embedded);
   const activeHomeSession = useContext(ActiveHomeSession);
   const rememberTask = rememberRecentTask;
   const viewSession = getHomeViewSession();
@@ -530,6 +530,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     getPresenceAvailability,
     invoke,
     lastPresenceSnapshot,
+    presenceVersion,
     recoveringDeviceIds,
     readDeviceList,
     status,
@@ -2046,8 +2047,12 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     [deviceModels, scheduleIndex, selectedDeviceId, homeSessions, t],
   );
   const projectMachineIdentities = useMemo(
-    () => buildHomeProjectMachineIdentities(home, deviceConnectionStates),
-    [home, deviceConnectionStates],
+    () => buildHomeProjectMachineIdentities(home, {
+      status, getPresenceAvailability, unresponsiveDevices, revokedDevices,
+    }),
+    // Presence is read through a stable getter; its version/connection epoch must
+    // refresh icons even when the page-local device list has not changed.
+    [home, status, getPresenceAvailability, presenceVersion, connectionEpoch, unresponsiveDevices, revokedDevices],
   );
   const runningSessionIds = useMemo(() => {
     const ids = new Set<string>();
@@ -2372,9 +2377,14 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
     guardedPush(href);
   }, [guardedPush, rememberTask, swipeRegistry, t]);
 
+  // Every visible row receives this callback, and the list presentation is rebuilt on each
+  // task update. Read the latest target on tap so updates do not re-render every row.
+  const newSessionTargetRef = useRef({ primaryDevice: home.primaryDevice, newSessionDeviceOptions, selectedDeviceId });
+  newSessionTargetRef.current = { primaryDevice: home.primaryDevice, newSessionDeviceOptions, selectedDeviceId };
   const openNewSession = useCallback((project?: MobileHomeProjectGroup, suggestion?: RemoteTaskSuggestionId, explicitDeviceId?: string, origin?: ComposerMorphOrigin) => {
-    const deviceId = project?.deviceId ?? explicitDeviceId ?? home.primaryDevice?.deviceId;
-    const deviceName = project?.deviceName ?? newSessionDeviceOptions.find((device) => device.deviceId === deviceId)?.name ?? home.primaryDevice?.label ?? deviceId ?? '';
+    const { primaryDevice, newSessionDeviceOptions, selectedDeviceId } = newSessionTargetRef.current;
+    const deviceId = project?.deviceId ?? explicitDeviceId ?? primaryDevice?.deviceId;
+    const deviceName = project?.deviceName ?? newSessionDeviceOptions.find((device) => device.deviceId === deviceId)?.name ?? primaryDevice?.label ?? deviceId ?? '';
     if (!deviceId) {
       setError(t('devices.list.error.noDevice'));
       return;
@@ -2393,7 +2403,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         ...(selectedDeviceId || explicitDeviceId ? { deviceExplicit: '1' } : {}),
       },
     });
-  }, [guardedPush, home.primaryDevice, newSessionDeviceOptions, selectedDeviceId, t]);
+  }, [guardedPush, t]);
 
   useEffect(() => {
     if (!newSessionActionRef) return;
@@ -2982,7 +2992,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
               />;
               if (row.item.automationGroup || !conversationSearchAllowsLocalWrites(row.item)) return content;
               return <SwipeableSessionRow key={row.key} session={row.item.session as RemoteSession}
-                registry={swipeRegistry} onArchive={archiveSession} onShowOptions={showSessionOptions} onTogglePin={toggleSessionPinned}
+                onMarkRead={sessionSwipeControls.onMarkRead} registry={swipeRegistry} onArchive={archiveSession} onShowOptions={showSessionOptions} onTogglePin={toggleSessionPinned}
                 testID="home.sharedSessionRow.swipe">{content}</SwipeableSessionRow>;
             }
             return <Pressable
@@ -4105,6 +4115,7 @@ function ProjectRow({
                   onArchive={swipe.onArchive}
                   onShowOptions={swipe.onShowOptions}
                   onTogglePin={swipe.onTogglePin}
+                  onMarkRead={swipe.onMarkRead}
                   registry={swipe.registry}
                   session={item.session as RemoteSession}
                   testID={`${childTestID}.swipe`}
@@ -4279,6 +4290,7 @@ function HomeListRowInner({
       onArchive={onArchive}
       onShowOptions={onShowOptions}
       onTogglePin={onTogglePin}
+      onMarkRead={swipe.onMarkRead}
       registry={registry}
       session={item.item.session as RemoteSession}
       testID={`${item.source === 'search' ? 'home.searchSessionRow' : homeSessionRowTestId(item.source)}.swipe`}
@@ -4756,6 +4768,7 @@ function AutomationGroupChildren({
             onArchive={swipe.onArchive}
             onShowOptions={swipe.onShowOptions}
             onTogglePin={swipe.onTogglePin}
+            onMarkRead={swipe.onMarkRead}
             registry={swipe.registry}
             session={child.session as RemoteSession}
             testID={`${testID}.automationChild.swipe`}
