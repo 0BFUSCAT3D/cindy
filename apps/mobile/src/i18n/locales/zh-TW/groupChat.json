@@ -171,6 +171,7 @@
     "replyModeAll": "大家都可以接話",
     "replyModeMentioned": "只有被 @ 的回答",
     "replyModeNote": "沒什麼可補充的夥伴不會說話。每輪最多聊 3 圈、10 則，之後等你點「繼續討論」。",
+    "replyModeNoteQueue": "夥伴們排隊依序回答，前 5 位自動接著說。引用夥伴的訊息或回覆它的話題，也會叫到它。",
     "replyModeSaveFailed": "回覆方式沒能儲存，請再試一次",
     "delete": "刪除群聊",
     "deleteNote": "只刪除這個群聊和其中的訊息，夥伴本身、它們的記憶和私聊都不受影響。",

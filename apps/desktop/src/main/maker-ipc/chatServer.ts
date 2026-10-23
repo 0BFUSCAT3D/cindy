@@ -19,7 +19,8 @@ import { chatErrorDiagnostic, chatGroupFailure, missingGroupCode } from './chatS
 import { createChatMedia } from './chatServerMedia.js';
 import { prepareChatReplyImages } from './chatServerReplyImages.js';
 import { chatServerWorkspaces } from './chatServerWorkspaces.js';
-import { buildPlanStepBrief } from './botGroupDivision.js';
+import { buildPlanStepBrief, draftPlanSteps, type PlanStepDraft } from './botGroupDivision.js';
+import { splitBotGroupRelaySteps } from '@cindy/maker-shared/botGroupMentions';
 import { chatMigrationReceipts } from './chatMigrationReceipts.js';
 import { prepareBotGroupTaskPost, type BotGroupTaskPostSnapshot } from './botGroupTaskPostSnapshot.js';
 import { registerGroupToolAuthority, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
@@ -225,6 +226,8 @@ const quoteAttachments = (count: number, name: string | null) => count ? { attac
 /** A main-group reply reads only the latest messages, each shortened; its lane keeps earlier turns. */
 const MAIN_GROUP_CONTEXT_MESSAGES = 12;
 const MAIN_GROUP_CONTEXT_CHARS = 600;
+/** The answer right before a queue turn, as much as a 分工 step's hand-off note (botGroupDivision). */
+const PREVIOUS_ANSWER_CHARS = 2000;
 function mainGroupContext<V extends { text: string }>(messages: Message[], view: (m: Message) => V) {
   const recent = messages.slice(-MAIN_GROUP_CONTEXT_MESSAGES).map(m => {
     const v = view(m);
@@ -238,9 +241,15 @@ function mainGroupContext<V extends { text: string }>(messages: Message[], view:
  */
 function discussionTurnBrief(plan: ServerPlan, position: number, history: readonly Message[]) {
   const step = plan.steps[position];
-  const earlierAnswers = plan.steps.filter(s => s.position < position).flatMap(s => {
+  const answers = plan.steps.filter(s => s.position < position).flatMap(s => {
     const result = history.find(m => m.id === s.resultMessageId);
     return result ? [{ from: s.botName, text: bodyText(result) }] : [];
+  });
+  // Each turn builds on the one before it: that answer keeps the hand-off allowance of a 分工
+  // step, older ones a main-group message's, so a long queue does not resend every answer in full.
+  const earlierAnswers = answers.map((answer, index) => {
+    const max = index === answers.length - 1 ? PREVIOUS_ANSWER_CHARS : MAIN_GROUP_CONTEXT_CHARS;
+    return answer.text.length > max ? { ...answer, text: `${answer.text.slice(0, max)}…`, shortened: true } : answer;
   });
   const notes = history.filter(m => plan.note_message_ids?.includes(m.id)).map(bodyText);
   return [
@@ -1383,22 +1392,62 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         }), request: text,
         requestAttachments: attachments.map(a => a.name), currentSteps: proposed?.steps,
         ...(quote ? { requestQuote: { from: quote.authorName, text: quote.excerpt, ...quoteAttachments(quote.attachmentCount, quote.attachmentName) } } : {}) }, controller.signal);
-      // Steps read the plan's request; keep what it quotes beside it when the server's limit allows.
-      const quoteLine = quote ? buildBotGroupQuoteCard(quote).fallback : '';
-      const request = quoteLine && text.length + quoteLine.length + 2 <= 8000 ? `${text}\n\n${quoteLine}` : text;
+      const request = planRequest(text, quote);
       if (!current() || controller.signal.aborted || planIntents.get(s.room.id) !== intent) return;
       if (decision?.needsPlan) await api(`/conversations/${s.room.id}/plans`, 'POST', {
         operationId: `plan:${sourceId}`, sourceMessageId: sourceId, organizerId: organizer.id, request, steps: decision.steps });
-      else if (explicit) await cancelPlanning(s.room.id, sourceId, true);
+      else if (explicit) await settleExplicitRequest(s.room.id, sourceId, forced && !proposed);
       else await api(`/conversations/${s.room.id}/messages/${sourceId}/continue`, 'POST', { operationId: `discuss:${sourceId}`, ...(groupDiscussionParity ? { automatic: true } : {}) });
     } catch (error) {
       if (current() && !controller.signal.aborted) {
         // An organizer failure must not swallow the user's posted request.
-        if (explicit) await cancelPlanning(s.room.id, sourceId, true);
+        if (explicit) await settleExplicitRequest(s.room.id, sourceId, forced);
         else await api(`/conversations/${s.room.id}/messages/${sourceId}/continue`, 'POST', { operationId: `discuss:${sourceId}`, ...(groupDiscussionParity ? { automatic: true } : {}) });
         deps.log?.warn('Group arrangement could not be prepared', { groupId: s.room.id });
       }
     } finally { delete intent.sourceId; if (planning.get(s.room.id) === pending) { planning.delete(s.room.id); changed(s.room.id); } }
+  }
+  /** Steps read the plan's request; keep what it quotes beside it when the server's limit allows. */
+  function planRequest(text: string, quote: BotGroupQuoteView | null) {
+    const quoteLine = quote ? buildBotGroupQuoteCard(quote).fallback : '';
+    return quoteLine && text.length + quoteLine.length + 2 <= 8000 ? `${text}\n\n${quoteLine}` : text;
+  }
+  /**
+   * A 分工 with no card. Servers that can cancel a planning hold are told so. A single-speaker
+   * server cannot, and would queue the held request two minutes later; a 「安排分工」 request is
+   * answered right away instead (named teammates, else the first), and a note on your proposed
+   * card stays a note.
+   */
+  async function settleExplicitRequest(roomId: string, sourceId: string, answer: boolean) {
+    if (!singleSpeaker) return cancelPlanning(roomId, sourceId, true);
+    if (answer) await api(`/conversations/${roomId}/messages/${sourceId}/continue`, 'POST', { operationId: `discuss:${sourceId}` });
+  }
+  /** Steps a 分工 request wrote out (§7.0), as teammates this account may give work to. */
+  function writtenPlanSteps(s: Snapshot, text: string): PlanStepDraft[] | null {
+    const bots = s.members.filter(m => m.kind === 'bot' && m.state === 'joined');
+    const written = splitBotGroupRelaySteps(text, { allLabels: [],
+      members: bots.map(m => ({ botId: m.id, name: memberName(m), displayName: m.name, nickname: m.nickname })) });
+    // A step for a teammate you may not give work to goes to the organizer, not into a neighbour's task.
+    const assignable = (botId: string) => bots.some(m => m.id === botId && (m.ownerActorId === selfId || m.guestAccess !== 'none')
+      && (!localBot(m.id) || localBot(m.id)?.status === 'active'));
+    return written?.every(step => assignable(step.botId)) ? draftPlanSteps(written) : null;
+  }
+  /** The user wrote the card, so it starts at once; each step still stops for 继续 (§7.4). */
+  async function openWrittenPlan(s: Snapshot, sourceId: string, request: string, steps: PlanStepDraft[], intent: PlanIntent) {
+    if (!current() || planIntents.get(s.room.id) !== intent) return;
+    const organizerId = steps.some(step => step.botId === s.room.organizer_id) ? s.room.organizer_id! : steps[0]!.botId;
+    let plan: ServerPlan;
+    try {
+      plan = await api<ServerPlan>(`/conversations/${s.room.id}/plans`, 'POST', {
+        operationId: `plan:${sourceId}`, sourceMessageId: sourceId, organizerId, request, steps });
+    } catch (error) {
+      await settleExplicitRequest(s.room.id, sourceId, true);
+      throw error;
+    } finally { delete intent.sourceId; }
+    // Not started (the card stays proposed with 开始) if a newer action took over meanwhile.
+    if (current() && planIntents.get(s.room.id) === intent) await api(`/conversations/${s.room.id}/plans/${plan.id}`, 'POST', {
+      operationId: `start:${plan.id}`, expectedRevision: plan.revision, action: 'start' });
+    changed(s.room.id);
   }
   async function updateExecution(run: Running, action: string, extra: Record<string, unknown> = {}) {
     return api(`/conversations/${run.execution.conversation_id}/executions/${run.execution.id}`, 'POST', {
@@ -2416,15 +2465,23 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const plans = await plansRead;
     const openPlan = plans.find(p => ['proposed','running','waiting'].includes(p.status));
     const proposed = openPlan?.status === 'proposed' && openPlan.creator_id === selfId;
-    // A single-speaker server arranges turns itself (several named teammates, or everyone when
-    // nobody is named); the send no longer asks a helper model whether to divide the work first.
-    if (i.division && openPlan && !proposed && !singleSpeaker) throw new Error('PLAN_OPEN');
-    // Reply mode decides whether a message triggers work; single-speaker only decides its order.
-    const canTrigger = (!singleSpeaker && i.division) || s.room.response_mode !== 'mentioned' || !namesNobody(i.mentions);
-    // A queue waiting for 继续 gives way to a new request; only a turn under way takes additions (§4.0).
-    const commentPlan = canTrigger && openPlan && openPlan.status !== 'proposed' && !(singleSpeaker && openPlan.kind === 'talk' && openPlan.status === 'waiting') && !i.mentions.botIds.length && !i.mentions.all && (openPlan.creator_id === selfId || s.members.some(m => m.id === selfId && ['owner','admin'].includes(m.role))) ? openPlan : undefined;
-    const shouldPlan = canTrigger && !singleSpeaker && !!deps.decidePlan && (i.division || (!i.mentions.botIds.length && (!proposed || !i.mentions.all)))
-      && (!openPlan || proposed);
+    // Additions are written as the human, so a teammate's role does not count (planView's canAdd).
+    const mayAdd = !!openPlan && (openPlan.creator_id === selfId || s.members.some(m => m.id === selfId && ['owner','admin'].includes(m.role)));
+    // The server opens one card at a time: a queue of yours waiting for 继续 ends when you ask for a
+    // 分工; anything else still open refuses it (bot-group-chat.md §7.0).
+    const settleQueue = singleSpeaker && i.division && openPlan?.kind === 'talk' && openPlan.status === 'waiting' && mayAdd ? openPlan : undefined;
+    if (i.division && openPlan && !proposed && !settleQueue) throw new Error('PLAN_OPEN');
+    // Reply mode decides whether an unaddressed message wakes anyone (single-speaker servers apply it too).
+    const canTrigger = i.division || s.room.response_mode !== 'mentioned' || !namesNobody(i.mentions);
+    // Words for a card under way reach its current step only when they would wake anyone (§4.0,
+    // §7.4); a queue waiting for 继续 gives way to a new request instead.
+    const commentPlan = canTrigger && openPlan && openPlan.status !== 'proposed' && !(singleSpeaker && openPlan.kind === 'talk' && openPlan.status === 'waiting') && !i.mentions.botIds.length && !i.mentions.all && mayAdd ? openPlan : undefined;
+    // Single-speaker servers queue turns themselves; only a 分工, or words about your proposed card,
+    // wait for the arrangement. A 分工 that writes out its steps needs no helper model.
+    const shouldPlan = singleSpeaker
+      ? i.division || (proposed && namesNobody(i.mentions) && !!deps.decidePlan)
+      : canTrigger && !!deps.decidePlan && (i.division || (!i.mentions.botIds.length && (!proposed || !i.mentions.all)))
+        && (!openPlan || proposed);
     const prepared = i.attachments?.length ? await deps.prepareAttachments?.({ groupId: i.groupId, attachments: i.attachments, controllerDeviceId: origin?.controllerDeviceId }) : undefined;
     if (i.attachments?.length && (!prepared || !prepared.ok)) {
       const error = new Error(prepared && !prepared.ok ? prepared.errorCode === 'INVALID_PARAMS' ? 'INVALID_ATTACHMENT' : prepared.errorCode : 'INVALID_ATTACHMENT');
@@ -2473,7 +2530,16 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         if (!intent || planIntents.get(roomId) !== intent) await cancelPlanningWithRetry(roomId, () => cancelPlanning(roomId, messageId));
         else {
           intent.sourceId = messageId;
-          void decideArrangement(s, messageId, i.text, i.division === true, prepared?.ok ? prepared.attachments : [], intent, quote).catch(() => undefined);
+          const arrange = async () => {
+            // If the queue moved on meanwhile, the server refuses the card and the request is answered instead.
+            if (settleQueue) await api(`/conversations/${roomId}/plans/${settleQueue.id}`, 'POST', {
+              operationId: `settle:${settleQueue.id}:${messageId}`, expectedRevision: settleQueue.revision, action: 'stop' })
+              .catch(error => deps.log?.warn('Waiting queue could not be ended', { groupId: roomId, ...chatErrorDiagnostic(error) }));
+            const written = singleSpeaker && i.division && !i.mentions.all ? writtenPlanSteps(s, i.text) : null;
+            if (written) await openWrittenPlan(s, messageId, planRequest(i.text, quote), written, intent);
+            else await decideArrangement(s, messageId, i.text, i.division === true, prepared?.ok ? prepared.attachments : [], intent, quote);
+          };
+          void arrange().catch(error => deps.log?.warn('Group arrangement failed', { groupId: roomId, ...chatErrorDiagnostic(error) }));
         }
       }
     })().catch(error => deps.log?.warn('Group send bookkeeping failed', { groupId: roomId, ...chatErrorDiagnostic(error) }));

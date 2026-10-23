@@ -132,19 +132,18 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
           onChange={event => { editGroup(); setTopic(event); }} />}</FormField>
         <FormField label={t(key('description'))}>{props => <Input {...props} value={description} maxLength={2000} disabled={!manager || busy}
           onChange={event => { editGroup(); setDescription(event); }} />}</FormField>
-        {/* Whether unmentioned messages trigger replies is independent of the speaking order. */}
+        {/* Whether unaddressed messages wake anyone; independent of the order teammates answer in. */}
         <FormField label={t(shared('replyMode'))}>{props => <Select {...props} label={t(shared('replyMode'))} value={replyMode}
           disabled={!manager || busy} options={(['all', 'mentioned'] as const).map(value => ({ value, label: t(REPLY_MODE_LABELS[value]) }))}
           onValueChange={value => { editGroup(); setReplyMode(value as typeof replyMode); }} />}</FormField>
-        {group.singleSpeaker ? null : <>
-        <FormField label={t(shared('speakingMode'))}>{props => <Select {...props} label={t(shared('speakingMode'))} value={speakingMode}
+        {/* Single-speaker servers always answer one teammate at a time, so there is no speaking mode. */}
+        {group.singleSpeaker ? null : <FormField label={t(shared('speakingMode'))}>{props => <Select {...props} label={t(shared('speakingMode'))} value={speakingMode}
           disabled={!manager || busy} options={(['auto', 'sequential'] as const).map(value => ({ value, label: t(SPEAKING_MODE_LABELS[value]) }))}
-          onValueChange={value => { editGroup(); setSpeakingMode(value as typeof speakingMode); }} />}</FormField>
-        </>}
+          onValueChange={value => { editGroup(); setSpeakingMode(value as typeof speakingMode); }} />}</FormField>}
         {manager && <Button type="submit" size="sm" variant="secondary" disabled={busy || !name.trim()}>{t(key('save'))}</Button>}
       </form>
-      {/* Organizer and project folder only serve a division of work, which single-speaker groups do not have. */}
-      {group.singleSpeaker ? null : <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
+      {/* The organizer arranges a 分工 whose steps are not written out; a 分工 works in the project folder. */}
+      <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
         <FormField label={t('bots.groupChat.organizer')} hint={t('bots.groupChat.settings.organizerNote')}>{props =>
           <Select {...props} label={t('bots.groupChat.organizer')} value={group.organizerBotId ?? ''}
             disabled={!manager || busy} options={companions.filter(m => m.status === 'active').map(m => ({ value: m.botId, label: m.name }))}
@@ -155,7 +154,7 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
             {group.projectDir && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void updateWorkSettings({ projectDir: null })}>{t('bots.groupChat.settings.projectDirClear')}</Button>}
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => void chooseProjectDir()}>{t('bots.groupChat.settings.projectDirChoose')}</Button>
           </div>}</FormField>
-      </section>}
+      </section>
       <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-14 font-medium text-[var(--text-primary)]">{t(key('myProfile'))}</h3>

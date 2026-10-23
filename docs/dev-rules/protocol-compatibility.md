@@ -2670,12 +2670,18 @@ Chat Server `/me` 追加 `capabilities.groupSingleSpeaker: 1`，服务端派发�
 它们本就声明 `planVersion: 1` 领取安排步骤、渲染安排卡并能「继续」；仍发送的 `deferExecution` /
 `continueDiscussion` 被接受（后者只记录、不续圈），旧的「继续讨论」只叫被 @ 的伙伴或第一位伙伴。
 
-新 Desktop 只在看到该能力时：不再发 `deferExecution`、不做发送前的辅助判断、不发 `continueDiscussion`；
+新 Desktop 只在看到该能力时：普通消息不再发 `deferExecution`、不做发送前的辅助判断、不发 `continueDiscussion`；
 队列停着等继续时新消息按新请求发送（不作为补充）。队列前 5 位由服务端自动接续，无需客户端参与。
 `chat_plan.kind` 是附加字段，旧客户端忽略；新客户端缺字段时按旧分工卡呈现。手机解析电脑的群资源时，
 保留经校验的可选 `kind`（talk/work）与 `canAdd`（boolean）；缺失或非法时沿用旧分工呈现，不把字符串当作补充权限。
-`mentioned` 的运行中 talk 队列及存量 work 分工不接受普通无 @ 消息作为自动补充，两端输入框不得承诺交给正在答的伙伴；存量 work 分工仍保留未结束时阻止新建分工的限制。
-手机须保留电脑投影的 `singleSpeaker: true`，据此隐藏不支持的「安排分工」；远程电脑传输不等于旧群。缺字段的旧电脑沿用原入口。
+`mentioned` 的运行中 talk 队列及 work 分工不接受普通无 @ 消息作为自动补充，两端输入框不得承诺交给正在答的伙伴；work 分工仍保留未结束时阻止新建分工的限制。
+手机须保留电脑投影的 `singleSpeaker: true`（据此隐藏「发言方式」）；远程电脑传输不等于旧群。
+
+2026-10-23 起客户端在同一能力下恢复「安排分工」，**不改服务端、不新增 wire 字段**，只组合现有接口：
+主群消息带 `deferExecution: true` 挂起；请求写好步骤时 `POST /plans`（`kind` 缺省为 `work`）后立即
+`action: start`，否则负责人出卡；没有卡时 `POST /messages/:id/continue` 立即回答（该服务端没有 `cancel-planning`，
+不处理会在两分钟后被排成讨论队列）。本人等继续的 `talk` 队列先 `action: stop` 再建卡，否则服务端返回 `PLAN_OPEN`。
+手机经电脑发起分工走同一路径；手机直连服务器不提供「安排分工」。
 停止的范围收窄与主群上下文精简都只在看到该能力时启用，旧服务器保留整轮停止与完整主群历史；收窄只在执行端实现（成员只停自己的请求与伙伴，群主或管理员——含本账号拥有的管理员伙伴——可 `all`），沿用既有 control /
 plan action 的服务端权限，IPC `bot-group:stop` 追加可选 `scope`；
 手机经电脑的远程动作不变（停止为本人范围）。发布顺序：服务端整集群先上，再发客户端。

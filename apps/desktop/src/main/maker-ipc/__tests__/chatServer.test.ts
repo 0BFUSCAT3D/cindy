@@ -1614,24 +1614,78 @@ describe('Chat Server result delivery and refresh', () => {
       expect(deliveries()[0][2]).not.toHaveProperty('continueDiscussion');
     });
 
-    it('sends without holding the request for a helper-model arrangement decision', async () => {
-      singleSpeaker();
-      deps.decidePlan = vi.fn() as typeof deps.decidePlan;
-      expect(await service.sendMessage({ groupId: roomId, text: 'Make a draft', clientId: 'single-speaker-send', mentions: { all: false, botIds: [] }, division: true }))
-        .toMatchObject({ ok: true });
-      await vi.advanceTimersByTimeAsync(0);
-      const post = fixture.handle.mock.calls.find(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')!;
-      expect(post[2].deferExecution).toBe(false);
-      expect(deps.decidePlan).not.toHaveBeenCalled();
+    // bot-group-chat.md §7.0 (2026-10-23): 「安排分工」 is back on these servers. A request that writes
+    // out who does what becomes that card and starts, with no helper model; otherwise the organizer
+    // arranges it. The request is held so the server's own queue does not answer it first.
+    describe('安排分工', () => {
+      const sourceId = '50000000-0000-4000-8000-000000000031', planId = '80000000-0000-4000-8000-000000000031';
+      const named = () => members().map(m => m.id === otherBot ? { ...m, name: 'Nova' } : m);
+      function divisionServer(open: object[] = []) {
+        singleSpeaker((route, method) => {
+          if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: named(), messages: [], cursor: '1' } };
+          if (route === `/conversations/${roomId}/messages` && method === 'POST') return { body: { id: sourceId } };
+          if (route === `/conversations/${roomId}/plans` && method === 'POST') return { body: { id: planId, revision: 1 } };
+          if (route === `/conversations/${roomId}/plans`) return { body: open };
+          return undefined;
+        });
+      }
+      const posts = () => fixture.handle.mock.calls.filter(([, method]) => method === 'POST');
+      const send = async (text: string) => {
+        expect(await service.sendMessage({ groupId: roomId, text, clientId: `division-${text.length}`, mentions: { all: false, botIds: [] }, division: true }))
+          .toMatchObject({ ok: true });
+        await vi.advanceTimersByTimeAsync(0);
+      };
+
+      it('starts the card a request writes out, without the organizer', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn() as typeof deps.decidePlan;
+        await send('登录页：@Bot (Owner) 出方案，然后 @Nova (Owner) 按方案实现');
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/messages`)![2]).toMatchObject({ deferExecution: true });
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/plans`)![2]).toMatchObject({ sourceMessageId: sourceId,
+          steps: [{ botId, task: '出方案' }, { botId: otherBot, task: '按方案实现' }] });
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/plans/${planId}`)![2]).toMatchObject({ action: 'start', expectedRevision: 1 });
+        expect(deps.decidePlan).not.toHaveBeenCalled();
+      });
+
+      it('asks the organizer when the steps are not written out', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn(async () => ({ needsPlan: true as const, steps: [{ botId: otherBot, task: 'build' }] }));
+        await send('@Bot (Owner) 和 @Nova (Owner) 一起做登录页');
+        expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({ mode: 'forced' }), expect.anything());
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/plans`)![2]).toMatchObject({ steps: [{ botId: otherBot, task: 'build' }] });
+        expect(posts().some(([route]) => route === `/conversations/${roomId}/plans/${planId}`)).toBe(false);
+      });
+
+      it('answers the request at once when no card comes of it, instead of a queue two minutes later', async () => {
+        divisionServer();
+        deps.decidePlan = vi.fn(async () => { throw new Error('model unavailable'); });
+        await send('Make a draft');
+        expect(posts().some(([route]) => route === `/conversations/${roomId}/messages/${sourceId}/continue`)).toBe(true);
+      });
+
+      it('ends your queue waiting for 继续 before opening the card', async () => {
+        const queue = { id: '80000000-0000-4000-8000-000000000032', revision: 4, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
+          creator_id: selfId, note_message_ids: [], status: 'waiting', current_step: 4, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+          steps: [{ position: 4, botId, botName: 'Bot', task: '', status: 'done' }] };
+        divisionServer([queue]);
+        await send('@Bot (Owner) 出方案');
+        const routes = posts().map(([route]) => route);
+        expect(routes.indexOf(`/conversations/${roomId}/plans/${queue.id}`)).toBeLessThan(routes.indexOf(`/conversations/${roomId}/plans`));
+        expect(posts().find(([route]) => route === `/conversations/${roomId}/plans/${queue.id}`)![2]).toMatchObject({ action: 'stop', expectedRevision: 4 });
+      });
     });
 
+    // Words for a card under way reach its current step when they would wake anyone: the requester
+    // adding to a turn, or asking the teammate who just finished a 分工 step to redo it (§4.0, §7.4).
     it.each([
       ['waiting for 继续: a new request replaces it', 'waiting', `/conversations/${roomId}/messages`],
       ['mid-turn: the words go to the teammate answering', 'running', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`],
-      ['mention-only mid-turn: unmentioned words stay ordinary messages', 'running', `/conversations/${roomId}/messages`, 'mentioned'],
-    ] as const)('with an open queue %s', async (_label, status, route, responseMode: string = 'all') => {
+      ['mention-only mid-turn: unmentioned words stay ordinary messages', 'running', `/conversations/${roomId}/messages`, 'talk', 'mentioned'],
+      ['of a 分工 waiting for 继续: a redo for its teammate', 'waiting', `/conversations/${roomId}/plans/80000000-0000-4000-8000-000000000002/messages`, 'work'],
+      ['of a 分工 waiting for 继续 in a mention-only group: an ordinary message', 'waiting', `/conversations/${roomId}/messages`, 'work', 'mentioned'],
+    ] as const)('with an open card %s', async (_label, status, route, kind: string = 'talk', responseMode: string = 'all') => {
       const queue = { id: '80000000-0000-4000-8000-000000000002', revision: 1, source_message_id: execution.source_message_id, request_text: 'Q', organizer_id: botId,
-        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind: 'talk', created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+        creator_id: selfId, note_message_ids: [], status, current_step: 0, kind, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
         steps: [{ position: 0, botId, botName: 'Bot', task: '', status: status === 'waiting' ? 'done' : 'running' }, { position: 1, botId: otherBot, botName: 'Peer', task: '', status: 'pending' }] };
       singleSpeaker(route => route === `/conversations/${roomId}/plans` ? { body: [queue] }
         : route.endsWith('/snapshot') ? { body: { room: { ...room(roomId), response_mode: responseMode }, members: members(), messages: [], cursor: '1' } } : undefined);

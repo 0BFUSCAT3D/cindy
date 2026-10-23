@@ -1239,7 +1239,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         members={group.members}
         running={running}
         planState={botGroupComposerPlanState(openPlan, group.replyMode)}
-        divisionAvailable={!group.singleSpeaker}
+        divisionSteps={!!group.singleSpeaker}
         attachments={attachmentState}
         attachmentScope={attachmentScope}
         dragOver={dragOver}

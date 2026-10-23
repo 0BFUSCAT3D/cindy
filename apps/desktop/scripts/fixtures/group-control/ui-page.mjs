@@ -60,8 +60,12 @@ export default {
       data: { ...base, members: QUEUE_CROWD, arrangement: 'long' },
     },
     settings: {
-      about: 'Single-speaker group settings: reply mode remains independent; no speaking mode, organizer or project folder',
+      about: 'Single-speaker group settings: reply mode, organizer and project folder as before; no speaking mode',
       data: { ...base, arrangement: 'running', settings: true },
+    },
+    division: {
+      about: 'Single-speaker group: 「+」→ 安排分工 is offered again; tagged, the composer says steps may be written out',
+      data: { ...base, arrangement: 'done' },
     },
     'thread-unread': {
       about: 'Server read state: unread thread entries (with @you), the in-chat 话题 hint above the composer and its list of this group\'s Threads',
@@ -121,8 +125,17 @@ export default {
       await replyMode.click();
       await page.getByRole('option', { name: await ui.t('bots.groupChat.settings.replyModeMentioned'), exact: true }).click();
       assert.equal(await replyMode.innerText(), await ui.t('bots.groupChat.settings.replyModeMentioned'));
-      for (const key of ['bots.groupChat.settings.speakingMode', 'bots.groupChat.organizer', 'bots.groupChat.settings.projectDir'])
-        assert.equal(await drawer.getByText(await ui.t(key), { exact: true }).count(), 0, key);
+      // Reply mode and the 分工 settings stay; one teammate at a time leaves no speaking mode (bot-group-chat.md §4.0).
+      assert.equal(await drawer.getByText(await ui.t('bots.groupChat.settings.speakingMode'), { exact: true }).count(), 0, 'speakingMode');
+      for (const key of ['bots.groupChat.organizer', 'bots.groupChat.settings.projectDir'])
+        assert.ok(await drawer.getByText(await ui.t(key), { exact: true }).count() > 0, key);
+      return;
+    }
+    if (ui.case === 'division') {
+      await page.getByRole('button', { name: '更多操作' }).click();
+      await page.getByRole('menuitem', { name: /安排分工/ }).click();
+      await page.waitForFunction(() => document.querySelector('textarea')?.getAttribute('placeholder')?.startsWith('写好谁做什么'));
+      await ui.capture('tagged');
       return;
     }
     if (ui.case === 'work-mentioned') {
