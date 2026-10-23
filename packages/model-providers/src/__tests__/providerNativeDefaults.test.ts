@@ -21,6 +21,21 @@ function connection(presetId: string, modelId: string): CustomProviderConfig {
 }
 
 describe('supplier import follows Gateway native model defaults', () => {
+  it('saved DeepSeek Flash aliases retain the Codex image restriction', () => {
+    const config = connection('deepseek', 'deepseek-flash');
+    for (const agent of agents) {
+      config.runtimes[agent]!.models = [{ id: 'deepseek-v4-flash', name: 'DeepSeek Flash' }];
+    }
+    const provider = buildUserProvider(config, options);
+    for (const agent of agents) {
+      const metadata = resolveModelMetadata(options.modelRegistry, 'deepseek', 'deepseek-v4-flash', undefined, undefined, agent);
+      expect(metadata.supportsImageInput).toBeUndefined();
+    }
+    expect(provider.models.codex![0].supportsImageInput).toBe(false);
+    const current = buildUserProvider(connection('deepseek', 'deepseek-flash'), options);
+    for (const agent of agents) expect(current.models[agent]![0].supportsImageInput).toBe(agent !== 'codex');
+  });
+
   // #7005: route context overrides must also bound the inherited output sent to Pi adapters.
   it.each([
     ['moonshot-kimi-code', 'k3.1-pro', 262_144],

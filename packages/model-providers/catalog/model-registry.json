@@ -1,6 +1,6 @@
 {
   "schemaVersion": 5,
-  "updatedAt": "2026-10-23T18:24:45.018Z",
+  "updatedAt": "2026-10-23T18:29:15.626Z",
   "models": [
     {
       "id": "openai/gpt-6.1-sol",
@@ -6766,7 +6766,6 @@
         "group": "china",
         "contextWindow": 1048576,
         "maxOutputTokens": 384000,
-        "supportsImageInput": true,
         "efforts": ["low", "high", "max"],
         "defaultEffort": "high",
         "officialDocs": "https://api-docs.deepseek.com/updates/"
