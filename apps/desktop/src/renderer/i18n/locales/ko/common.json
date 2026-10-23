@@ -6930,10 +6930,10 @@
         "embeddedSimulator": {
           "title": "기존 내장 시뮬레이터 지원이 종료되었습니다",
           "description": "Cindy에서 기존 내장 시뮬레이터를 제거했습니다.",
-          "replacementName": "iOS 시뮬레이터",
+          "replacementName": "기기 시뮬레이터",
           "replacementDescription": "Cindy 사이드바에서 실시간 화면을 보고 기기를 조작하며 App 실행과 스크린샷 촬영을 할 수 있습니다. 오픈 소스 프로젝트 Baguette를 기반으로 합니다.",
           "requirements": "Apple Silicon Mac, macOS 15 이상 및 전체 Xcode가 필요합니다.",
-          "dataNotice": "기존 시뮬레이터 기기와 App 데이터는 삭제되지 않습니다. 새 iOS 시뮬레이터를 설치해도 기기, App, 로그인 상태는 자동으로 이전되지 않습니다."
+          "dataNotice": "기존 시뮬레이터 기기와 App 데이터는 삭제되지 않습니다. 새 기기 시뮬레이터를 설치해도 기기, App, 로그인 상태는 자동으로 이전되지 않습니다."
         }
       },
       "usage": {
