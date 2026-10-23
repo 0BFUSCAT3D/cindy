@@ -215,7 +215,7 @@ describe('createProcessMonitorSampler', () => {
     });
   });
 
-  it('agent 条目解析归属任务标题:仅登记了 sessionId 的条目,失败只丢标题', async () => {
+  it('任务标题后台解析:首帧不带,解析完成后下一帧生效;失败与无归属只丢标题', async () => {
     const lookups: string[] = [];
     const { sampler } = makeHarness({
       snapshot: snapshotOf([
@@ -239,17 +239,62 @@ describe('createProcessMonitorSampler', () => {
         },
       },
     });
+    // 首帧立即返回,不等标题查询(库慢不阻塞 CPU / 内存刷新)。
+    expect(entryByPid(await sampler.sample(), 901)?.sessionLabel).toBeUndefined();
+    expect(lookups).toEqual(['session-1', 'session-2']);
+    // 查询落定后,下一帧带上标题;失败/无归属的条目不带 sessionLabel 字段。
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     expect(entryByPid(await sampler.sample(), 901)).toMatchObject({
       sessionLabel: '修复登录页',
     });
-    // 同 id 去重只查一次;解析失败/空标题的条目不带 sessionLabel 字段。
-    expect(lookups).toEqual(['session-1', 'session-2']);
     expect(entryByPid(await sampler.sample(), 902)?.sessionLabel).toBeUndefined();
     expect(entryByPid(await sampler.sample(), 903)?.sessionLabel).toBeUndefined();
-    // 采样器自身不缓存(缓存属生产装配层),每轮都对登记的 id 重新解析。
-    const afterFirstRound = lookups.length;
+    // 缓存未过期时不再重复查询。
+    expect(lookups).toEqual(['session-1', 'session-2']);
+  });
+
+  it('标题缓存按 TTL 后台刷新:刷新期间沿用旧值,不阻塞采样', async () => {
+    const { state, sampler } = makeHarness({
+      snapshot: snapshotOf([
+        osRow({ pid: 911, ppid: SELF_PID, cmdLineLower: 'pi-marker host' }),
+      ]),
+      deps: {
+        sessionLabelTtlMs: 5_000,
+        resolveSessionLabel: (sessionId) =>
+          Promise.resolve(sessionId === 'session-9' ? `标题@${state.nowMs}` : null),
+        resolveAgentProcessRegistration: () => ({
+          kind: 'pi',
+          role: 'task-host',
+          sessionId: 'session-9',
+          instanceId: 'inst:911',
+        }),
+      },
+    });
     await sampler.sample();
-    expect(lookups.slice(afterFirstRound)).toEqual(['session-1', 'session-2']);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(entryByPid(await sampler.sample(), 911)).toMatchObject({
+      sessionLabel: '标题@10000',
+    });
+    // TTL 未过期:沿用缓存,不重查。
+    state.nowMs += 4_000;
+    expect(entryByPid(await sampler.sample(), 911)).toMatchObject({
+      sessionLabel: '标题@10000',
+    });
+    // 过期后仍先返回旧值,刷新在后台落定,下一帧生效。
+    state.nowMs += 5_100;
+    expect(entryByPid(await sampler.sample(), 911)).toMatchObject({
+      sessionLabel: '标题@10000',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(entryByPid(await sampler.sample(), 911)).toMatchObject({
+      sessionLabel: '标题@19100',
+    });
   });
 
   it('OS 扫描按周期缓存:未过期不重扫,过期后重扫', async () => {

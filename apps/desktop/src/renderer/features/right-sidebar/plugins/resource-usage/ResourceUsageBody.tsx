@@ -201,7 +201,7 @@ function EntryRow({
         <div className="resource-usage-name-copy">
           <div className="resource-usage-name" title={name}>{name}</div>
           {details ? (
-            <div className="resource-usage-details">
+            <div className="resource-usage-details" title={details}>
               <span>{details}</span>
               <span className="resource-usage-pid-inline"> · PID {entry.pid}</span>
             </div>

@@ -245,11 +245,12 @@ describe('process monitor IPC authorization', () => {
     expect(sender.removeListener).toHaveBeenNthCalledWith(2, 'destroyed', expect.any(Function));
   });
 
-  it('生产装配把 resolveSessionLabel 传入采样器,agent 条目带归属标题', async () => {
+  it('生产装配把 resolveSessionLabel 传入采样器,后续帧的 agent 条目带归属标题', async () => {
     const sender = fakeSender();
     register({
       sampler: undefined,
       platform: 'linux',
+      sampleIntervalMs: 10,
       scanOsProcesses: vi.fn().mockResolvedValue({
         rows: [osRow({ pid: 511, ppid: SELF_PID, cmdLineLower: 'pi-marker host' })],
         childrenByParent: new Map(),
@@ -266,16 +267,21 @@ describe('process monitor IPC authorization', () => {
     });
 
     await handlerFor(PROCESS_MONITOR_SUBSCRIBE_CHANNEL)({ sender });
-    await vi.waitFor(() => {
-      expect(sender.send).toHaveBeenCalled();
-    });
-    const sample = sender.send.mock.calls.at(-1)![1] as {
-      entries: Array<{ pid: number; sessionLabel?: string }>;
-    };
-    expect(sample.entries.find((entry) => entry.pid === 511)).toMatchObject({
-      sessionLabel: '写发布说明',
-    });
-  });
+    // 标题查询在后台缓存,首帧可能还没有;轮询后续帧直到标题出现。
+    await vi.waitFor(
+      () => {
+        const withLabel = sender.send.mock.calls
+          .map((call) => call[1] as { entries: Array<{ pid: number; sessionLabel?: string }> })
+          .some((sample) =>
+            sample.entries.some(
+              (entry) => entry.pid === 511 && entry.sessionLabel === '写发布说明',
+            ),
+          );
+        expect(withLabel).toBe(true);
+      },
+      { timeout: 2_000, interval: 20 },
+    );
+  }, 5_000);
 });
 
 describe('terminate ownership validation', () => {

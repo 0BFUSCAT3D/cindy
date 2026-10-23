@@ -8670,7 +8670,6 @@ export class PiAgent extends BaseAgent {
           pid,
           kind: 'pi',
           role: 'control-plane-service',
-          sessionId: opts.sourceSdkSessionId ?? null,
         }),
     );
     const proc = new PiRpcProcess({
