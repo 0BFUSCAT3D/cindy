@@ -150,7 +150,7 @@ export interface BotGroupRelayStep {
 }
 
 /** Words that join one step to the next (「，然后 @B」); they belong to neither step's task. */
-const STEP_CONNECTOR = /(?:然后|接着|随后|之后|最后|再由|再|then|and then|next)\s*$/i;
+const STEP_CONNECTOR = /(?:然后|接着|随后|之后|最后|再由|再|\b(?:and then|then|next))\s*$/i;
 /** A later step starts on a new line or after sentence / list punctuation. */
 const STEP_BOUNDARY = /(?:^|[\n，,。.;；、→>：:])\s*$/;
 const STEP_EDGE = /^[\s，,。.;；、→>：:\-]+|[\s，,。.;；、→>：:\-]+$/g;
@@ -172,7 +172,9 @@ export function splitBotGroupRelaySteps(
   for (const [index, token] of tokens.entries()) {
     if (token.entry.all || token.entry.botIds.length !== 1) return null;
     if (index > 0 && !STEP_BOUNDARY.test(text.slice(tokens[index - 1]!.end, token.start).replace(STEP_CONNECTOR, ''))) return null;
-    const task = text.slice(token.end, tokens[index + 1]?.start ?? text.length).replace(STEP_CONNECTOR, '').replace(STEP_EDGE, '');
+    // A connector only leads into the next step; the last step keeps its words.
+    const span = text.slice(token.end, tokens[index + 1]?.start ?? text.length);
+    const task = (index + 1 < tokens.length ? span.replace(STEP_CONNECTOR, '') : span).replace(STEP_EDGE, '');
     if (!task) return null;
     steps.push({ botId: token.entry.botIds[0]!, task });
   }

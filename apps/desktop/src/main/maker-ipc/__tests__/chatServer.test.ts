@@ -186,8 +186,10 @@ describe('Chat Server result delivery and refresh', () => {
     async function serve(plan: Record<string, unknown>, settings: { autoContinue?: boolean; startedHere?: string[] } | null,
       onContinue?: () => { status: number; body: unknown }, onRead?: () => void) {
       if (settings) workspaceSettings.set(roomId, { projectDir: null, plans: {}, startedHere: [planId], ...settings });
+      // Only a server that tells a 分工 from a queue (groupSingleSpeaker) offers the switch.
       fixture.handle.mockImplementation((route, method) => route === `/conversations/${roomId}/plans/${planId}` && method === 'POST'
-        ? onContinue?.() ?? { body: {} } : route.startsWith(`/conversations/${roomId}/plans`) ? (onRead?.(), { body: [plan] }) : response(route));
+        ? onContinue?.() ?? { body: {} } : route.startsWith(`/conversations/${roomId}/plans`) ? (onRead?.(), { body: [plan] })
+        : route === '/me' ? { body: { actor: { id: selfId }, capabilities: { groupSingleSpeaker: 1 } } } : response(route));
       await service.getGroup(roomId);
       await vi.advanceTimersByTimeAsync(2000);
     }
@@ -196,6 +198,10 @@ describe('Chat Server result delivery and refresh', () => {
       await stepEnded('2');
       expect(continues()).toHaveLength(1);
       expect(continues()[0]![2]).toMatchObject({ expectedRevision: 3 });
+    });
+    it('goes on with a step that ended before the room was first read (a cold start)', async () => {
+      await serve(division(), { autoContinue: true });
+      expect(continues()).toHaveLength(1);
       // The same finished step is not continued twice when later changes arrive.
       await stepEnded('3');
       expect(continues()).toHaveLength(1);
@@ -228,12 +234,16 @@ describe('Chat Server result delivery and refresh', () => {
       expect(after.ok && [after.group.autoContinue, after.group.plans[0]?.autoContinue]).toEqual([true, true]);
     });
     it('does not go on when the switch is turned off while the 分工 is read', async () => {
-      let reads = 0;
       await serve(division(), { autoContinue: true }, undefined, () => {
-        if (++reads > 1) workspaceSettings.set(roomId, { ...workspaceSettings.get(roomId) as object, autoContinue: false });
+        workspaceSettings.set(roomId, { ...workspaceSettings.get(roomId) as object, autoContinue: false });
       });
       await stepEnded('2');
       expect(continues()).toHaveLength(0);
+    });
+    it('does not offer the switch on a server that cannot tell a 分工 from a queue', async () => {
+      workspaceSettings.set(roomId, { projectDir: null, plans: {}, autoContinue: true });
+      const result = await service.getGroup(roomId);
+      expect(result.ok && result.group).not.toHaveProperty('autoContinue');
     });
     it('does not try again after someone else went on first', async () => {
       await serve(division(), { autoContinue: true }, () => ({ status: 409, body: { error: { code: 'REVISION_CONFLICT' } } }));

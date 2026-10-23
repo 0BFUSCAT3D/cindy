@@ -861,6 +861,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   function subscribe(roomId: string, cursor = '0') {
     const fresh = !rooms.has(roomId); advanceRoom(roomId, cursor);
     if (fresh && connected && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: cursor }));
+    // A step that ended while nothing followed the room sends no event from this cursor on.
+    if (fresh) autoContinuePlans(roomId);
   }
   function connect() {
     if (!current()) return;
@@ -1329,7 +1331,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
           name: memberName(m), avatar: m.groupAvatar ? '' : p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
-      }), organizerBotId: ((id?: string) => id ? localBot(id)?.id ?? id : null)(s.room.organizer_id ?? s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id), projectDir: workspace?.projectDir ?? null, autoContinue: workspace?.autoContinue === true, lastMessage: last && lastView ? {
+      }), organizerBotId: ((id?: string) => id ? localBot(id)?.id ?? id : null)(s.room.organizer_id ?? s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id), projectDir: workspace?.projectDir ?? null,
+      // Only servers that tell a 分工 from a queue (kind) can hand one on by itself.
+      ...(singleSpeaker ? { autoContinue: workspace?.autoContinue === true } : {}), lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
         preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null, ...(open.kind ? { kind: open.kind } : {}) } : null,
@@ -1387,9 +1391,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   function startedHere(plan: ServerPlan, workspace: ReturnType<ReturnType<typeof chatServerWorkspaces>['read']>) {
     return plan.kind === 'work' && plan.creator_id === selfId && workspace?.startedHere?.includes(plan.id) === true;
   }
+  /** The card already exists: failing to remember it only leaves it to manual 继续. */
   function markStartedHere(roomId: string, planId: string) {
-    const settings = workspaces().read(roomId) ?? { projectDir: null, plans: {} };
-    workspaces().save(roomId, { ...settings, startedHere: [...(settings.startedHere ?? []).filter(known => known !== planId), planId].slice(-50) });
+    try {
+      const settings = workspaces().read(roomId) ?? { projectDir: null, plans: {} };
+      workspaces().save(roomId, { ...settings, startedHere: [...(settings.startedHere ?? []).filter(known => known !== planId), planId].slice(-50) });
+    } catch (error) { deps.log?.warn('Group 分工 origin could not be saved', { groupId: roomId, ...chatErrorDiagnostic(error) }); }
   }
   const autoContinued = new Set<string>();
   function autoContinuePlans(roomId: string) {

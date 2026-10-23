@@ -190,6 +190,9 @@ describe('splitBotGroupRelaySteps', () => {
     ['punctuation and connectors', '做登录页：@阿布 出方案，然后 @小满 实现；最后 @咪咪 测一遍。',
       [['abu', '出方案'], ['xiaoman', '实现'], ['mimi', '测一遍']]],
     ['one teammate', '@Ann review the diff', [['ann', 'review the diff']]],
+    // A connector only leads into the next step: the last step keeps it, and words merely ending in one keep theirs.
+    ['a last step ending like a connector', '@阿布 出方案，then @Ann decide what to do next', [['abu', '出方案'], ['ann', 'decide what to do next']]],
+    ['a word ending like a connector', '@Ann add context\n@阿布 实现', [['ann', 'add context'], ['abu', '实现']]],
   ] as const)('reads %s', (_label, text, expected) => {
     expect(split(text)).toEqual(expected.map(([botId, task]) => ({ botId, task })));
   });
