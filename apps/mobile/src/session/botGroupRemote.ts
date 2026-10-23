@@ -271,6 +271,8 @@ function parsePlan(value: unknown): BotGroupPlanView | null {
   return {
     id: planId,
     status,
+    kind: record.kind === 'talk' || record.kind === 'work' ? record.kind : undefined,
+    canAdd: typeof record.canAdd === 'boolean' ? record.canAdd : undefined,
     organizerBotId: id(record.organizerBotId) ?? '',
     organizerName: text(record.organizerName, MAX_NAME) ?? '',
     steps: steps as BotGroupPlanStepView[],
