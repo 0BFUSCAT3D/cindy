@@ -819,7 +819,8 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       cursorImage.src = "data:image/png;base64," + value.png;
     // Keep delayed host coordinates from pulling the local touchpad backwards.
     const nativeOwnsCursor = nativeTouchpad &&
-      (nativeTouchpad.down || performance.now() - lastLocalMove <= 200);
+      (nativeTouchpad.down ||
+        performance.now() - Math.max(lastLocalMove, nativeTouchpad.endedAt ?? 0) <= 200);
     if (
       !control ||
       (!nativeOwnsCursor && (!remoteCursor || mode !== "pointer" ||
@@ -2233,11 +2234,13 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         if (!nativeMouseControls || !control) break;
         if (message.phase === "start") {
           nativeTouchpad = { down: true };
-          cursorNeedsEntry = true;
           break;
         }
         if (message.phase === "end") {
-          if (nativeTouchpad) nativeTouchpad.down = false;
+          if (nativeTouchpad) {
+            nativeTouchpad.down = false;
+            nativeTouchpad.endedAt = performance.now();
+          }
           break;
         }
         if (message.tap === true) {

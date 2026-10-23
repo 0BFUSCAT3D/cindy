@@ -1227,7 +1227,9 @@ full-width landscape viewer. The keyboard toolbar remains below the hinge rather
 than moving into the video region when the system keyboard leaves little room.
 The lower touchpad owns relative cursor movement for its entire contact, including
 pauses, regardless of the video surface's touch/pointer preference. Host position
-feedback resumes after lift and the existing 200ms local-input grace period;
+feedback resumes after a full 200ms grace period measured from lift (or a later
+local input), even when the finger paused before lifting. New contacts preserve
+edge coordinates; only viewport changes request cursor re-entry. Gesture
 cancellation, control loss and leaving the pad clear that ownership. The local
 React Native/WebView bridge carries contact start/end; the remote input protocol
 is unchanged. Regression coverage lives in Mobile's `viewer.test.ts` and
