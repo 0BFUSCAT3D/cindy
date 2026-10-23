@@ -34,8 +34,8 @@ export function useProjectGroups(
   equivalentResult?: ProjectGroupsResult,
 ): ProjectGroupsResult {
   const sshHosts = useRemoteSshHosts();
-  const selectGroups = useMemo(() => createProjectGroupsSelector(), []);
   const hostProjectAliases = useSyncExternalStore(remoteProjectAliases.subscribe, remoteProjectAliases.getSnapshot);
+  const selectGroups = useMemo(() => createProjectGroupsSelector(), []);
   /*
     伙伴归属表。会话行本身不带 botId,归属只有伙伴档案知道 —— 档案还没加载完的
     那一瞬间这张表是空的,伙伴任务就走原来的分组落到别处,**不会消失**。

@@ -6,6 +6,7 @@ import {
 import {
   getDataOwnerGeneration,
   isDataOwnerGenerationCurrent,
+  isDataOwnerIdCurrent,
   isDataOwnerPushCurrent,
   type DataOwnerGeneration,
 } from '@/contexts/dataOwnerGeneration';
@@ -17,7 +18,7 @@ let owner: DataOwnerGeneration | null = null;
 const ownerStamps = new Map<string, SyncedProjectOrderOwnerStamp>();
 
 function selectOwner(requestOwner: DataOwnerGeneration): void {
-  if (owner && isDataOwnerGenerationCurrent(owner)) return;
+  if (owner && isDataOwnerIdCurrent(owner)) return;
   ownerStamps.clear();
   mirror.clear();
   owner = requestOwner;
@@ -35,8 +36,10 @@ function acceptOwnerStamp(deviceId: string, raw: unknown): boolean {
 /** Renderer-only display mirror. Its lifecycle is owned by the existing remote-project synchronizer. */
 export const remoteProjectAliases = {
   subscribe: mirror.subscribe,
+  // A same-account repair changes the ingress generation, not display ownership.
+  // Keep accepted names/watermarks; refresh still fences each in-flight read below.
   getSnapshot: (): ProjectAliasesByDevice =>
-    owner && isDataOwnerGenerationCurrent(owner) ? mirror.getSnapshot() : EMPTY,
+    owner && isDataOwnerIdCurrent(owner) ? mirror.getSnapshot() : EMPTY,
   clear(): void {
     owner = null;
     ownerStamps.clear();

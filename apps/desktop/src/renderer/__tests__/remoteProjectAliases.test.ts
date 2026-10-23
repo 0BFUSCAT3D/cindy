@@ -57,6 +57,45 @@ describe('Desktop project alias mirror adapter', () => {
     expect(remoteProjectAliases.getSnapshot().size).toBe(0);
   });
 
+  it('retains same-owner names across a local generation change while fencing old reads', async () => {
+    invoke.mockResolvedValueOnce(snapshot('A')).mockResolvedValueOnce(snapshot('B'));
+    await remoteProjectAliases.refresh('a', () => true);
+    await remoteProjectAliases.refresh('b', () => true);
+    const previous = remoteProjectAliases.getSnapshot();
+    let complete!: (value: unknown) => void;
+    invoke.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const pending = remoteProjectAliases.refresh('a', () => true);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(3));
+
+    setDataOwnerGeneration('owner', 2);
+    const duringRepair = remoteProjectAliases.getSnapshot();
+    complete(snapshot('Stale local generation'));
+    await pending;
+    expect(duringRepair).toBe(previous);
+    expect(remoteProjectAliases.getSnapshot()).toBe(previous);
+
+    invoke.mockResolvedValueOnce(snapshot('Fresh A'));
+    await remoteProjectAliases.refresh('a', () => true);
+    expect(remoteProjectAliases.getSnapshot().get('a')?.aliases[0].alias).toBe('Fresh A');
+    expect(remoteProjectAliases.getSnapshot().get('b')).toBe(previous.get('b'));
+    setDataOwnerGeneration('other', 3);
+    expect(remoteProjectAliases.getSnapshot().size).toBe(0);
+  });
+
+  it('retains host watermarks and rejects old local pushes across same-owner repair', async () => {
+    const hostStamp = { dataOwnerId: 'owner', ownerGeneration: 8 };
+    invoke.mockResolvedValueOnce({ ...snapshot('Current host'), ownerStamp: hostStamp });
+    await remoteProjectAliases.refresh('a', () => true);
+    setDataOwnerGeneration('owner', 2);
+    expect(remoteProjectAliases.acceptChanged('a', hostStamp,
+      { dataOwnerId: 'owner', ownerGeneration: 1 }, () => true)).toBe(false);
+    invoke.mockResolvedValueOnce(snapshot('Old host generation'));
+    await remoteProjectAliases.refresh('a', () => true);
+    expect(remoteProjectAliases.getSnapshot().get('a')?.aliases[0].alias).toBe('Current host');
+    expect(remoteProjectAliases.acceptChanged('a', hostStamp,
+      { dataOwnerId: 'owner', ownerGeneration: 2 }, () => true)).toBe(true);
+  });
+
   it('accepts a restarted host generation after suspension while rejecting older reads within one link', async () => {
     invoke.mockResolvedValueOnce({ ...snapshot('Before restart'), ownerStamp: { dataOwnerId: 'owner', ownerGeneration: 8 } });
     await remoteProjectAliases.refresh('a', () => true);
