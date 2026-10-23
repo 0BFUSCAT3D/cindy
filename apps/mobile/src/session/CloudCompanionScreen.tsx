@@ -135,9 +135,9 @@ export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, tit
     if (arrived) {
       switchingRef.current = { phase: 'idle' };
       setSwitching(switchingRef.current);
-      void openTeammate.current(arrived, { replace: true });
+      void openTeammate.current(arrived, { replace: true, leaving: { botId, deviceId } });
     } else if (state !== switchingRef.current) setSwitching(state);
-  }, [botId]);
+  }, [botId, deviceId]);
   // Every roster change may be the arrival; the interval re-reads the roster and enforces the timeout.
   useEffect(() => { if (waiting) tick(); });
   useEffect(() => {
