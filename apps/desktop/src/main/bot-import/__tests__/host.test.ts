@@ -8,7 +8,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Routine, RoutineInput } from '@cindy/maker-scheduler';
 import { companionEnvironmentKey, createCompanionEnvironmentStore } from '../environment.js';
-import { deserializeImportSnapshotAsync, fingerprint } from '../files.js';
+import { deserializeImportSnapshotAsync, serializeImportSnapshotAsync, fingerprint } from '../files.js';
 import { createMessage } from '../../localDb/ipc/messages.js';
 import { t } from '../../i18n.js';
 import { createBotProfile, getBotRemoteResourceSource } from '../../localDb/ipc/bots.js';
@@ -177,8 +177,18 @@ it('recovers a failed native knowledge write using the same receipt without copy
 const olderInstall = async (requestId: string) => {
   const file = path.join(h.root, 'companion-imports', `${requestId}.json`);
   const receipt = JSON.parse(await fs.readFile(file, 'utf8'));
-  receipt.nativePackage.packageVersion = '0.4.0';
+  receipt.nativePackage.packageVersion = '0.5.0';
+  receipt.nativePackage.packageHash = fingerprint('older package');
+  receipt.nativePackage.opening.welcome = 'Older package welcome';
   await fs.writeFile(file, JSON.stringify(receipt));
+  const stored = await h.store.read(h.root, receipt.result.botId, () => {});
+  if (stored?.pendingImport) {
+    const snapshot = await deserializeImportSnapshotAsync(stored.pendingImport.snapshotJson, () => {});
+    snapshot.nativePackage = { ...snapshot.nativePackage!, ...receipt.nativePackage };
+    stored.pendingImport.snapshotJson = await serializeImportSnapshotAsync(snapshot, () => {});
+    await h.store.write(h.root, receipt.result.botId, stored, () => {});
+  }
+  return receipt.nativePackage;
 };
 it('resumes an unfinished save of an older installed version from its stored checkpoint, as the same request', async () => {
   h.native = true;
@@ -186,10 +196,13 @@ it('resumes an unfinished save of an older installed version from its stored che
   const entry = (await listNativeBotPackages())[0]!;
   const partial = await nativeFinished(await inviteNativeBotPackage(entry, 'renderer:1'));
   expect(partial.status).toBe('needs-attention');
-  await olderInstall(partial.requestId);
+  const originalPackage = await olderInstall(partial.requestId);
   const complete = await nativeFinished(await inviteNativeBotPackage(entry, 'renderer:2'));
   expect(complete.status).toBe('complete'); expect(complete.requestId).toBe(partial.requestId); expect(complete.botId).toBe(partial.botId);
   expect(createBotProfile).toHaveBeenCalledTimes(1);
+  const receipt = JSON.parse(await fs.readFile(path.join(h.root, 'companion-imports', `${partial.requestId}.json`), 'utf8'));
+  expect(receipt.nativePackage).toEqual(originalPackage);
+  expect(h.invitation).toHaveBeenCalledWith(partial.botId, partial.requestId, originalPackage.locale, originalPackage.opening);
 });
 it('keeps an older installed version unchanged when it has no unfinished checkpoint', async () => {
   h.native = true;
@@ -217,7 +230,9 @@ it('restarts an older install that never saved its checkpoint, as the same reque
   expect(createBotProfile).toHaveBeenCalledTimes(1);
   expect(h.importDocument).toHaveBeenCalledTimes(1);
 });
-it('restarts an older install that never saved its checkpoint in the language it was first invited in', async () => {
+// PR #6520 discussion_r4358525338 (unit): inviteNativeBotPackage must persist the package actually installed.
+// Existing restart tests covered completion/name only; a pre-checkpoint failure followed by an upgrade left stale receipt metadata.
+it('restarts with current package metadata while preserving the original language and rejecting later hash drift', async () => {
   h.native = true;
   const entry = (await listNativeBotPackages())[0]!;
   vi.spyOn(h.store, 'write').mockRejectedValueOnce(new Error('fixture failure before checkpoint'));
@@ -231,6 +246,18 @@ it('restarts an older install that never saved its checkpoint in the language it
   expect(complete.status).toBe('complete'); expect(complete.requestId).toBe(requestId);
   expect(createBotProfile).toHaveBeenCalledTimes(1);
   expect(createBotProfile).toHaveBeenCalledWith(expect.objectContaining({ name: entry.locales!.ja!.name }));
+  const file = path.join(h.root, 'companion-imports', `${requestId}.json`);
+  const receipt = JSON.parse(await fs.readFile(file, 'utf8'));
+  const ja = entry.locales!.ja!;
+  expect(receipt.nativePackage).toMatchObject({ packageId: entry.packageId, packageVersion: entry.packageVersion,
+    packageHash: entry.packageHash, locale: 'ja', opening: { welcome: ja.welcome,
+      capabilities: ja.capabilities.map(capability => capability.label) } });
+  expect(receipt.nativePackage.opening).toEqual(h.invitation.mock.calls[0]![3]);
+  expect(receipt.result.requestId).toBe(requestId);
+  // Keep the catalog identity valid: only the saved hash differs, so this exercises the receipt's drift fence.
+  receipt.nativePackage.packageHash = fingerprint('different content at the same version');
+  await fs.writeFile(file, JSON.stringify(receipt));
+  await expect(inviteNativeBotPackage({ ...entry, locale: 'en' }, 'renderer:3')).rejects.toMatchObject({ code: 'SELECTION_CHANGED' });
 });
 it('saves the teammate, opening and routine names in the language the invite was made in', async () => {
   h.native = true;
