@@ -16,6 +16,7 @@ const copy={
 const label=(key:keyof typeof copy):RemoteLocalizedText=>{const [fallback,cn,tw,ja,ko]=copy[key];return {fallback,translations:{en:fallback,'zh-CN':cn,'zh-TW':tw,ja,ko}};};
 const text=(key:keyof typeof copy,locale='en')=>label(key).translations?.[locale]??label(key).fallback;
 const ref=(id:string)=>({collectionId:'plugin-libraries',kind:'plugin-library',id});
+const size=(bytes:number)=>bytes<1024?`${bytes} B`:bytes<1024**2?`${(bytes/1024).toFixed(1)} KiB`:bytes<1024**3?`${(bytes/1024**2).toFixed(1)} MiB`:`${(bytes/1024**3).toFixed(1)} GiB`;
 
 export function registerLibraryResources(registry:RemoteResourceRegistry,host:TerminalPlugins){
   const ids=async()=>[...new Set([...(await host.list()).filter(ghost=>ghost.manifest.library).map(installedGhostStoragePart),...await host.library.ids()])];
@@ -23,7 +24,7 @@ export function registerLibraryResources(registry:RemoteResourceRegistry,host:Te
     const row=await host.library.overview(id),action=(name:string)=>`${name}:${row.revision}`;
     return {ref:ref(id),revision:row.revision,display:{title:row.name,subtitle:[text(row.state,locale),row.orphaned?text('retained',locale):''].filter(Boolean).join(' · ')},
       blocks:[{id:'location',primitive:'text',fallbackMarkdown:row.root??text('unavailable',locale)},
-        ...(row.bytes===null?[]:[{id:'usage',primitive:'text' as const,fallbackMarkdown:`${text('files',locale)}: ${row.files} · ${(row.bytes/1024/1024).toFixed(1)} MiB`}])],
+        ...(row.bytes===null?[]:[{id:'usage',primitive:'text' as const,fallbackMarkdown:`${text('files',locale)}: ${row.files} · ${size(row.bytes)}`}])],
       actions:row.state==='unavailable'?[]:[
         {id:action('relocate'),label:label('relocate'),fields:[{id:'directory',label:label('folder'),kind:'text',required:true}]},
         ...(row.location==='custom'?[{id:action('default'),label:label('defaults')}]:[]),

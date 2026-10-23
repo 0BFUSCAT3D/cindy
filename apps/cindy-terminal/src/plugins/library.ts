@@ -28,6 +28,7 @@ export class TerminalPluginLibrary {
     syncAgentReadonlyExtraDir?: GhostLibrarySlotDeps['syncAgentReadonlyExtraDir'];
   }) {
     this.bindings = new LibraryBindingStore({
+      strictReads: true,
       getFile: () => path.join(options.root, 'libraries-binding.json'),
       getManagedRoots: () => [path.resolve(options.root, '../..')],
       getDefaultRoot: id => this.root(id), log: options.log,

@@ -18,6 +18,7 @@ import {mkdtemp,writeFile,readFile,copyFile,rm,readdir,mkdir} from 'node:fs/prom
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
 import {build} from 'esbuild';
 import JSZip from 'jszip';
 import {installedGhostStoragePart} from '@cindy/plugin-runtime/shared/pluginIdentity';
@@ -51,6 +52,7 @@ it('creates and packs a real plugin using the cwd-bound Node scaffold worker wit
 });
 
 it('requires confirmation of exact bytes and keeps native credentials private across restart',async()=>{
+  const artifact='terminal-verified-download',artifactHash=createHash('sha256').update(artifact).digest('hex');
   const archive=new JSZip();
   archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-fixture',name:'Terminal fixture',version:'1.0.0',kind:'chip',entry:'main.js',settingsHtml:'settings.html',slots:['tool','node','card'],fs:true,tools:[{name:'check',description:'Verify fixture'}],node:{entry:'worker.cjs',protocol:'json-rpc-stdio',secretBindings:[{key:'key',label:'Fixture key',methods:['check']}]}}));
   const withNetwork=JSON.parse(await archive.file('ghost.json')!.async('string'));
@@ -59,7 +61,8 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   withNetwork.network={hosts:['accounts.example.com','api.example.com'],secrets:[{key:'oauth',label:'Fixture account',source:'oauth',inject:{header:'Authorization',format:'Bearer {value}',hosts:['api.example.com']},oauth:{authorizeUrl:'https://accounts.example.com/authorize',tokenUrl:'https://accounts.example.com/token',clientId:'fixture-client',scopes:['read']}}],connections:[{key:'instances',label:'Fixture instance',inject:{header:'Authorization',format:'Bearer {value}'}}]};
   archive.file('ghost.json',JSON.stringify(withNetwork));
   archive.file('main.js',`cindy.onHostMessage(async request=>{
-    const reply=await cindy.node.request({method:'check',callId:request.callId,cancelWithCall:true});
+    const downloaded=await cindy.send({type:'download-request',kind:'start',id:'browser-artifact',url:'https://api.example.com/artifact',sha256:'${artifactHash}',bytes:${artifact.length}});
+    const reply=await cindy.node.request({method:'check',downloadTokens:{artifact:downloaded.token},callId:request.callId,cancelWithCall:true});
     const saved=await cindy.send({type:'fs-request',op:'write',root:'workdir',path:'plugin-result.txt',content:'terminal-plugin-files',callId:request.callId});
     const library=await cindy.send({type:'library-request',op:'write',path:'works/browser.txt',content:'terminal-plugin-library',encoding:'utf8'});
     await cindy.send({type:'card-update',callId:request.callId,html:'<p>Plugin result</p><script>bad()</script>'});
@@ -67,14 +70,14 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:{reply,saved,library,callId:request.callId}});
   });`);
   archive.file('settings.html','<!doctype html><html><body>Fixture</body></html>');
-  archive.file('worker.cjs',String.raw`require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{configured:r.cindy?.secrets?.key==='synthetic-acceptance-key'}})+'\n');});`);
+  archive.file('worker.cjs',String.raw`require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{configured:r.cindy?.secrets?.key==='synthetic-acceptance-key',...(r.params?.downloads?{downloaded:require('node:fs').readFileSync(r.params.downloads.artifact,'utf8')}:{})}})+'\n');});`);
   const file=path.join(directory,'fixture.cindy'),bytes=await archive.generateAsync({type:'nodebuffer'});await writeFile(file,bytes);
   const vault=new TerminalSecretStore(path.join(directory,'vault'));await vault.open();await vault.initialize('machine');
   let failCleanup=false;
   const secrets={setManySync:(entries:Record<string,string|null>)=>vault.setManySync(entries),getSync:(key:string)=>vault.getSync(key),setSync:(key:string,value:string)=>vault.setSync(key,value),deleteSync:(key:string)=>vault.deleteSync(key),get:(key:string)=>vault.get(key),set:(key:string,value:string)=>vault.set(key,value),delete:async(key:string)=>{if(failCleanup&&key.includes(':oauth:'))throw new Error('Synthetic vault write interruption');await vault.delete(key);}};
   let active=true;const media=new TerminalTaskMedia(path.join(directory,'media'));
   const cardPushes:unknown[]=[];
-  const options={credentials:{
+  const options={downloadRequest:async(url:string,_init:RequestInit,beforeDispatch:()=>void)=>{beforeDispatch();expect(url).toBe('https://api.example.com/artifact');return {response:new Response(artifact)};},credentials:{
     getLoginEmail:()=>null,confirmAddHost:async()=>true,
     openExternal:async(url:string)=>{const authorization=new URL(url);const callback=new URL(authorization.searchParams.get('redirect_uri')!);callback.searchParams.set('state',authorization.searchParams.get('state')!);callback.searchParams.set('code','synthetic-code');await fetch(callback);},
     fetchImpl:async(input:Parameters<typeof fetch>[0],init?:RequestInit)=>{expect(String(input)).toBe('https://accounts.example.com/token');expect(new URLSearchParams(String(init?.body)).get('client_id')).toBe('fixture-client');return Response.json({access_token:'synthetic-oauth-access',refresh_token:'synthetic-oauth-refresh',expires_in:3600,scope:'read'});},
@@ -96,6 +99,13 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     expect(binding).toBeTruthy();
     const saveRequest={client,collectionId:'plugins',resourceRef:resource.ref,actionId:'credentials',input:{key:binding,value:'synthetic-acceptance-key'}};
     await registry.invoke(context,saveRequest);
+    // Integration tier: the public terminal pipe downloads real bytes through
+    // the shared verifier, then leases the receipt to the real Node worker.
+    const download=await host.receive(instance,{type:'download-request',kind:'start',id:'native-artifact',url:'https://api.example.com/artifact',sha256:artifactHash,bytes:artifact.length}) as {ok:boolean;token:string};
+    expect(download).toMatchObject({ok:true,bytes:artifact.length,sha256:artifactHash});
+    expect(await host.native.handleNodeRequest(instance,{type:'node-request',method:'check',downloadTokens:{artifact:download.token}})).toMatchObject({ok:true,result:{downloaded:artifact}});
+    expect(await host.receive(instance,{type:'download-request',kind:'start',id:'forbidden',url:'https://undeclared.example.com/artifact',sha256:artifactHash,bytes:artifact.length})).toMatchObject({ok:false});
+
     // The same production settings endpoints feed browser settings and terminal
     // forms. Synthetic provider HTTP still exercises real PKCE/loopback and vault.
     const settings=async(route:string,method='GET',body?:unknown)=>{
@@ -154,7 +164,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
         expect(payload(await client.callTool({name:'ghost_info',arguments:{ghost_id:'terminal-fixture'}}))).toMatchObject({ok:false,errorCode:'GHOST_DISABLED_IN_WORKDIR'});
         await preferences.set(directory,instance,false);
         called=payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{}}}));
-        expect(called).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true}},saved:{ok:true},library:{ok:true}}});
+        expect(called).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true,downloaded:artifact}},saved:{ok:true},library:{ok:true}}});
       }finally{await client.close();await server.close();pluginTask.close();setup.close();publisher.close();account.close();}
 
       expect(await readFile(path.join(directory,'plugin-result.txt'),'utf8')).toBe('terminal-plugin-files');
@@ -242,6 +252,15 @@ it('persists plugin works through restart and uninstall while isolating a change
     expect(await request(id,'db.open',{dbPath:'works/index.sqlite'})).toMatchObject({ok:true});
     expect(await request(id,'db.exec',{dbPath:'works/index.sqlite',sql:'SELECT name FROM works'})).toMatchObject({ok:true,rows:[{name:'retained work'}]});
     await expect(registry.invoke(context,relocation)).rejects.toThrow('PLUGIN_LIBRARY_CHANGED');
+    // A broken custom-root registry must not create a second, apparently empty
+    // default library. Only this synthetic fixture's registry is corrupted.
+    const bindingFile=path.join(root,'libraries-binding.json'),binding=await readFile(bindingFile);
+    try{
+      await writeFile(bindingFile,'{broken');
+      expect(await request(id,'write',{path:'works/must-not-appear.txt',content:'split library',encoding:'utf8'})).toMatchObject({ok:false});
+      await expect(host.library.overview(id)).rejects.toThrow();
+      await expect(readFile(path.join(root,'libraries',id,'works/must-not-appear.txt'))).rejects.toMatchObject({code:'ENOENT'});
+    }finally{await writeFile(bindingFile,binding);}
     const relocated=await registry.get(context,{client,ref});
     await registry.invoke(context,{client,collectionId:ref.collectionId,resourceRef:ref,actionId:relocated.actions!.find(action=>action.id.startsWith('default:'))!.id});
     expect(await request(id,'read',{path:'works/note.txt',encoding:'utf8'})).toMatchObject({ok:true,content:'retained work'});

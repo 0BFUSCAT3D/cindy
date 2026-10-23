@@ -244,7 +244,7 @@ describe('terminal authentication surface',()=>{
 // The production resource controller must retain server form defaults and its
 // revision token. Deletion must leave the stale detail screen (unit tier).
 it('edits resource defaults and returns to the collection after deletion',async()=>{
-  const host=fakeClient();let removed=false;let submitted:unknown;
+  const host=fakeClient();let removed=false;let submitted:unknown;const actionInputs:Record<string,unknown>={};
   const ref={collectionId:'fixture',kind:'fixture',id:'one'};
   const collection={id:'fixture',resourceKind:'fixture',title:'Records'};
   const item={ref,revision:'1',links:[],display:{title:'Saved record'}};
@@ -254,10 +254,13 @@ it('edits resource defaults and returns to the collection after deletion',async(
     if(channel==='maker:remote-resources:get')return {...item,actions:[
       {id:'edit',label:'Edit',fields:[{id:'title',label:'Title',kind:'text',required:true},{id:'mode',label:'Mode',kind:'select',options:[{value:'a',label:'A'},{value:'b',label:'B'}]},{id:'enabled',label:'Enabled',kind:'toggle'}]},
       {id:'delete',label:'Delete',confirmation:{title:'Delete record?',confirmLabel:'Delete'}},
-    ],blocks:[{id:'edit',primitive:'form',fallbackMarkdown:'',data:{actionId:'edit',values:{title:'Existing title',mode:'b',enabled:true,__revision:'rev-1'}}}]};
+      {id:'refresh',label:'Refresh'},
+    ],blocks:[{id:'edit',primitive:'form',fallbackMarkdown:'',data:{actionId:'edit',values:{title:'Existing title',mode:'b',enabled:true,__revision:'rev-1'}}},
+      ...['delete','refresh'].map(actionId=>({id:actionId,primitive:'form',fallbackMarkdown:'',data:{actionId,values:{__revision:'rev-1'}}}))]};
     if(channel==='maker:remote-resources:invoke'){
       const request=args[0] as {actionId:string;input:unknown};
-      if(request.actionId==='edit')submitted=request.input;else removed=true;
+      actionInputs[request.actionId]=request.input;
+      if(request.actionId==='edit')submitted=request.input;else if(request.actionId==='delete')removed=true;
       return {effects:[{kind:'refresh-collection',collectionId:'fixture'}]};
     }
   });
@@ -267,10 +270,12 @@ it('edits resource defaults and returns to the collection after deletion',async(
   await screen.press('\r');await screen.press('\r');await screen.press('\r');
   expect(submitted).toEqual({title:'Existing title',mode:'b',enabled:true,__revision:'rev-1'});
   expect(screen.latest()).toContain('Records');
+  await screen.press('\r');await screen.burst(['\x1b[B','\x1b[B','\r']);
+  expect(actionInputs.refresh).toEqual({__revision:'rev-1'});
   await screen.press('\r');await screen.burst(['\x1b[B','\r']);
   await screen.press('\r');expect(removed).toBe(false);
   await screen.burst(['\x1b[B','\r']);await screen.burst(['\x1b[B','\r']);
-  expect(removed).toBe(true);expect(screen.latest()).toContain('Records');expect(screen.latest()).not.toContain('Saved record');
+  expect(removed).toBe(true);expect(actionInputs.delete).toEqual({__revision:'rev-1'});expect(screen.latest()).toContain('Records');expect(screen.latest()).not.toContain('Saved record');
 });
 
 // Unit: real Ink typing must use the dedicated setup submission, never a

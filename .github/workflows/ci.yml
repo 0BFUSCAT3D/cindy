@@ -47,7 +47,9 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
       - name: Targeted authentication, vault, transport and engine tests
-        run: pnpm --filter cindy-terminal exec vitest run src/host.integration.test.ts src/tasks/host.test.ts src/engines/engines.test.ts src/ui/authentication.test.tsx src/maintenance.test.ts src/plugins/account.test.ts src/plugins/market.test.ts src/plugins/host.native.test.ts --maxWorkers=1 --minWorkers=1
+        run: pnpm --filter cindy-terminal exec vitest run src/host.integration.test.ts src/remote/service.test.ts src/tasks/host.test.ts src/engines/engines.test.ts src/ui/authentication.test.tsx src/maintenance.test.ts src/plugins/account.test.ts src/plugins/market.test.ts src/plugins/host.native.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Existing verified downloads and plugin download policy
+        run: pnpm --filter desktop exec vitest run src/main/downloader/__tests__/download.test.ts src/main/downloader/__tests__/scheduler.test.ts src/main/downloader/__tests__/requestInjection.test.ts src/main/cindy-brain/__tests__/downloadSlot.test.ts --maxWorkers=1 --minWorkers=1
       - name: Native plugin worker and existing broker ABI
         run: pnpm --filter @cindy/plugin-runtime exec vitest run src/nativeProcess.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal

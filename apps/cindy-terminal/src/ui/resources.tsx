@@ -71,7 +71,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     const block=resource?.blocks?.find(block=>block.primitive==='form'&&(block.data as {actionId?:string}|undefined)?.actionId===chosen.id);
     const defaults=(block?.data as {values?:Record<string,unknown>}|undefined)?.values??{};
     setAction(chosen);setConfirmed(!chosen.confirmation);setField(0);setValues(defaults);prepareField(chosen.fields?.[0],defaults);if(chosen.confirmation)setSelected(0);
-    if(!chosen.confirmation&&!chosen.fields?.length)void run(()=>submit(chosen,{}));
+    if(!chosen.confirmation&&!chosen.fields?.length)void run(()=>submit(chosen,defaults));
   }
   useEffect(()=>{
     epoch.current++;const at=epoch.current;setCollection(undefined);setResource(undefined);setAction(undefined);setSelected(0);
@@ -117,7 +117,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     if(key.upArrow)setSelected(value=>Math.max(0,value-1));
     if(key.downArrow)setSelected(value=>Math.min(count-1,value+1));
     if(key.return){
-      if(current&&!confirmedNow.current){if(selectedNow.current===0)setAction(undefined);else if(current.fields?.length){setConfirmed(true);prepareField(current.fields[0],valuesNow.current);}else void run(()=>submit(current,{}));}
+      if(current&&!confirmedNow.current){if(selectedNow.current===0)setAction(undefined);else if(current.fields?.length){setConfirmed(true);prepareField(current.fields[0],valuesNow.current);}else void run(()=>submit(current,valuesNow.current));}
       else if(currentField)nextField(currentField.kind==='toggle'?selectedNow.current===1:currentField.options?.[selectedNow.current]?.value);
       else lines[selectedNow.current]?.run();
     }

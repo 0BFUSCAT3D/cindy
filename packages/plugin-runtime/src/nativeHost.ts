@@ -14,6 +14,7 @@ export interface NativePluginHostOptions {
   manager: GhostManagerOptions;
   web?: Omit<HeadlessSandboxOptions, 'capture' | 'receive'> & { receive(instanceId: string, payload: unknown): Promise<unknown> };
   node: NativeNodeWorkerOptions & { snapshotWorkerPath: string };
+  withNodeRequest?(instanceId: string, payload: unknown, run: (payload: unknown) => Promise<unknown>): Promise<unknown>;
   broker: Omit<GhostNodeRuntimeBrokerDeps, 'getGhost' | 'instanceId' | 'spawnProcess' | 'spawnChildProcess' | 'bindDeviceAuthorizationTarget' | 'bindPluginAuthorizationTarget'>;
 }
 
@@ -129,7 +130,8 @@ export class NativePluginHost {
   async handleNodeRequest(instanceId: string, payload: unknown) {
     await this.refreshTail;
     if (this.closed) throw new Error('PLUGIN_HOST_CLOSED');
-    return this.node.handleRequest(instanceId, payload);
+    const run = (request: unknown) => this.node.handleRequest(instanceId, request);
+    return this.options.withNodeRequest ? this.options.withNodeRequest(instanceId, payload, run) : run(payload);
   }
 
   async close(): Promise<void> {

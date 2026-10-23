@@ -135,6 +135,11 @@ export class TerminalDeviceService {
         try { listener(snapshot); } catch { options.logger?.warn('Remote observer failed'); }
       }
       const entry = this.outbound.get(snapshot.deviceId);
+      // Presence loss can mean the remote process exited. Its old handshake is
+      // no longer evidence that the next process knows our reliable stream or
+      // subscriptions. Keep recovery intent and the shared relay intact; the
+      // existing link-open handshake reconciles transport state on return.
+      if (!snapshot.online && entry) entry.accepted = undefined;
       if (snapshot.online && entry?.wanted) this.scheduleRecovery(entry, 0);
     });
     this.client.onPeerTransportReset(({ deviceId }) => {

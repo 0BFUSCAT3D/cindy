@@ -205,6 +205,46 @@ describe('terminal bidirectional remote service', () => {
     await disposeFirst(); expect(lastTopics).toEqual(['session:s1']);
     await disposeSecond(); expect(lastTopics).toEqual([]);
   });
+
+  // Tier: integration. A running controller must restore its real device-link
+  // handshake when a server process restarts. Socket-loss coverage only restarts
+  // the controller; it cannot detect a stale accepted link to a new host process.
+  it('reopens a restarted host without interrupting another peer or replaying a write', async () => {
+    const relay = new Relay(), pushes = vi.fn(), survivingWrite = deferred<string>();
+    const healthyRun = vi.fn(async () => survivingWrite.promise);
+    const healthy = make(relay, 'healthy', { invokeLocal: healthyRun });
+    const first = make(relay, 'host');
+    const controller = make(relay, 'controller', { onPush: pushes });
+    const other = make(relay, 'other');
+    await online(first, healthy, controller, other);
+    await controller.subscribe('host', ['sessions']);
+    await other.subscribe('host', ['sessions']);
+    const healthySocket = relay.sockets.get('healthy');
+    const controllerSocket = relay.sockets.get('controller');
+    const write = controller.invoke('healthy', 'local-db:sessions:patch-meta', [{ id: 'saved' }]);
+    void write.catch(() => undefined); // afterEach can stop it if an earlier assertion fails.
+    await vi.waitFor(() => expect(healthyRun).toHaveBeenCalledTimes(1), { interval: 1 });
+    const presence = (isOnline: boolean) => {
+      for (const id of ['controller', 'other']) relay.sockets.get(id)!.push({
+        v: PROTOCOL_VERSION, kind: 'presence-changed', payload: { deviceId: 'host', online: isOnline },
+      });
+    };
+    first.stop(); presence(false);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const second = make(relay, 'host', { invokeLocal: async () => 'new-process' });
+    await online(second); presence(true);
+    await vi.waitFor(() => expect(relay.frames.filter(frame => frame.kind === 'link-open'
+      && frame.src === 'controller' && frame.dst === 'host')).toHaveLength(2), { interval: 1 });
+    await expect(controller.invoke('host', 'maker:remote-resources:manifest')).resolves.toBe('new-process');
+    await second.publish('local-db:sessions:patched', { sessionId: 's1' });
+    await vi.waitFor(() => expect(pushes).toHaveBeenCalledTimes(1), { interval: 1 });
+    survivingWrite.resolve('saved-once');
+    await expect(write).resolves.toBe('saved-once');
+    expect(healthyRun).toHaveBeenCalledTimes(1);
+    expect(relay.sockets.get('healthy')).toBe(healthySocket);
+    expect(relay.sockets.get('controller')).toBe(controllerSocket);
+    expect(await other.invoke('host', 'maker:remote-resources:manifest')).toBe('new-process');
+  });
   it('delivers only the joined task metadata and hides private handoff cards from guests', async () => {
     const relay = new Relay();
     const membership = new TerminalMembershipService({

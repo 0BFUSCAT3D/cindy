@@ -171,6 +171,9 @@ export type LibraryLocationResolution =
   | { kind: 'custom'; root: null; drift: 'binding-moved' | 'disk-missing'; record: LibraryBindingRecord };
 
 export interface LibraryBindingDeps {
+  /** New hosts fail closed on an unreadable registry instead of creating a
+   * second library in the default location. Legacy hosts retain their policy. */
+  strictReads?: boolean;
   /** owner-scoped libraries-binding.json 的绝对路径(生产注入;测试 tmpdir)。 */
   getFile(): string;
   /** 宿主受管根列表(userData、owners 树等):自定义库根不得落在其内。 */
@@ -319,7 +322,7 @@ export class LibraryBindingStore {
     return next;
   }
 
-  private async readData(strict = false): Promise<LibraryBindingFileData> {
+  private async readData(strict = this.deps.strictReads ?? false): Promise<LibraryBindingFileData> {
     const file = this.deps.getFile();
     let data: LibraryBindingFileData;
     let hasRelocation = false;

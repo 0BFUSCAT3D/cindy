@@ -25,6 +25,9 @@ import { evaluateGhostSetupAssessment } from '@cindy/plugin-runtime/ghostSetupSt
 import { TerminalPluginIdentity } from './identity.js';
 import type { TerminalPluginAccount } from './account.js';
 import { TerminalPluginLibrary } from './library.js';
+import { PluginDownloadSlot, type PluginDownloadDeps } from '@cindy/plugin-runtime/downloadSlot';
+import { createDownloader } from '@cindy/plugin-runtime/download/index';
+import { fetchSingleHopWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';
 import { ghostManifestDigest, type PluginMarketInstallationRecord } from '@cindy/plugin-runtime/market/ledger';
 
 type Inspected = Exclude<Awaited<ReturnType<NativePluginHost['manager']['inspect']>>, {rejection:unknown}>;
@@ -43,6 +46,7 @@ export interface TerminalPluginOptions {
   cards:Pick<GhostCardServiceDeps,'persist'|'broadcast'>;
   fs:Pick<FsSlotDeps,'getSessionSnapshot'|'requestWriteConfirm'|'writeSaveDeposit'>;
   network?:Omit<NetworkSlotDeps,'getGhost'|'captureRequestGuard'|'readSecret'>;
+  downloadRequest?: PluginDownloadDeps['guardedFetch'];
   credentials?:Partial<TerminalPluginCredentialOptions>;
   account?:TerminalPluginAccount;
   broker?:NativePluginHostOptions['broker'];
@@ -60,6 +64,7 @@ export class TerminalPlugins {
   readonly credentials:TerminalPluginCredentials;
   readonly identity:TerminalPluginIdentity;
   readonly library:TerminalPluginLibrary;
+  readonly downloads:PluginDownloadSlot;
   readonly setupChanges=new GhostSetupChangeBus();
   private readonly pending = new Map<string,PendingInstall>();
   private readonly removing=new Set<string>();
@@ -79,6 +84,11 @@ export class TerminalPlugins {
     this.kv=createGhostKvStore({getRootDir:()=>path.join(options.root,'plugin-kv'),log:options.log});
     const getGhost=(id:string)=>{this.guard();return this.native.list().find(ghost=>installedGhostStoragePart(ghost)===id)??null;};
     this.library=new TerminalPluginLibrary({root:options.root,runtimeDirectory:options.runtimeDirectory,getGhost,current:()=>this.current(),log:options.log});
+    this.downloads=new PluginDownloadSlot({getGhost,root:id=>path.join(options.root,'plugin-downloads',id),
+      scope:()=>{this.guard();return options.root;},send:(id,event)=>{if(this.current())this.native.web?.send(id,event);},
+      download:createDownloader(),guardedFetch:options.downloadRequest??((url,init,beforeDispatch)=>
+        fetchSingleHopWithSsrFGuard({url,init,signal:init.signal??undefined,requireHttps:true,beforeDispatch})),
+    });
     this.cards=new GhostCardService({...options.cards,sanitize:sanitizeGhostCardHtml,
       hasCardSlot:id=>{const ghost=getGhost(id);return !!ghost?.enabled&&ghost.approval?.state==='approved'&&ghost.manifest.card!==undefined;},
       log:{debug:(message,meta)=>options.log?.info(message,meta),warn:(message,meta)=>options.log?.warn(message,meta)},
@@ -102,6 +112,8 @@ export class TerminalPlugins {
         getOwnerContextKey:()=>{this.guard();return options.root;},getLocale:options.locale,log:options.log,
         onChanged:ghosts=>{this.revision++;for(const ghost of ghosts)this.setupChanges.emit(installedGhostStoragePart(ghost),{source:'manifest'});options.changed();}},
       node:{nodePath:process.execPath,workerPath:path.join(options.runtimeDirectory,'plugin-node-worker.cjs'),snapshotWorkerPath:path.join(options.runtimeDirectory,'plugin-snapshot-worker.cjs')},
+      withNodeRequest:(id,payload,run)=>payload&&typeof payload==='object'&&!Array.isArray(payload)
+        ?this.downloads.withNodeDownloads(id,payload as Record<string,unknown>,run,()=>this.current()):run(payload),
       broker:{...options.broker,log:options.log,ownerScope:{capture:()=>{this.guard();return this;},isCurrent:value=>value===this&&this.current(),isStable:()=>this.current()},
         resolveOauthSecret:(id,key,account)=>this.credentials.resolveOauthSecret(id,key,account),
         readSecret:(id,key)=>this.readSecret(id,key),secretSaved:async(id,key)=>(await this.readSecret(id,key))!==null},
@@ -122,6 +134,7 @@ export class TerminalPlugins {
     if(type==='fetch-request'&&this.network)return this.network.handleFetchRequest(id,payload);
     if(type==='fs-request')return this.fs.handleFsRequest(id,payload);
     if(type==='library-request')return this.library.slot.handleLibraryRequest(id,payload);
+    if(type==='download-request')return this.downloads.handle(id,payload,()=>this.current());
     if(type==='card-update'){this.cards.handleCardUpdate(id,payload);return {ok:true};}
     return this.options.receive(id,payload);
   }
@@ -233,6 +246,7 @@ export class TerminalPlugins {
    * crash, and invokes it in reverse if the new receipt cannot be committed. */
   private async archiveSourceState(from:string,to:string){
     this.guard();this.credentials.oauth.invalidateGhost(from);this.credentials.oauth.invalidateGhost(to);
+    await this.downloads.cancelPlugin(from);await this.downloads.cancelPlugin(to);
     await this.library.slot.invalidateGhost(from);await this.library.slot.invalidateGhost(to);
     const moves=['plugin-kv','plugin-fs','libraries','library-staging','plugin-downloads'].map(dir=>({from:path.join(this.options.root,dir,from+(dir==='plugin-kv'?'.json':'')),to:path.join(this.options.root,dir,to+(dir==='plugin-kv'?'.json':''))}));
     for(const move of moves)if(fs.existsSync(move.from)&&fs.existsSync(move.to))throw new Error('PLUGIN_ARCHIVE_COLLISION');
@@ -266,7 +280,7 @@ export class TerminalPlugins {
       const check=()=>{this.guard();assertCurrent();const receiver=findInstalledGhostForDeliveryTarget(this.native.manager.list(),{ghostId:inspected.manifest.id,namespace:pending.namespace});if((receiver?installedGhostStoragePart(receiver):null)!==pending.receiver||Boolean(receiver&&this.sourceChanged(receiver,inspected,pending.installOrigin,pending.record))!==pending.sourceChanged)throw new Error('PLUGIN_CHANGED');assertGhostInstallConsent(decision,receiver,inspected.manifest,inspected.packageSha256);this.identity.assertInstall({manifest:inspected.manifest,packageSha256:inspected.packageSha256,namespace:pending.namespace,installOrigin:pending.installOrigin,record:pending.record});};
       check();
       const approvals={taskCapabilityApproved:confirmedTaskCapability(decision,installed,inspected.manifest),targetCapabilityApproved:confirmedTaskCapability(decision,installed,inspected.manifest,'targets')};
-      if(installed){const instance=installedGhostStoragePart(installed);this.native.runtime?.stop(instance);await this.native.node.stopAndWait(instance);await this.library.slot.invalidateGhost(instance);check();}
+      if(installed){const instance=installedGhostStoragePart(installed);this.native.runtime?.stop(instance);await this.native.node.stopAndWait(instance);await this.downloads.cancelPlugin(instance);await this.library.slot.invalidateGhost(instance);check();}
       this.identity.begin(inspected.manifest.id,pending.namespace,inspected.packageSha256,installed??null,pending.record);
       const result=installed
         // The manager pins the previous receipt and package hash under its
@@ -290,7 +304,7 @@ export class TerminalPlugins {
     });
   }
   async setEnabled(id:string,enabled:boolean) {
-    return this.mutate(async()=>{const ghost=await this.get(id);const result=await this.native.manager.setEnabled(installedGhostPhysicalRelId(ghost),enabled,ghostInstallApprovalToken(ghost.approval),()=>this.guard());if('rejection' in result)throw new Error('PLUGIN_CHANGE_REJECTED');if(!enabled)await this.library.slot.invalidateGhost(id);await this.native.refresh();});
+    return this.mutate(async()=>{const ghost=await this.get(id);const result=await this.native.manager.setEnabled(installedGhostPhysicalRelId(ghost),enabled,ghostInstallApprovalToken(ghost.approval),()=>this.guard());if('rejection' in result)throw new Error('PLUGIN_CHANGE_REJECTED');if(!enabled){await this.downloads.cancelPlugin(id);await this.library.slot.invalidateGhost(id);}await this.native.refresh();});
   }
   private secretIndex(id:string){return `plugin-key-index:${id}`;}
   private storedSecretKeys(id:string):string[] {
@@ -345,6 +359,7 @@ export class TerminalPlugins {
       this.cleanup.set(id,[...keys]);await this.persistCleanup();this.guard();
       const result=await this.native.manager.uninstall(installedGhostPhysicalRelId(ghost));
       if('rejection' in result){this.cleanup.delete(id);await this.persistCleanup();throw new Error('PLUGIN_REMOVE_REJECTED');}
+      await this.downloads.removePlugin(id);
       try{await this.library.orphan(id,ghost.manifest.name);}catch{this.options.log?.warn('Plugin library orphan marker remains unchanged');}
       this.identity.removed(ghost);
       await this.native.refresh();
@@ -358,8 +373,8 @@ export class TerminalPlugins {
   private closing?:Promise<void>;
   close(){
     if(this.closing)return this.closing;
-    this.credentials.close();this.closed=true;this.options.onClose?.();this.pending.clear();
-    return this.closing=(async()=>{await this.ready.catch(()=>{});await this.mutations;try{await this.native.close();}finally{await this.library.close();await this.cards.flushWrites();}})();
+    this.credentials.close();this.closed=true;this.downloads.abortAll();this.options.onClose?.();this.pending.clear();
+    return this.closing=(async()=>{await this.ready.catch(()=>{});await this.mutations;try{await this.native.close();}finally{await this.downloads.stopAndWait();await this.library.close();await this.cards.flushWrites();}})();
   }
 }
 
