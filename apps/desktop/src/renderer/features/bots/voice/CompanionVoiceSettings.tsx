@@ -24,7 +24,6 @@ import type {
 } from '@/../shared/voiceConversation';
 import {
   normalizeVoiceConversationSelection,
-  resolveSpeechSpeed,
   voiceModelKey,
 } from '@/../shared/voiceConversation';
 import { referenceSpeechVoices } from '@/../shared/speechVoices';
@@ -251,8 +250,7 @@ export function CompanionVoiceSettings(props: Props) {
   }, [props.beforeLeaveRef, persist, ready, selection, protocol, preview]);
   const carrySpeed = (next: VoiceConversationSelection): VoiceConversationSelection => {
     const previousSpeed = speed ?? preference?.speed;
-    const nextProtocol = resolveVoiceConfiguration(models, next).protocol;
-    const nextSpeed = resolveSpeechSpeed(next.modelId, nextProtocol, previousSpeed);
+    const nextSpeed = resolveVoiceConfiguration(models, next, undefined, previousSpeed).speed;
     setSpeed(undefined);
     setSpeedNotice(previousSpeed !== nextSpeed ? (nextSpeed ?? 1) : undefined);
     return { ...next, ...(nextSpeed !== undefined ? { speed: nextSpeed } : {}) };
@@ -450,7 +448,7 @@ export function CompanionVoiceSettings(props: Props) {
               modelId: selectedModel.id,
               protocol: protocolOverride,
               voice: value,
-              speed: resolveSpeechSpeed(selectedModel.id, protocol, speed ?? preference?.speed),
+              speed: effectiveSpeed,
             });
             if (save && next && validModel && protocol) void persist(next);
           }}

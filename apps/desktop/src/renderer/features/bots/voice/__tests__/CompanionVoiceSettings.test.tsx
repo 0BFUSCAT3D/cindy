@@ -435,6 +435,35 @@ it('reconciles the saved speed on model changes and keeps it when changing the v
   expect(saved).not.toHaveProperty('speed');
 });
 
+// OpenRouter uses OpenAI transport, but does not promise OpenAI's speed range.
+// Exercise real settings save/preview and call-start resolution with an old saved speed.
+it('honors route speed limits when reopening, editing and previewing an OpenRouter voice', async () => {
+  const router: VoiceConversationModel = {
+    id: 'elevenlabs/eleven-v3', name: 'Eleven v3', providerId: 'router', agent: 'codex',
+    protocol: 'openai', protocolLocked: true, speedRange: null,
+  };
+  models = [router];
+  const saved = { providerId: 'router', agent: 'codex' as const, modelId: router.id, voice: 'sarah', speed: 1.5 };
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({ selection: saved, customized: true });
+  renderSettings();
+  await screen.findByText('bots.voiceMode.speedUnavailable');
+  expect(screen.queryByRole('slider')).toBeNull();
+  expect(resolveVoiceConfiguration(models, saved).selection).not.toHaveProperty('speed');
+  const voice = await screen.findByLabelText('bots.voiceMode.voiceId');
+  await waitFor(() => expect((voice as HTMLInputElement).disabled).toBe(false));
+  fireEvent.change(voice, { target: { value: 'custom-voice-id' } });
+  fireEvent.blur(voice);
+  await waitFor(() => expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
+    'bot', { providerId: 'router', agent: 'codex', modelId: router.id, voice: 'custom-voice-id' },
+  ));
+  const previewButton = await screen.findByRole('button', { name: 'bots.voiceMode.preview' });
+  await waitFor(() => expect((previewButton as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(previewButton);
+  await waitFor(() => expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalled());
+  expect(vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0]).toMatchObject({ voice: 'custom-voice-id', modelId: router.id });
+  expect(vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0]).not.toHaveProperty('speed');
+});
+
 it('defaults to sentence playback, persists a playback-only change, and restores the default', async () => {
   models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   const view = renderSettings();

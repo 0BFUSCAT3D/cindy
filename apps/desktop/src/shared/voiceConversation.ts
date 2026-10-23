@@ -50,7 +50,7 @@ export type VoiceExitDecision = boolean | 'submit_then_exit';
 
 export { speechSpeedRange, isSpeechSpeedSupported, resolveSpeechSpeed } from './speechProtocols.js';
 export type { SpeechProtocol } from './speechProtocols.js';
-import { SPEECH_PROTOCOLS, type SpeechProtocol } from './speechProtocols.js';
+import { SPEECH_PROTOCOLS, type SpeechProtocol, type SpeechSpeedRange } from './speechProtocols.js';
 
 // Missing provider/runtime is the original Cindy AI selection, never another connection.
 export type SpeechModelSelection = {
@@ -91,6 +91,9 @@ export type VoiceConversationModel = {
   protocol?: SpeechProtocol;
   /** The official endpoint fixes protocol; saved overrides cannot select another adapter. */
   protocolLocked?: boolean;
+  /** Host-owned route capability. Absent uses protocol defaults; null omits speed.
+   * Display only, never persisted or accepted as a caller-provided capability. */
+  speedRange?: SpeechSpeedRange;
   defaultVoice?: string;
 };
 export type VoiceConversationPreference = {
