@@ -41,7 +41,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - name: Install target-native dependencies
-        run: pnpm install --frozen-lockfile
+        shell: bash
+        run: pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
       - name: Targeted authentication, vault, transport and engine tests
         run: pnpm --filter cindy-terminal exec vitest run src/host.integration.test.ts src/engines/engines.test.ts src/ui/authentication.test.tsx src/maintenance.test.ts --maxWorkers=1 --minWorkers=1
       - name: Native plugin worker and existing broker ABI

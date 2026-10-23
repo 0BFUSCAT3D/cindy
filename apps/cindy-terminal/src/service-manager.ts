@@ -135,7 +135,7 @@ export class TerminalServiceManager {
       } else if (this.platform === 'win32') {
         // The COM state enum is locale-independent (4 = running). No password,
         // interactive PowerShell profile or command-shell interpolation.
-        const script = `$s=New-Object -ComObject Schedule.Service;$s.Connect();$t=$s.GetFolder('\\').GetTask('${this.id}');[Console]::Write([int]$t.State)`;
+        const script = `$s=[Activator]::CreateInstance([type]::GetTypeFromProgID('Schedule.Service'));$s.Connect();$t=$s.GetFolder('\\').GetTask('${this.id}');[Console]::Write([int]$t.State)`;
         const { stdout } = await this.execute(windowsSystemCommand('powershell',this.env), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 15_000, windowsHide: true, env: windowsPowerShellEnv(this.env) });
         result.managerAvailable = result.registered = true;
         result.running = stdout.trim() === '4';
@@ -265,8 +265,13 @@ export class TerminalServiceManager {
   }
 
   private userSystemctl(args: string[], timeout = 10_000) {
-    const runtime = this.env.XDG_RUNTIME_DIR || `/run/user/${this.userId()}`;
-    return this.execute('systemctl', ['--user', ...args], { timeout, env: { ...this.env, XDG_RUNTIME_DIR: runtime, DBUS_SESSION_BUS_ADDRESS: this.env.DBUS_SESSION_BUS_ADDRESS || `unix:path=${runtime}/bus` } });
+    // A service or sudo session may inherit another account's runtime path.
+    // Always address the current Unix account's systemd manager; desktop
+    // session buses and caller-supplied bus overrides are not its identity.
+    const runtime = `/run/user/${this.userId()}`;
+    const env: NodeJS.ProcessEnv = { ...this.env, XDG_RUNTIME_DIR: runtime, DBUS_SESSION_BUS_ADDRESS: `unix:path=${runtime}/bus` };
+    delete env.SYSTEMD_BUS_ADDRESS;
+    return this.execute('systemctl', ['--user', ...args], { timeout, env });
   }
   async uninstall(): Promise<ServiceRemoval> {
     const current = await this.status();

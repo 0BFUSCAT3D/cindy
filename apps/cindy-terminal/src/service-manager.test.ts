@@ -51,15 +51,20 @@ it('keeps Linux registration distinct from running and verifies the explicit boo
   const directory = await mkdtemp(path.join(os.tmpdir(), 'cindy-service-command-test-')); directories.push(directory);
   let linger = false;
   let running = false;
-  const execute = vi.fn(async (file: string, args: string[]) => {
+  const execute = vi.fn(async (file: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
     if (file === 'loginctl') {
       if (args[0] === 'enable-linger') linger = true;
       return { stdout: linger ? 'yes\n' : 'no\n', stderr: '' };
     }
+    // Native linger acceptance inherited UID 1001's runtime while the service
+    // actually ran as UID 1002. Every systemctl operation must use its own bus.
+    expect(options.env?.XDG_RUNTIME_DIR).toBe('/run/user/12345');
+    expect(options.env?.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/run/user/12345/bus');
+    expect(options.env?.SYSTEMD_BUS_ADDRESS).toBeUndefined();
     if (args[1] === 'start') running = true;
     return { stdout: `LoadState=loaded\nActiveState=${running ? 'active' : 'inactive'}\nMainPID=${running ? 2345 : 0}\n`, stderr: '' };
   });
-  const manager = new TerminalServiceManager(path.join(directory, 'profile'), path.join(directory, 'cli.js'), process.execPath, { platform: 'linux', home: directory, uid: 12345, env: {}, execute });
+  const manager = new TerminalServiceManager(path.join(directory, 'profile'), path.join(directory, 'cli.js'), process.execPath, { platform: 'linux', home: directory, uid: 12345, env: { XDG_RUNTIME_DIR: '/run/user/999', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/999/bus', SYSTEMD_BUS_ADDRESS: 'unix:path=/run/user/999/bus' }, execute });
   expect(await manager.install()).toMatchObject({ starts: 'login', registrationOnly: true });
   expect(await manager.inspect()).toMatchObject({ registered: true, running: false, starts: 'login', bootEnableCommand: ['loginctl', 'enable-linger', '12345'] });
   expect(await manager.enableBoot()).toMatchObject({ running: false, starts: 'boot' });

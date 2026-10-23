@@ -50,9 +50,11 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   archive.file('worker.cjs',String.raw`require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{configured:r.cindy?.secrets?.key==='synthetic-acceptance-key'}})+'\n');});`);
   const file=path.join(directory,'fixture.cindy'),bytes=await archive.generateAsync({type:'nodebuffer'});await writeFile(file,bytes);
   const vault=new TerminalSecretStore(path.join(directory,'vault'));await vault.open();await vault.initialize('machine');
+  let failCleanup=false;
+  const secrets={get:(key:string)=>vault.get(key),set:(key:string,value:string)=>vault.set(key,value),delete:async(key:string)=>{if(failCleanup&&key.includes(':oauth:'))throw new Error('Synthetic vault write interruption');await vault.delete(key);}};
   let active=true;const media=new TerminalTaskMedia(path.join(directory,'media'));
   const cardPushes:unknown[]=[];
-  const options={root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets:vault,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},cards:{persist:(row:import('@cindy/plugin-runtime/cardService').GhostCardRow)=>media.savePluginCard(row,()=>{}),broadcast:(payload:unknown)=>{cardPushes.push(payload);}},fs:{getSessionSnapshot:async()=>({workingDir:directory,permissionMode:'bypassPermissions',planModeEnabled:false,remoteHostId:null,isCurrent:()=>active}),requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
+  const options={root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},cards:{persist:(row:import('@cindy/plugin-runtime/cardService').GhostCardRow)=>media.savePluginCard(row,()=>{}),broadcast:(payload:unknown)=>{cardPushes.push(payload);}},fs:{getSessionSnapshot:async()=>({workingDir:directory,permissionMode:'bypassPermissions',planModeEnabled:false,remoteHostId:null,isCurrent:()=>active}),requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
   const host=new TerminalPlugins(options);
   try{
     const registry=new RemoteResourceRegistry();registerPluginResources(registry,host);
@@ -65,8 +67,11 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     expect(await host.list()).toEqual([]);
     await writeFile(file,bytes);
     const valid=await host.prepareInstall(file,'controller-a');const ghost=await host.confirmInstall(valid.id,'controller-a');const instance=installedGhostStoragePart(ghost);
-    await host.saveSecret(instance,'key','synthetic-acceptance-key');
     const resource=await registry.get(context,{client,ref:{collectionId:'plugins',kind:'plugin',id:instance}});
+    const binding=resource.actions?.find(action=>action.id==='credentials')?.fields?.find(field=>field.id==='key')?.options?.[0].value;
+    expect(binding).toBeTruthy();
+    const saveRequest={client,collectionId:'plugins',resourceRef:resource.ref,actionId:'credentials',input:{key:binding,value:'synthetic-acceptance-key'}};
+    await registry.invoke(context,saveRequest);
     expect(JSON.stringify(resource)).not.toContain('synthetic-acceptance-key');
     expect((await readFile(path.join(directory,'vault','secrets.enc'),'utf8'))).not.toContain('synthetic-acceptance-key');
     if(process.env.CINDY_TEST_CHROMIUM){
@@ -80,9 +85,29 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
       expect(await host.fs.handleFsRequest(instance,{type:'fs-request',op:'write',root:'workdir',path:'late-write.txt',content:'late',callId:cards[0].callId})).toMatchObject({ok:false});
       expect(host.kv.read(instance)).toEqual({visited:true});
     }
+    // Integration regression: an old remote form cannot bind new bytes to the
+    // previous package's credential request, even when the secret key is reused.
+    const updated=JSON.parse(await archive.file('ghost.json')!.async('string'));updated.version='1.0.1';
+    archive.file('ghost.json',JSON.stringify(updated));await writeFile(file,await archive.generateAsync({type:'nodebuffer'}));
+    const update=await host.prepareInstall(file,'controller-a');await host.confirmInstall(update.id,'controller-a');
+    await expect(registry.invoke(context,saveRequest)).rejects.toThrow('PLUGIN_CHANGED');
+    await host.writeSecret(instance,'oauth:fixture:refresh','synthetic-refresh-value');
     const approval=(await host.list())[0].approval;await host.close();
     const next=new TerminalPlugins(options);
-    try{expect((await next.list())[0].approval).toEqual(approval);await next.setEnabled(instance,false);expect((await next.list())[0].enabled).toBe(false);active=false;await expect(next.list()).rejects.toThrow('OWNER_CHANGED');}
-    finally{await next.close();}
+    try{
+      expect((await next.list())[0].approval).toEqual(approval);await next.setEnabled(instance,false);expect((await next.list())[0].enabled).toBe(false);
+      // Integration regression: a failed vault delete after package removal
+      // used to lose the only retry opportunity, including derived OAuth keys.
+      failCleanup=true;await expect(next.uninstall(instance)).rejects.toThrow('PLUGIN_REMOVE_CLEANUP_FAILED');
+      expect(await next.list()).toEqual([]);expect(await vault.get(`plugin:${instance}:oauth:fixture:refresh`)).toBe('synthetic-refresh-value');
+    }finally{await next.close();}
+    failCleanup=false;const recovered=new TerminalPlugins(options);
+    try{
+      expect(await recovered.list()).toEqual([]);
+      expect(await vault.get(`plugin:${instance}:oauth:fixture:refresh`)).toBeNull();
+      expect(await vault.get(`plugin:${instance}:key`)).toBeNull();
+      expect(recovered.kv.read(instance)).toEqual({});
+      active=false;await expect(recovered.list()).rejects.toThrow('OWNER_CHANGED');
+    }finally{await recovered.close();}
   }finally{await host.close();vault.lock();await media.close();}
 });

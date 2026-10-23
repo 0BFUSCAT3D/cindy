@@ -119,6 +119,7 @@ try {
     record('real local WebRTC data channel', 'PASS');
   } finally { sender.onopen=null;sender.close();if(receiver){receiver.onmessage=null;receiver.close();}right.ondatachannel=null;left.close();right.close(); }
 
+  if(process.platform==='win32')await promisify(execFile)(path.join(process.env.SystemRoot,'System32/wevtutil.exe'),['sl','Microsoft-Windows-TaskScheduler/Operational','/e:true'],{timeout:10_000}).catch(()=>{});
   const install = await run(['service', 'install'], { raw: true });
   if (install.code === 0) {
     registered = true; record('native user-service registration', 'PASS');
@@ -168,10 +169,12 @@ try {
   if(process.platform==='win32'){
     const installation=JSON.parse(await readFile(path.join(profile,'service-installation.json'),'utf8').catch(()=>'null'));
     if(installation?.id){
-      const script=`$ErrorActionPreference='Stop';[Console]::WriteLine('PS_START');$s=New-Object -ComObject Schedule.Service;[Console]::WriteLine('PS_COM');$s.Connect();[Console]::WriteLine('PS_CONNECTED');$t=$s.GetFolder('\\').GetTask('${installation.id}');[Console]::WriteLine('State='+[int]$t.State);[Console]::WriteLine('LastResult='+$t.LastTaskResult);[Console]::WriteLine('LastRun='+$t.LastRunTime);[Console]::WriteLine($t.Xml)`;
+      const script=`$ErrorActionPreference='Stop';[Console]::WriteLine('PS_START');$s=[Activator]::CreateInstance([type]::GetTypeFromProgID('Schedule.Service'));[Console]::WriteLine('PS_COM');$s.Connect();[Console]::WriteLine('PS_CONNECTED');$t=$s.GetFolder('\\').GetTask('${installation.id}');[Console]::WriteLine('State='+[int]$t.State);[Console]::WriteLine('LastResult='+$t.LastTaskResult);[Console]::WriteLine('LastRun='+$t.LastRunTime);[Console]::WriteLine($t.Xml)`;
       const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe');
       const diagnostic=await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env:process.env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:String(error.message)+' '+(error.stderr??'')}));
       console.log('SYNTHETIC_SCHEDULER_STATE',diagnostic.stdout,diagnostic.stderr);
+      const events=await promisify(execFile)(path.join(process.env.SystemRoot,'System32/wevtutil.exe'),['qe','Microsoft-Windows-TaskScheduler/Operational',`/q:*[EventData[Data[@Name='TaskName']='\\${installation.id}']]`,'/f:text','/c:40','/rd:true'],{timeout:10_000}).catch(error=>({stdout:error.stdout??'',stderr:String(error.message)}));
+      console.log('SYNTHETIC_SCHEDULER_EVENTS',events.stdout,events.stderr);
       console.log('SYNTHETIC_SERVICE_ENDPOINT',await readFile(path.join(profile,'service.json'),'utf8').then(text=>{const {pid}=JSON.parse(text);return {pid};}).catch(()=>null));
     }
   }

@@ -1,6 +1,6 @@
 import type { RemoteResourceRegistry, RemoteResource, RemoteLocalizedText } from '@cindy/device-link';
 import { installedGhostStoragePart } from '@cindy/plugin-runtime/shared/pluginIdentity';
-import { ghostPermissionItems, type GhostPermissionItem, type InstalledGhost } from '@cindy/plugin-runtime/shared/ghost';
+import { ghostInstallApprovalToken, ghostPermissionItems, type GhostPermissionItem, type InstalledGhost } from '@cindy/plugin-runtime/shared/ghost';
 import type { TerminalPlugins } from './host.js';
 import permissions from './permissions.json';
 
@@ -24,7 +24,7 @@ function secretFields(ghost:InstalledGhost){
   const keys=new Map<string,string>();
   for(const secret of ghost.manifest.network?.secrets??[])if(['user','gh-cli'].includes(secret.source??'user'))keys.set(secret.key,secret.label);
   for(const binding of ghost.manifest.node?.secretBindings??[])if(!binding.oauthSecret)keys.set(binding.key,binding.label);
-  return [...keys].map(([value,label])=>({value,label}));
+  return [...keys].map(([key,label])=>({value:Buffer.from(JSON.stringify([key,ghostInstallApprovalToken(ghost.approval)])).toString('base64url'),label}));
 }
 
 export function registerPluginResources(registry:RemoteResourceRegistry,host:TerminalPlugins){
@@ -68,7 +68,10 @@ export function registerPluginResources(registry:RemoteResourceRegistry,host:Ter
       else if(request.actionId==='remove')await host.uninstall(id);
       else if(request.actionId==='credentials'){
         const key=request.input?.key,value=request.input?.value;if(typeof key!=='string'||typeof value!=='string')throw new Error('PLUGIN_SECRET_INVALID');
-        await host.saveSecret(id,key,value);
+        let binding:unknown;
+        try{binding=JSON.parse(Buffer.from(key,'base64url').toString());}catch{throw new Error('PLUGIN_SECRET_FORM_STALE');}
+        if(!Array.isArray(binding)||binding.length!==2||binding.some(part=>typeof part!=='string'))throw new Error('PLUGIN_SECRET_FORM_STALE');
+        await host.saveSecret(id,binding[0],value,binding[1],context.assertCurrent);
       }else throw new Error('INVALID_ACTION');
       return {effects:[{kind:'refresh-collection',collectionId:'plugins'}]};
     },
