@@ -1,10 +1,9 @@
 /**
- * useProviderAccountUsage —— API Key 供应商余额卡数据 hook。
+ * useProviderAccountUsage —— API Key 供应商余额/额度数据 hook。
  *
  * 与订阅卡的 useProviderSubscriptionCard 互补：那边读 OAuth 订阅配额，这边经
- * PROVIDER_ACCOUNT_USAGE 读供应商自己的账户接口。挂载时拉一次，刷新按钮手动
- * forceRefresh；不支持（unsupported）时 hook 返回 supported=false，模块不渲染。
- * 失败不重试轮询——重试入口是刷新按钮本身。
+ * PROVIDER_ACCOUNT_USAGE 读供应商自己的账户接口。挂载时拉一次；失败不轮询，重挂载
+ * （重开详情/chip 重现）即重试。不支持（unsupported）时 supported=false，模块不渲染。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -12,7 +11,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProviderView } from '@cindy/model-providers';
 
 import type { ProviderAccountUsageResult } from '../../shared/providerAccountUsage';
-import { isZhipuCodingPlanProviderView } from '../lib/zhipuCodingPlan';
+import {
+  hasDeepSeekOfficialRouteView,
+  isZhipuCodingPlanProviderView,
+} from '../lib/providerAccountUsageView';
 
 export interface ProviderAccountUsageState {
   /** false = 该供应商没有可读的账户接口，调用方不应渲染模块。 */
@@ -22,30 +24,13 @@ export interface ProviderAccountUsageState {
   refresh: () => void;
 }
 
-const DEEPSEEK_ORIGIN = 'https://api.deepseek.com';
-
-/** 任一 runtime 是否指向官方 DeepSeek 端点（与 main 认领规则同口径，首屏免查询裁剪用）。 */
-function hasDeepSeekOfficialRoute(provider: ProviderView | undefined): boolean {
-  if (!provider) return false;
-  return Object.values(provider.routing ?? {}).some((route) => {
-    const upstream = (route as { upstream?: string } | undefined)?.upstream;
-    if (!upstream) return false;
-    try {
-      const url = new URL(upstream);
-      return url.protocol === 'https:' && url.origin === DEEPSEEK_ORIGIN;
-    } catch {
-      return false;
-    }
-  });
-}
-
 export function useProviderAccountUsage(
   provider: ProviderView | undefined,
 ): ProviderAccountUsageState {
   const supported =
     !!provider
     && provider.auth?.method !== 'oauth'
-    && (hasDeepSeekOfficialRoute(provider) || isZhipuCodingPlanProviderView(provider));
+    && (hasDeepSeekOfficialRouteView(provider) || isZhipuCodingPlanProviderView(provider));
   const [result, setResult] = useState<ProviderAccountUsageResult | null>(null);
   const [busy, setBusy] = useState(false);
   const requestId = useRef(0);
