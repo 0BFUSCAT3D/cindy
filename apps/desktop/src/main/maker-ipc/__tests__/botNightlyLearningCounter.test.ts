@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   row: null as null | { botId: string; role: string; createdAt: number; meta: string; inputMeta: string | null; inputContent?: string },
   record: vi.fn(),
 }));
+vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => 'owner',
   isAppSessionBoundaryPending: () => false,

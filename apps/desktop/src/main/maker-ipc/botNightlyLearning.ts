@@ -49,6 +49,8 @@ const MAX_REPLIES = 400;
 const MESSAGE_BUDGET = 60_000;
 const USER_TEXT_CHARS = 4_000;
 const ASSISTANT_TEXT_CHARS = 3_000;
+/** 这么久以内开始、还没完成的回复会挡住水位，等它完成后再学；更早的视为已中断，不再等。 */
+const IN_FLIGHT_HOLD_MS = 6 * 60 * 60_000;
 
 export class NightlyLearningError extends Error {
   constructor(readonly code: 'NOT_FOUND' | 'CHANGED' | 'BUSY' | 'UNAVAILABLE', message: string) {
@@ -91,8 +93,20 @@ const parseMeta = (raw: string | null) => {
   try { return JSON.parse(raw || '{}') as Record<string, any>; } catch { return {}; }
 };
 
-/** 读取水位之后主人和伙伴完成的对话轮次；口径与计数器（botNightlyLearningCounter.ts）一致。 */
-async function readTurns(botId: string, after: number, until: number): Promise<{ turns: Turn[]; truncated: boolean }> {
+type TurnScan = {
+  turns: Turn[];
+  /** 读到了 until 之前的全部回复；否则 scannedThrough 是这一批扫到的最后一条回复的时间。 */
+  complete: boolean;
+  scannedThrough: number;
+  /** 最早一条仍在生成的回复的时间；水位不能越过它。 */
+  holdAt: number;
+};
+
+/**
+ * 读取水位之后主人和伙伴完成的对话轮次；口径与计数器（botNightlyLearningCounter.ts）一致。
+ * 已经学过的回复（learned）跳过；被过滤掉的回复同样算扫过，水位照常推进。
+ */
+async function readTurns(botId: string, after: number, until: number, learned: Record<string, number>): Promise<TurnScan> {
   const rows = await getDbClient().query<{
     sessionId: string; id: string; content: string; meta: string; createdAt: number; role: string;
     inputId: string | null; inputContent: string | null; inputMeta: string | null;
@@ -117,9 +131,14 @@ async function readTurns(botId: string, after: number, until: number): Promise<{
     [botId, after, until],
   );
   const turns: Turn[] = [];
+  let holdAt = Infinity;
   for (const row of rows.slice(0, MAX_REPLIES)) {
     const meta = parseMeta(row.meta);
-    if (meta.turnCompleted !== true || meta.parentUuid || meta.botPrivateReply || meta.botGroupLane) continue;
+    if (meta.parentUuid || meta.botPrivateReply || meta.botGroupLane || learned[row.id]) continue;
+    if (meta.turnCompleted !== true) {
+      if (row.createdAt > until - IN_FLIGHT_HOLD_MS) holdAt = Math.min(holdAt, row.createdAt);
+      continue;
+    }
     const inputMeta = parseMeta(row.inputMeta);
     if (!row.inputId || isAutomaticInputOriginKind(inputMeta.origin?.kind)) continue;
     const source = inputMeta.imSource;
@@ -136,7 +155,8 @@ async function readTurns(botId: string, after: number, until: number): Promise<{
       ],
     });
   }
-  return { turns, truncated: rows.length > MAX_REPLIES };
+  const complete = rows.length <= MAX_REPLIES;
+  return { turns, complete, scannedThrough: complete ? until : rows[MAX_REPLIES - 1]!.createdAt, holdAt };
 }
 
 /** 从工具调用记录里数这个伙伴的技能被读了几次：调用技能，或读了它技能目录下的 SKILL.md。 */
@@ -207,17 +227,19 @@ const sameMemory = (a: MemorySnapshot, b: MemorySnapshot) =>
 const sameSkill = (a: SkillSnapshot, b: SkillSnapshot) =>
   (!a && !b) || (!!a && !!b && a.source === b.source && a.enabled === b.enabled);
 
-/** 把一条记忆改成目标内容（null = 删除），返回改完后的实际内容。 */
-async function applyMemory(store: MemoryStore, filename: string, target: MemorySnapshot): Promise<MemorySnapshot> {
-  const current = await readMemory(store, filename);
+/**
+ * 把一条记忆改成目标内容（null = 删除），返回改完后的实际内容。expected 是调用方刚核对过的版本
+ * （null = 应当不存在），直接交给存储层核对：这之间被改过就由存储层拒绝，不覆盖。
+ */
+async function applyMemory(store: MemoryStore, filename: string, target: MemorySnapshot, expected: string | null): Promise<MemorySnapshot> {
   if (!target) {
-    if (current) await store.delete(filename, current.frontmatter.updatedAt);
+    if (expected !== null) await store.delete(filename, expected);
     return null;
   }
-  if (!current) {
+  if (expected === null) {
     await store.write({ type: target.type, name: target.slug, title: target.title, description: target.description, body: target.body, mode: 'create', preserveBody: true });
   } else {
-    await store.update(filename, current.frontmatter.updatedAt, { title: target.title, description: target.description, body: target.body });
+    await store.update(filename, expected, { title: target.title, description: target.description, body: target.body });
   }
   return memorySnapshot(await readMemory(store, filename));
 }
@@ -297,11 +319,18 @@ async function runLocked(
   const state = (await readNightlyLearningState(root, botId)) ?? null;
   const snapshotTurns = state?.pending.turns ?? 0;
   const after = state?.throughAt ?? (state?.pending.firstAt ? state.pending.firstAt - 1 : startedAt);
-  const { turns, truncated } = await readTurns(botId, after, startedAt);
-  const selected = learningSnapshotPrefix(turns, MESSAGE_BUDGET);
+  const scan = await readTurns(botId, after, startedAt, state?.learned ?? {});
+  const selected = learningSnapshotPrefix(scan.turns, MESSAGE_BUDGET);
   const messages = selected.flatMap((turn) => turn.messages);
-  const readAll = !truncated && selected.length === turns.length;
-  const throughAt = readAll ? startedAt : (selected.at(-1)?.createdAt ?? after);
+  const allSelected = selected.length === scan.turns.length;
+  const readAll = scan.complete && allSelected;
+  // 没读完时退到最后读到的那一毫秒之前，同一毫秒里还没读的回复下次仍能读到；读过的记进 learned 跳过。
+  // 仍在生成的回复挡住水位，等它完成后再学。
+  const frontier = !allSelected ? (selected.at(-1)?.createdAt ?? after + 1) - 1
+    : scan.complete ? startedAt : scan.scannedThrough - 1;
+  const throughAt = Math.max(after, Math.min(frontier, scan.holdAt - 1));
+  const learnedNow: Record<string, number> = {};
+  for (const turn of selected) if (turn.createdAt > throughAt) learnedNow[turn.messages[1]!.id] = turn.createdAt;
   const perSession = new Map<string, number>();
   for (const turn of selected) perSession.set(turn.sessionId, (perSession.get(turn.sessionId) ?? 0) + 1);
   const consumedTurns = readAll ? snapshotTurns : selected.length;
@@ -312,9 +341,15 @@ async function runLocked(
       if (advance) {
         subtractPending(s, perSession, consumedTurns);
         s.throughAt = Math.max(s.throughAt ?? 0, throughAt);
+        const learned = Object.fromEntries(Object.entries({ ...s.learned, ...learnedNow }).filter(([, at]) => at > s.throughAt!));
+        if (Object.keys(learned).length) s.learned = learned;
+        else delete s.learned;
       }
       extra?.(s);
-      s.runs.unshift(run);
+      // 整理开始前已先登记了这次运行（逐条记录改动），这里补齐结果。
+      const existing = s.runs.find((r) => r.id === run.id);
+      if (existing) Object.assign(existing, run);
+      else s.runs.unshift(run);
       return s;
     });
   };
@@ -327,6 +362,12 @@ async function runLocked(
   const enabledSkills = (await Promise.all(catalog.filter((s) => s.enabled !== false).map((s) => readBotSkillForBot(botId, s.slug))))
     .filter((s) => s !== null);
   const skillFull = learningSnapshotBudget(enabledSkills.filter((s) => s.body.length <= 12000), 30_000);
+  // 运行前的技能原文与启用状态；写入前核对，模型返回前被改过或停用的技能不覆盖。
+  const skillBefore = new Map<string, SkillSnapshot>();
+  for (const s of catalog.filter((c) => c.enabled !== false)) {
+    const source = await readBotSkillSourceForBot(botId, s.slug);
+    if (source !== null) skillBefore.set(s.slug, { source, enabled: true });
+  }
   const usageNow = await countSkillUsage(botId, new Set(catalog.map((s) => s.slug)), after, throughAt);
   const usage = { ...(state?.skillUsage ?? {}) };
   for (const [slug, value] of usageNow) {
@@ -398,18 +439,34 @@ async function runLocked(
 
   const items: NightlyLearningItem[] = [];
   const backup: NightlyLearningBackup = {};
-  const add = (item: Omit<NightlyLearningItem, 'id'>, kind: 'memory' | 'skill', b: MemorySnapshot | SkillSnapshot, a: MemorySnapshot | SkillSnapshot) => {
+  // 改动前先登记这次运行，每改一条就把备份和记录落盘：中途退出时已做的改动仍能在记录里撤销。
+  await updateNightlyLearningState(root, botId, (s) => {
+    s.runs.unshift({ id: runId, at: startedAt, ...(manual ? { manual: true } : {}), outcome: 'nothing', turns: selected.length, items: [] });
+    return s;
+  });
+  const add = async (item: Omit<NightlyLearningItem, 'id'>, kind: 'memory' | 'skill', b: MemorySnapshot | SkillSnapshot, a: MemorySnapshot | SkillSnapshot) => {
     const id = `i${items.length + 1}`;
     items.push({ id, ...item });
     backup[id] = { kind, before: b, after: a };
+    await writeNightlyLearningBackup(root, botId, runId, backup);
+    await updateNightlyLearningState(root, botId, (s) => {
+      const run = s.runs.find((r) => r.id === runId);
+      if (!run) return null;
+      run.items = structuredClone(items);
+      run.outcome = 'learned';
+      return s;
+    });
   };
   const full = new Map(memoryFull.map((m) => [m.filename, m]));
-  // 合并时保留的那一条可能同一轮里改了标题：「并入」显示改后的标题。
-  const plannedTitles = new Map(plan.memories.flatMap((op) => (op.op === 'update' ? [[op.filename, op.title] as const] : [])));
+  // 合并 = 更新保留的那一条 + 删除来源。保留项的更新没写成功、保留项不存在或这一轮也要删时，不删来源。
+  const plannedUpdates = new Set(plan.memories.flatMap((op) => (op.op === 'update' ? [op.filename] : [])));
+  const plannedDeletes = new Set(plan.memories.flatMap((op) => (op.op === 'delete' ? [op.filename] : [])));
+  const appliedUpdates = new Map<string, string>();
   const titleOf = (filename: string) =>
-    plannedTitles.get(filename) ?? memories.find((m) => m.filename === filename)?.frontmatter.title ?? filename;
+    appliedUpdates.get(filename) ?? memories.find((m) => m.filename === filename)?.frontmatter.title ?? filename;
+  const memoryOps = [...plan.memories.filter((op) => op.op !== 'delete'), ...plan.memories.filter((op) => op.op === 'delete')];
 
-  for (const op of store ? plan.memories : []) {
+  for (const op of store ? memoryOps : []) {
     if (!current()) break;
     try {
       if (op.op === 'create') {
@@ -417,7 +474,7 @@ async function runLocked(
         const filename = `${op.type}_${op.name}.md`;
         if (await readMemory(store!, filename)) continue;
         const target: MemorySnapshot = { filename, type: op.type, slug: op.name, title: op.title, description: op.description, body: op.body, updatedAt: '' };
-        add({ kind: 'memory', action: 'created', target: filename, title: op.title, reason: op.reason }, 'memory', null, await applyMemory(store!, filename, target));
+        await add({ kind: 'memory', action: 'created', target: filename, title: op.title, reason: op.reason }, 'memory', null, await applyMemory(store!, filename, target, null));
         continue;
       }
       const prior = full.get(op.filename);
@@ -427,13 +484,16 @@ async function runLocked(
       const beforeSnap = memorySnapshot(live);
       if (op.op === 'update') {
         if (op.body === live.body && op.title === live.frontmatter.title && op.description === live.frontmatter.description) continue;
-        const afterSnap = await applyMemory(store!, op.filename, { ...beforeSnap!, title: op.title, description: op.description, body: op.body });
-        add({ kind: 'memory', action: 'updated', target: op.filename, title: op.title, reason: op.reason }, 'memory', beforeSnap, afterSnap);
+        const afterSnap = await applyMemory(store!, op.filename, { ...beforeSnap!, title: op.title, description: op.description, body: op.body }, live.frontmatter.updatedAt);
+        appliedUpdates.set(op.filename, op.title);
+        await add({ kind: 'memory', action: 'updated', target: op.filename, title: op.title, reason: op.reason }, 'memory', beforeSnap, afterSnap);
       } else {
-        await applyMemory(store!, op.filename, null);
-        add({
+        const into = op.mergedInto;
+        if (into && (plannedDeletes.has(into) || (plannedUpdates.has(into) && !appliedUpdates.has(into)) || !(await readMemory(store!, into)))) continue;
+        await applyMemory(store!, op.filename, null, live.frontmatter.updatedAt);
+        await add({
           kind: 'memory', action: 'deleted', target: op.filename, title: live.frontmatter.title, reason: op.reason,
-          ...(op.mergedInto ? { mergedInto: titleOf(op.mergedInto) } : {}),
+          ...(into ? { mergedInto: titleOf(into) } : {}),
         }, 'memory', beforeSnap, null);
       }
     } catch (error) {
@@ -443,18 +503,23 @@ async function runLocked(
 
   const enabledSlugs = new Set(skillFull.map((s) => s.slug));
   const nameOf = (slug: string) => catalog.find((s) => s.slug === slug)?.name ?? slug;
-  for (const op of plan.skills) {
+  const plannedSkillUpdates = new Set(plan.skills.flatMap((op) => (op.op === 'update' ? [op.slug] : [])));
+  const appliedSkillUpdates = new Set<string>();
+  const skillOps = [...plan.skills.filter((op) => op.op === 'update'), ...plan.skills.filter((op) => op.op !== 'update')];
+  for (const op of skillOps) {
     if (!current()) break;
     try {
       if (op.op === 'update' && !enabledSlugs.has(op.slug)) continue;
-      if (op.op === 'disable' && !catalog.some((s) => s.slug === op.slug && s.enabled !== false)) continue;
+      if (op.op === 'disable' && op.mergedInto && plannedSkillUpdates.has(op.mergedInto) && !appliedSkillUpdates.has(op.mergedInto)) continue;
+      const expected = skillBefore.get(op.slug);
       const beforeSnap = await readSkill(botId, op.slug);
-      if (!beforeSnap) continue;
+      if (!beforeSnap || !expected || !sameSkill(beforeSnap, expected)) continue;
       const target: SkillSnapshot = op.op === 'update'
         ? { source: renderBotSkillFile({ slug: op.slug, name: op.title, description: op.description, updatedAt: new Date().toISOString(), body: op.body }), enabled: true }
         : { source: beforeSnap.source, enabled: false };
       const afterSnap = await applySkill(botId, op.slug, target);
-      add({
+      if (op.op === 'update') appliedSkillUpdates.add(op.slug);
+      await add({
         kind: 'skill', action: op.op === 'update' ? 'updated' : 'disabled', target: op.slug,
         title: op.op === 'update' ? op.title : nameOf(op.slug), reason: op.reason,
         ...(op.op === 'disable' && op.mergedInto ? { mergedInto: nameOf(op.mergedInto) } : {}),
@@ -472,12 +537,14 @@ async function runLocked(
     if (!candidate || !hasLearningEvidence(op, messages, true)) continue;
     if (catalog.some((s) => s.slug === op.slug)) continue;
     try {
+      if (await readSkill(botId, op.slug)) continue;
       const target: SkillSnapshot = {
         source: renderBotSkillFile({ slug: op.slug, name: op.title, description: op.description, updatedAt: new Date().toISOString(), body: op.body }),
         enabled: true,
       };
-      add({ kind: 'skill', action: 'created', target: op.slug, title: op.title, reason: op.reason }, 'skill', null, await applySkill(botId, op.slug, target));
+      const afterSnap = await applySkill(botId, op.slug, target);
       promoted.add(candidate.id);
+      await add({ kind: 'skill', action: 'created', target: op.slug, title: op.title, reason: op.reason }, 'skill', null, afterSnap);
     } catch (error) {
       log.warn('nightly skill promotion skipped', { botId, error: String(error) });
     }
@@ -492,7 +559,6 @@ async function runLocked(
   }
   const forgotten = new Set(plan.forget);
 
-  if (items.length) await writeNightlyLearningBackup(root, botId, runId, backup);
   await recordRun(
     { id: runId, at: startedAt, ...(manual ? { manual: true } : {}), outcome: items.length ? 'learned' : 'nothing', turns: selected.length, items },
     (s) => {
@@ -509,10 +575,25 @@ async function runLocked(
   return { resultText: items.length ? `Nightly learning made ${items.length} change(s)` : 'Nightly learning found nothing to change' };
 }
 
+/**
+ * 排队等待期间可能换了账号：技能服务按执行时的当前账号取目录，备份目录却是入队前取的。
+ * 每次读写前核对仍是入队时的账号，不是就拒绝，不写进另一个账号。
+ */
+function ownerGuard(): () => void {
+  const owner = activeOwnerScopeKey();
+  const db = getDbClient();
+  return () => {
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner || getDbClient() !== db)
+      throw new NightlyLearningError('UNAVAILABLE', 'Account changed');
+  };
+}
+
 /** 撤销（redo=false）或恢复（redo=true）一条改动；内容在那之后被改过时拒绝，不覆盖。 */
 export async function revertNightlyLearningItem(botId: string, runId: string, itemId: string, redo: boolean): Promise<void> {
   const root = ownerScopedUserDataPath();
+  const assertOwner = ownerGuard();
   await runSerializedForTeammate(botId, async () => {
+    assertOwner();
     const state = await readNightlyLearningState(root, botId);
     const item = state?.runs.find((r) => r.id === runId)?.items.find((i) => i.id === itemId);
     const backup = await readNightlyLearningBackup(root, botId, runId);
@@ -526,10 +607,12 @@ export async function revertNightlyLearningItem(botId: string, runId: string, it
       if (!store) throw new NightlyLearningError('UNAVAILABLE', 'Memory is turned off');
       const live = memorySnapshot(await readMemory(store, item.target));
       if (!sameMemory(live, expected as MemorySnapshot)) throw new NightlyLearningError('CHANGED', 'Changed since then');
-      actual = await applyMemory(store, item.target, target as MemorySnapshot);
+      assertOwner();
+      actual = await applyMemory(store, item.target, target as MemorySnapshot, live?.updatedAt ?? null);
     } else {
       const live = await readSkill(botId, item.target);
       if (!sameSkill(live, expected as SkillSnapshot)) throw new NightlyLearningError('CHANGED', 'Changed since then');
+      assertOwner();
       actual = await applySkill(botId, item.target, target as SkillSnapshot);
     }
     // 记下还原后的实际内容（记忆的更新时间会变），下一次恢复 / 撤销按它核对。
@@ -550,8 +633,10 @@ export async function revertNightlyLearningItem(botId: string, runId: string, it
 /** 「现在记成技能」直接用候选的草稿建技能并记一条可撤销记录；「不用学」移出观察且以后不再加回。 */
 export async function resolveNightlyLearningCandidate(botId: string, candidateId: string, action: 'promote' | 'decline'): Promise<void> {
   const root = ownerScopedUserDataPath();
+  const assertOwner = ownerGuard();
   let changed = false;
   await runSerializedForTeammate(botId, async () => {
+    assertOwner();
     const state = await readNightlyLearningState(root, botId);
     const candidate = state?.candidates.find((c) => c.id === candidateId);
     if (!candidate) throw new NightlyLearningError('NOT_FOUND', 'Candidate not found');
@@ -567,6 +652,7 @@ export async function resolveNightlyLearningCandidate(botId: string, candidateId
     const base = normalizeBotSkillSlug(candidate.draft.name) ?? `skill-${candidateId.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(-8)}`;
     let slug = base;
     for (let n = 2; existing.has(slug); n += 1) slug = `${base.slice(0, 60)}-${n}`;
+    assertOwner();
     const after = await applySkill(botId, slug, {
       source: renderBotSkillFile({ slug, name: candidate.draft.name, description: candidate.draft.description, updatedAt: new Date().toISOString(), body: candidate.draft.body }),
       enabled: true,

@@ -7,6 +7,7 @@
  * 以及宿主合成的隐藏指令（开场问候、续跑等 `[UI_ACTION_TRIGGER]` 行）。
  * 同一条回复只计一次（回复上记 nightlyLearningCounted），重启或重放终态不会重复计数。
  */
+import { BrowserWindow } from 'electron';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending, ownerScopedUserDataPath } from '../appSessionState.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { patchMessageAgentMetaWithResult } from '../localDb/ipc/messages.js';
@@ -72,4 +73,9 @@ export async function countNightlyLearningTurn(sessionId: string, replyId: strin
   });
   if (!claimed || !current()) return;
   await recordNightlyLearningTurn(ownerScopedUserDataPath(), row.botId, sessionId, row.createdAt);
+  // 打开着的例行任务页与学习记录页随之刷新「待整理」；换账号后不推给新账号的页面。
+  if (!current()) return;
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('routines:changed');
+  }
 }

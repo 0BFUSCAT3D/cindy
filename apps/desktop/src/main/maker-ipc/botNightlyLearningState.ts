@@ -35,6 +35,11 @@ export interface NightlyLearningState {
   pending: { turns: number; sessions: Record<string, number>; firstAt?: number };
   /** 已整理到的回复时间（created_at，毫秒）；之后的回复留给下一次。 */
   throughAt?: number;
+  /**
+   * 水位之后已经学过的回复（回复 client_id → created_at）。水位为等仍在生成的回复而停在前面，
+   * 或一批没读完时，下一次跳过这些回复，不重复学同一轮；水位越过后随之删除。
+   */
+  learned?: Record<string, number>;
   runs: NightlyLearningRun[];
   candidates: NightlyLearningCandidateRecord[];
   /** 用户点过「不用学」的做法标题，避免下次又加回观察。 */
@@ -76,6 +81,8 @@ export function parseNightlyLearningState(raw: unknown): NightlyLearningState {
   const pending = isRecord(raw.pending) ? raw.pending : {};
   const sessions: Record<string, number> = {};
   if (isRecord(pending.sessions)) for (const [id, n] of Object.entries(pending.sessions)) if (num(n) > 0) sessions[id] = num(n);
+  const learned: Record<string, number> = {};
+  if (isRecord(raw.learned)) for (const [id, at] of Object.entries(raw.learned)) if (num(at) > 0) learned[id] = num(at);
   const usage: NightlyLearningState['skillUsage'] = {};
   if (isRecord(raw.skillUsage)) for (const [slug, value] of Object.entries(raw.skillUsage))
     if (isRecord(value)) usage[slug] = { count: num(value.count), lastUsedAt: num(value.lastUsedAt) };
@@ -85,6 +92,7 @@ export function parseNightlyLearningState(raw: unknown): NightlyLearningState {
     ...(raw.frequency === 'weekly' ? { frequency: 'weekly' as const } : {}),
     pending: { turns: num(pending.turns), sessions, ...(num(pending.firstAt) ? { firstAt: num(pending.firstAt) } : {}) },
     ...(num(raw.throughAt) ? { throughAt: num(raw.throughAt) } : {}),
+    ...(Object.keys(learned).length ? { learned } : {}),
     runs: Array.isArray(raw.runs) ? (raw.runs.filter(isRecord) as unknown as NightlyLearningRun[]).slice(0, MAX_RUNS) : [],
     candidates: Array.isArray(raw.candidates)
       ? (raw.candidates.filter((c) => isRecord(c) && typeof c.id === 'string' && isRecord(c.draft)) as unknown as NightlyLearningCandidateRecord[])
