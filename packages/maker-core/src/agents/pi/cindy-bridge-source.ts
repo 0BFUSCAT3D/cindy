@@ -3189,6 +3189,16 @@ class CindyMcpGateway {
     };
   }
 
+  /**
+   * 未披露时的回执（路标）：指名该查哪个 server/tool，并说明重发即可放行。
+   * tool_call hook 与 executeCall 共用同一段文本，避免两处漂移。
+   */
+  private disclosureSignpost(call: ResolvedMcpGatewayCall): string {
+    return 'Inspect this tool before execution by calling cindy_mcp_list_tools with '
+      + JSON.stringify({ server: call.tool.serverName, tool: call.tool.name })
+      + '. The current schema has already been recorded; re-send the same call to proceed.';
+  }
+
   isSchemaDisclosed(call: ResolvedMcpGatewayCall): boolean {
     const key = mcpGatewayKey(call.tool.serverName, call.tool.name);
     return this.disclosedSchemas.get(key) === this.schemaFingerprint(call.tool);
@@ -3389,10 +3399,25 @@ class CindyMcpGateway {
       );
     }
     if (!this.isSchemaDisclosed(resolved)) {
-      throw new Error(
-        'Inspect this tool before execution by calling cindy_mcp_list_tools with ' +
-        JSON.stringify({ server: resolved.tool.serverName, tool: resolved.tool.name }) + '.',
+      // 拦一次，把路标递到模型手上，同时记账。
+      //
+      // 记账解决的是披露整片失效：按 schema 指纹记账后，只有真正新增或 schema 真变动
+      // 的工具才拦，同一工具的第二次调用直接放行。
+      //
+      // 拦这一次的理由是零拦截实测出来的代价（2026-10-15）：模型没有任何信号知道
+      // 该去查 schema，参数名和信封层级只能靠服务端报错反推——实测把 target_session_id
+      // 猜成 worker_id、把 args 里的字段平铺到调用根，连续撞 -32602 后才放弃。回执里
+      // 指名 server/tool，模型才会去 list_tools。
+      //
+      // 拦时即记账，模型照路标重发即放行。放行的语义是「这个工具的 schema 我见过了」，
+      // 不是「这组参数是对的」：参数仍由工具自身 inputSchema 校验。
+      this.markSchemaDisclosed(resolved);
+      console.warn(
+        '[cindy-bridge] gateway tool auto-disclosed on first call: '
+        + resolved.tool.serverName + '/' + resolved.tool.name
+        + '; signposting inspection instead of staying silent',
       );
+      throw new Error(this.disclosureSignpost(resolved));
     }
     return this.executeResolvedCall(resolved, signal);
   }
@@ -4669,22 +4694,26 @@ export default async function cindyBridge(piApi: any) {
         : event.toolName === CINDY_BOT_MEMORY_TOOL
           ? mcpGateway.resolveBotMemory(event.input)
         : null;
-    const gatewayCall = resolvedGatewayCall && mcpGateway.isSchemaDisclosed(resolvedGatewayCall)
-      ? resolvedGatewayCall
-      : CINDY_DIRECT_BOT_TOOLS.has(event.toolName)
-        ? resolvedGatewayCall
-        : event.toolName === CINDY_BOT_MEMORY_TOOL
-          ? resolvedGatewayCall
-        : null;
-    // Invalid, unknown, or not-yet-inspected gateway input cannot execute a
-    // capability. Let execute() return its deterministic discovery/schema error
-    // without showing a misleading permission prompt for the wrapper itself.
+    // 分类只认「解析成功」：披露状态不参与权限命名与采集分类，否则被门拦下的那次
+    // 会被当成非 gateway 调用，权限命名与采集都会漏掉这一条。
+    const gatewayCall = resolvedGatewayCall;
+    // Invalid or unknown gateway input cannot execute a capability. Let execute()
+    // return its deterministic discovery/schema error without showing a misleading
+    // permission prompt for the wrapper itself.
     if (
       (event.toolName === CINDY_MCP_CALL_TOOL
         || CINDY_DIRECT_BOT_TOOLS.has(event.toolName)
         || event.toolName === CINDY_BOT_MEMORY_TOOL)
       && !gatewayCall
     ) return;
+    // 披露门必须判在**发起权限询问之前**：pi 的权限询问由本 hook 发起，若等到工具实现
+    // 里才拦，这次弹框已经发生了 —— 被门拦下的一次也打扰用户，与 pi-harness 记载的
+    // 「未检查 schema 的调用在 bridge 内 fail closed，不会触达 MCP 或弹权限框」相悖。
+    // 未披露的首次调用在这里直接放行给 execute（execute 的门会记账并回路标），不弹框；
+    // 模型照路标补完 list_tools 后重发时已披露，才正常过一次权限。
+    if (event.toolName === CINDY_MCP_CALL_TOOL && gatewayCall && !mcpGateway.isSchemaDisclosed(gatewayCall)) {
+      return;
+    }
     const permissionToolName = gatewayCall?.qualifiedName ?? event.toolName;
     const permissionInput = gatewayCall?.args ?? event.input ?? {};
     let decision: string | undefined;
@@ -4757,13 +4786,9 @@ export default async function cindyBridge(piApi: any) {
         : event.toolName === CINDY_BOT_MEMORY_TOOL
           ? mcpGateway.resolveBotMemory(event.input)
         : null;
-    const gatewayCall = resolvedGatewayCall && mcpGateway.isSchemaDisclosed(resolvedGatewayCall)
-      ? resolvedGatewayCall
-      : CINDY_DIRECT_BOT_TOOLS.has(event.toolName)
-        ? resolvedGatewayCall
-        : event.toolName === CINDY_BOT_MEMORY_TOOL
-          ? resolvedGatewayCall
-        : null;
+    // 分类只认「解析成功」：自愈放行的首次调用发生在记账之前，若在这里按披露状态
+    // 判定，它会被当成非 gateway 调用，权限命名与采集都会漏掉这一条。
+    const gatewayCall = resolvedGatewayCall;
     const captureToolName = gatewayCall?.qualifiedName ?? event.toolName;
     const captureInput = gatewayCall?.args ?? event.input ?? {};
     if (!isCindyShellTool(captureToolName) && !String(captureToolName ?? '').startsWith('mcp__')) return;

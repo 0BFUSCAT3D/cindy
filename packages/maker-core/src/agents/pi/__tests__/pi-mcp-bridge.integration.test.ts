@@ -1460,18 +1460,20 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
   );
 
   it(
-    'known tools cannot execute or prompt until their exact input schema has been inspected',
+    'an uninspected tool call is blocked once, then executes once on the re-send',
     { timeout: 90_000 },
     async () => {
       echoCalls.length = 0;
       opaqueTurnCaptures.length = 0;
       let permissionCount = 0;
+      const sessionId = 'mcp-itest-uninspected-first-call';
       const { permissionAsked, requestBodies } = await runOneTurn(
         'ask',
         async (req) => {
           permissionCount += 1;
           expect(req.kind).toBe('permission');
           if (req.kind === 'permission') {
+            // 首次调用即便未 inspect 也要按完整 gateway 工具身份过权限（分类只认解析成功）。
             expect(req.toolName).toBe('mcp__cindy_echo__echo');
             expect(req.input).toEqual({ text: 'hello-pi' });
           }
@@ -1479,17 +1481,25 @@ describe.skipIf(!piAvailable)('PiAgent × cindy-bridge (real pi + MCP bridge + p
         },
         'local',
         'call without schema inspection',
-        // 披露记录按会话落盘：给独立会话，才走得到「首次未披露」。
+        // localHostOnly 占位：本用例只要会话隔离，不要 local host 工具配置。
         false,
-        'mcp-itest-uninspected-first-call',
+        sessionId,
       );
 
       expect(permissionAsked).toBe(true);
+      // 剧本：首次盲调在权限询问**之前**就被披露门拦下（不弹权限框、不执行工具，只回
+      // 一条指名路标的错误），模型照路标补 list_tools 后重发；重发时已披露，正常过一次
+      // 权限门才真正落到 MCP。
       expect(permissionCount).toBe(1);
       expect(echoCalls).toEqual([{ text: 'hello-pi' }]);
-      expect(requestBodies[1]).toContain('Inspect this tool before execution');
-      expect(requestBodies[2]).toContain('inputSchema');
-      await waitFor(() => opaqueTurnCaptures.length === 1);
+      expect(requestBodies.some((body) => body.includes('Inspect this tool before execution'))).toBe(true);
+      // 披露记录已按当前 schema 写入，模型随后补的 list_tools 仍返回 schema。
+      expect(requestBodies.some((body) => body.includes('inputSchema'))).toBe(true);
+      await waitFor(() => opaqueTurnCaptures.length >= 1);
+      expect(opaqueTurnCaptures[0]).toMatchObject({
+        sessionId,
+        provider: 'pi',
+      });
     },
   );
 
