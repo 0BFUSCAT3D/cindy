@@ -1,6 +1,8 @@
 import type { AgentKind, Effort } from '@cindy/maker-core';
 import { effectiveSourceIdForModel, findCatalogModel, type ProviderView } from '@cindy/model-providers';
 import { resolveCompatibleSessionRuntimeEffort } from './sessionRuntimeControl';
+import { parseScheduledModelBaseline, type ScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
+import { throwIpcError } from '../utils/ipcValidate';
 
 /** A saved automation choice, applied only while its target's send lock is held. */
 export interface ScheduledModelSelection {
@@ -8,12 +10,56 @@ export interface ScheduledModelSelection {
   model: string;
   providerId: string | null;
   effort: Effort | null;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 
 export interface ScheduledModelSelectionLease {
   release: () => void;
   selection: ScheduledModelSelection;
+}
+
+/** Send-boundary operations only. The saved preference survives idle time and restart. */
+export function createScheduledModelScope(deps: {
+  read: (sessionId: string) => Promise<{
+    profile: Omit<ScheduledModelSelection, 'effort'> & {
+      effort: ScheduledModelSelection['effort'] | '';
+    };
+    baseline: string | null;
+  } | null>;
+  write: (sessionId: string, baseline: ScheduledModelBaseline | null) => Promise<void>;
+  isBusy: (sessionId: string) => boolean;
+  apply: (sessionId: string, profile: ScheduledModelSelection) => Promise<void>;
+  createId: () => string;
+  ownerEpoch?: () => string;
+}) {
+  const assertOwner = (owner: string | undefined) => {
+    if (owner !== deps.ownerEpoch?.()) throw new Error('Account changed during scheduled model selection');
+  };
+  return {
+    async begin(sessionId: string): Promise<string | undefined> {
+      const owner = deps.ownerEpoch?.();
+      const row = await deps.read(sessionId);
+      assertOwner(owner);
+      if (!row) return undefined;
+      const existing = parseScheduledModelBaseline(row.baseline);
+      if (existing) return existing.scopeId;
+      const scopeId = deps.createId();
+      await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId });
+      return scopeId;
+    },
+    async restore(sessionId: string, expectedScopeId?: string): Promise<void> {
+      if (deps.isBusy(sessionId)) return;
+      const owner = deps.ownerEpoch?.();
+      const row = await deps.read(sessionId);
+      assertOwner(owner);
+      const baseline = parseScheduledModelBaseline(row?.baseline);
+      if (!baseline || (expectedScopeId && baseline.scopeId !== expectedScopeId)) return;
+      // Keep the saved choice on failure so the next input retries before dispatch.
+      await deps.apply(sessionId, baseline);
+      assertOwner(owner);
+      await deps.write(sessionId, null);
+    },
+  };
 }
 
 export class ScheduledModelSelectionBusyError extends Error {}
@@ -31,8 +77,10 @@ export function assertScheduledHarnessSupported(
   agentKind: AgentKind | undefined,
 ): void {
   if (target?.status !== 'active' || !agentKind || target.agentKind === agentKind) return;
-  if (target.remoteHostId || target.orcaRole) {
-    throw new Error('SSH and Orca automation targets must keep their current Harness');
+  // Orca Lead/Worker use the ordinary handoff transaction, including restoration
+  // before the next manual send. Only SSH still lacks cross-Harness handoff.
+  if (target.remoteHostId) {
+    throwIpcError('SSH_HARNESS_SWITCH_UNSUPPORTED', 'SSH automation targets must keep their current Harness');
   }
 }
 
@@ -46,13 +94,13 @@ export function resolveScheduledModelSelection(
   const provider = providers.find((candidate) => candidate.id === providerId);
   const model = findCatalogModel(provider, selection.model, selection.agentKind, { exact: true });
   if (!provider?.connected || !model) {
-    throw new Error(`Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
+    throwIpcError('MODEL_SELECTION_UNAVAILABLE', `Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
   }
   return {
     ...selection,
     providerId,
     effort: resolveCompatibleSessionRuntimeEffort(model, selection.effort),
-    fastMode: selection.fastMode && model.supportsFastMode === true,
+    fastMode: model.supportsFastMode === true && (selection.fastMode !== 'ultrafast' || (selection.agentKind === 'codex' && model.supportsUltrafastMode === true)) ? selection.fastMode : false,
   };
 }
 
@@ -68,16 +116,19 @@ export async function applyScheduledModelSelection(
   },
 ): Promise<ScheduledModelSelection> {
   const target = await deps.getTarget();
-  // The runner owns missing/archived target recovery, including persistent-task rebinding.
+  // The runner restores ordinary archived targets before selection and owns
+  // deleted/missing-target rebinding for persistent tasks.
+  // Its replacement resolves at the schedule's saved location. Do not query the old
+  // target's catalog: that device may be offline or its provider share revoked.
   if (!target || target.status === 'archived' || target.status === 'deleted') {
-    return deps.resolveSelection(selection);
+    return selection;
   }
   if (deps.isBusy()) throw new ScheduledModelSelectionBusyError('Scheduled model selection waits for the current turn');
   assertScheduledHarnessSupported(target, selection.agentKind);
   const resolved = await deps.resolveSelection(selection);
   if (target.agentKind !== resolved.agentKind) {
     const result = await deps.switchHarness(resolved);
-    if (!result.engineReady || result.retryPending) throw new Error('Scheduled Harness switch did not become ready');
+    if (!result.engineReady || result.retryPending) throwIpcError('HARNESS_SWITCH_NOT_READY', 'Scheduled Harness switch did not become ready');
   }
   await deps.applyModel(resolved);
   return resolved;

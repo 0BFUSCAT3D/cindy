@@ -428,6 +428,18 @@ describe('[14] sendInvokeResultSafe — 结果超限兜底', () => {
     expect(second[2].result[0].content.length).toBeLessThan(bigContent.length);
   });
 
+  it('keeps a long HTML draft card reference in the compact phone history response', () => {
+    const sendInvokeResult = vi.fn().mockImplementationOnce(() => { throw tooLarge(); });
+    const client = mkClient({ sendInvokeResult });
+    const content = JSON.stringify({ ok: true, result: { bodyHtml: '你好'.repeat(16000) }, xdt_card_id: 'draft-card' });
+    __testing.sendInvokeResultSafe(client as never, 'ctrl', 'req', {
+      ok: true, result: [{ id: 'card-result', role: 'tool_result', content }],
+    }, 'local-db:messages:list');
+    const stored = sendInvokeResult.mock.calls[1][2].result[0].content;
+    expect(JSON.parse(stored)).toMatchObject({ xdt_card_id: 'draft-card' });
+    expect(Buffer.byteLength(stored)).toBeLessThanOrEqual(8192);
+  });
+
   it('消息页非字符串 content 超限 → 用占位文本替代,不返回半截 JSON', () => {
     const sendInvokeResult = vi.fn().mockImplementationOnce(() => {
       throw tooLarge();
@@ -1352,4 +1364,20 @@ describe('remote recorded-turn actions', () => {
       .toMatchObject({ ok: false });
     expect(write).not.toHaveBeenCalled();
   });
+});
+
+it('compacts rich answer history into a complete replayable snapshot instead of cutting its JSON', () => {
+  const sendInvokeResult = vi.fn().mockImplementationOnce(() => { throw tooLarge(); });
+  const client = mkClient({ sendInvokeResult });
+  const ops = [JSON.stringify({ seq: 1, op: 'create', id: 'text', kind: 'text', props: { text: 'Initial' } })];
+  for (let seq = 2; seq <= 80; seq++) ops.push(JSON.stringify({ seq, op: 'patch', id: 'text', props: { text: '中'.repeat(600) + seq } }));
+  const content = '```cindy-ui\n' + ops.join('\n') + '\n```';
+  __testing.sendInvokeResultSafe(client as never, 'mobile', 'rich-history', { ok: true, result: [{ id: 'rich', role: 'assistant', content }] }, 'local-db:messages:list');
+  expect(sendInvokeResult).toHaveBeenCalledTimes(2);
+  const result = sendInvokeResult.mock.calls[1][2].result[0].content;
+  expect(result).toContain('```cindy-ui\n');
+  const operation = JSON.parse(result.split('\n')[1]);
+  expect(operation).toMatchObject({ seq: 1, op: 'create', id: 'text', props: { text: '中'.repeat(600) + '80' } });
+  expect(result.endsWith('\n```\n')).toBe(true);
+  expect(encodedByteLength(result)).toBeLessThan(128 * 1024);
 });

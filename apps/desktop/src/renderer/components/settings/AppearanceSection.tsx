@@ -25,7 +25,6 @@ import {
   useFontSettings,
 } from '@/hooks/useFontSettings';
 import { useSidebarCardMode, useSidebarMainViewMode } from '@/hooks/useSidebarCardMode';
-import { useGhostPanelRestoreMode } from '@/hooks/useGhostPanelRestoreMode';
 import { getThemeFamilies, resolveFamilyVariant, type ThemeFamily } from '@/themes/families';
 import { resolveThemeValue } from '@/themes/theme-service';
 import type { Theme } from '@/themes/types';
@@ -415,8 +414,6 @@ export function AppearanceSection() {
   } = useFontSettings();
   const { mode: sidebarViewMode, setMode: setSidebarViewMode } = useSidebarCardMode();
   const { mode: sidebarMainViewMode, setMode: setSidebarMainViewMode } = useSidebarMainViewMode();
-  const { mode: ghostPanelRestoreMode, setMode: setGhostPanelRestoreMode } =
-    useGhostPanelRestoreMode();
   const { t } = useTranslation();
   const [localThemesVersion, setLocalThemesVersion] = useState(0);
   const [uiSizeInput, setUiSizeInput] = useState(String(uiSize));
@@ -765,7 +762,7 @@ export function AppearanceSection() {
                   >
                     {t('settings.appearance.font.uiSize.label')}
                   </p>
-                  <p className="mt-1 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                  <p className="mt-1 text-12 leading-[1.4] text-[var(--text-secondary)]">
                     {t('settings.appearance.font.uiSize.description')}
                   </p>
                 </div>
@@ -851,7 +848,7 @@ export function AppearanceSection() {
                   >
                     {t('settings.appearance.font.codeSize.label')}
                   </p>
-                  <p className="mt-1 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                  <p className="mt-1 text-12 leading-[1.4] text-[var(--text-secondary)]">
                     {t('settings.appearance.font.codeSize.description')}
                   </p>
                 </div>
@@ -928,7 +925,7 @@ export function AppearanceSection() {
                 >
                   {t('settings.appearance.sidebarCardMode.label')}
                 </p>
-                <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
                   {t('settings.appearance.sidebarCardMode.hint')}
                 </p>
               </div>
@@ -956,7 +953,7 @@ export function AppearanceSection() {
                 >
                   {t('settings.appearance.sidebarMainListMode.label')}
                 </p>
-                <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
                   {t('settings.appearance.sidebarMainListMode.hint')}
                 </p>
               </div>
@@ -972,32 +969,6 @@ export function AppearanceSection() {
               />
             </div>
 
-            <div className={SETTINGS_ROW_DIVIDER_CLASS} />
-
-            <div className="cindy-segmented-row px-4 py-4">
-              <div className="flex min-w-0 flex-col gap-1">
-                <p
-                  id="settings-search-settings-appearance-ghostPanelRestore-label"
-                  className="text-13 font-medium text-[var(--settings-section-sublabel)]"
-                  style={{ letterSpacing: '0.12px' }}
-                >
-                  {t('settings.appearance.ghostPanelRestore.label')}
-                </p>
-                <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
-                  {t('settings.appearance.ghostPanelRestore.hint')}
-                </p>
-              </div>
-
-              <SegmentedControl
-                aria-label={t('settings.appearance.ghostPanelRestore.aria')}
-                value={ghostPanelRestoreMode}
-                onValueChange={setGhostPanelRestoreMode}
-                options={[
-                  { value: 'bubble', label: t('settings.appearance.ghostPanelRestore.bubble') },
-                  { value: 'sidebar', label: t('settings.appearance.ghostPanelRestore.sidebar') },
-                ]}
-              />
-            </div>
 
             <div className={SETTINGS_ROW_DIVIDER_CLASS} />
 
