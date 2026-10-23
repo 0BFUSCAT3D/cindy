@@ -1,6 +1,6 @@
 {
   "schemaVersion": 5,
-  "updatedAt": "2026-10-23T18:08:25.914Z",
+  "updatedAt": "2026-10-23T18:24:45.018Z",
   "models": [
     {
       "id": "openai/gpt-6.1-sol",
@@ -2108,7 +2108,8 @@
           "modelId": "k3.1-pro",
           "agents": ["claude-code", "codex"],
           "defaults": {
-            "contextWindow": 262144
+            "contextWindow": 262144,
+            "maxOutputTokens": 262144
           }
         }
       ],
@@ -2199,7 +2200,8 @@
           "modelId": "k3",
           "agents": ["claude-code", "codex"],
           "defaults": {
-            "contextWindow": 262144
+            "contextWindow": 262144,
+            "maxOutputTokens": 262144
           }
         },
         {
@@ -2207,7 +2209,8 @@
           "modelId": "k3-256k",
           "agents": ["claude-code", "codex"],
           "defaults": {
-            "contextWindow": 262144
+            "contextWindow": 262144,
+            "maxOutputTokens": 262144
           }
         }
       ],
