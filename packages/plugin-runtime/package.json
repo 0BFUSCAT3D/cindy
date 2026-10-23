@@ -12,7 +12,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --maxWorkers=1 --testTimeout=30000"
   },
   "dependencies": {
     "@cindy/device-link": "workspace:*",

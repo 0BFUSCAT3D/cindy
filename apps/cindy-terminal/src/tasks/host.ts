@@ -29,6 +29,8 @@ import { createInboundFileStaging } from '@cindy/im-runtime/inboundFileStaging';
 import { TerminalImBindings } from '../im/bindings.js';
 import { TerminalImDefaults } from '../im/defaults.js';
 import { createImSessionDefaults } from '@cindy/im-runtime/defaultSessionSettings';
+import { createTerminalImSessionRepo } from '../im/session-repo.js';
+import type { ImOrchestratorConfig, ImSessionNamespace } from '@cindy/im-runtime/types';
 import type { Capabilities, MakerEventListener } from '@cindy/maker-core';
 import { createHistoryViewReader } from '@cindy/remote-agent/host/historyViewReader';
 import type { HistoryWorkReference } from '@cindy/maker-shared/message-window';
@@ -95,6 +97,7 @@ export class TerminalTaskHost {
   readonly channels = TERMINAL_TASK_CHANNELS;
   readonly models: TerminalModelConfig;
   readonly storage: TerminalTaskStorage;
+  private readonly storageReady: Promise<void>;
   readonly media: TerminalTaskMedia;
   readonly capabilities: TerminalCapabilities;
   readonly channelFiles: ReturnType<typeof createInboundFileStaging>;
@@ -148,7 +151,8 @@ export class TerminalTaskHost {
     if (!path.isAbsolute(options.profileDir)) throw new Error('PROFILE_DIRECTORY_MUST_BE_ABSOLUTE');
     this.media = new TerminalTaskMedia(options.profileDir);
     this.storage = new TerminalTaskStorage(path.join(options.profileDir, 'tasks'));
-    this.channelBindings = new TerminalImBindings({ root: options.profileDir, logger: options.logger, assertCurrent: () => { if (this.closed) throw new Error('TASK_HOST_CLOSED'); } });
+    this.storageReady = this.storage.open();
+    this.channelBindings = new TerminalImBindings({ root: options.profileDir, logger: options.logger, beforeOpen: this.storageReady, assertCurrent: () => { if (this.closed) throw new Error('TASK_HOST_CLOSED'); } });
     this.channelDefaults = new TerminalImDefaults({ root: options.profileDir, assertCurrent: () => this.guard({ source: 'local' }), changed: channel => this.emit('maker:remote-resources:changed', { collectionId: 'channels', channel }) });
     this.channelSessionDefaults = createImSessionDefaults({
       getCapabilities: kind => this.channelRuntime().getCapabilities(kind),
@@ -169,7 +173,7 @@ export class TerminalTaskHost {
   }
   private async initialize() {
     await privateDirectory(this.options.profileDir);
-    const initialized=await Promise.allSettled([this.storage.open(),this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,this.channelDefaults.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
+    const initialized=await Promise.allSettled([this.storageReady,this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,this.channelDefaults.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
     const failed=initialized.find((result):result is PromiseRejectedResult=>result.status==='rejected');if(failed)throw failed.reason;
     for (const id of this.channelBindings.store.listAttachedTargets()) {
       const row = await this.storage.get(id);
@@ -213,6 +217,8 @@ export class TerminalTaskHost {
       pinnedAt: row.pinnedAt ? new Date(row.pinnedAt).toISOString() : null,
       parentSessionId: row.parentSessionId ?? null, remoteHostId: null, agentDeviceId: row.agentDeviceId ?? null,
       createdAt: new Date(row.createdAt).toISOString(), updatedAt: new Date(row.updatedAt).toISOString(),
+      userSendAt: row.userSendAt ? new Date(row.userSendAt).toISOString() : null,
+      ...(row.source === 'feishu' ? { feishuBotAppId: row.imBotContextId ?? null, feishuOpenId: row.imUserId ?? null } : {}),
       totalTokenUsage: (this.live.get(row.id)?.session.getUsageSnapshot() ?? row.usage)?.tokenUsage ?? 0, totalCostUsd: (this.live.get(row.id)?.session.getUsageSnapshot() ?? row.usage)?.costUsd ?? 0, contextTokens: (this.live.get(row.id)?.session.getUsageSnapshot() ?? row.usage)?.contextTokens ?? 0, contextWindow: (this.live.get(row.id)?.session.getUsageSnapshot() ?? row.usage)?.contextWindow ?? 0,
       extraDirs: [], writableDirs: [],
     };
@@ -390,8 +396,7 @@ export class TerminalTaskHost {
     }
     return this.models.select();
   }
-  private async create(input: Record<string, unknown>, guard: () => void) {
-    const id = randomUUID();
+  private async admitTask(input: Record<string, unknown>, id: string, guard: () => void) {
     if (this.options.resolveExecutionRoute) { const execution = await this.options.resolveExecutionRoute(input, id); if (execution) input = { ...input, ...execution }; guard(); }
     let resolved = await this.selection(input);
     if (this.options.resolveExecutionRoute && !input.groupBinding) {
@@ -405,6 +410,29 @@ export class TerminalTaskHost {
     if (!input.workingDir && !input.workDir) await privateDirectory(cwd);
     if (!(await stat(cwd)).isDirectory()) throw new Error('WORKING_DIRECTORY_NOT_FOUND');
     guard();
+    return { input, resolved, cwd };
+  }
+  channelRepository(config: ImOrchestratorConfig, namespace: ImSessionNamespace, options: { projectSwitching?: boolean } = {}) {
+    const guard = () => this.guard({ source: 'local' });
+    return createTerminalImSessionRepo({
+      ready: this.ready, storage: this.storage, bindings: this.channelBindings, defaults: this.channelSessionDefaults,
+      assertCurrent: guard,
+      admit: async (row, title) => {
+        const { input, resolved, cwd } = await this.admitTask({ ...row, title, workingDir: row.workingDir }, row.id, guard);
+        return { id: row.id, ...resolved.selection, workDir: cwd, title, permissionMode: permission(row.permissionMode), fastMode: row.fastMode, ...(input.agentDeviceId ? { agentDeviceId: string(input.agentDeviceId) } : {}), ...(input.groupBinding ? { groupBinding: input.groupBinding as import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding } : {}) };
+      },
+      changed: (row, kind) => {
+        this.emit('terminal:tasks:changed', { sessionId: row.id });
+        this.emit(`local-db:sessions:${kind}`, kind === 'created' ? { sessionId: row.id } : { sessionId: row.id, patch: this.guiSession(row) });
+      },
+      warn: message => this.options.logger.warn(message),
+    }, config, namespace, options);
+  }
+  private async create(input: Record<string, unknown>, guard: () => void) {
+    const id = randomUUID();
+    const admitted = await this.admitTask(input, id, guard);
+    const { resolved, cwd } = admitted;
+    input = admitted.input;
     await this.storage.create({ id, agentKind: resolved.selection.agentKind, model: resolved.selection.model, workDir: cwd, title: typeof input.title === 'string' ? input.title : typeof this.options.defaultTitle === 'function' ? this.options.defaultTitle() : this.options.defaultTitle ?? 'New task', permissionMode: input.permissionMode ? permission(input.permissionMode) : 'default', ...(typeof input.planMode === 'boolean' ? { planMode: input.planMode } : {}) });
     guard();
     await this.storage.setSelection(id, resolved.selection);

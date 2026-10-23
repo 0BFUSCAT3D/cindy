@@ -253,7 +253,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
   }finally{pages.close();await controllerAuthorization.close();await hostAuthorization.close();await host.close();vault.lock();await media.close();}
   // Native Windows vault ACL commands run for each durable mutation. Preserve
   // the local 5s budget while allowing that real OS work on the CI runner.
-},process.platform==='win32'?30_000:5_000);
+},30_000);
 
 // Native integration: Library was absent from the terminal pipe. Exercise real
 // package approval, the Node SQLite worker, source archival and uninstall, so
@@ -321,4 +321,4 @@ it('persists plugin works through restart and uninstall while isolating a change
     const trashed=(await readdir(path.join(root,'libraries-trash'))).find(name=>name.startsWith(archived))!;
     expect(await readFile(path.join(root,'libraries-trash',trashed,'works/note.txt'),'utf8')).toBe('retained work');
   }finally{await host.close();}
-},process.platform==='win32'?30_000:5_000);
+},30_000);

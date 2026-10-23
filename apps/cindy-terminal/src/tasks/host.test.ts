@@ -3,7 +3,9 @@ import type { TerminalClient } from '../contracts.js';
 import { TerminalSchedulerHost } from './scheduler.js';
 import { createServer } from 'node:http';
 import { createProviderProxy } from '../models/proxy.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as platform from '../platform.js';
+import { TerminalImBindings } from '../im/bindings.js';
 import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -150,6 +152,86 @@ describe('terminal task host', () => {
     await restarted.channelDefaults.reset('discord');
     expect(restarted.channelDefaults.state('discord').isCustomized).toBe(false);
     expect(restarted.channelDefaults.read('feishu').permissionMode).toBe('ask');
+  });
+  // Recovery tier / IM /new: a committed rotation spans two task files and
+  // the takeover file. Interrupt the real final write, then reopen production
+  // storage; never accept a half-rotated task or lose a newer takeover.
+  it('recovers an interrupted channel rotation with its takeover and preserves a newer binding', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-channel-rotation-')); roots.push(root);
+    const storage = new TerminalTaskStorage(path.join(root, 'tasks')); await storage.open();
+    const bindings = new TerminalImBindings({ root, logger, assertCurrent() {} }); await bindings.ready;
+    const metadata = { agentKind: 'claude-code' as const, model: 'test-model', workDir: root, title: 'Channel task' };
+    const old = await storage.create({ ...metadata, id: 'old-channel', sdkSessionId: 'native-context', source: 'telegram' });
+    await storage.create({ ...metadata, id: 'taken-over' });
+    await storage.append(old.id, { kind: 'user', message: { type: 'user', content: 'preserve original history' } });
+    const identity = { channel: 'telegram', botContextId: 'bot', userId: 'owner' };
+    await bindings.store.attach(identity, 'taken-over');
+    const write = platform.atomicPrivateWrite;
+    const interruption = vi.spyOn(platform, 'atomicPrivateWrite').mockImplementation(async (file, value) => {
+      if (file === path.join(root, 'channel-bindings.json')) throw new Error('SIMULATED_PROCESS_INTERRUPTION');
+      return write(file, value);
+    });
+    try {
+      await expect(bindings.commitTaskRotation({ identity, targetSessionId: 'taken-over' }, snapshot => storage.rotateChannelTask({ ...metadata, id: 'new-channel', source: 'telegram' }, old.id, snapshot, () => {}))).rejects.toThrow('SIMULATED_PROCESS_INTERRUPTION');
+      await expect(storage.list()).rejects.toThrow('SIMULATED_PROCESS_INTERRUPTION');
+      expect(bindings.store.get(identity)).toBe('taken-over');
+    } finally { interruption.mockRestore(); await bindings.close(); }
+    const recovered = new TerminalTaskStorage(path.join(root, 'tasks'));
+    const recovery = recovered.open();
+    const restoredBindings = new TerminalImBindings({ root, logger, beforeOpen: recovery, assertCurrent() {} });
+    await restoredBindings.ready;
+    try {
+      expect(await recovered.get('new-channel')).toMatchObject({ source: 'telegram' });
+      expect(await recovered.get(old.id)).toMatchObject({ archived: true, sdkSessionId: 'native-context' });
+      expect((await recovered.history(old.id)).records[0].message?.content).toBe('preserve original history');
+      expect(restoredBindings.store.get(identity)).toBeNull();
+      await recovered.create({ ...metadata, id: 'newer-takeover' });
+      await restoredBindings.store.attach(identity, 'newer-takeover');
+      await restoredBindings.commitTaskRotation({ identity, targetSessionId: 'taken-over' }, snapshot => recovered.rotateChannelTask({ ...metadata, id: 'next-channel', source: 'telegram' }, 'new-channel', snapshot, () => {}));
+      expect(restoredBindings.store.get(identity)).toBe('newer-takeover');
+      expect(await recovered.get('new-channel')).toMatchObject({ archived: true });
+    } finally { await restoredBindings.close(); }
+    const after = new TerminalImBindings({ root, logger, assertCurrent() {} }); await after.ready;
+    expect(after.store.get(identity)).toBe('newer-takeover'); await after.close();
+  });
+  // Integration: channel identity creation/revival/rotation must produce the
+  // same tasks that GUI clients read and the real Maker runtime resumes.
+  it('creates, revives and rotates channel tasks through the shared GUI task host', async () => {
+    const { host, root, create, native, pushes } = await setup();
+    const config = { agentKind: 'claude-code' as const, defaultModel: 'test-model', defaultPermissionMode: 'auto' as const };
+    const namespace = { source: 'telegram' as const, createTaskOnNew: true, sessionIdFor: (bot: string, user: string) => `telegram_${bot}_${user}`, defaultTitle: () => 'Telegram task', ensureWorkingDir: () => root, workspaceKind: 'dialogue' as const, extraInsertColumns: (bot: string, user: string) => ({ imBotContextId: bot, imUserId: user }) };
+    await host.channelDefaults.update({ agents: { 'claude-code': { providerId: 'fixture', model: 'test-model', effort: 'high' } } }, 'telegram');
+    const repo = host.channelRepository(config, namespace);
+    const [first, duplicate] = await Promise.all([repo.createSession('bot', 'owner'), repo.createSession('bot', 'owner')]);
+    expect(first.id).toBe(duplicate.id);
+    expect(native.starts).toHaveLength(0);
+    expect((await host.invoke('local-db:sessions:list', [])) as unknown[]).toHaveLength(1);
+    expect(await host.invoke('local-db:sessions:get', [first.id])).toMatchObject({ source: 'telegram', workspaceKind: 'dialogue', imUserId: 'owner', imBotContextId: 'bot', userSendAt: expect.any(String) });
+    const runtime = await host.channelRuntime().createSession({ id: first.id, agentKind: first.agentKind, workingDir: first.workingDir, model: first.model, vendorOptions: { source: 'telegram' } });
+    await host.invoke('maker:send', [first.id, { text: 'original channel task' }]);
+    const sdkSessionId = (await host.storage.get(first.id))!.sdkSessionId;
+    expect(runtime).toBe(host.channelRuntime().getSession(first.id));
+    await host.invoke('local-db:sessions:patch-meta', [first.id, { status: 'archived' }]);
+    expect((await repo.peekSession('bot', 'owner'))?.sdkSessionId).toBe(sdkSessionId);
+    expect((await host.storage.get(first.id))?.archived).toBe(true);
+    expect((await repo.findActiveSession('bot', 'owner'))?.id).toBe(first.id);
+    expect((await host.storage.get(first.id))?.archived).toBe(false);
+    const target = await host.invoke('maker:create-session', [{ title: 'Existing GUI task' }]) as { id: string };
+    const identity = { channel: 'telegram', botContextId: 'bot', userId: 'owner' };
+    await host.channelBindings.store.attach(identity, target.id);
+    const rotated = await repo.createFreshSession!('bot', 'owner', undefined, undefined, { identity, targetSessionId: target.id });
+    expect(rotated.current.id).not.toBe(first.id);
+    expect(rotated.current.sdkSessionId).toBeNull();
+    expect((await host.storage.get(first.id))?.archived).toBe(true);
+    expect((await host.storage.get(target.id))?.archived).not.toBe(true);
+    expect(host.channelBindings.store.get(identity)).toBeNull();
+    expect((await host.invoke('local-db:messages:list', [first.id, { limit: 10 }]) as Array<{content:string}>).some(row => row.content === 'original channel task')).toBe(true);
+    expect(pushes.some(event => event.channel === 'local-db:sessions:created' && (event.payload as {sessionId:string}).sessionId === rotated.current.id)).toBe(true);
+    await host.close();
+    const restarted = create(); await restarted.ready;
+    const resumedRepo = restarted.channelRepository(config, namespace);
+    expect((await resumedRepo.peekSession('bot', 'owner'))?.id).toBe(rotated.current.id);
+    await expect(repo.findActiveSession('bot', 'owner')).rejects.toThrow('TASK_HOST_CLOSED');
   });
   // Integration / im-turn-flow: Desktop's mocked SQL tests do not cover the
   // terminal owner's atomic file or daemon retirement. Two identities claiming

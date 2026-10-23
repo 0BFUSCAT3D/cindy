@@ -10,7 +10,8 @@
     "build": "node scripts/build.mjs",
     "dev": "tsx src/cli.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --maxWorkers=1 --fileParallelism=false"
+    "test": "vitest run --exclude **/*.integration.test.ts --maxWorkers=1 --fileParallelism=false",
+    "test:integration": "vitest run src/host.integration.test.ts src/plugins/host.integration.test.ts src/models/runtime.integration.test.ts --testTimeout=30000 --maxWorkers=1 --fileParallelism=false"
   },
   "dependencies": {
     "@roamhq/wrtc": "0.10.0",

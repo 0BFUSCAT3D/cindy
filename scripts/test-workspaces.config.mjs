@@ -321,6 +321,18 @@ export default {
   workspaces: [
     requiredUnitWorkspace('cindy-headless', 'apps/cindy-headless'),
     {
+      ...requiredUnitWorkspace('cindy-terminal', 'apps/cindy-terminal'),
+      tiers: {
+        unit: { status: 'required', command: unitVitestCommand(1), exclude: ['**/*.integration.test.ts'] },
+        integration: {
+          status: 'manual', execution: 'exclusive', coverage: 'allowlist',
+          reason: 'Real terminal IPC, native agents, Chromium, encrypted vaults and plugin subprocesses use isolated temporary owners and explicit platform acceptance.',
+          command: vitestBin('run', '--pool=forks', '--maxWorkers=1', '--testTimeout=30000'),
+          include: ['src/**/*.integration.test.ts'],
+        },
+      },
+    },
+    {
       name: 'desktop',
       cwd: 'apps/desktop',
       status: 'required',
@@ -512,6 +524,22 @@ export default {
     noCollectableWorkspace('@cindy/github-client', 'packages/github-client'),
     noCollectableWorkspace('@cindy/gitlab-client', 'packages/gitlab-client'),
     noCollectableWorkspace('@cindy/heartbeat-client', 'packages/heartbeat-client'),
+    noCollectableWorkspace('@cindy/companion-core', 'packages/companion-core', 'Shared companion behavior is exercised through Desktop and terminal host integration tests.'),
+    noCollectableWorkspace('@cindy/im-runtime', 'packages/im-runtime', 'Shared IM behavior retains its Desktop characterization tests and terminal host integration coverage.'),
+    noCollectableWorkspace('@cindy/media-core', 'packages/media-core', 'Shared media behavior is covered through Desktop and terminal host consumers.'),
+    noCollectableWorkspace('@cindy/remote-agent', 'packages/remote-agent', 'Shared remote execution is covered through Desktop and terminal host consumers.'),
+    noCollectableWorkspace('@cindy/terminal-core', 'packages/terminal-core', 'Shared PTY behavior is covered through Desktop and terminal platform acceptance.'),
+    {
+      name: '@cindy/plugin-runtime', cwd: 'packages/plugin-runtime', status: 'required',
+      tiers: {
+        integration: {
+          status: 'manual', execution: 'exclusive', coverage: 'allowlist',
+          reason: 'Plugin workers and Chromium require real process and browser isolation; each run uses private temporary directories and loopback listeners.',
+          command: vitestBin('run', '--pool=forks', '--maxWorkers=1', '--testTimeout=30000'),
+          include: ['src/*.integration.test.ts'],
+        },
+      },
+    },
     requiredUnitWorkspace('@cindy/im', 'packages/lizi-im'),
     requiredUnitWorkspace('@cindy/mcps', 'packages/lizi-mcps'),
     requiredUnitWorkspace('@cindy/maker-cc-manager', 'packages/maker-cc-manager'),

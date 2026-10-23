@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { IdentityKey } from '@cindy/im';
 import type { Logger } from "@cindy/maker-core";
 import {
   PersistentImBindingStore,
@@ -22,6 +23,7 @@ export class TerminalImBindings {
       root: string;
       assertCurrent(): void;
       logger: Logger;
+      beforeOpen?: Promise<void>;
     },
   ) {
     this.file = path.join(options.root, "channel-bindings.json");
@@ -38,13 +40,14 @@ export class TerminalImBindings {
   }
 
   private async open() {
+    await this.options.beforeOpen;
     this.guard();
     const raw = await readPrivateFile(this.file);
     this.guard();
     if (raw) {
       const parsed: unknown = JSON.parse(raw.toString());
       if (!Array.isArray(parsed)) throw new Error("INVALID_IM_BINDINGS");
-      this.rows = parsed.map(validateRow);
+      this.rows = parsed.map(validateImBindingRow);
       if (new Set(this.rows.map(imBindingKey)).size !== this.rows.length)
         throw new Error("DUPLICATE_IM_BINDING_IDENTITY");
     }
@@ -65,7 +68,7 @@ export class TerminalImBindings {
         return structuredClone(this.rows);
       },
       replace: async (input) => {
-        const row = validateRow(input),
+        const row = validateImBindingRow(input),
           key = imBindingKey(row);
         await commit([
           ...this.rows.filter(
@@ -86,6 +89,22 @@ export class TerminalImBindings {
     };
   }
 
+  async commitTaskRotation<T>(
+    detach: { identity: IdentityKey; targetSessionId: string } | null,
+    commit: (bindings: ImBindingRow[]) => Promise<T>,
+  ): Promise<T> {
+    await this.ready;
+    this.guard();
+    return this.store.commitAndDetach(detach, async detached => {
+      this.guard();
+      const rows = detached ? this.rows.filter(row => row.targetSessionId !== detach!.targetSessionId) : this.rows;
+      const result = await commit(structuredClone(rows));
+      this.guard();
+      this.rows = rows;
+      return result;
+    });
+  }
+
   async close() {
     this.closed = true;
     await this.ready.catch(() => {});
@@ -94,7 +113,7 @@ export class TerminalImBindings {
   }
 }
 
-function validateRow(input: unknown): ImBindingRow {
+export function validateImBindingRow(input: unknown): ImBindingRow {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new Error("INVALID_IM_BINDING");
   const row = input as Record<string, unknown>;

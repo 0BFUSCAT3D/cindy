@@ -5,8 +5,12 @@ import path from 'node:path';
 import type { SessionMeta, SessionStorage, AgentEvent, UserMessage } from '@cindy/maker-core';
 import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platform.js';
 import type { ModelSelection } from '../models/config.js';
+import type { ImBindingRow } from '@cindy/im-runtime/binding';
+import { validateImBindingRow } from '../im/bindings.js';
 
-export type TerminalTaskMeta = SessionMeta & { providerId?: string; archived?: boolean; deleted?: boolean; pinnedAt?: number | null; agentDeviceId?: string; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding; queuePaused?: boolean; queueExpanded?: boolean; clearedAt?: number; usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number } };
+export type TerminalTaskMeta = SessionMeta & { providerId?: string; archived?: boolean; deleted?: boolean; pinnedAt?: number | null; agentDeviceId?: string; groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding; queuePaused?: boolean; queueExpanded?: boolean; clearedAt?: number; source?: string; imBotContextId?: string; imUserId?: string; imScopeKey?: string; imDefaultRoute?: string | null; workspaceKind?: 'project' | 'dialogue'; userSendAt?: number; usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number } };
+export type NewTerminalTaskMeta = Omit<TerminalTaskMeta, 'createdAt' | 'updatedAt'>;
+type ChannelRotation = { version: 1; rows: TerminalTaskMeta[]; bindings: ImBindingRow[] };
 export type Submission = { requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
 export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string };
 function taskId(value: string): string {
@@ -20,11 +24,17 @@ export class TerminalTaskStorage implements SessionStorage {
   private readonly submissions = new Map<string, Submission[]>();
   private readonly nextSequences = new Map<string, number>();
   private readonly writes = new Map<string, Promise<unknown>>();
+  private metadataBarrier: Promise<void> = Promise.resolve();
+  private metadataFault: unknown;
   constructor(private readonly root: string) {}
   private directory(id: string) { return path.join(this.root, taskId(id)); }
   private file(id: string) { return path.join(this.directory(id), 'task.json'); }
   async open(): Promise<void> {
     await privateDirectory(this.root);
+    // Complete a committed multi-file rotation before any task or binding
+    // index is exposed. Individual files remain the normal storage format.
+    const rotation = await readPrivateFile(this.rotationFile());
+    if (rotation) await this.materializeRotation(this.parseRotation(JSON.parse(rotation.toString())));
     for (const entry of await readdir(this.root, { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]{1,100}$/.test(entry.name)) continue;
       const raw = await readPrivateFile(this.file(entry.name));
@@ -44,11 +54,11 @@ export class TerminalTaskStorage implements SessionStorage {
     }
   }
   private enqueue<T>(id: string, action: () => Promise<T>): Promise<T> {
-    const result = (this.writes.get(id) ?? Promise.resolve()).then(action);
+    const result = Promise.all([this.metadataBarrier, this.writes.get(id)]).then(action);
     this.writes.set(id, result.catch(() => undefined));
     return result;
   }
-  async create(meta: Omit<SessionMeta, 'createdAt' | 'updatedAt'>): Promise<TerminalTaskMeta> {
+  async create(meta: NewTerminalTaskMeta): Promise<TerminalTaskMeta> {
     return this.enqueue(meta.id, async () => {
       if (this.rows.has(meta.id)) throw new Error('TASK_ALREADY_EXISTS');
       await privateDirectory(this.directory(meta.id));
@@ -60,12 +70,61 @@ export class TerminalTaskStorage implements SessionStorage {
   }
   async get(id: string): Promise<TerminalTaskMeta | null> {
     taskId(id);
+    await this.metadataBarrier;
     await this.writes.get(id);
     return this.rows.has(id) ? structuredClone(this.rows.get(id)!) : null;
   }
   async list(): Promise<TerminalTaskMeta[]> {
     await this.flush();
     return [...this.rows.values()].map(row => structuredClone(row)).sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+  /** Commit the fresh task, previous task state and takeover snapshot at one
+   * journal boundary. The binding store holds its mutation queue around this
+   * operation, so a newer takeover cannot be overwritten by a stale /new. */
+  rotateChannelTask(meta: NewTerminalTaskMeta, previousId: string | null, bindings: ImBindingRow[], guard: () => void): Promise<TerminalTaskMeta> {
+    taskId(meta.id);
+    if (previousId) taskId(previousId);
+    const prior = [this.metadataBarrier, ...this.writes.values()];
+    const operation = Promise.all(prior).then(async () => {
+      guard();
+      if (this.rows.has(meta.id)) throw new Error('TASK_ALREADY_EXISTS');
+      const previous = previousId ? this.rows.get(previousId) : undefined;
+      if (previousId && !previous) throw new Error('TASK_NOT_FOUND');
+      const now = Math.max(Date.now(), (previous?.createdAt ?? 0) + 1), row = { ...meta, createdAt: now, updatedAt: now };
+      const rotation = this.parseRotation({ version: 1, rows: [row, ...(previous ? [{ ...previous, archived: previous.deleted ? previous.archived : true, updatedAt: now }] : [])], bindings });
+      guard();
+      // The durable journal is the commit point. Any later I/O failure blocks
+      // this owner until startup recovery, rather than accepting more writes
+      // over a partly materialized transaction.
+      await atomicPrivateWrite(this.rotationFile(), JSON.stringify(rotation));
+      try {
+        await this.materializeRotation(rotation);
+        for (const changed of rotation.rows) this.rows.set(changed.id, changed);
+        return structuredClone(row);
+      } catch (error) { this.metadataFault = error; throw error; }
+    });
+    this.metadataBarrier = operation.then(() => {}, () => { if (this.metadataFault) throw this.metadataFault; });
+    void this.metadataBarrier.catch(() => {});
+    return operation;
+  }
+  private rotationFile() { return path.join(this.root, 'channel-rotation.json'); }
+  private parseRotation(input: unknown): ChannelRotation {
+    const value = input as Partial<ChannelRotation> | null;
+    if (!value || value.version !== 1 || !Array.isArray(value.rows) || value.rows.length < 1 || value.rows.length > 2 || !Array.isArray(value.bindings)) throw new Error('INVALID_CHANNEL_ROTATION');
+    for (const row of value.rows) {
+      if (!row || typeof row.id !== 'string' || !['claude-code', 'codex', 'pi'].includes(row.agentKind) || typeof row.model !== 'string' || typeof row.workDir !== 'string' || !Number.isSafeInteger(row.createdAt) || !Number.isSafeInteger(row.updatedAt)) throw new Error('INVALID_CHANNEL_ROTATION');
+      taskId(row.id);
+    }
+    if (new Set(value.rows.map(row => row.id)).size !== value.rows.length) throw new Error('INVALID_CHANNEL_ROTATION');
+    return { version: 1, rows: value.rows, bindings: value.bindings.map(validateImBindingRow) };
+  }
+  private async materializeRotation(rotation: ChannelRotation) {
+    for (const row of rotation.rows) {
+      await privateDirectory(this.directory(row.id));
+      await atomicPrivateWrite(this.file(row.id), JSON.stringify(row));
+    }
+    await atomicPrivateWrite(path.join(path.dirname(this.root), 'channel-bindings.json'), JSON.stringify(rotation.bindings));
+    await rm(this.rotationFile(), { force: true });
   }
   update(id: string, patch: Partial<TerminalTaskMeta>): Promise<TerminalTaskMeta> {
     return this.enqueue(id, async () => {
@@ -143,6 +202,7 @@ export class TerminalTaskStorage implements SessionStorage {
   }
   async history(id: string, after = 0, limit = 200) {
     taskId(id);
+    await this.metadataBarrier;
     await this.writes.get(id);
     if (!this.rows.has(id)) throw new Error('TASK_NOT_FOUND');
     return this.readHistory(id, after, Math.max(1, Math.min(1000, limit)));
@@ -221,5 +281,5 @@ export class TerminalTaskStorage implements SessionStorage {
       return structuredClone(receipt);
     });
   }
-  async flush(): Promise<void> { await Promise.all(this.writes.values()); }
+  async flush(): Promise<void> { await Promise.all([this.metadataBarrier, ...this.writes.values()]); }
 }

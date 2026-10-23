@@ -360,6 +360,28 @@ export class PersistentImBindingStore implements BindingStore<string> {
     });
   }
 
+  /** A host transaction may rotate a task and detach its takeover together.
+   * Hold the same mutation queue as attach/detach until that durable commit
+   * finishes, then publish the matching in-memory change. A stale request
+   * still commits its task transaction without revoking a newer takeover. */
+  commitAndDetach<T>(
+    detach: { identity: IdentityKey; targetSessionId: string } | null,
+    commit: (detached: boolean) => Promise<T>,
+  ): Promise<T> {
+    return this.enqueueMutation(async () => {
+      const detached = !!detach && this.get(detach.identity) === detach.targetSessionId;
+      const result = await commit(detached);
+      if (detached && detach) {
+        const key = imBindingKey(detach.identity);
+        this.forward.delete(key);
+        this.reverse.delete(detach.targetSessionId);
+        this.attachCardIds.delete(key);
+        this.emit({ identity: detach.identity, value: null, prevValue: detach.targetSessionId });
+      }
+      return result;
+    });
+  }
+
   onChange(listener: BindingChangeListener<string>): () => void {
     this.listeners.add(listener);
     return () => {
