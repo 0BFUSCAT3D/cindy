@@ -33,7 +33,7 @@ const UI_FILE_SUFFIXES = ['.css', '.scss', '.less'];
 const FIELD_LABEL = '引用的设计规范';
 // 设计规范文档引用特征：docs/design-rules/ 目录或其下具体文档名。
 const DESIGN_DOC_PATTERN =
-  /(docs\/design-rules\/|DESIGN\.md|cindy-design-system|token-decision-table)/i;
+  /(docs\/design-rules\/|DESIGN\.md|cindy-design-system|figma-component-spec|token-decision-table)/i;
 // 「不涉及」豁免在去掉该词与标点后至少要剩这么多字符，才算附了理由
 // （放到 4 是为了让「纯逻辑重构」「无 UI 变化」这类最短合理理由能过）。
 const MIN_EXEMPT_REASON_CHARS = 4;
