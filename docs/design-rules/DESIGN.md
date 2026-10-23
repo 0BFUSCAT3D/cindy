@@ -1949,7 +1949,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 
 > 本节是登录全链路的设计系统规范，也是登录域唯一的现行规则来源：色值以 §16.1 色板表（由 `packages/design-tokens` 生成）为准，几何以 §16.2 常量表与 `loginDesignTokens.ts` / `loginSkinLayout.ts` 为准。[`token-decision-table.md`](./token-decision-table.md) 保留为 token / 尺寸的决策记录。原 `figma-component-spec.md`（Figma 组件逐态读取记录）已于 2026-10-23 移除：其现行值均已并入本节与代码常量，后续改版未再回写；代码注释里的 `figma §N` 指它的章节，可在 git 历史（移除前的提交 `70b32d7578`）查阅，Figma nodeId 仍直接写在注释里。`DESIGN-login`（逐屏规格）、`flow-map`（状态机）、`fidelity-matrix`（保真度验收矩阵）仍为设计阶段工作文件，不入仓库。
 >
-> **交付状态**：亮色与深色均已落地（深色色值经 Figma 组件库 Dark symbol 逐个核验，见 §16.1 双态表 / §16.5）。两模式均受 §10「Light / Dark 双模式交付门槛」约束。
+> **交付状态**：亮色与深色均已落地——dark token 槽位已填入真实值（经 Figma 组件库 Dark symbol 逐个核验，见 §16.1 双态表）、深色字标 / slogan 资产随模式切换、组件经 `--login-overlay-*` 消费 hover / pressed 叠层。**唯一现存缺口**：部分叠层取值仍是 2026-07-24 改判前的旧值，见 §16.5 第 1 条〔落码状态〕。两模式均受 §10「Light / Dark 双模式交付门槛」约束。
 >
 > 本节独立于 §1–§15 默认皮肤与 CINDY 皮肤族——登录页是独立白底 / 深底反色体系，**不消费编辑器主题的 `--surface` / `--text-*` 等 slot**，只走本节定义的 `--login-*` token（文字类 token 的**值**与 §15.16 墨水阶梯相同，但仍是独立 token，扩展主题改主界面文字色不会影响登录页）（light / dark 二态已注册于 `apps/desktop/src/renderer/themes/colors.ts`；见 §10）。`--login-*` 随基础 light / dark **二态**切换，但**不跟随具体扩展主题**（登录页只认 light / dark 模式；首次亮、后续跟随见 §16.5）。
 
@@ -2185,15 +2185,15 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 
 ### 16.5 深色模式与主题跟随
 
-> 深色受 §10「Light / Dark 双模式交付门槛」约束，是**必须交付**的另一模式，非可选愿景。深色色值经 Figma 组件库 Dark symbol 逐个核验（见 §16.1 双态表），为目标规格——token dark 槽位已预留，待实现 PR 填入真实值并补齐 overlay token、深色资产切换及主题跟随逻辑。落地机制如下。
+> 深色受 §10「Light / Dark 双模式交付门槛」约束，是**必须交付**的另一模式，非可选愿景。深色色值经 Figma 组件库 Dark symbol 逐个核验（见 §16.1 双态表），已落地：token dark 槽位已填入真实值，overlay token、深色资产切换及主题跟随均已实现；仅下面第 1 条所述的叠层取值尚未全部对齐新口径。机制如下。
 
 **深色 = 黑白反色在深底的镜像**：面板 / 控件深底、主按钮与社交圆钮反相白、文字反相米白，几何 / 布局 / props / 状态机 / i18n **零改动**——只换色值。
 
-**大部分组件纯 token 驱动**（补 §16.1 双态表的 dark 值即自动深色，组件不动）：`LoginPanel` / `LoginInput` / `LoginPrimaryButton`（底 / 边 / 字 + spinner）/ `LoginSocialButton`（随主按钮 token 自动反相白圆）/ `LoginBackButton` / `LoginTitleBlock` / `LoginTextLink` / `LoginMethodRow` / `LoginErrorText` / `LoginLoadingRing`。
+**大部分组件纯 token 驱动**（由 §16.1 双态表的 dark 值驱动，组件不动）：`LoginPanel` / `LoginInput` / `LoginPrimaryButton`（底 / 边 / 字 + spinner）/ `LoginSocialButton`（随主按钮 token 自动反相白圆）/ `LoginBackButton` / `LoginTitleBlock` / `LoginTextLink` / `LoginMethodRow` / `LoginErrorText` / `LoginLoadingRing`。
 
 **3 处非纯 token、需组件改动**：
 
-1. **hover / pressed 叠层二态**：叠层原为组件内 figma 实测 rgba 字面值，暗色起 token 化为 `--login-overlay-*` 二态。**〔2026-07-24 组件库更新改判〕hover 统一「叠白变亮」**：全按钮族 hover = normal 底上叠白色半透明（深底 `#2A2828`/`#434141` 族 +白 8%；浅底 `#EEEEEE` 族 +白 10%；**唯一例外**：`back` 亮色 hover 维持既有白 70%），两模式同向——旧「白底钮 hover = 黑 5% 变暗」口径作废（figma `white_button 347:2529`、SSO `549:779` 已按新值改稿）。pressed 维持叠黑，alpha 分档：**深底强调钮 50%**（`log_in_button` 与亮模式强调小钮 `light_button_highlight`，不论尺寸）/ 暗普通小钮 `Dark_button_Normal` 20% / 浅底钮 10%（边 `#E5E5E5`）/ 方式行与返回钮 8%。归纳仅作速记，**落码逐组件对拍本条下方的状态矩阵，不按类别名推断**。**〔落码状态〕本改判当前仅在文档层生效**：as-built 组件（含回调页 dark CTA / `oauthResultPage`）仍消费改判前的旧叠层值（浅底 hover 黑 5%、pressed 黑 10% 等），与新口径的同步随暗色实现 PR 的 `--login-overlay-*` token 化一并落地——在那之前「文档新口径 vs 代码旧值」的差异是已知且有意的，不构成实现缺陷；落地后以本段口径为准。hover 方向不再随底色反转，但 alpha 档位随组件底色深浅取值，`--login-overlay-*` 系列 light / dark 二态 token 照常承载，组件把字面 rgba 改为 `var(--login-overlay-*)`（机械替换，零行为变化）。
+1. **hover / pressed 叠层二态**：叠层原为组件内 figma 实测 rgba 字面值，暗色起 token 化为 `--login-overlay-*` 二态。**〔2026-07-24 组件库更新改判〕hover 统一「叠白变亮」**：全按钮族 hover = normal 底上叠白色半透明（深底 `#2A2828`/`#434141` 族 +白 8%；浅底 `#EEEEEE` 族 +白 10%；**唯一例外**：`back` 亮色 hover 维持既有白 70%），两模式同向——旧「白底钮 hover = 黑 5% 变暗」口径作废（figma `white_button 347:2529`、SSO `549:779` 已按新值改稿）。pressed 维持叠黑，alpha 分档：**深底强调钮 50%**（`log_in_button` 与亮模式强调小钮 `light_button_highlight`，不论尺寸）/ 暗普通小钮 `Dark_button_Normal` 20% / 浅底钮 10%（边 `#E5E5E5`）/ 方式行与返回钮 8%。归纳仅作速记，**落码逐组件对拍本条下方的状态矩阵，不按类别名推断**。**〔落码状态，2026-10-23 核对〕**：token 化已完成——桌面登录组件的 hover / pressed 叠层已全部消费 `var(--login-overlay-*)`，不再写字面 rgba。**仍未对齐新口径的是个别取值**：例如深色的 `--login-overlay-button-hover` 仍是改判前的黑 5%（新口径：浅底钮 hover 为白 10%），回调页（`oauthResultPage`）深色 CTA 的 hover 同样是黑 5%（该页在系统浏览器里，不能引用 renderer token，用内联常量）。这是已知缺口，由后续单独 PR 逐组件对拍下方状态矩阵后改值；在那之前，以本段口径和状态矩阵为准，不要照抄这些旧值。hover 方向不再随底色反转，但 alpha 档位随组件底色深浅取值，`--login-overlay-*` 系列 light / dark 二态 token 照常承载。
 
    按钮族状态矩阵（Figma 组件库 2026-07-24 实测；原载已移除的 `figma-component-spec §11.1 / §11.3`，hover 仅桌面）：
 
@@ -2210,7 +2210,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 
    四个小按钮的 disabled 同值：`#2A2828` 上叠白 70%，边 `#B4B4B4`，字 `#D4D4D4`。
 2. **`--login-bg-base` 前提变更**：画布底原为「跨主题恒定白 `#EDEDED`」，深色为 `#1F1F1E`（figma 532:585 帧实测）——即 `--login-*` 从「跨主题恒定」改为「随 light / dark 二态」（见 §16.2）。〔2026-10-01〕两态改为与 CINDY 皮肤页底同值 `#F2F2ED` / `#181818`，登录前后背景不再变色；仍为固定值，不随扩展主题。
-3. **`LoginBrandStage` 资产按模式切**：深色画布用**登录专用**白字版字标 / slogan 资产（`assets/login/wordmark-dark*.png` / `slogan-dark*.png`，源自 figma 532:585 `CINDY_Standard_White` 与 SLOGAN `#FBFBFB`，由暗色实现 PR 新增；**不是** §15.7 的新页横版 `cindy-logo-dark.png`——落位与尺寸不同）；立绘两模式同资产。
+3. **`LoginBrandStage` 资产按模式切**：深色画布用**登录专用**白字版字标 / slogan 资产（`assets/login/wordmark-dark*.png` / `slogan-dark*.png`，源自 figma 532:585 `CINDY_Standard_White` 与 SLOGAN `#FBFBFB`，已随暗色实现 PR 新增；**不是** §15.7 的新页横版 `cindy-logo-dark.png`——落位与尺寸不同）；立绘两模式同资产。
 
 **disabled 态特例**：主按钮 disabled **两模式同构**——深底 `#2A2828`（独立 token `--login-disabled-button-bg`，**不随** `--login-primary-button-bg` 反相；组件需 disabled 分支切换底/字）+ 白 70% 叠层（`--login-disabled-button-overlay`）+ 边 `#B4B4B4` + 文字 `#D4D4D4`（`--login-disabled-button-text`）opacity 0.8（figma `white_button` Disable 态核验：深色 disabled 不反相为白底，仍走亮色同款灰态）。
 
