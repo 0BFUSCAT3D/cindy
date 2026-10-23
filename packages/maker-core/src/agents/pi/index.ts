@@ -8212,18 +8212,7 @@ export class PiAgent extends BaseAgent {
       async setEffort(effort: Effort): Promise<void> {
         if (reviewMode) return;
         assertStartupEffortAllowed(activeEffortSnapshot, effort);
-        if (activeEffortSnapshot?.length === 0) {
-          // 防御：该模型在本次启动快照里没有任何思考档位（目录声明不支持思考）。
-          // 静默 return 会让调用方以为「已应用」；而模型实际仍可能推理，推理文本只能走
-          // content 通道、被当成普通正文渲染。留一行 warn，让这类目录错报能在日志里定位，
-          // 而不是只能翻库看消息构成。
-          deps.logger.warn('pi set_thinking_level skipped: model declares no thinking tiers', {
-            model: opts.model,
-            providerId: opts.providerId ?? null,
-            requestedEffort: effort,
-          });
-          return;
-        }
+        if (activeEffortSnapshot?.length === 0) return;
         const resp = await runExclusivePiRpc(() => proc.request({
           type: 'set_thinking_level',
           level: effortToPiThinkingLevel(effort),
