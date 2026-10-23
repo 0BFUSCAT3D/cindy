@@ -182,6 +182,7 @@ import {
   storedCustomProviderId,
   isLocalOnlyProviderForAgent,
   isOrganizationManagedProvider,
+  supportsSubscriptionFastPolicy,
   type ProviderView,
 } from '@cindy/model-providers';
 import { createId } from '@paralleldrive/cuid2';
@@ -24062,7 +24063,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           log.debug('set-fast-mode: session not found, no-op', { sessionId });
           return remoteResponse;
         }
-        if (sess.agentKind !== 'codex' && sess.agentKind !== 'pi' && !(sess.agentKind === 'claude-code' && subscriptionForbidsFast)) {
+        // An explicit enable after relaxation must reach the policy wrapper as
+        // well as native Claude, otherwise its request suppression stays latched.
+        // Custom API connections retain their existing persistence-only path.
+        const claudeSubscription = sess.agentKind === 'claude-code' && !fastProfile?.agentDeviceId &&
+          supportsSubscriptionFastPolicy(getActiveCatalog().providers.find(
+            provider => provider.id === (fastProfile?.providerId ?? getSessionProvider(sessionId)),
+          ));
+        if (sess.agentKind !== 'codex' && sess.agentKind !== 'pi' && !claudeSubscription) {
           await commitRuntimeAxisAfterPersistence({
             persist: persistFastMode,
             commit: commitFastMode,

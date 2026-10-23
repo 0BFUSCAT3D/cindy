@@ -32,11 +32,15 @@ export function SubscriptionFastSetting({
   useEffect(() => {
     alive.current = true;
     sequence.current++;
-    setAllowed(provider.subscriptionFastPolicy?.allowFast !== false);
     return () => {
       alive.current = false;
       sequence.current++;
     };
+  }, [provider.id, deviceId]);
+  useEffect(() => {
+    // A committed catalog push can precede a native-update failure. Refresh the
+    // value without invalidating that same provider's pending save feedback.
+    setAllowed(provider.subscriptionFastPolicy?.allowFast !== false);
   }, [provider.id, deviceId, provider.subscriptionFastPolicy?.allowFast]);
   if (!provider.subscriptionFastPolicy) return null;
   const change = async (allowFast: boolean) => {

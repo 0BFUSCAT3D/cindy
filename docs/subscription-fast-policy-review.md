@@ -183,3 +183,35 @@ pnpm --filter desktop run typecheck
 - 24 个改动测试文件分别运行通过，独立计时在 `artifacts/fast-rebase/standalone-timings.json`。桥接回归保留真实路由和 handler，直接加载实际速度钳制函数，减少无关 Agent 初始化；优化后单文件 8.15 秒、测试体 66 毫秒，尚高于 5 秒目标，如实登记。
 
 机器报告与日志在忽略目录 `artifacts/fast-rebase/`。macOS、Claude 原生真实付费请求和不同物理机仍未补测；之前隔离 dev 的真实分享记录不代替最终 rebase 后的实机证据。
+
+## PR #6894 首次自动跟进（2026-10-23）
+
+以下为提交 PR 后的增量复核，不计入提交前十项发现。没有新增 Orca 委托，也没有重启正式版或发送真实付费请求。
+
+### R11 / P1：解除限制后，运行中的 Claude 无法显式恢复 Fast
+
+- GitHub 原线程：`discussion_r4356434669`。独立确认 `SET_FAST_MODE` 仅在仍被禁止时才调用 Claude 的运行句柄；恢复允许后只保存偏好，原生 Fast 状态和请求抑制没有解除。
+- 修复：真实本机 OAuth 订阅上的 Claude 显式开关始终经过运行句柄和已有策略包装器；仅放宽账号/组限制仍不自动启用。自定义 API 仍走原来的偏好保存路径，没有增加原生控制请求。
+- 回归：在既有 `sessionRuntimeControlWiring.test.ts` 复用编译后的生产 IPC 闭包并连接真实 `withFastModePolicy`，执行「禁止 → 允许 → 手动开启」；Anthropic 和 OpenAI 订阅均在旧实现失败、修复后通过，自定义 API 对照保持原样。现有策略/原生设置测试单独覆盖抑制回调与 flag 更新，这个入口用例补齐此前无法发现的 IPC 提前返回。
+
+### R12 / P2：目录先刷新时，原生保存失败提示被吞掉
+
+- GitHub 原线程：`discussion_r4356434675`。独立确认同一供应商 `allowFast` 变化会递增保存代次，使后到的原生更新失败提示被当成陈旧请求。
+- 修复：供应商/电脑身份生命周期与目录值刷新分开。相同身份的新目录只刷新开关值，继续显示该次保存失败；换供应商、换电脑、换号和卸载仍丢弃旧响应。
+- 回归：在已有 `ProviderShareManagePage.test.tsx` 使用真实 `SubscriptionFastSetting` 和管理 IPC 适配器；延迟保存，先更新 props 再拒绝，旧实现没有提示、修复后有提示；四类失效边界继续通过。复用原页面夹具，没有拆分小测试文件或复制组件实现。
+
+### CI 失败分诊与测试夹具适配
+
+- 初始 `client-ci` run `39905324909` 的 verify job `120255848292`：生产 Fast 闭包新增策略依赖后，归档设置夹具缺少 `readSessionRuntimeProfiles` 等绑定，九项报 `ReferenceError`。补齐该夹具的缺省允许订阅依赖，原有归档/删除/持久化失败断言保留。
+- Linux 分片 job `120255848377`：hook bridge 偏好用例开始读取真实宿主策略，旧 Electron mock 无 `app`，创建任务返回错误。明确注入缺省允许策略以隔离宿主配置，不读取账号文件；仍通过真实 runner、路由变换检查 effort/Fast，禁止场景继续由独立真实策略与 bridge handler 回归验证。失败断言增加原错误信息以便诊断。
+- Linux 分片 job `120255848463`：收藏同步的无目录夹具缺少 `isSubscriptionShareCatalogStale` 导出，补齐「无已缓存订阅目录」的返回值；没有更改收藏同步源码或断言。
+- 上述失败均在本地重现后修复，属于本 PR 新依赖与既有夹具的适配遗漏；没有按 flaky 处理、空提交、弱化断言或因 main 普通前进而 rebase。
+
+### 本轮增量验证
+
+- 10 个不同文件共 384 项通过：IPC/页面 119，策略与 runtime axis 33，Core 包装器/Claude flag 14，hook/收藏/持久策略 218。重复计时不重复计数；IPC 单文件 79 项、3.68 秒。
+- `register.ts` 全文件 ESLint 仍有 15 个既有 unused 错误，hook 测试仍有六个既有 unused 参数错误；分别对照上游基线 `70b32d7` 的完整消息集合，新增错误均为零。不把全文件 lint 写成通过，也不跨范围删除别人的代码。
+- UI 完整 `--changed --theme all --engine chromium` 矩阵为 376/382 通过（665.8 秒），Fast 的八个明暗主题场景全部通过，已查看总览及开关实图。六个失败均在 `plugin-install-mail` 的多视图/编辑/刷新场景，报 `ResizeObserver loop completed with undelivered notifications`。随后 `--compare 70b32d7` 在上游基线也复现同类失败；没有据此修改插件或掩盖整批失败。`ProvidersSection.tsx` 仍为 UNCOVERED。没有再次发布新截图，PR 保留已获用户授权的原有模拟图。
+- 独立单文件耗时：IPC 3.68 秒、收藏同步 3.85 秒、管理页面 30.60 秒、hook runner 15.94 秒。后两项复用已有大入口夹具：页面同时加载真实页面、账号/成员/用量组件，hook 加载真实 runner、路由和 Core 事件判定；没有逐项 resetModules、增加真实等待或拆分机械小文件。测试体分别为 17.51 秒、1.49 秒，重收集成本与 Windows 并行类型/UI 扫描负载均保留记录，不将其宣称满足五秒目标。
+- 最后代码的 Desktop 全量 `typecheck` 退出码 0；过程中诊断断言的 nullable message 类型错误已修复后重跑，未记失败批次为通过。最终 `check:test-hygiene` 通过（363 个文件在原基线内），开发文档合同 10 项通过；除上述两处已有 lint 基线外，其余四个改动源码/测试文件的定向 ESLint 通过。
+- 历史 3114 项结果保持属于提交前快照，不能代替这次新增代码的验证。原 Core 独立 build、macOS/真实 Claude 付费/跨物理机限制继续保留，不由本轮模拟测试替代。
