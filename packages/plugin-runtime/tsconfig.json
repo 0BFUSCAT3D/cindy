@@ -9,6 +9,7 @@
     "noEmit": true
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "../maker-core/src/types/md-raw.d.ts"
   ]
 }

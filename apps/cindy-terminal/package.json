@@ -45,7 +45,8 @@
     "@cindy/companion-core": "workspace:*",
     "@cindy/plugin-runtime": "workspace:*",
     "@cindy/browser-control-runtime": "workspace:*",
-    "playwright-core": "1.60.0"
+    "playwright-core": "1.60.0",
+    "cindy-tools": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

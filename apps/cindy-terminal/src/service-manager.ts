@@ -141,7 +141,7 @@ export class TerminalServiceManager {
         result.running = stdout.trim() === '4';
         result.starts = installation.starts;
       }
-    } catch { /* A receipt alone never proves an available or running manager. */ }
+    } catch(error) { console.error('SYNTHETIC_SERVICE_INSPECT_ERROR',error); }
     return result;
   }
 

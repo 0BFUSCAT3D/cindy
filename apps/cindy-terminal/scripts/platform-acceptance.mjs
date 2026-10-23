@@ -124,6 +124,7 @@ try {
     registered = true; record('native user-service registration', 'PASS');
     if(realUserManager){const installed=JSON.parse(install.output);assert.equal(installed.starts,'boot');record('systemd linger registers startup without an interactive login','PASS');}
     const activated = await run(['service','activate'],{timeout:90_000});
+    console.log('SYNTHETIC_SERVICE_ACTIVATED',JSON.stringify(activated.service));
     assert.equal(activated.service.running,true); assert.ok(activated.status.deviceId);
     record('native user-service activation + real IPC', 'PASS');
     const previousStart=activated.status.startedAt;
@@ -135,12 +136,14 @@ try {
     // recovery. status is passive and cannot create a substitute daemon.
     const endpoint=JSON.parse(await readFile(path.join(profile,'service.json'),'utf8'));
     assert.ok(Number.isSafeInteger(endpoint.pid)&&endpoint.pid>0);
+    console.log('SYNTHETIC_SERVICE_CRASH_PID',endpoint.pid);
     process.kill(endpoint.pid,'SIGKILL');
-    const recoveryDeadline=Date.now()+100_000;let recovered=false;
+    const recoveryDeadline=Date.now()+100_000;let recovered=false,lastRecoveryState,lastRecoveryError;
     while(Date.now()<recoveryDeadline){
-      try{const state=await run(['service','status'],{timeout:10_000});if(state.startedAt>restarted.startedAt&&state.service?.running){assert.equal(state.deviceId,restarted.deviceId);recovered=true;break;}}catch{}
+      try{const state=await run(['service','status'],{timeout:10_000});lastRecoveryState={startedAt:state.startedAt,service:state.service};if(state.startedAt>restarted.startedAt&&state.service?.running){assert.equal(state.deviceId,restarted.deviceId);recovered=true;break;}}catch(error){lastRecoveryError=String(error.message);}
       await new Promise(resolve=>setTimeout(resolve,500));
     }
+    if(!recovered)console.log('SYNTHETIC_RECOVERY_STATE',JSON.stringify({lastRecoveryState,lastRecoveryError}));
     assert.ok(recovered,'Native service manager must recover its crashed host');
     record('OS-managed crash recovery without CLI auto-start', 'PASS');
     await run(['service', 'uninstall']); registered = false;
@@ -157,16 +160,16 @@ try {
     const installation=JSON.parse(await readFile(path.join(profile,'service-installation.json'),'utf8').catch(()=>'null'));
     if(installation?.id){
       console.log('SYNTHETIC_SERVICE_UNIT',await readFile(installation.file,'utf8').catch(()=>''));
-      const journal=await promisify(execFile)('journalctl',['--user','--unit',`${installation.id}.service`,'--no-pager','--lines=60'],{env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:error.stderr??''}));
+      const journal=await promisify(execFile)('journalctl',['--user','--unit',`${installation.id}.service`,'--no-pager','--lines=60'],{env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:String(error.message)+' '+(error.stderr??'')}));
       console.log('SYNTHETIC_SERVICE_JOURNAL',journal.stdout,journal.stderr);
     }
   }
   if(process.platform==='win32'){
     const installation=JSON.parse(await readFile(path.join(profile,'service-installation.json'),'utf8').catch(()=>'null'));
     if(installation?.id){
-      const script=`$s=New-Object -ComObject Schedule.Service;$s.Connect();$t=$s.GetFolder('\\').GetTask('${installation.id}');[pscustomobject]@{State=[int]$t.State;LastResult=$t.LastTaskResult;LastRun=$t.LastRunTime;NextRun=$t.NextRunTime;Instances=@($t.GetInstances(0)|ForEach-Object{[pscustomobject]@{PID=$_.EnginePID;State=[int]$_.State}});Xml=$t.Xml}|ConvertTo-Json -Depth 4`;
+      const script=`$ErrorActionPreference='Stop';$s=New-Object -ComObject Schedule.Service;$s.Connect();$t=$s.GetFolder('\\').GetTask('${installation.id}');[Console]::WriteLine('State='+[int]$t.State);[Console]::WriteLine('LastResult='+$t.LastTaskResult);[Console]::WriteLine('LastRun='+$t.LastRunTime);[Console]::WriteLine($t.Xml)`;
       const powershell=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe');
-      const diagnostic=await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:error.stderr??''}));
+      const diagnostic=await promisify(execFile)(powershell,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env,timeout:15_000}).catch(error=>({stdout:error.stdout??'',stderr:String(error.message)+' '+(error.stderr??'')}));
       console.log('SYNTHETIC_SCHEDULER_STATE',diagnostic.stdout,diagnostic.stderr);
       console.log('SYNTHETIC_SERVICE_ENDPOINT',await readFile(path.join(profile,'service.json'),'utf8').then(text=>{const {pid}=JSON.parse(text);return {pid};}).catch(()=>null));
     }
