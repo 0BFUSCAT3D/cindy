@@ -148,8 +148,15 @@ export function BotCapabilitySettings({
             name: t(`settings.builtinTools.plugins.${item.id}.name`, { defaultValue: item.name }),
             description: t(`settings.builtinTools.plugins.${item.id}.description`, { defaultValue: item.description ?? '' }),
           } : item);
+          // A kept reference this computer does not have: its name (not its internal id), flagged as not here.
           for (const id of selected[kind])
-            if (!rows.some((item) => item.id === id)) rows.push({ id, name: id, available: false });
+            if (!rows.some((item) => item.id === id)) rows.push({
+              id,
+              name: kind === 'mcp' ? capabilities.mcpServerNames?.[id] || id
+                : kind === 'toolset' ? t(`settings.builtinTools.plugins.${id}.name`, { defaultValue: id }) : id,
+              available: false,
+              missing: true,
+            });
           const mode = kind === 'mcp' ? capabilities.mcpMode : kind === 'toolset' ? capabilities.toolsetMode : 'allowlist';
           // Inheritance can only become an explicit selection from a complete
           // catalog of this kind. Missing/refreshing entries must not drop tools.
@@ -176,7 +183,7 @@ export function BotCapabilitySettings({
                       <p className="text-13 font-medium text-[var(--text-primary)]">{item.name}</p>
                       {item.description && <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">{item.description}</p>}
                       {item.personal && <p className="mt-1 text-12 text-[var(--text-secondary)]">{t('bots.capabilities.personalHint')}</p>}
-                      {!item.available && <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">{t('bots.capabilities.unavailableHint')}</p>}
+                      {!item.available && <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">{t(item.missing ? 'bots.capabilities.notOnThisComputer' : 'bots.capabilities.unavailableHint')}</p>}
                       {kind === 'toolset' && onConfigure && <Button type="button" size="sm" variant="secondary" className="mt-2"
                         onClick={() => onConfigure(kind, item.id)}>{t('bots.capabilities.configure')}</Button>}
                     </div>

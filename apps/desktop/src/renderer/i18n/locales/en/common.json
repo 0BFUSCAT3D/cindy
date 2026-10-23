@@ -9840,6 +9840,7 @@
       "selectedHint": "Only selected items in this list are allowed for this companion.",
       "personalHint": "A skill learned by this companion, loaded with its profile.",
       "unavailableHint": "Unavailable on this computer or execution target. Configure its connection or system access first.",
+      "notOnThisComputer": "Not available on this computer",
       "configure": "Open configuration",
       "empty_toolset": "No built-in tools are available on this execution target.",
       "empty_mcp": "No custom MCP servers have been added.",

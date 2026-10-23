@@ -9806,6 +9806,7 @@
       "selectedHint": "此清單中，夥伴只使用已選取的項目。",
       "personalHint": "夥伴自己學到的技能，隨夥伴自動載入。",
       "unavailableHint": "本機或目前執行環境暫不可用，請先設定連線或系統授權。",
+      "notOnThisComputer": "這台電腦不可用",
       "configure": "前往設定",
       "empty_toolset": "目前執行環境沒有可用的內建工具。",
       "empty_mcp": "尚未新增自訂 MCP 服務。",

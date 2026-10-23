@@ -9806,6 +9806,7 @@
       "selectedHint": "此列表中，伙伴只使用已选中的项目。",
       "personalHint": "伙伴自己学到的技能，随伙伴自动加载。",
       "unavailableHint": "本机或当前执行环境暂不可用，请先配置连接或系统授权。",
+      "notOnThisComputer": "这台电脑不可用",
       "configure": "前往配置",
       "empty_toolset": "当前执行环境没有可用的内置工具。",
       "empty_mcp": "尚未添加自定义 MCP 服务。",

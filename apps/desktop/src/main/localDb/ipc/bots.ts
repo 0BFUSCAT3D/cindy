@@ -1259,6 +1259,9 @@ async function readProfile(
       mcpServers: Array.isArray(config.mcpServers)
         ? config.mcpServers.filter((item): item is string => typeof item === 'string')
         : [],
+      ...(config.mcpServerNames && typeof config.mcpServerNames === 'object' && !Array.isArray(config.mcpServerNames)
+        ? { mcpServerNames: Object.fromEntries(Object.entries(config.mcpServerNames as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string')) } : {}),
       memory: config.memory !== false,
       permissions: config.permissions === 'trusted' || config.permissions === 'auto' ? config.permissions : 'ask',
       // Stored and enforced elsewhere (input handoff policy, scheduler follow); the settings page reads them

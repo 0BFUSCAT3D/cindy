@@ -15,6 +15,8 @@ export type BotCapabilityEntry = {
   description?: string;
   available: boolean;
   personal?: boolean;
+  /** Kept from the companion's setup but not present on this computer. */
+  missing?: boolean;
 };
 
 type Bots = NonNullable<Window['electronAPI']['localDb']>['bots'];

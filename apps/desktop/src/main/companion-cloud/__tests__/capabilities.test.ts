@@ -16,6 +16,16 @@ describe('portable companion capabilities', () => {
       toolsetMode: 'inherit', mcpServers: ['mcp-1'], mcpMode: 'allowlist', memory: false, inputHandoff: true, allowSchedulerFollow: true, gender: 'female' });
   });
 
+  it('carries the names of the referenced MCP servers (this computer\'s win, an earlier computer\'s are kept), nothing else about them', () => {
+    const config = { mcpServers: ['mcp-1', 'mcp-2', 'mcp-3'], mcpServerNames: { 'mcp-2': 'Old name', 'mcp-3': 'From before', stray: 'x' } };
+    const value = portableCompanionCapabilities(config, null, { 'mcp-1': 'Docs', 'mcp-2': 'New name', other: 'y' });
+    expect(value.mcpServerNames).toEqual({ 'mcp-1': 'Docs', 'mcp-2': 'New name', 'mcp-3': 'From before' });
+    // Read back from the cloud defensively, and handed to the profile for display.
+    expect(parseCompanionCapabilities({ mcpServers: ['a'], mcpServerNames: { a: ' Wiki ', b: 'unreferenced', c: 3 } })?.mcpServerNames).toEqual({ a: 'Wiki' });
+    expect(parseCompanionCapabilities({ mcpServers: ['a'] })).toEqual({ mcpServers: ['a'] });
+    expect(companionCapabilitiesPatch({ mcpServers: ['a'], mcpServerNames: { a: 'Wiki' } }, { chain: [], task: null })).toEqual({ mcpServers: ['a'], mcpServerNames: { a: 'Wiki' } });
+  });
+
   it('carries only the model chain the owner chose, without routes that run on another computer', () => {
     const chosen = [route('m1'), route('m2', { agentDeviceId: 'phone-1' })];
     expect(portableCompanionCapabilities({}, chosen).modelChain).toEqual([route('m1')]);

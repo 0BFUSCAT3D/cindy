@@ -20,6 +20,8 @@ export interface CompanionCapabilitiesValue {
   toolsetMode?: SelectionMode;
   mcpServers?: string[];
   mcpMode?: SelectionMode;
+  /** Display names of the referenced MCP servers (their ids mean nothing to a person); never configuration. */
+  mcpServerNames?: Record<string, string>;
   memory?: boolean;
   inputHandoff?: boolean;
   allowSchedulerFollow?: boolean;
@@ -33,6 +35,17 @@ const refs = (value: unknown): string[] | undefined => Array.isArray(value)
   ? [...new Set(value.filter((id): id is string => typeof id === 'string' && !!id.trim() && id.length <= MAX_REF_LENGTH))].slice(0, MAX_REFS)
   : undefined;
 const mode = (value: unknown): SelectionMode | undefined => (value === 'inherit' || value === 'allowlist' ? value : undefined);
+const MAX_NAME_LENGTH = 80;
+/** Names for the referenced ids only (the list may hold ids this computer does not know). */
+function referencedNames(raw: unknown, ids: string[] | undefined): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !ids?.length) return undefined;
+  const names: Record<string, string> = {};
+  for (const id of ids) {
+    const name = (raw as Record<string, unknown>)[id];
+    if (typeof name === 'string' && name.trim()) names[id] = name.trim().slice(0, MAX_NAME_LENGTH);
+  }
+  return Object.keys(names).length ? names : undefined;
+}
 /** A route that names another computer to run on has no meaning on the new home. */
 const portableRoute = (route: BotModelRoute) => !route.agentDeviceId;
 
@@ -40,7 +53,8 @@ const portableRoute = (route: BotModelRoute) => !route.agentDeviceId;
  * The portable part of a capabilities record. `explicitChain` is the companion's own chosen model
  * chain (null: it follows the default, which the new computer then also follows).
  */
-export function portableCompanionCapabilities(config: Record<string, unknown>, explicitChain: BotModelRoute[] | null): CompanionCapabilitiesValue {
+export function portableCompanionCapabilities(config: Record<string, unknown>, explicitChain: BotModelRoute[] | null,
+  localMcpNames: Record<string, string> = {}): CompanionCapabilitiesValue {
   const value: CompanionCapabilitiesValue = {};
   for (const [field, selection] of [['skills', 'skillMode'], ['toolsets', 'toolsetMode'], ['mcpServers', 'mcpMode']] as const) {
     const list = refs(config[field]);
@@ -48,6 +62,9 @@ export function portableCompanionCapabilities(config: Record<string, unknown>, e
     const selected = mode(config[selection]);
     if (selected) value[selection] = selected;
   }
+  // Names this computer knows win; the rest keep what an earlier computer sent along.
+  const mcpNames = referencedNames({ ...(config.mcpServerNames as Record<string, unknown> | undefined), ...localMcpNames }, value.mcpServers);
+  if (mcpNames) value.mcpServerNames = mcpNames;
   const excluded = refs(config.skillsExcluded);
   if (excluded) value.skillsExcluded = excluded;
   for (const field of ['memory', 'inputHandoff', 'allowSchedulerFollow'] as const) {
@@ -74,6 +91,8 @@ export function parseCompanionCapabilities(raw: unknown): CompanionCapabilitiesV
     const selected = mode(input[selection]);
     if (selected) value[selection] = selected;
   }
+  const mcpNames = referencedNames(input.mcpServerNames, value.mcpServers);
+  if (mcpNames) value.mcpServerNames = mcpNames;
   const excluded = refs(input.skillsExcluded);
   if (excluded) value.skillsExcluded = excluded;
   for (const field of ['memory', 'inputHandoff', 'allowSchedulerFollow'] as const) {
@@ -97,7 +116,7 @@ export function companionCapabilitiesPatch(value: CompanionCapabilitiesValue, mo
   chain: BotModelRoute[]; task: BotModelRoute | null;
 }): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
-  for (const field of ['skills', 'skillMode', 'skillsExcluded', 'toolsets', 'toolsetMode', 'mcpServers', 'mcpMode', 'memory', 'inputHandoff', 'allowSchedulerFollow'] as const) {
+  for (const field of ['skills', 'skillMode', 'skillsExcluded', 'toolsets', 'toolsetMode', 'mcpServers', 'mcpMode', 'mcpServerNames', 'memory', 'inputHandoff', 'allowSchedulerFollow'] as const) {
     if (value[field] !== undefined) patch[field] = value[field];
   }
   if (value.modelChain) {

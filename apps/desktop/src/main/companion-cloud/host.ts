@@ -22,6 +22,7 @@ import type { BotModelRoute } from '../../shared/botModelChain.js';
 import { inferBotTemplatePresetId } from '../../shared/botTemplatePreset.js';
 import { resolveBotCanonicalSession } from '../maker-ipc/botCanonicalSessionRegistry.js';
 import { readExplicitBotModelChain } from '../maker-host/bot-model-chain-settings-store.js';
+import { listCustomMcpServers } from '../maker-host/custom-mcp-store.js';
 import { resolveAvailableTaskModels } from '../maker-ipc/appDefaultModelControl.js';
 import { botProfileDir, botProfileMemoryDir, readBotProfileFolder, writeBotProfileFolder } from '../maker-ipc/botProfileFolder.js';
 import { onBotRemoteResourceChanged } from '../maker-ipc/botRemoteResourceInvalidation.js';
@@ -83,8 +84,10 @@ export async function readCompanionValues(botId: string, selfDeviceId: string | 
   try {
     const config = JSON.parse(row.capabilities ?? '{}') as unknown;
     if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('CAPABILITIES_UNREADABLE');
+    // Names of this computer's own MCP servers, so a computer without them can still say which one it is.
+    const mcpNames = Object.fromEntries((await listCustomMcpServers().catch(() => [])).map(server => [server.id, server.name]));
     values.push({ key: COMPANION_CAPABILITIES_KEY, value: portableCompanionCapabilities(
-      config as Record<string, unknown>, readExplicitBotModelChain(config as Record<string, unknown>)) });
+      config as Record<string, unknown>, readExplicitBotModelChain(config as Record<string, unknown>), mcpNames) });
   } catch { values.push({ key: COMPANION_CAPABILITIES_KEY, value: null, unread: true }); }
   const memoryDir = botProfileMemoryDir(userDataDir, botId);
   // Only a missing folder means "no memories"; any other read error aborts this cycle so the
