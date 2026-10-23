@@ -10295,7 +10295,6 @@
       "openSettings": "Voice settings",
       "startConversation": "Start voice conversation",
       "settingsHint": "Choose this companion’s speech model and voice, then start a voice conversation from the message composer.",
-      "incompleteSettings": "Choose a speech API and voice to save automatically.",
       "previewNeedsChat": "Start a conversation with this companion to preview a voice.",
       "voiceId": "Voice ID",
       "manualVoice": "Enter a voice ID",
