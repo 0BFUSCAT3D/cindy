@@ -60,6 +60,7 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
   const titleRequests: Array<{ prompt: string; options?: import('@cindy/maker-core').OneShotOptions }> = [];
   const sent: import('@cindy/maker-core').UserMessage[] = [];
   const resumeFailures = new Set<string>();
+  const overflowed = new Set<string>();
   const usageByModel = new Map<string, { contextTokens: number; contextWindow: number }>();
   const create = async (input: RuntimeInput) => {
     inputs.push(input);
@@ -91,7 +92,12 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
             emit({ type: 'done', data: { silentStop: true } });
             return;
           }
-          if (text === 'context-overflow-fixture') {
+          if (text.includes('context-overflow-fixture') || text.includes('overflow-once') && !overflowed.has(input.taskId) || text.includes('overflow-after-write')) {
+            overflowed.add(input.taskId);
+            if (text.includes('overflow-after-write')) {
+              await writeFile(path.join(options.workingDir, 'effect.txt'), 'completed once');
+              emit({ type: 'tool_use', data: { toolName: 'Write', input: { file_path: 'effect.txt' } } });
+            }
             running = false;
             emit({ type: 'error', data: { reason: 'context-overflow', message: 'maximum context length exceeded', isTerminal: true } });
             return;
@@ -354,6 +360,7 @@ describe('terminal task host', () => {
       await connections.start();
       await connections.saveConfiguration('telegram', { token: '999:synthetic-token', ownerUserId: '111' });
       expect(connections.telegram.getStatus().kind).toBe('connected');
+      expect(calls).toContainEqual({ method: 'setMyCommands', params: { scope: { type: 'chat', chat_id: 111 }, commands: expect.arrayContaining([{ command: 'new', description: 'Create a new session' }]) } });
       const view = await registry.get(context, { client, ref: resourceRef });
       expect(view.actions?.find(action => action.id === 'edit')?.fields).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'token', kind: 'secret' })]));
       expect(JSON.stringify(view)).not.toContain('synthetic-token');
@@ -672,7 +679,68 @@ describe('terminal task host', () => {
     expect(native.starts.at(-1)?.resumeSessionId).toBeUndefined();
     expect(JSON.stringify(native.sent.at(-1))).toContain('completed earlier work');
     expect(JSON.stringify(native.sent.at(-1))).not.toContain('context-overflow-fixture');
+    expect(native.sent).toHaveLength(4);
+  });
+  // Integration: the same submission survives automatic context rebuilding;
+  // a completed tool effect or a user stop must prevent hidden replay.
+  it('continues one overflowed input once and preserves its receipt and earlier history', async () => {
+    const { host, native } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    await host.invoke('maker:send', [task.id, { text: 'remember amber-47', clientId: 'earlier' }]);
+    await host.invoke('terminal:tasks:wait', [task.id, 'earlier']);
+    await host.invoke('maker:send', [task.id, { text: 'overflow-once', clientId: 'recover-me' }]);
+    expect(await host.invoke('terminal:tasks:wait', [task.id, 'recover-me'])).toMatchObject({ status: 'completed' });
+    const history = await host.invoke('local-db:messages:list', [task.id, { limit: 100 }]) as Array<{ role: string; content: string; agentMeta?: { contextRebuild?: unknown } }>;
+    expect(history.filter(row => row.agentMeta?.contextRebuild)).toHaveLength(1);
+    expect(history.filter(row => row.role === 'user' && row.content === 'overflow-once')).toHaveLength(1);
+    expect(history.some(row => row.role === 'error')).toBe(false);
     expect(native.sent).toHaveLength(3);
+    expect(JSON.stringify(native.sent.at(-1))).toContain('amber-47');
+    expect(native.starts.at(-1)?.resumeSessionId).toBeUndefined();
+  });
+  it('surfaces overflow after a tool effect without replaying the input', async () => {
+    const { host, native, root } = await setup();
+    const task = await host.invoke('maker:create-session', [{ workingDir: root }]) as { id: string };
+    await host.invoke('maker:send', [task.id, { text: 'overflow-after-write', clientId: 'no-repeat' }]);
+    expect(await host.invoke('terminal:tasks:wait', [task.id, 'no-repeat'])).toMatchObject({ status: 'failed' });
+    expect(native.sent).toHaveLength(1);
+    expect(await readFile(path.join(root, 'effect.txt'), 'utf8')).toBe('completed once');
+    expect((await host.invoke('local-db:messages:list', [task.id]) as Array<{ role: string }>).some(row => row.role === 'error')).toBe(true);
+  });
+  it.each(['scheduler', 'session'] as const)('returns overflow to its %s dispatcher without leaving the receipt running', async source => {
+    const { host, native } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    if (source === 'scheduler') {
+      await host.submitScheduled(task.id, 'overflow-once', { scheduleId: 'schedule-1', scheduleName: 'Fixture', runId: 'run-1', requestId: 'external-input' });
+    } else {
+      await host.invoke('maker:send', [task.id, { text: 'overflow-once', clientId: 'external-input' }], { source: 'local', sender: { sessionId: 'sender-1', title: 'Sender' } });
+    }
+    expect(await host.invoke('terminal:tasks:wait', [task.id, 'external-input'])).toMatchObject({ status: 'failed' });
+    expect(native.sent).toHaveLength(1);
+    const history = await host.invoke('local-db:messages:list', [task.id]) as Array<{ role: string; agentMeta?: { origin?: { kind: string }; contextRebuild?: unknown } }>;
+    expect(history.find(row => row.role === 'user')?.agentMeta?.origin?.kind).toBe(source);
+    expect(history.some(row => row.agentMeta?.contextRebuild)).toBe(false);
+  });
+  it.each(['maker:input:stop', 'maker:close-session', 'maker:abort-session'])('cancels an in-flight rebuild before its commit through %s', async command => {
+    const { host, native } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    let reached!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { reached = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = host.storage.commitContextRebuild.bind(host.storage);
+    const commit = vi.spyOn(host.storage, 'commitContextRebuild').mockImplementation(async (...args) => { reached(); await gate; return original(...args); });
+    try {
+      await host.invoke('maker:send', [task.id, { text: 'overflow-once', clientId: 'cancel-me' }]);
+      await entered;
+      await host.invoke('maker:send', [task.id, { text: 'queued input', clientId: 'still-queued' }]);
+      const stop = host.invoke(command, [task.id]);
+      release(); await stop;
+      expect(await host.invoke('terminal:tasks:wait', [task.id, 'cancel-me'])).toMatchObject({ status: 'interrupted' });
+      expect(native.sent).toHaveLength(1);
+      expect((await host.invoke('local-db:messages:list', [task.id]) as Array<{ agentMeta?: { contextRebuild?: unknown } }>).some(row => row.agentMeta?.contextRebuild)).toBe(false);
+      expect(await host.invoke('maker:session-in-turn', [task.id])).toBe(false);
+      expect(await host.invoke('terminal:tasks:status', [task.id, 'still-queued'])).toMatchObject({ status: 'queued' });
+    } finally { release(); commit.mockRestore(); }
   });
   // The public GUI channel stages a choice; the real Maker send boundary applies
   // it, records context, and resumes the parked native engine when switching back.

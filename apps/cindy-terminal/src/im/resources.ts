@@ -75,6 +75,7 @@ export function registerImResources(registry: RemoteResourceRegistry, connection
         ...(persona ? [{ id: 'persona', primitive: 'form', data: { actionId: 'persona', values: persona }, fallbackMarkdown: '' }] : []),
         ...(id === 'telegram' ? [{ id: 'online', primitive: 'form', data: { actionId: 'online', values: { online: connections.telegram.getStatus().kind === 'connected' } }, fallbackMarkdown: '' }] : []),
         ...(id === 'feishu' ? [{ id: 'announcement', primitive: 'form', data: { actionId: 'announcement', values: { enabled: status.lifecycleAnnouncement !== false } }, fallbackMarkdown: '' }] : []),
+        ...(id === 'feishu' ? [{ id: 'connect', primitive: 'form', data: { actionId: 'connect', values: { service: status.service ?? 'feishu' } }, fallbackMarkdown: '' }] : []),
       ], actions: [
         { id: 'edit', label: label('Configure', '配置', '設定', '設定', '설정'), fields: credentialFields[id] },
         ...(id === 'feishu' ? [{ id: 'connect', label: label('Create and connect', '创建并连接', '建立並連線', '作成して接続', '만들고 연결'), fields: [credentialFields.feishu[0]!] },

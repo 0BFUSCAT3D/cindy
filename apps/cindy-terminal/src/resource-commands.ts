@@ -11,6 +11,10 @@ export async function invokeResourceAction(client:TerminalClient,raw:Omit<import
   if(request.collectionId==='plugins'&&request.resourceRef&&request.actionId==='credentials')return submitPluginSecret(client,request.resourceRef.id,request.input,device);
   if(request.collectionId==='mcp'&&(request.actionId==='create'||request.actionId==='edit'))return submitConfiguration(client,{collectionId:'mcp',actionId:request.actionId,...(request.resourceRef?{resourceId:request.resourceRef.id}:{})},request.input,device);
   if(request.collectionId==='channels'&&request.actionId==='edit'&&request.resourceRef)return submitConfiguration(client,{collectionId:'channels',actionId:'edit',resourceId:request.resourceRef.id},request.input,device);
+  if(request.collectionId==='channels'&&request.actionId==='connect'&&request.resourceRef?.id==='feishu'){
+    const input=request.input as {service?:unknown}|undefined;
+    return {effects:[],result:await client.invoke('terminal:channel-registration',[{command:'begin',service:input?.service,...(device?{deviceId:device}:{})}])};
+  }
   return client.invoke('maker:remote-resources:invoke',[request],device);
 }
 

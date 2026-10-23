@@ -25,13 +25,15 @@ export function ChannelRegistration({ client, device, service, locale, onDone }:
   const done = useRef(onDone); done.current = onDone;
   const cancel = async (requestId: string) => { await client.invoke('terminal:channel-registration', [{ command: 'cancel', id: requestId }]).catch(() => {}); };
   useEffect(() => {
-    let disposed = false, timer: NodeJS.Timeout | undefined;
+    let disposed = false, timer: NodeJS.Timeout | undefined, expiresAt: number | undefined;
     const apply = (next: ChannelRegistrationState) => {
       if (disposed) return;
       setState(next);
+      expiresAt = next.expiresAt;
       if (next.status === 'pending') timer = setTimeout(() => { void read(); }, 1500);
     };
     const read = async () => {
+      if (expiresAt !== undefined && Date.now() >= expiresAt) { apply({ status: 'expired' }); if (id.current) void cancel(id.current); return; }
       try {
         const result = await client.invoke<{ state: ChannelRegistrationState }>('terminal:channel-registration', [{ command: 'read', id: id.current }]);
         apply(result.state);

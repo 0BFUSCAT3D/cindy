@@ -13,7 +13,7 @@ import { type InvocationContext, type TerminalSecrets } from '../contracts.js';
 import { createDeviceAgentStarter, readDeviceProviderViews, readRemoteProviderRoute, hostedStartOptions, type HostedStartInput, type DeviceAgentServiceDeps } from '@cindy/remote-agent';
 import { readTaskDelivery, validateTaskDelivery, type TaskDeliveryProof } from './handoff.js';
 import { TerminalTaskMedia } from './media.js';
-import { persistedUserContentToWireMessage, type ContextOverflowRolloverDeps } from '@cindy/im-runtime/contextOverflowRollover';
+import { persistedUserContentToWireMessage, isContextOverflowErrorData, isOversizedHistoryErrorData, isUnsupportedRequestOptionErrorData, type ContextOverflowRolloverDeps } from '@cindy/im-runtime/contextOverflowRollover';
 import { createAutoReviewIntentProjection } from '@cindy/maker-shared/auto-review-intent';
 import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, INHERITED_CAPABILITY_SELECTION, PI_CACHE_RECOVERY_EXPECTATION } from '@cindy/maker-core';
 import { normalizeTaskInput, appendInputText, inputPlainText, persistedInput, type InputHost, type AttachmentLifecycle } from './input.js';
@@ -142,6 +142,9 @@ export class TerminalTaskHost {
   private readonly permissionChanges = createSessionPermissionChanges();
   private readonly utilityAbort = new AbortController();
   private readonly utilityWork = new Set<Promise<unknown>>();
+  private readonly recovering = new Map<string, Promise<void>>();
+  private readonly externalSubmissions = new Map<string, string>();
+  private readonly stoppingTasks = new Map<string, number>();
   private readonly storageReady: Promise<void>;
   readonly media: TerminalTaskMedia;
   readonly capabilities: TerminalCapabilities;
@@ -819,7 +822,7 @@ export class TerminalTaskHost {
   observeTask(id:string, listener:(event:AgentEvent)=>void) {const set=this.taskObservers.get(id)??new Set();set.add(listener);this.taskObservers.set(id,set);return ()=>{set.delete(listener);if(!set.size)this.taskObservers.delete(id);};}
   listBindings() { return Object.fromEntries(this.groupBindings); }
   async sessionGroup(id: string) { const row = await this.storage.get(id); return row?.groupBinding ? { groupDeviceId: row.groupBinding.groupDeviceId ?? null, providerId: row.groupBinding.providerId } : null; }
-  isTurnRunning(id: string): boolean { return this.turnLifecycle.running(id) || this.starts.has(id) || this.sending.has(id) || this.activeSubmissions.has(id) || this.live.get(id)?.session.isTurnRunning() === true; }
+  isTurnRunning(id: string): boolean { return this.recovering.has(id) || this.turnLifecycle.running(id) || this.starts.has(id) || this.sending.has(id) || this.activeSubmissions.has(id) || this.live.get(id)?.session.isTurnRunning() === true; }
   async submitScheduled(id: string, text: string, origin: Omit<ScheduledOrigin, 'kind'> & { requestId?: string; assertCurrent?: () => void }) {
     return this.submit(id, { text }, { requestId: origin.requestId ?? randomUUID() }, { source: 'local', assertCurrent: origin.assertCurrent, scheduler: { kind: 'scheduler', scheduleId: origin.scheduleId, scheduleName: origin.scheduleName, runId: origin.runId, firedAt:origin.firedAt } });
   }
@@ -1003,6 +1006,34 @@ export class TerminalTaskHost {
   }
   private onEvent(id: string, event: AgentEvent) {
     const runtime = this.live.get(id)?.session;
+    if (runtime && event.type === 'error' && event.turnScope !== 'background' && (event.data as { isTerminal?: boolean } | undefined)?.isTerminal !== false) {
+      const identity = { instanceId: event.sessionInstanceId, generation: event.sessionTurnGeneration };
+      const recoverable = !this.stoppingTasks.has(id) && this.activeSubmissions.has(id) && this.externalSubmissions.get(id) !== this.activeSubmissions.get(id)
+        && !event.turnOrigin && !this.channelBindings.store.findByTarget(id) && !this.pluginSetup?.surface.isHeadlessGhostSetupTurn(id)
+        && (isContextOverflowErrorData(event.data) || isOversizedHistoryErrorData(event.data) || isUnsupportedRequestOptionErrorData(event.data));
+      const claim = this.routes.recovery.runtime.claim(id, identity, recoverable);
+      if (claim === 'in-flight') return;
+      if (claim === 'claimed') {
+        const requestId = this.activeSubmissions.get(id);
+        // Let the native terminal boundary finish before closing/rebuilding its
+        // Session. Keep the same submission occupied throughout the replay.
+        const work = Promise.resolve().then(async () => {
+          const recovered = await this.routes.recovery.runtime.tryRecover(id, event.data, identity);
+          if (!recovered && !this.closed && this.activeSubmissions.get(id) === requestId) this.persistTaskEvent(id, event, requestId);
+        }).catch(() => {
+          if (!this.closed && this.activeSubmissions.get(id) === requestId) this.persistTaskEvent(id, event, requestId);
+        }).finally(() => {
+          if (this.recovering.get(id) === work) this.recovering.delete(id);
+          setImmediate(() => this.drain(id));
+        });
+        this.recovering.set(id, work);
+        return;
+      }
+    }
+    this.persistTaskEvent(id, event, this.activeSubmissions.get(id));
+  }
+  private persistTaskEvent(id: string, event: AgentEvent, sourceRequestId?: string) {
+    const runtime = this.live.get(id)?.session;
     if (runtime) this.changes.observe(runtime, event);
     for(const observer of this.taskObservers.get(id)??[])observer(event);
     // Generated byte payloads are host-owned, not durable conversation text.
@@ -1017,7 +1048,7 @@ export class TerminalTaskHost {
     }
     void this.storage.append(id, { kind: 'event', event: saved }).then(row => {
       this.emit('maker:event', { sessionId: id, event: saved, sequence: row.sequence });
-      const requestId = this.activeSubmissions.get(id);
+      const requestId = this.activeSubmissions.get(id) === sourceRequestId ? sourceRequestId : undefined;
       if (requestId && event.turnScope !== 'background' && event.type === 'text') {
         const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : { text: String(event.data ?? '') };
         const text = typeof data.text === 'string' ? data.text : typeof data.content === 'string' ? data.content : '';
@@ -1027,6 +1058,7 @@ export class TerminalTaskHost {
       if (event.type === 'done' && !silentStop) { void this.messages(id,{limit:1}).then(rows=>{if(rows[0]?.role==='assistant')this.emit('local-db:messages:created',{sessionId:id,message:rows[0]});}).catch(()=>{}); setImmediate(() => this.drain(id)); const usage = this.live.get(id)?.session.getUsageSnapshot(); if (usage) void this.storage.update(id, { usage }).catch(() => this.persistenceFaults.add(id)); }
       if (requestId && !silentStop && event.turnScope !== 'background' && (event.type === 'done' || (event.type === 'error' && (event.data as { isTerminal?: boolean })?.isTerminal !== false))) {
         this.activeSubmissions.delete(id);
+        this.externalSubmissions.delete(id);
         void this.updateReceipt(id, requestId, event.type === 'done' ? 'completed' : 'failed', event.type === 'error' ? 'TURN_FAILED' : undefined, this.submissionText.get(id));
         this.submissionText.delete(id);
         setImmediate(() => this.drain(id));
@@ -1136,7 +1168,7 @@ export class TerminalTaskHost {
     await this.storage.updateIf(id, row => !row.deleted, { usage: task.session.getUsageSnapshot() }, () => {});
     for (const pending of [...this.pending.values()]) if (pending.sessionId === id) pending.settle(decisionForDismissal(pending.request));
     const requestId = this.activeSubmissions.get(id);
-    if (requestId && !this.routeClosures.has(id)) { this.activeSubmissions.delete(id); await this.updateReceipt(id, requestId, 'interrupted', 'SESSION_CLOSED', this.submissionText.get(id)); this.submissionText.delete(id); }
+    if (requestId && !this.routeClosures.has(id)) { this.activeSubmissions.delete(id); this.externalSubmissions.delete(id); await this.updateReceipt(id, requestId, 'interrupted', 'SESSION_CLOSED', this.submissionText.get(id)); this.submissionText.delete(id); }
     task.revoke();
     if (this.routeClosures.has(id)) await task.maker.closeSession(id, 'agent-switch');
     await task.maker.shutdown();
@@ -1145,6 +1177,19 @@ export class TerminalTaskHost {
     for (const dispose of task.dispose) await dispose();
     this.live.delete(id);
   }
+  private async cancelTaskRecovery(id: string) {
+    const work = this.recovering.get(id);
+    this.routes.recovery.runtime.cancelRecovery(id);
+    if (!work) return;
+    const requestId = this.activeSubmissions.get(id);
+    await work;
+    if (requestId && this.activeSubmissions.get(id) === requestId) {
+      this.activeSubmissions.delete(id);
+      this.externalSubmissions.delete(id);
+      await this.updateReceipt(id, requestId, 'interrupted', 'INPUT_STOPPED', this.submissionText.get(id));
+      this.submissionText.delete(id);
+    }
+  }
   private guard(context: TaskInvocationContext) {
     if (this.closed) throw new Error('TASK_HOST_CLOSED');
     if (context.signal?.aborted) throw new Error('REQUEST_ABORTED');
@@ -1152,10 +1197,23 @@ export class TerminalTaskHost {
   }
   async invoke(channel: string, args: unknown[] = [], context: TaskInvocationContext = { source: 'local' }): Promise<unknown> {
     this.guard(context);
-    const result = await this.dispatch(channel, args, context);
-    this.guard(context);
-    if(channel.startsWith('maker:input:')&&channel!=='maker:input:get-projection')this.emit('maker:input:projection',result);
-    return result;
+    const stopsTask = ['maker:input:stop', 'maker:abort-session', 'maker:close-session', 'terminal:tasks:delete'].includes(channel)
+      || channel === 'local-db:sessions:update' && record(args[1] ?? {}).status !== undefined && record(args[1]).status !== 'active';
+    const stoppingId = stopsTask ? string(args[0]) : undefined;
+    if (stoppingId) this.stoppingTasks.set(stoppingId, (this.stoppingTasks.get(stoppingId) ?? 0) + 1);
+    try {
+      const result = await this.dispatch(channel, args, context);
+      this.guard(context);
+      if(channel.startsWith('maker:input:')&&channel!=='maker:input:get-projection')this.emit('maker:input:projection',result);
+      return result;
+    } finally {
+      if (stoppingId) {
+        const remaining = (this.stoppingTasks.get(stoppingId) ?? 1) - 1;
+        if (remaining) this.stoppingTasks.set(stoppingId, remaining);
+        else this.stoppingTasks.delete(stoppingId);
+        if (!remaining && channel === 'maker:input:stop' && record(args[1] ?? {}).pauseQueue === false) this.drain(stoppingId);
+      }
+    }
   }
   private async dispatch(channel: string, args: unknown[], context: TaskInvocationContext): Promise<unknown> {
     await this.ready;
@@ -1183,6 +1241,7 @@ export class TerminalTaskHost {
       }
       case 'maker:input:stop': {
         const id=string(args[0]),opts=args[1]?record(args[1]):{};this.queuePaused.add(id);
+        await this.cancelTaskRecovery(id);
         await this.storage.update(id,{queuePaused:opts.pauseQueue!==false});
         if(opts.keepQueue===false)for(const item of await this.storage.queued(id))await this.removeQueued(id,item.requestId,context);
         const task=this.live.get(id);if(task)await this.turnLifecycle.stop(task.session);if(opts.pauseQueue===false){this.queuePaused.delete(id);this.drain(id);}return this.projection(id);
@@ -1285,7 +1344,7 @@ export class TerminalTaskHost {
       case 'terminal:tasks:get': { const row = await this.storage.get(string(args[0])); if (!row) throw new Error('TASK_NOT_FOUND'); return this.view(row); }
       case 'terminal:tasks:history': { const page = args[1] === undefined ? {} : record(args[1]); return this.storage.history(string(args[0]), Number(page.after ?? 0), Number(page.limit ?? 200)); }
       case 'terminal:tasks:rename': { const row = await this.storage.update(string(args[0]), { title: string(args[1]) }); this.emit('terminal:tasks:changed', { sessionId: row.id }); return this.view(row); }
-      case 'terminal:tasks:delete': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.options.beforeTaskUnavailable?.(id); this.guard(context); await this.closeTask(id); const channelFilesRoot=this.channelFiles.imAttachmentsRoot(); const channelIdentity=this.channelBindings.store.findByTarget(id); if(channelIdentity)await this.channelBindings.store.detachIfTarget(channelIdentity,id); await this.storage.delete(id); await this.media.removeSession(id); await this.channelFiles.removeImSessionAttachmentDirs(id,channelFilesRoot); this.channelVendorOptions.delete(id); this.emit('terminal:tasks:changed', { sessionId: id }); return { success: true }; }
+      case 'terminal:tasks:delete': { const id = string(args[0]); await this.cancelTaskRecovery(id); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.options.beforeTaskUnavailable?.(id); this.guard(context); await this.closeTask(id); const channelFilesRoot=this.channelFiles.imAttachmentsRoot(); const channelIdentity=this.channelBindings.store.findByTarget(id); if(channelIdentity)await this.channelBindings.store.detachIfTarget(channelIdentity,id); await this.storage.delete(id); await this.media.removeSession(id); await this.channelFiles.removeImSessionAttachmentDirs(id,channelFilesRoot); this.channelVendorOptions.delete(id); this.emit('terminal:tasks:changed', { sessionId: id }); return { success: true }; }
       case 'maker:list-active': { const sessions = [...this.live.values()].map(({ session }) => ({ sessionId: session.id, agentKind: session.agentKind, workDir: session.workDir, capabilities: session.capabilities, isTurnRunning: session.isTurnRunning() })); return args[0] && record(args[0]).snapshotVersion === 2 ? { format: 'active-sessions-v2', sessions } : sessions; }
       case 'maker:any-session-in-turn': return [...this.live.values()].some(task => task.session.isTurnRunning());
       case 'maker:session:turn-active': return { inTurn: this.isTurnRunning(string(args[0])) };
@@ -1293,9 +1352,10 @@ export class TerminalTaskHost {
       case 'maker:plugin-setup:submit-inline': {if(context.source!=='local')throw new Error('LOCAL_ONLY_COMMAND');const request=parseGhostSetupInlineSubmitRequest(args[0]);return {accepted:Boolean(request&&this.pluginSetup?.bridge.submitInline(request.requestId,request))};}
       case 'maker:get-pending-interactions': return [...(!context.sharedTask?this.pluginSetup?.bridge.pendingSnapshots(string(args[0]))??[]:[]),...(!context.sharedTask ? this.options.protectedInput?.handoff.pendingSnapshots(string(args[0]))??[] : []), ...[...this.pending.values()].filter(p => p.sessionId === args[0] && !p.migrated && (!context.sharedTask || ['permission','ask_user_question','plan_review'].includes(p.request.kind))).map(p => ({ request: p.request }))];
       case 'maker:resolve-interaction': {if(!context.sharedTask&&this.pluginSetup?.bridge.pendingSnapshots().some(item=>item.request.requestId===args[0]))return {accepted:this.pluginSetup.bridge.resolve(string(args[0]),args[1])};if(!context.sharedTask&&this.options.protectedInput?.handoff.isCurrent(string(args[0])))return this.options.protectedInput.handoff.resolve(string(args[0]),args[1],context.source==='remote'?{deviceId:context.deviceId}:{local:true});if(context.sharedTask)this.assertSharedInteraction(string(args[0]),record(args[1]));return this.resolveInteraction(string(args[0]), args[1]);}
-      case 'maker:close-session': { const id = string(args[0]); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.closeTask(id); return { success: true }; }
-      case 'maker:abort-session': { const id=string(args[0]);this.options.protectedInput?.handoff.cleanupForSession(id);this.pluginSetup?.bridge.cleanupForSession(id,'session_aborted');const task = this.live.get(id); if(task)await this.turnLifecycle.stop(task.session); return { success: true }; }
+      case 'maker:close-session': { const id = string(args[0]); await this.cancelTaskRecovery(id); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.closeTask(id); return { success: true }; }
+      case 'maker:abort-session': { const id=string(args[0]);await this.cancelTaskRecovery(id);this.options.protectedInput?.handoff.cleanupForSession(id);this.pluginSetup?.bridge.cleanupForSession(id,'session_aborted');const task = this.live.get(id); if(task)await this.turnLifecycle.stop(task.session); return { success: true }; }
       case 'maker:send': {
+        if (this.stoppingTasks.has(string(args[0]))) throw new Error('SESSION_STOPPING');
         if (args[1] && typeof args[1] === 'object' && typeof (args[1] as Record<string, unknown>).clientId === 'string') {
           const receipt = await this.submit(string(args[0]), args[1], { requestId: (args[1] as Record<string, unknown>).clientId }, context);
           return { accepted: !['failed', 'interrupted'].includes(receipt.status), requestId: receipt.requestId, clientId: receipt.requestId, status: receipt.status, ...(receipt.error ? { reason: receipt.error } : {}) };
@@ -1419,7 +1479,7 @@ export class TerminalTaskHost {
     void this.projection(id).then(projection => this.emit('maker:input:projection', projection)).catch(() => undefined);
   }
   private drain(id: string) {
-    if (!this.pendingDispatchReady || this.closed || this.queuePaused.has(id) || this.queueMutations.has(id) || this.queueLocks.get(id)?.size || this.queueEditLocks.get(id)?.size || this.activeSubmissions.has(id) || this.starts.has(id) || this.sending.has(id) || this.turnLifecycle.running(id) || this.live.get(id)?.session.isTurnRunning()) return;
+    if (!this.pendingDispatchReady || this.closed || this.stoppingTasks.has(id) || this.recovering.has(id) || this.queuePaused.has(id) || this.queueMutations.has(id) || this.queueLocks.get(id)?.size || this.queueEditLocks.get(id)?.size || this.activeSubmissions.has(id) || this.starts.has(id) || this.sending.has(id) || this.turnLifecycle.running(id) || this.live.get(id)?.session.isTurnRunning()) return;
     const queue = this.queuedSubmissions.get(id) ?? [];
     const readyIndex = queue.findIndex(item => !item.sendAtMs || item.sendAtMs <= Date.now());
     const next = readyIndex >= 0 ? queue.splice(readyIndex,1)[0] : undefined;
@@ -1461,6 +1521,11 @@ export class TerminalTaskHost {
       this.guard(context);
       if (this.activeSubmissions.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning()) throw new Error('SESSION_RUNNING');
       this.activeSubmissions.set(id, requestId);
+      // These dispatchers own their retry and source metadata. Generic replay
+      // deliberately leaves them alone, including task-to-task inputs whose
+      // source is persisted but is not a Maker SendOrigin.
+      if (context.scheduler || context.sender || context.deliveryProof) this.externalSubmissions.set(id, requestId);
+      else this.externalSubmissions.delete(id);
       if (!await this.updateReceipt(id, requestId, 'sending')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
       const result = await this.invoke('maker:send', [id, message], {...context, normalizedInput:true}) as { accepted: boolean; reason?: string };
       if (!result.accepted) throw new Error(result.reason ?? 'SEND_REJECTED');
@@ -1468,7 +1533,7 @@ export class TerminalTaskHost {
       void this.projection(id).then(projection => this.emit('maker:input:projection', projection)).catch(() => undefined);
       setImmediate(() => this.drain(id));
     } catch (error) {
-      if (this.activeSubmissions.get(id) === requestId) this.activeSubmissions.delete(id);
+      if (this.activeSubmissions.get(id) === requestId) { this.activeSubmissions.delete(id); this.externalSubmissions.delete(id); }
       const reason = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : 'SEND_FAILED';
       await this.updateReceipt(id, requestId, 'failed', reason);
       setImmediate(() => this.drain(id));
@@ -1621,7 +1686,7 @@ export class TerminalTaskHost {
       if (!['active', 'archived', 'deleted'].includes(String(patch.status))) throw new Error('INVALID_SESSION_STATUS');
       if (patch.status !== 'active' && (this.starts.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning())) throw new Error('SESSION_RUNNING');
       update.archived = patch.status === 'archived'; update.deleted = patch.status === 'deleted';
-      if (patch.status !== 'active') { await this.options.beforeTaskUnavailable?.(id); guard(); await this.closeTask(id); }
+      if (patch.status !== 'active') { await this.cancelTaskRecovery(id); await this.options.beforeTaskUnavailable?.(id); guard(); await this.closeTask(id); }
     }
     if (patch.pinnedAt !== undefined) {
       const at = patch.pinnedAt === null ? null : typeof patch.pinnedAt === 'number' ? patch.pinnedAt : Date.parse(string(patch.pinnedAt));
@@ -1639,6 +1704,7 @@ export class TerminalTaskHost {
   private async shutdown() {
     this.closed = true;
     this.utilityAbort.abort();
+    const recovery = [...this.recovering.keys()].map(id => this.cancelTaskRecovery(id));
     const channelHandlers = this.channelControl.close();
     await this.channelOrchestrators.close();
     await channelHandlers;
@@ -1648,6 +1714,7 @@ export class TerminalTaskHost {
     // native handles that did open; the start caller retains the original error.
     await this.ready.catch(()=>{});
     await Promise.allSettled(this.utilityWork);
+    await Promise.allSettled(recovery);
     await Promise.allSettled(this.starts.values());
     await Promise.all([...this.live.keys()].map(id => this.closeTask(id)));
     this.makerObservers.clear();

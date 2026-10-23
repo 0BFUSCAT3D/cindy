@@ -161,3 +161,105 @@ const channelPermissionMessages: Record<Locale, string> = {
   "ko": "현재 Agent는 이 권한 모드로 이 채널에서 실행할 수 없어 메시지를 처리할 수 없습니다. /permission을 보내 지원되는 권한 모드로 변경하세요."
 };
 export function channelPermissionUnavailable(locale: Locale) { return channelPermissionMessages[locale]; }
+
+const telegramCommandMenus: Record<Locale, Record<string, string>> = {
+  "en": {
+    "start": "Welcome and usage",
+    "new": "Create a new session",
+    "help": "Show command help",
+    "stop": "Stop the current task",
+    "session": "Recent sessions, pick one to continue",
+    "project": "Switch project workspace",
+    "model": "Show or switch the model",
+    "permission": "Show or switch the permission mode",
+    "settings": "Show project and agent settings",
+    "ctr": "Remotely control a desktop session",
+    "exctr": "Exit remote control",
+    "workspace": "Switch project workspace",
+    "unbind": "Clear the current project mapping",
+    "effort": "Choose reasoning effort",
+    "agent": "Choose an Agent",
+    "status": "Show link status",
+    "unlink": "Unlink Telegram"
+  },
+  "zh-CN": {
+    "start": "查看欢迎信息和用法",
+    "new": "创建新任务",
+    "help": "查看命令帮助",
+    "stop": "中止当前执行",
+    "session": "最近任务列表，选中即续聊",
+    "project": "切换项目工作区",
+    "model": "查看或切换模型",
+    "permission": "查看或切换权限模式",
+    "settings": "查看当前项目与 Agent 设置",
+    "ctr": "接管桌面端的任务",
+    "exctr": "退出远程控制",
+    "workspace": "切换项目工作区",
+    "unbind": "清除当前项目映射",
+    "effort": "选择推理强度",
+    "agent": "选择 Agent",
+    "status": "查看关联状态",
+    "unlink": "解除 Telegram 关联"
+  },
+  "zh-TW": {
+    "start": "檢視歡迎資訊和用法",
+    "new": "建立新任務",
+    "help": "檢視命令幫助",
+    "stop": "中止當前執行",
+    "session": "最近任務列表，選中即續聊",
+    "project": "切換專案工作區",
+    "model": "檢視或切換模型",
+    "permission": "檢視或切換權限模式",
+    "settings": "檢視目前專案與 Agent 設定",
+    "ctr": "接管桌面端的任務",
+    "exctr": "退出遠端控制",
+    "workspace": "切換專案工作區",
+    "unbind": "清除目前專案對應",
+    "effort": "選擇推理強度",
+    "agent": "選擇 Agent",
+    "status": "檢視關聯狀態",
+    "unlink": "解除 Telegram 關聯"
+  },
+  "ja": {
+    "start": "ようこそと使い方を表示",
+    "new": "新しいセッションを作成",
+    "help": "コマンドヘルプを表示",
+    "stop": "現在のタスクを停止",
+    "session": "最近のセッション一覧から続行",
+    "project": "プロジェクトワークスペースを切り替え",
+    "model": "モデルを表示・切り替え",
+    "permission": "権限モードを表示・切り替え",
+    "settings": "プロジェクトと Agent 設定を表示",
+    "ctr": "デスクトップセッションをリモート操作",
+    "exctr": "リモート操作を終了",
+    "workspace": "プロジェクトワークスペースを切り替え",
+    "unbind": "現在のプロジェクト設定を解除",
+    "effort": "推論強度を選択",
+    "agent": "Agent を選択",
+    "status": "連携状態を表示",
+    "unlink": "Telegram 連携を解除"
+  },
+  "ko": {
+    "start": "환영 메시지와 사용법 보기",
+    "new": "새 세션 만들기",
+    "help": "명령어 도움말 보기",
+    "stop": "현재 작업 중지",
+    "session": "최근 세션 목록에서 이어서 대화",
+    "project": "프로젝트 워크스페이스 전환",
+    "model": "모델 보기·전환",
+    "permission": "권한 모드 보기·전환",
+    "settings": "프로젝트와 Agent 설정 보기",
+    "ctr": "데스크톱 세션 원격 제어",
+    "exctr": "원격 제어 종료",
+    "workspace": "프로젝트 워크스페이스 전환",
+    "unbind": "현재 프로젝트 매핑 해제",
+    "effort": "추론 강도 선택",
+    "agent": "Agent 선택",
+    "status": "연결 상태 보기",
+    "unlink": "Telegram 연결 해제"
+  }
+};
+export function telegramCommandDescription(locale: Locale, key: string) {
+  const command = key.replace(/^settings\.telegramBot\.commandMenu\./, "");
+  return telegramCommandMenus[locale][command] ?? telegramCommandMenus.en[command] ?? command;
+}

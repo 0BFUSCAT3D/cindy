@@ -41,7 +41,10 @@ export class TerminalTaskRecovery {
           model: row.model, providerId: row.providerId, workingDir: row.workDir };
       },
       resolveVerifiedWindow: (kind, model, provider) => this.windows.get(this.key(dbToMakerAgentKind(kind), provider, model)) ?? null,
-      listMessages: host.messages,
+      // Desktop excludes both its hidden rebuild marker (rewind_at) and the
+      // visible contextRebuild card from handoff material. Neither is a tool
+      // effect or an assistant response to the failed input.
+      listMessages: async id => (await host.messages(id)).filter(row => !row.agentMeta?.contextRebuild),
       findLatestUser: async id => (await host.messages(id)).reverse().find(row => row.role === 'user') ?? null,
       findLatestRebuildMeta: async id => {
         const row = (await host.messages(id)).reverse().find(row => row.role === 'context_rebuild');

@@ -9,7 +9,8 @@ import { buildFeishuAdapter } from '@cindy/im-runtime/channels/feishu/adapter';
 import { createFeishuUiText } from '@cindy/im-runtime/channels/feishu/uiText';
 import { createFeishuNotifications } from '@cindy/im-runtime/channels/feishu/notificationOrigin';
 import { createTerminalFeishuTools } from './feishu-tools.js';
-import { channelPermissionUnavailable, type Locale } from '../ui/i18n.js';
+import { channelPermissionUnavailable, telegramCommandDescription, type Locale } from '../ui/i18n.js';
+import { buildPersonalBotCommandMenu } from '@cindy/im-runtime/botCommands';
 import { buildTelegramAdapter } from '@cindy/im-runtime/channels/telegram/adapter';
 import { telegramUiText } from '@cindy/im-runtime/channels/telegram/uiText';
 import { createTelegramSpeakerRegistration } from '@cindy/im-runtime/channels/telegram/contacts';
@@ -91,6 +92,7 @@ export class TerminalImConnections {
     this.telegramSettings = new TerminalTelegramSettings(options.root, options.assertCurrent);
     void this.telegramSettings.ready.catch(() => {});
     this.telegram = createTelegramIM(this.transport.host, { ...native.telegram,
+      commandMenu: buildPersonalBotCommandMenu(key => telegramCommandDescription(options.language?.() ?? 'en', key)),
       resolveImageUrl: url => { const file = this.transport.host.media!.resolveMediaUrl(url); if (!file) throw new Error('INVALID_MEDIA_URL'); return file; },
       expiredCardNotice: telegramUiText.expiredCardNotice, behavior: () => this.telegramSettings.behavior(),
     });
