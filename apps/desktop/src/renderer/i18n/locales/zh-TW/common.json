@@ -9567,6 +9567,9 @@
         "projectDirChange": "更換",
         "projectDirClear": "清除",
         "projectDirNote": "分工做事時，夥伴們在這裡工作。不選也行，會用這個群聊自己的資料夾；選了 git 專案，每次分工會新開一個 worktree 和分支，不動你手上的程式碼。",
+        "handoff": "分工交接",
+        "autoContinueNote": "開著時，你在這個群聊發起的分工做完一步就自動交給下一位；關著時每一步都等你點「繼續」。只在這台電腦上生效。",
+        "autoContinueSaveFailed": "分工交接沒能儲存，請再試一次",
         "projectDirSaveFailed": "專案資料夾沒能儲存，確認資料夾還在後再試"
       },
       "errors": {
@@ -9602,6 +9605,8 @@
         "dismiss": "不用了",
         "editHint": "點某一步可以換人",
         "pauseNote": "每做完一步會停下來，等你點「繼續」。",
+        "autoContinue": "做完一步自動交給下一位",
+        "autoNote": "做完一步會自動交給下一位。",
         "superseded": "已更新",
         "dismissed": "不用了",
         "stopped": "已停止",

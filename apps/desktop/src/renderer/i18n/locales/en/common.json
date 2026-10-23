@@ -9601,6 +9601,9 @@
         "projectDirChange": "Change Folder",
         "projectDirClear": "Clear Folder",
         "projectDirNote": "Teammates work here when they split the work. You can leave it empty and they’ll use this group chat’s own folder. If you choose a git project, each work split gets a new worktree and branch, so your own code stays untouched.",
+        "handoff": "Step handoffs",
+        "autoContinueNote": "When on, work splits you start in this group move on to the next step by themselves. When off, each step waits until you click “Start Next Step”. Applies on this computer only.",
+        "autoContinueSaveFailed": "Couldn’t save step handoffs. Try again.",
         "projectDirSaveFailed": "Couldn’t save the project folder. Make sure the folder still exists, then try again."
       },
       "errors": {
@@ -9636,6 +9639,8 @@
         "dismiss": "Skip Plan",
         "editHint": "Click a step to hand it to someone else",
         "pauseNote": "Work pauses after each step until you click “Start Next Step”.",
+        "autoContinue": "Start the next step automatically",
+        "autoNote": "Each finished step starts the next one automatically.",
         "superseded": "Updated",
         "dismissed": "Skipped",
         "stopped": "Stopped",

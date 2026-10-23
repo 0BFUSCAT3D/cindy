@@ -14,7 +14,13 @@ vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: asyn
   if (!taskPosts.has(key)) taskPosts.set(key, JSON.parse(JSON.stringify(await prepare())));
   return JSON.parse(JSON.stringify(taskPosts.get(key)));
 } }));
-vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
+// This computer's group settings; each test starts with none.
+const workspaceSettings = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({
+  read: (room: string) => workspaceSettings.get(room) ?? null,
+  save: (room: string, value: unknown) => { workspaceSettings.set(room, value); },
+}) }));
+beforeEach(() => workspaceSettings.clear());
 const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
 vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' },
@@ -162,6 +168,69 @@ describe('Chat Server result delivery and refresh', () => {
     service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
   });
   afterEach(() => { service.dispose(); vi.useRealTimers(); vi.unstubAllEnvs(); fixture.config = ''; vi.clearAllMocks(); });
+  describe('分工 auto-continue on this computer (bot-group-chat.md §7.4)', () => {
+    const planId = '80000000-0000-4000-8000-000000000009';
+    const otherHuman = '30000000-0000-4000-8000-000000000002';
+    const division = (over: Record<string, unknown> = {}, first = 'done') => ({ id: planId, revision: 3, kind: 'work',
+      source_message_id: execution.source_message_id, request_text: 'build it', organizer_id: botId, creator_id: selfId,
+      status: 'waiting', current_step: 0, created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z',
+      steps: [{ position: 0, botId, botName: 'Bot', task: 'draft', status: first }, { position: 1, botId, botName: 'Bot', task: 'polish', status: 'pending' }],
+      ...over });
+    const continues = () => fixture.handle.mock.calls.filter(([route, method, body]) =>
+      route === `/conversations/${roomId}/plans/${planId}` && method === 'POST' && (body as { action?: string })?.action === 'continue');
+    const stepEnded = async (cursor: string) => {
+      fixture.sockets[0]!.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor,
+        changes: [{ type: 'execution.updated', entityId: execution.id }] }));
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    async function serve(plan: Record<string, unknown>, settings: { autoContinue?: boolean } | null, onContinue?: () => { status: number; body: unknown }) {
+      if (settings) workspaceSettings.set(roomId, { projectDir: null, plans: {}, ...settings });
+      fixture.handle.mockImplementation((route, method) => route === `/conversations/${roomId}/plans/${planId}` && method === 'POST'
+        ? onContinue?.() ?? { body: {} } : route.startsWith(`/conversations/${roomId}/plans`) ? { body: [plan] } : response(route));
+      await service.getGroup(roomId);
+      await vi.advanceTimersByTimeAsync(2000);
+    }
+    it('goes on to the next step of a 分工 started here once a step is done', async () => {
+      await serve(division(), { autoContinue: true });
+      await stepEnded('2');
+      expect(continues()).toHaveLength(1);
+      expect(continues()[0]![2]).toMatchObject({ expectedRevision: 3 });
+      // The same finished step is not continued twice when later changes arrive.
+      await stepEnded('3');
+      expect(continues()).toHaveLength(1);
+    });
+    it.each([
+      ['the switch is off', division(), { autoContinue: false }],
+      ['nothing was chosen on this computer', division(), null],
+      ['the step failed and waits for 重试', division({}, 'failed'), { autoContinue: true }],
+      ['someone else started the 分工', division({ creator_id: otherHuman }), { autoContinue: true }],
+      ['it is a discussion queue, not a 分工', division({ kind: 'talk' }), { autoContinue: true }],
+      ['the 分工 was stopped', division({ status: 'stopped' }), { autoContinue: true }],
+      ['the last step is done', division({ current_step: 1, status: 'waiting', steps: [
+        { position: 0, botId, botName: 'Bot', task: 'draft', status: 'done' }, { position: 1, botId, botName: 'Bot', task: 'polish', status: 'done' }] }), { autoContinue: true }],
+    ])('keeps waiting for 继续 when %s', async (_case, plan, settings) => {
+      await serve(plan, settings);
+      await stepEnded('2');
+      expect(continues()).toHaveLength(0);
+    });
+    it('turning it on while a step waits goes on now, and shows the choice on the group and its 分工 card', async () => {
+      await serve(division(), null);
+      const before = await service.getGroup(roomId);
+      expect(before.ok && [before.group.autoContinue, before.group.plans[0]?.autoContinue]).toEqual([false, false]);
+      expect(await service.updateGroup({ groupId: roomId, autoContinue: true })).toEqual({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(workspaceSettings.get(roomId)).toMatchObject({ autoContinue: true, projectDir: null });
+      expect(continues()).toHaveLength(1);
+      const after = await service.getGroup(roomId);
+      expect(after.ok && [after.group.autoContinue, after.group.plans[0]?.autoContinue]).toEqual([true, true]);
+    });
+    it('does not try again after someone else went on first', async () => {
+      await serve(division(), { autoContinue: true }, () => ({ status: 409, body: { error: { code: 'REVISION_CONFLICT' } } }));
+      await stepEnded('2');
+      await stepEnded('3');
+      expect(continues()).toHaveLength(1);
+    });
+  });
   it('uses the mobile edited revision instead of a newer server snapshot when saving settings', async () => {
     await service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 7 });
     expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}`, 'PATCH', expect.objectContaining({ name: 'Draft', expectedRevision: 7 }));

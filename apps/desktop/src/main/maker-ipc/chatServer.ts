@@ -886,7 +886,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           for (const roomId of rooms.keys()) invalidate(roomId);
           ws.send(JSON.stringify({ type: 'subscribe', scope: `actor:${selfId}`, after: '0' }));
           for (const [roomId, cursor] of rooms) ws.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: cursor }));
-          void syncPersonalList(true).then(() => { if (current() && socket === ws) { for (const roomId of rooms.keys()) changed(roomId); changed(''); } }).catch(() => ws.close());
+          void syncPersonalList(true).then(() => { if (current() && socket === ws) { for (const roomId of rooms.keys()) { changed(roomId); autoContinuePlans(roomId); } changed(''); } }).catch(() => ws.close());
         } else if (event.type === 'changes') {
           // This adapter stores no client history. Each invalidation re-reads authoritative
           // state; a reconnect resumes after the last cursor this process has read or acked.
@@ -903,8 +903,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             const types = changes.map(change => (change as { type?: unknown } | null)?.type);
             // Lease renewals append no change; ordinary chatter cannot revoke a lease, so it does
             // not renew one either. Any other or unknown change re-checks the room's running work.
-            if (!types.length || types.some(type => typeof type !== 'string' || !CHATTER_CHANGES.has(type)))
+            if (!types.length || types.some(type => typeof type !== 'string' || !CHATTER_CHANGES.has(type))) {
               for (const run of running.values()) if (run.execution.conversation_id === roomId) void checkLease(run);
+              // A step ends with an execution change, wherever its companion ran.
+              autoContinuePlans(roomId);
+            }
             if (changes.some(queuedForThisDevice)) {
               for (const change of changes) {
                 const value = change as { entityId?: unknown; data?: { botId?: unknown } };
@@ -1326,7 +1329,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
           name: memberName(m), avatar: m.groupAvatar ? '' : p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
-      }), organizerBotId: ((id?: string) => id ? localBot(id)?.id ?? id : null)(s.room.organizer_id ?? s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id), projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
+      }), organizerBotId: ((id?: string) => id ? localBot(id)?.id ?? id : null)(s.room.organizer_id ?? s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id), projectDir: workspace?.projectDir ?? null, autoContinue: workspace?.autoContinue === true, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
         preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null, ...(open.kind ? { kind: open.kind } : {}) } : null,
@@ -1349,6 +1352,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         canManage: plan.creator_id === selfId || members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)),
         // Same rule as sendMessage's commentPlan: additions are written as the human, so a teammate's role does not count.
         canAdd: plan.creator_id === selfId || members.some(m => m.id === selfId && ['owner', 'admin'].includes(m.role)) } : {}),
+      // Only a 分工 started here follows this computer's choice; its 继续 is pressed from here.
+      ...(plan.kind === 'work' && plan.creator_id === selfId ? { autoContinue: workspace?.autoContinue === true } : {}),
       createdAt: Date.parse(plan.created_at), updatedAt: Date.parse(plan.updated_at) };
   }
   async function actPlan(input: unknown, action: string) {
@@ -1368,6 +1373,43 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     await api(`/conversations/${room}/plans/${plan.id}`, 'POST', { operationId: randomUUID(), expectedRevision: plan.revision,
       action: serverAction, position: i.position, botId }, asManager);
     changed(room); return { ok: true as const };
+  }
+  /**
+   * 分工 started here with this computer's 自动交接 on: once a step is done, start the next one as
+   * 继续 would. A failed step, a stopped 分工 and the last step still wait (bot-group-chat.md §7.4).
+   * The expected revision keeps a concurrent 继续 or edit from starting a step twice.
+   */
+  const autoContinueRuns = new Map<string, boolean>();
+  const autoContinued = new Set<string>();
+  function autoContinuePlans(roomId: string) {
+    if (!current()) return;
+    if (autoContinueRuns.has(roomId)) { autoContinueRuns.set(roomId, true); return; }
+    autoContinueRuns.set(roomId, false);
+    void (async () => {
+      do {
+        autoContinueRuns.set(roomId, false);
+        if (!workspaces().read(roomId)?.autoContinue) return;
+        const plans = await api<ServerPlan[]>(`/conversations/${roomId}/plans`);
+        for (const plan of plans) {
+          const at = plan.current_step ?? 0;
+          if (plan.kind !== 'work' || plan.creator_id !== selfId || plan.status !== 'waiting'
+            || plan.steps[at]?.status !== 'done' || at + 1 >= plan.steps.length) continue;
+          const key = `${plan.id}:${at}`;
+          if (autoContinued.has(key)) continue;
+          autoContinued.add(key);
+          if (autoContinued.size > 1000) autoContinued.delete(autoContinued.values().next().value!);
+          try {
+            await api(`/conversations/${roomId}/plans/${plan.id}`, 'POST', { operationId: randomUUID(), expectedRevision: plan.revision, action: 'continue' });
+            changed(roomId);
+          } catch (error) {
+            // Someone else went on or changed the 分工 first; anything else may be tried again.
+            if (!(error instanceof ChatResponseError) || retryableResponse(error)) autoContinued.delete(key);
+            throw error;
+          }
+        }
+      } while (current() && autoContinueRuns.get(roomId));
+    })().catch(error => deps.log?.warn('Group 分工 auto-continue failed', { groupId: roomId, ...chatErrorDiagnostic(error) }))
+      .finally(() => autoContinueRuns.delete(roomId));
   }
   async function decideArrangement(s: Snapshot, sourceId: string, text: string, forced: boolean, attachments: BotGroupAttachment[], intent: PlanIntent, quote: BotGroupQuoteView | null = null) {
     if (!current() || planIntents.get(s.room.id) !== intent) return;
@@ -2608,7 +2650,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     },
     updateGroup: input => safe(async () => {
       const i = z.object({ groupId: id, name: z.string().min(1).max(40).optional(), replyMode: z.enum(['all', 'mentioned']).optional(),
-        speakingMode: z.enum(['auto', 'sequential']).optional(), organizerBotId: z.string().nullable().optional(), projectDir: z.string().max(4096).nullable().optional(), expectedRevision: z.number().int().positive().optional() }).parse(input);
+        speakingMode: z.enum(['auto', 'sequential']).optional(), organizerBotId: z.string().nullable().optional(), projectDir: z.string().max(4096).nullable().optional(), autoContinue: z.boolean().optional(), expectedRevision: z.number().int().positive().optional() }).parse(input);
       i.groupId = await resolveGroup(i.groupId);
       if (i.organizerBotId) await register();
       const s = await groupSnapshot(i.groupId);
@@ -2618,7 +2660,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (i.name !== undefined || i.replyMode !== undefined || i.speakingMode !== undefined || organizerId !== undefined) await api(`/conversations/${i.groupId}`, 'PATCH', { operationId: randomUUID(), expectedRevision: i.expectedRevision ?? s.room.revision,
         name: i.name, responseMode: i.replyMode, speakingMode: i.speakingMode, organizerId }, managementActor(s));
       if (projectDir !== undefined) workspaces().save(i.groupId, { ...workspaces().read(i.groupId) ?? { plans: {} }, projectDir });
-      changed(i.groupId); return { ok: true as const };
+      if (i.autoContinue !== undefined) workspaces().save(i.groupId, { projectDir: null, plans: {}, ...workspaces().read(i.groupId), autoContinue: i.autoContinue });
+      changed(i.groupId);
+      // Turned on while a step waits for 继续: go on now rather than at the next change.
+      if (i.autoContinue) autoContinuePlans(i.groupId);
+      return { ok: true as const };
     }),
     // Stop stops what is yours: your requests and arrangements, and your teammates' work for
     // others. An owner or admin may stop everything (`all`). Work you may not stop is left running.

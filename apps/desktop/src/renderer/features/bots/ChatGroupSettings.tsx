@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { FormField } from '@/components/ui/form-field';
+import { Switch } from '@/components/ui/switch';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { ProfileEditDialog } from '@/components/settings/ProfileEditDialog';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
@@ -99,14 +100,14 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
       refreshBotGroups();
     },
   }), [group.id, me?.actorId, me?.name, me?.groupAvatar, me?.defaultAvatarUrl, t]);
-  async function updateWorkSettings(input: { organizerBotId?: string; projectDir?: string | null }) {
+  async function updateWorkSettings(input: { organizerBotId?: string; projectDir?: string | null; autoContinue?: boolean }) {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setError('');
     const generation = getDataOwnerGeneration();
     try {
       const result = await window.electronAPI.maker.updateBotGroup({ groupId: group.id, ...input });
       if (!isDataOwnerGenerationCurrent(generation)) return;
-      if (!result.ok) setError(t('bots.groupChat.settings.projectDirSaveFailed'));
+      if (!result.ok) setError(t('autoContinue' in input ? 'bots.groupChat.settings.autoContinueSaveFailed' : 'bots.groupChat.settings.projectDirSaveFailed'));
       else refreshBotGroups();
     } catch { if (isDataOwnerGenerationCurrent(generation)) setError(t(chatErrorKey('REQUEST_FAILED'))); }
     finally { busyRef.current = false; if (mounted.current) setBusy(false); }
@@ -154,6 +155,13 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
             {group.projectDir && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void updateWorkSettings({ projectDir: null })}>{t('bots.groupChat.settings.projectDirClear')}</Button>}
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => void chooseProjectDir()}>{t('bots.groupChat.settings.projectDirChoose')}</Button>
           </div>}</FormField>
+        {/* Kept on this computer like the project folder; only 分工 you start follow it (§7.4). */}
+        {group.autoContinue !== undefined && <FormField label={t('bots.groupChat.settings.handoff')} hint={t('bots.groupChat.settings.autoContinueNote')}>{() =>
+          <label className="flex w-fit cursor-pointer items-center gap-2.5 text-13 leading-5 text-[var(--text-primary)]">
+            <Switch data-testid="bot-group-auto-continue" checked={group.autoContinue === true} disabled={busy}
+              onCheckedChange={autoContinue => void updateWorkSettings({ autoContinue })} />
+            <span className="min-w-0">{t('bots.groupChat.plan.autoContinue')}</span>
+          </label>}</FormField>}
       </section>
       <section className="space-y-3 border-t border-[var(--border-default)] pt-5">
         <div className="flex items-center justify-between gap-3">

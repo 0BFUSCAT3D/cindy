@@ -9567,6 +9567,9 @@
         "projectDirChange": "更换",
         "projectDirClear": "清除",
         "projectDirNote": "分工做事时，伙伴们在这里干活。不选也行，会用这个群自己的文件夹；选了 git 项目，每次分工会新开一个 worktree 和分支，不动你手上的代码。",
+        "handoff": "分工交接",
+        "autoContinueNote": "开着时，你在这个群发起的分工做完一步就自动交给下一位；关着时每一步都等你点「继续」。只在这台电脑上生效。",
+        "autoContinueSaveFailed": "分工交接没能保存，请再试一次",
         "projectDirSaveFailed": "项目文件夹没能保存，确认文件夹还在后再试"
       },
       "errors": {
@@ -9602,6 +9605,8 @@
         "dismiss": "不用了",
         "editHint": "点某一步可以换人",
         "pauseNote": "每做完一步会停下来，等你点「继续」。",
+        "autoContinue": "做完一步自动交给下一位",
+        "autoNote": "做完一步会自动交给下一位。",
         "superseded": "已更新",
         "dismissed": "不用了",
         "stopped": "已停止",
