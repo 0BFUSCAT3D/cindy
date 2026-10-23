@@ -3,6 +3,7 @@ import {
   buildUserProvider,
   findBaseModel,
   type AgentKind,
+  type Catalog,
   type CustomProviderConfig,
   type ModelMetadata,
   type ProviderPreset,
@@ -190,14 +191,18 @@ export function missingSpeechReference(
   provider: ProviderView,
   config: CustomProviderConfig,
   refreshedAgents: ReadonlySet<AgentKind>,
+  catalog: Pick<Catalog, 'modelRegistry' | 'presets'>,
 ): { agent: AgentKind; model: ProviderRuntimeModelConfig } | undefined {
   const target = providerSpeechSetup(provider);
   if (!target || !refreshedAgents.has(target.agent)) return;
   const models = Object.values(config.runtimes).flatMap(runtime => runtime?.models ?? []);
   // Hidden speech is still a saved choice. Never fill a different runtime or
   // override discovery/user classification of an existing reference ID.
-  // Current Server-only classifications live in the projection, not userModelConfig.
-  if (provider.audioModels?.some(model => model.mode === 'audio_speech') || models.some(isSpeechModel)) return;
+  // Reproject after discovery: new IDs are absent from the previous ProviderView,
+  // and current Registry defaults must not be persisted as discovery/user fields.
+  const projected = buildUserProvider(config, catalog);
+  if (provider.audioModels?.some(model => model.mode === 'audio_speech') ||
+    projected.audioModels?.some(model => model.mode === 'audio_speech')) return;
   const runtime = config.runtimes[target.agent];
   if (!runtime) return;
   const model = speechReferenceModels(runtime.baseUrl).find(reference => reference.defaultEnabled);

@@ -269,6 +269,11 @@ describe('ProvidersSection — 双栏管理', () => {
       window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: true, models: [
         { id: 'MiniMax-M3', name: 'Upstream name' }, ...discovered,
       ] }));
+      // Reference persistence is covered by the real Main handler tests. The
+      // renderer must display Main's result and send only the discovery merge.
+      if (kind === 'missing') vi.mocked(updateCustomProvider).mockResolvedValueOnce({
+        ok: true, speechReferenceAdded: true,
+      });
       const view = render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
       // Opening Settings only schedules discovery, never writes reference models.
       expect(updateCustomProvider).not.toHaveBeenCalled();
@@ -277,25 +282,50 @@ describe('ProvidersSection — 双栏管理', () => {
       expect(saved.name).toBe(config.name);
       expect(saved.runtimes.codex!.models.find(model => model.id === 'MiniMax-M3')).toMatchObject(config.runtimes.codex.models[0]);
       const speech = buildUserProvider(saved, { modelRegistry: BUNDLED_CATALOG.modelRegistry }).audioModels?.filter(model => model.mode === 'audio_speech') ?? [];
-      expect(speech.map(model => model.id)).toEqual(kind === 'missing' ? ['speech-2.8-turbo']
+      expect(speech.map(model => model.id)).toEqual(kind === 'missing' ? []
         : kind === 'discovered' ? ['new-voice'] : kind === 'hidden' ? ['speech-2.8-hd'] : []);
       if (kind === 'hidden') expect(speech[0].defaultEnabled).toBe(false);
       expect(setModelVisibilities).not.toHaveBeenCalled();
+      expect(vi.mocked(updateCustomProvider).mock.lastCall![2])
+        .toEqual({ speechReferenceRefreshAgents: ['codex'] });
       if (kind === 'missing') {
-        expect(speech[0].defaultEnabled).toBe(true);
         expect(toast.success).toHaveBeenLastCalledWith('settings.providers.models.refreshSpeechAdded');
         // A second click sees the saved reference; it does not add HD/other defaults.
-        selectSpeechProvider(saved);
+        const persisted = structuredClone(saved);
+        persisted.runtimes.codex!.models.push({ id: 'speech-2.8-turbo', name: 'Speech 2.8 Turbo', defaultEnabled: true });
+        selectSpeechProvider(persisted);
         view.rerender(<MemoryRouter><ProvidersSection /></MemoryRouter>);
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'settings.providers.models.refreshAria' })); });
         expect(vi.mocked(updateCustomProvider).mock.lastCall![0].runtimes.codex!.models.map(model => model.id))
-          .toEqual(saved.runtimes.codex!.models.map(model => model.id));
+          .toEqual(persisted.runtimes.codex!.models.map(model => model.id));
       }
     },
   );
-  // Unit regression for #6928: the real refresh/save path must recognize a saved
-  // model classified only by the current Server Registry. Bundled/explicit-mode
-  // cases above cannot catch an extra enabled reference beside a hidden model.
+  // #6928: a newly discovered ID has no pre-refresh projection or reported mode.
+  // The active Registry must classify it before a reference can be persisted.
+  it('does not append a reference beside newly discovered Server-only speech', async () => {
+    const config = miniMaxConfig();
+    const discovered = { id: 'server-only-new-speech', name: 'New speech' };
+    const modelRegistry: ModelRegistry = {
+      ...BUNDLED_CATALOG.modelRegistry!,
+      baseModels: [...BUNDLED_CATALOG.modelRegistry!.baseModels!,
+        { id: discovered.id, aliases: [], defaults: { mode: 'audio_speech' } }],
+    };
+    selectSpeechProvider(config, modelRegistry);
+    window.electronAPI.maker.fetchProviderModels = vi.fn(async () => ({ ok: true, models: [discovered] }));
+    render(<MemoryRouter><ProvidersSection /></MemoryRouter>);
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'settings.providers.models.refreshAria' })); });
+    const saved = vi.mocked(updateCustomProvider).mock.lastCall![0];
+    expect(vi.mocked(updateCustomProvider).mock.lastCall![2])
+      .toEqual({ speechReferenceRefreshAgents: ['codex'] });
+    expect(buildUserProvider(saved, { modelRegistry }).audioModels?.map(model => model.id))
+      .toEqual([discovered.id]);
+    expect(saved.runtimes.codex!.models.find(model => model.id === discovered.id)?.mode).toBeUndefined();
+    expect(saved.runtimes.codex!.models.find(model => model.id === 'MiniMax-M3'))
+      .toMatchObject(config.runtimes.codex.models[0]);
+  });
+  // Keep raw saved settings through refresh. Main's real handler regression
+  // separately proves classification and reference persistence for these modes.
   it.each([
     ['codex', true, 'audio_speech'],
     ['codex', false, 'audio_speech'],
@@ -320,7 +350,7 @@ describe('ProvidersSection — 双栏管理', () => {
     const saved = vi.mocked(updateCustomProvider).mock.lastCall![0];
     expect(saved.runtimes[agent]!.models.find(model => model.id === savedAudio.id)).toEqual(savedAudio);
     expect(saved.runtimes.codex!.models.some(model => model.id === 'speech-2.8-turbo'))
-      .toBe(mode !== 'audio_speech');
+      .toBe(false);
     expect(buildUserProvider(saved, { modelRegistry }).audioModels)
       .toEqual(expect.arrayContaining([expect.objectContaining({ id: savedAudio.id, mode, defaultEnabled })]));
     expect(setModelVisibilities).not.toHaveBeenCalled();
@@ -375,6 +405,8 @@ describe('ProvidersSection — 双栏管理', () => {
       const saved = vi.mocked(updateCustomProvider).mock.lastCall![0];
       expect(saved.runtimes.codex!.models.some(model => model.id === 'speech-2.8-turbo')).toBe(false);
       expect(saved.runtimes.pi!.models).toEqual(expect.arrayContaining(config.runtimes.pi.models));
+      expect(vi.mocked(updateCustomProvider).mock.lastCall![2])
+        .toEqual({ speechReferenceRefreshAgents: kind === 'failed-target' ? ['pi'] : ['codex', 'pi'] });
       expect(setModelVisibilities).not.toHaveBeenCalled();
     },
   );

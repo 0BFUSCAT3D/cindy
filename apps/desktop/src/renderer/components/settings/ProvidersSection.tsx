@@ -1,5 +1,5 @@
 import { AddSpeechModelsDialog } from './AddSpeechModelsDialog';
-import { missingSpeechReference, providerSpeechSetup } from '../../../shared/speechProviderSetup';
+import { providerSpeechSetup } from '../../../shared/speechProviderSetup';
 import { useCodexRateLimits } from '@/hooks/useCodexRateLimits';
 import { useCodexRateLimitReset } from '@/hooks/useCodexRateLimitReset';
 import { CodexResetCredits } from '../status/CodexResetCredits';
@@ -2965,14 +2965,16 @@ export function ProvidersSection() {
           toast.error(t('settings.providers.models.refreshFailed'));
           return;
         }
-        const reference = missingSpeechReference(p, config, refreshedAgents);
-        if (reference) config.runtimes[reference.agent]!.models.push(reference.model);
-        const result = await updateCustomProvider(config, {});
+        // Main owns the active Registry and classifies the complete discovery
+        // result in the same save, without freezing defaults into user overrides.
+        const result = providerSpeechSetup(p)
+          ? await updateCustomProvider(config, {}, { speechReferenceRefreshAgents: [...refreshedAgents] })
+          : await updateCustomProvider(config, {});
         if (!result.ok) {
           toast.error(t('settings.providers.models.refreshFailed'));
           return;
         }
-        if (reference) {
+        if (result.speechReferenceAdded) {
           toast.success(t('settings.providers.models.refreshSpeechAdded'));
         } else if (added > 0) {
           toast.success(t('settings.providers.models.refreshAdded', { count: added }));
