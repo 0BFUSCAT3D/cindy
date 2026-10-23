@@ -47,6 +47,10 @@ const providers = [
           contextWindow: 400000,
           efforts: ['low', 'medium', 'high'],
           defaultEffort: 'medium',
+          // 承载「最近」里 fast:'ultrafast' 的条目:Fast 与 Ultrafast 都要显式声明,
+          // 否则解析(unifiedModelSelection)会把速度折成 false,后缀消失。
+          supportsFastMode: true,
+          supportsUltrafastMode: true,
         },
       ],
       'claude-code': [
@@ -58,6 +62,8 @@ const providers = [
           contextWindow: 400000,
           efforts: ['low', 'medium', 'high'],
           defaultEffort: 'medium',
+          // 承载「最近」里 fast:true 的条目。
+          supportsFastMode: true,
         },
       ],
     },
@@ -95,6 +101,18 @@ void mountPage({
   host: { maker: {
     getModelContextLimit: async () => ({ limit: 272000, isCustomized: false }),
     onProvidersChanged: subscription('providersChanged'),
+    // agent 级 Fast 能力:useAgentCapabilities → electronAPI.maker.getCapabilities;
+    // 缺了它 unifiedAgentFastCapable 恒 false,行速度同样会被折掉。
+    getCapabilities: async () => ({
+      hasFastMode: true,
+      availableModels: [],
+      effortLevels: [
+        { id: 'low', displayName: 'Low' },
+        { id: 'medium', displayName: 'Medium' },
+        { id: 'high', displayName: 'High' },
+      ],
+      permissionModes: [{ id: 'default', displayName: 'Default' }],
+    }),
   } },
   render: () => <Fixture />,
 });

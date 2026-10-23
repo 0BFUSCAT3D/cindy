@@ -17,6 +17,10 @@ export default {
     // 切到「最近」格:三条最近使用,其中 GPT-5.6(codex) 带 Ultrafast、GPT-5.6(cc) 带 Fast。
     await page.getByRole('button', { name: await ui.t('newChat.modelSelector.unified.railRecent'), exact: true }).click();
     await page.getByText('GPT-5.6').first().waitFor();
+    // 分别断言两种速度的三元组后缀(速度只存在 title="引擎 · 档位 · 速度" 里,
+    // SpeedIcon 是纯图形):用 ui.t 取当前 locale 文案,$= 结尾匹配不会让「快速」误中「超快」。
+    await page.locator(`[data-unified-triple][title$=" · ${await ui.t('newChat.modelSelector.speed.ultrafast')}"]`).waitFor();
+    await page.locator(`[data-unified-triple][title$=" · ${await ui.t('newChat.modelSelector.speed.fast')}"]`).waitFor();
     await ui.capture('recent-view');
   },
 };
