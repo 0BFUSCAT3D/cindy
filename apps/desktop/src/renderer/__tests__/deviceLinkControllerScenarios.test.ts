@@ -284,6 +284,37 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     },
   );
 
+  it('defers the history-view mirror write out of the publish stack', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    host.seedSession(s, {}, [dbMessage(s, 'first', 'first', '2026-06-15T00:00:00Z')]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    const leave = makerChatStore.enterView(s);
+    let off = () => {};
+    try {
+      makerChatStore.ensureInitialMessages(s);
+      await flush();
+      const view = getRemoteHistoryView(s)!;
+      expect(view.getSnapshot().ready).toBe(true);
+      const notify = vi.fn();
+      off = makerChatStore.subscribe(s, notify);
+      host.seedSession(s, {}, [
+        dbMessage(s, 'first', 'first', '2026-06-15T00:00:00Z'),
+        dbMessage(s, 'second', 'second', '2026-06-15T00:00:01Z'),
+      ]);
+      const read = view.refresh();
+      expect(notify).not.toHaveBeenCalled();
+      await read;
+      await flush();
+      expect(notify).toHaveBeenCalled();
+      expect(makerChatStore.getSnapshot(s).messages.map((message) => message.clientId))
+        .toEqual(['client-first', 'client-second']);
+    } finally {
+      off();
+      leave();
+    }
+  });
+
   // A durable push both invalidates the view (page read at +500 ms) and arms the
   // lost-push repair (+1.5 s). The repair must only read when nothing read the
   // latest page after the push: a running turn used to cost two page reads plus an
