@@ -597,6 +597,66 @@ describe('useFileTree showIgnoredDirs option', () => {
     view.unmount();
   });
 
+  it('切回隐藏态：被忽略目录的展开位被剪掉，缺缓存补拉不再去扫它', async () => {
+    const hiddenRoot: readonly DirEntry[] = [
+      { name: 'packages', relPath: 'packages', type: 'directory', size: 0, mtimeMs: 1 },
+    ];
+    const hiddenPackages: readonly DirEntry[] = []; // 隐藏视图：node_modules 被滤掉
+    const revealedRoot = hiddenRoot;
+    const revealedPackages: readonly DirEntry[] = [
+      {
+        name: 'node_modules',
+        relPath: 'packages/node_modules',
+        type: 'directory',
+        size: 0,
+        mtimeMs: 2,
+      },
+    ];
+    mocks.loadExpandedSet.mockImplementation(
+      (_workdir: string, opts?: { showIgnoredDirs?: boolean }) =>
+        opts?.showIgnoredDirs
+          ? new Set(['packages', 'packages/node_modules'])
+          : new Set(['packages']),
+    );
+    const revealNodeModules = deferred<readonly DirEntry[]>();
+    mocks.listDir.mockImplementation((args: { relPath?: string; showIgnoredDirs?: boolean }) => {
+      if (args.showIgnoredDirs) {
+        if ((args.relPath ?? '') === '') return Promise.resolve(revealedRoot);
+        if (args.relPath === 'packages') return Promise.resolve(revealedPackages);
+        return revealNodeModules.promise; // node_modules 的列表挂在半路
+      }
+      if ((args.relPath ?? '') === '') return Promise.resolve(hiddenRoot);
+      return Promise.resolve(hiddenPackages);
+    });
+
+    const view = renderHook(
+      ({ reveal }: { reveal: boolean }) =>
+        useFileTree({ workdir: '/workdir-hidden-prune', showIgnoredDirs: reveal }),
+      { initialProps: { reveal: true } },
+    );
+    await waitFor(() => expect(view.result.current.entries.get('packages')).toEqual(revealedPackages));
+
+    // 关开关：node_modules 是被忽略目录，隐藏视图里不可达 —— 借来的（已过滤）
+    // packages 列表是权威证据，展开位要剪掉，也不能再为它补拉扫描（复审 P1）。
+    await act(async () => {
+      view.rerender({ reveal: false });
+    });
+    expect(view.result.current.expanded.has('packages/node_modules')).toBe(false);
+    expect(
+      mocks.listDir.mock.calls.some(
+        (call) =>
+          call[0].relPath === 'packages/node_modules' && call[0].showIgnoredDirs === false,
+      ),
+    ).toBe(false);
+
+    // 收尾：放掉挂着的放行态请求。
+    await act(async () => {
+      revealNodeModules.resolve(hiddenPackages);
+      await Promise.resolve();
+    });
+    view.unmount();
+  });
+
   it('切回隐藏态时继承的展开目录缺缓存要补拉，不能一直「展开但空白」', async () => {
     const revealedRoot: readonly DirEntry[] = [
       { name: 'src', relPath: 'src', type: 'directory', size: 0, mtimeMs: 1 },

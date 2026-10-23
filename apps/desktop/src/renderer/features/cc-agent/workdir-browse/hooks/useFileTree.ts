@@ -430,7 +430,12 @@ function getOrCreateStore(opts: Required<UseFileTreeOptions>): FileTreeStore {
     docMode: opts.docMode,
     showIgnoredDirs: opts.showIgnoredDirs,
     borrowedDirs: new Set(
-      seedDisplayable && seed ? seed.entries.keys() : [],
+      // 只在 reveal 方向豁免：借来的 hidden 列表天然缺被忽略目录，缺路径 ≠
+      // 过期（评审 P2）。hidden 方向的种子列表已按新视图就地过滤
+      //（filterSeedTreeForHiddenView），对「隐藏视图可达与否」是权威证据 ——
+      // 再豁免会把被剪掉的被忽略目录展开位保下来、还倒逼缺缓存补拉去扫它
+      //（复审 P1）。
+      seedDisplayable && seed && opts.showIgnoredDirs ? seed.entries.keys() : [],
     ),
     snapshot:
       seedDisplayable && seed
