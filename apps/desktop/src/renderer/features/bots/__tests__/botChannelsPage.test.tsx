@@ -12,7 +12,10 @@ import type { BotProfile } from '../botStore';
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(async () => true),
   navigate: vi.fn(),
+  toastError: vi.fn(),
 }));
+
+vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError } }));
 
 vi.mock('react-router-dom', () => ({ useNavigate: () => mocks.navigate }));
 // The shared-quota rail observes auth; this component fixture has no auth host.
@@ -92,6 +95,7 @@ let lanesApi: {
 
 beforeEach(() => {
   mocks.navigate.mockClear();
+  mocks.toastError.mockClear();
   mocks.confirm.mockReset();
   mocks.confirm.mockResolvedValue(true);
   groupsApi = {};
@@ -186,37 +190,67 @@ describe('BotChannelsPage', () => {
     );
   });
 
-  // 已确认的归档功能：真实列表按钮应调用本连接的归档 IPC，成功移出、失败与取消保留。
+  // 已确认的归档功能：真实列表按钮应调用本连接的归档 IPC，行内二次确认后移出、失败恢复，不打开确认窗。
   // 现有测试只有 reset；最小输入一条专线。unit：可观察列表结果和错误提示。
-  it.each(['done', 'cancel', 'failed'] as const)('archives a channel task with %s outcome', async (outcome) => {
+  it.each(['done', 'failed'] as const)('archives a channel task with %s outcome', async (outcome) => {
     const lanes = [{ sessionId: 's-topic', kind: 'topic', chatId: 'group', threadId: 'topic', name: 'Release room', state: 'idle', lastActivityAt: null, contextMessageCount: 0 }];
-    mocks.confirm.mockResolvedValue(outcome !== 'cancel');
+    mocks.confirm.mockResolvedValue(false);
+    let finishArchive!: (value: { connectionId: string; lanes: typeof lanes }) => void;
+    let failArchive!: (error: Error) => void;
     lanesApi = {
       listLanes: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes })),
       resetLane: vi.fn(),
-      archiveLane: vi.fn(async () => {
-        if (outcome === 'failed') throw new Error('unavailable');
-        return { connectionId: 'a1b2c3d4e5f6', lanes: [] };
-      }),
+      archiveLane: vi.fn(() => new Promise((resolve, reject) => {
+        finishArchive = resolve;
+        failArchive = reject;
+      })),
     };
     installApi({ connections: [connection({ channel: 'feishu' })] });
     render(<BotChannelsPage bot={mia} />);
     await expandTaskList();
     fireEvent.click(await screen.findByRole('button', { name: 'bots.channels.lanes.archiveAria:{"lane":"Release room"}' }));
-    if (outcome === 'cancel') {
-      await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
-      expect(lanesApi.archiveLane).not.toHaveBeenCalled();
+    expect(lanesApi.archiveLane).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'ccAgent.sidebar.sessionMenu.archived' }));
+    await waitFor(() => expect(lanesApi.archiveLane).toHaveBeenCalledWith({ id: 'a1b2c3d4e5f6', sessionId: 's-topic' }));
+    expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull();
+    await act(async () => {
+      if (outcome === 'failed') failArchive(new Error('unavailable'));
+      else finishArchive({ connectionId: 'a1b2c3d4e5f6', lanes: [] });
+    });
+    if (outcome === 'done') await waitFor(() => expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull());
+    else {
+      await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('bots.channels.lanes.archiveFailed'));
       expect(await screen.findByRole('button', { name: /^Release room/ })).toBeTruthy();
-    } else {
-      await waitFor(() => expect(lanesApi.archiveLane).toHaveBeenCalledWith({ id: 'a1b2c3d4e5f6', sessionId: 's-topic' }));
-      if (outcome === 'done') await waitFor(() => expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull());
-      else {
-        expect(await screen.findByText('bots.channels.lanes.archiveFailed')).toBeTruthy();
-        expect(await screen.findByRole('button', { name: /^Release room/ })).toBeTruthy();
-      }
     }
+    expect(mocks.confirm).not.toHaveBeenCalled();
     expect(lanesApi.resetLane).not.toHaveBeenCalled();
     expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  // SessionItem 的行内确认合同：误触不写入，4s 超时 / 点击外部撤销，允许列表归档失败后恢复。
+  it.each(['outside', 'timeout'] as const)('dismisses inline archive confirmation on %s without changing the task', async (reason) => {
+    const lanes = [{ sessionId: 's-topic', kind: 'topic', chatId: 'group', threadId: 'topic', name: 'Release room', state: 'idle', lastActivityAt: null, contextMessageCount: 0 }];
+    lanesApi = {
+      listLanes: vi.fn(async () => ({ connectionId: 'a1b2c3d4e5f6', lanes })),
+      archiveLane: vi.fn(),
+      resetLane: vi.fn(),
+    };
+    installApi({ connections: [connection({ channel: 'feishu' })] });
+    render(<BotChannelsPage bot={mia} />);
+    await expandTaskList();
+    const archive = await screen.findByRole('button', { name: 'bots.channels.lanes.archiveAria:{"lane":"Release room"}' });
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(archive);
+      expect(screen.getByRole('button', { name: 'ccAgent.sidebar.sessionMenu.archived' })).toBeTruthy();
+      if (reason === 'timeout') act(() => { vi.advanceTimersByTime(4000); });
+      else fireEvent.mouseDown(document.body);
+      expect(screen.queryByRole('button', { name: 'ccAgent.sidebar.sessionMenu.archived' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'bots.channels.lanes.archiveAria:{"lane":"Release room"}' })).toBeTruthy();
+      expect(lanesApi.archiveLane).not.toHaveBeenCalled();
+      expect(lanesApi.resetLane).not.toHaveBeenCalled();
+      expect(mocks.confirm).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   // 归档与既有 20 秒轮询竞态；最小输入为归档期间迟到的旧列表，旧测试没有在途读取。
@@ -239,6 +273,7 @@ describe('BotChannelsPage', () => {
       const archive = screen.getByRole('button', { name: 'bots.channels.lanes.archiveAria:{"lane":"Release room"}' });
       await act(async () => { vi.advanceTimersByTime(20_000); });
       await act(async () => { fireEvent.click(archive); });
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'ccAgent.sidebar.sessionMenu.archived' })); });
       expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull();
       await act(async () => { finishOldRead({ connectionId: 'a1b2c3d4e5f6', lanes }); });
       expect(screen.queryByRole('button', { name: /^Release room/ })).toBeNull();

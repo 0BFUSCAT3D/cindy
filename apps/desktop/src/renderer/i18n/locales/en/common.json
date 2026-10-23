@@ -10133,7 +10133,7 @@
         "title": "{{platform}} tasks",
         "expand": "Expand {{platform}} tasks",
         "collapse": "Collapse {{platform}} tasks",
-        "hint": "Each group, topic, and DM from someone else has its own task. If one gets stuck or goes off track, start it over. Its history is kept.",
+        "hint": "Each group, topic, and DM from someone else has its own task. If one gets stuck or goes off track, start it over. Its history is kept. Archiving only hides the list entry; the task keeps running with its context and history. New messages bring it back.",
         "ownerName": "Your DM",
         "kind": {
           "ownerDm": "Main task",
@@ -10161,14 +10161,7 @@
         "resetFailed": "Couldn’t start it over. Try again later.",
         "loadFailed": "Couldn’t load tasks",
         "empty": "No groups or DMs from others yet. They show up here once someone talks to {{name}} in a group or a DM.",
-        "archive": "Archive task",
         "archiveAria": "Archive “{{lane}}”",
-        "archiveConfirm": {
-          "title": "Archive “{{lane}}”?",
-          "description": "Hide this conversation from this list. Its task, context, history and current reply stay unchanged. New messages bring it back to the list.",
-          "confirm": "Archive"
-        },
-        "archiveDone": "“{{lane}}” archived from the list. Its task and history are kept.",
         "archiveFailed": "Could not archive the task"
       },
       "add": {

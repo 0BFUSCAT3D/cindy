@@ -93,6 +93,14 @@ export default {
       await row.evaluate((el) => el.blur());
       const collapse = page.getByRole('button', { name: await ui.t('bots.channels.lanes.collapse', { platform }), exact: true });
       await ui.capture('tasks-expanded');
+      const archive = page.getByRole('button', { name: await ui.t('bots.channels.lanes.archiveAria', { lane: '拉拉, 徐紫旎, 姚刘浏' }), exact: true });
+      await archive.click();
+      const inlineConfirm = page.getByRole('button', { name: await ui.t('ccAgent.sidebar.sessionMenu.archived'), exact: true });
+      await inlineConfirm.waitFor({ state: 'visible' });
+      await ui.capture('tasks-archive-confirm');
+      await page.mouse.click(1, 1);
+      await archive.waitFor({ state: 'visible' });
+      assert.equal(await inlineConfirm.isVisible(), false, 'outside click cancels inline archive without a write');
       await collapse.click();
       await row.waitFor({ state: 'hidden' });
       assert.equal(await row.isVisible(), false, 'task records collapse without invoking a write');

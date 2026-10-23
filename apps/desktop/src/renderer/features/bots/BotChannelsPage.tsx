@@ -26,6 +26,7 @@ import { Select } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { WechatBotSection } from '@/components/settings/WechatBotSection';
 import { cn } from '@/lib/utils';
+import { toast } from '@/lib/toast';
 import { formatRelative } from '@/hooks/useRelativeTime';
 import { extractIpcError } from '@/utils/ipcError';
 import type {
@@ -368,6 +369,8 @@ function ConnectionLanes({ connectionId, botId, botName, platform }: { connectio
   const { confirm } = useConfirmDialog();
   const [expanded, setExpanded] = useState(false);
   const contentId = useId();
+  const [archivePendingId, setArchivePendingId] = useState<string | null>(null);
+  const archiveConfirmRef = useRef<HTMLButtonElement>(null);
   const [lanes, setLanes] = useState<BotImConnectionLane[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [resettingId, setResettingId] = useState<string | null>(null);
@@ -403,6 +406,26 @@ function ConnectionLanes({ connectionId, botId, botName, platform }: { connectio
     };
   }, [connectionId, reloadToken]);
 
+  // Match SessionItem's inline archive confirmation: 4s or an outside click dismisses it.
+  useEffect(() => {
+    if (!archivePendingId) return;
+    if (!expanded) {
+      setArchivePendingId(null);
+      return;
+    }
+    const dismiss = () => setArchivePendingId(null);
+    const timer = setTimeout(dismiss, 4000);
+    const onMouseDown = (event: MouseEvent) => {
+      if (event.target instanceof Node && archiveConfirmRef.current?.contains(event.target)) return;
+      dismiss();
+    };
+    document.addEventListener('mousedown', onMouseDown, true);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('mousedown', onMouseDown, true);
+    };
+  }, [archivePendingId, expanded]);
+
   const laneName = (lane: BotImConnectionLane) =>
     lane.kind === 'owner-dm' ? t('bots.channels.lanes.ownerName') : lane.name || lane.chatId || '';
 
@@ -411,28 +434,38 @@ function ConnectionLanes({ connectionId, botId, botName, platform }: { connectio
     mutatingRef.current = true;
     loadGeneration.current += 1;
     const name = laneName(lane);
+    const previousLanes = lanes;
     try {
-      const ok = await confirm({
-        title: t(`bots.channels.lanes.${action}Confirm.title`, { lane: name }),
-        description: t(
-          action === 'reset' && lane.kind === 'owner-dm'
-            ? 'bots.channels.lanes.resetConfirm.ownerDescription'
-            : `bots.channels.lanes.${action}Confirm.description`,
-          { name: botName },
-        ),
-        confirmText: t(`bots.channels.lanes.${action}Confirm.confirm`),
-        cancelText: t('bots.channels.lanes.resetConfirm.cancel'),
-      });
-      if (!ok) return;
+      if (action === 'reset') {
+        const ok = await confirm({
+          title: t('bots.channels.lanes.resetConfirm.title', { lane: name }),
+          description: t(
+            lane.kind === 'owner-dm'
+              ? 'bots.channels.lanes.resetConfirm.ownerDescription'
+              : 'bots.channels.lanes.resetConfirm.description',
+            { name: botName },
+          ),
+          confirmText: t('bots.channels.lanes.resetConfirm.confirm'),
+          cancelText: t('bots.channels.lanes.resetConfirm.cancel'),
+        });
+        if (!ok) return;
+      }
       if (action === 'reset') setResettingId(lane.sessionId);
-      else setArchivingId(lane.sessionId);
+      else {
+        setArchivePendingId(null);
+        setArchivingId(lane.sessionId);
+        setLanes((current) => current?.filter((row) => row.sessionId !== lane.sessionId) ?? null);
+      }
       setNotice(null);
       const payload = await (action === 'reset' ? resetBotImConnectionLane : archiveBotImConnectionLane)(connectionId, lane.sessionId);
       setLanes(payload.lanes);
       setNow(Date.now());
-      setNotice({ tone: 'done', text: t(`bots.channels.lanes.${action}Done`, { lane: name }) });
+      if (action === 'reset') setNotice({ tone: 'done', text: t('bots.channels.lanes.resetDone', { lane: name }) });
     } catch {
-      setNotice({ tone: 'failed', text: t(`bots.channels.lanes.${action}Failed`) });
+      if (action === 'archive') {
+        setLanes(previousLanes);
+        toast.error(t('bots.channels.lanes.archiveFailed'));
+      } else setNotice({ tone: 'failed', text: t('bots.channels.lanes.resetFailed') });
       setReloadToken((value) => value + 1);
     } finally {
       mutatingRef.current = false;
@@ -513,15 +546,34 @@ function ConnectionLanes({ connectionId, botId, botName, platform }: { connectio
             </button>
             <div className="flex shrink-0 items-center gap-1">
             {botImConnectionLaneArchiveSupported() ? (
-              <ChromeIconButton
-                className="shrink-0 text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-                aria-label={t('bots.channels.lanes.archiveAria', { lane: name })}
-                tooltip={t('bots.channels.lanes.archive')}
-                disabled={archivingId !== null || resettingId !== null}
-                onClick={() => void mutate(lane, 'archive')}
-              >
-                {archivingId === lane.sessionId ? <Spinner size={14} /> : <Archive size={14} strokeWidth={2} aria-hidden />}
-              </ChromeIconButton>
+              <div className="relative flex h-7 w-7 shrink-0 items-center justify-end">
+              {archivePendingId === lane.sessionId ? (
+                <Button
+                  ref={archiveConfirmRef}
+                  type="button"
+                  variant="secondary"
+                  tone="danger-surface"
+                  size="xs"
+                  compact
+                  className="absolute right-0 top-1/2 w-max min-w-14 -translate-y-1/2 whitespace-nowrap"
+                  aria-label={t('ccAgent.sidebar.sessionMenu.archived')}
+                  disabled={archivingId !== null || resettingId !== null}
+                  onClick={() => void mutate(lane, 'archive')}
+                >
+                  {t('ccAgent.sidebar.sessionMenu.archived')}
+                </Button>
+              ) : (
+                <ChromeIconButton
+                  className="shrink-0 text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                  aria-label={t('bots.channels.lanes.archiveAria', { lane: name })}
+                  tooltip={t('ccAgent.sidebar.sessionMenu.archived')}
+                  disabled={archivingId !== null || resettingId !== null}
+                  onClick={() => setArchivePendingId(lane.sessionId)}
+                >
+                  <Archive size={14} strokeWidth={2} aria-hidden />
+                </ChromeIconButton>
+              )}
+              </div>
             ) : null}
             <Button
               type="button"
