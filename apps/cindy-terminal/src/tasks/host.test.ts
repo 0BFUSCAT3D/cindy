@@ -6,7 +6,7 @@ import { createProviderProxy } from '../models/proxy.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as platform from '../platform.js';
 import { TerminalImBindings } from '../im/bindings.js';
-import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ClaudeCodeAgent, type AgentEvent, type AgentSessionHandle, type InteractionDecision, type InteractionResolver, type Logger, type StartSessionOptions } from '@cindy/maker-core';
@@ -47,6 +47,7 @@ function engine() {
     agent.startSession = async options => {
       starts.push(options);
       let running = false;
+      let silentForever = false;
       let ended = false;
       let resolver: InteractionResolver | undefined;
       let awaken: (() => void) | undefined;
@@ -60,9 +61,19 @@ function engine() {
           running = true;
           emit({ type: 'status', data: { isRunning: true } });
           const text = typeof message.content === 'string' ? message.content : '';
+          if (text === 'silent-once' || text === 'silent-loop' || silentForever) {
+            silentForever ||= text === 'silent-loop';
+            running = false;
+            emit({ type: 'done', data: { silentStop: true } });
+            return;
+          }
           if (text === 'permission') {
             const decision = await resolver!({ requestId: 'native-request', kind: 'permission', toolName: 'Bash', input: { command: 'true' } });
             decisions.push(decision);
+          }
+          if (text === 'edit-fixture') {
+            await input.turnChangeCapture!.beforeKnownFileWrite({ sessionId: options.sessionId!, provider: 'claude-code', cwd: options.workingDir, targetPath: 'revision.txt' });
+            await writeFile(path.join(options.workingDir, 'revision.txt'), 'after\n');
           }
           emit({ type: 'text', data: { text: `Echo: ${text}`, isFinal: true } });
           running = false;
@@ -109,6 +120,84 @@ async function setup(native = engine()) {
 }
 
 describe('terminal task host', () => {
+  // Regression: vendor silent-stop previously completed the terminal receipt
+  // immediately and could leave a shared IM turn waiting forever. Real Maker
+  // drives generation, terminal and abort callbacks; only its transport is fake.
+  it.each(['resume', 'stop', 'exhausted'] as const)('keeps a silent task occupied until %s settles its logical turn', async outcome => {
+    const { host, native } = await setup();
+    const task = await host.invoke('maker:create-session', [{}]) as { id: string };
+    const terminal = (silent: boolean) => new Promise<void>(resolve => {
+      const off = host.observeTask(task.id, event => {
+        if (event.type === 'done' && Boolean((event.data as { silentStop?: boolean })?.silentStop) === silent) { off(); resolve(); }
+      });
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const first = terminal(true);
+      await host.invoke('maker:send', [task.id, { text: outcome === 'exhausted' ? 'silent-loop' : 'silent-once', clientId: 'silent-receipt' }]);
+      await first;
+      expect(await host.invoke('maker:session:turn-active', [task.id])).toEqual({ inTurn: true });
+      expect((await host.storage.submission(task.id, 'silent-receipt'))?.status).not.toBe('completed');
+      if (outcome === 'stop') {
+        await host.invoke('maker:abort-session', [task.id]);
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(native.sent).toHaveLength(1);
+        expect(host.isTurnRunning(task.id)).toBe(false);
+      } else if (outcome === 'resume') {
+        const finished = terminal(false);
+        await vi.advanceTimersByTimeAsync(1_500);
+        await finished;
+        await host.storage.flush();
+        expect(native.sent.map(message => message.content)).toEqual(['silent-once', '继续']);
+        const messages = await host.invoke('local-db:messages:list', [task.id]) as Array<{ role: string; agentMeta?: { autoResume?: boolean } }>;
+        expect(messages.filter(message => message.agentMeta?.autoResume)).toHaveLength(1);
+        expect(host.isTurnRunning(task.id)).toBe(false);
+      } else {
+        const repeated = terminal(true);
+        await vi.advanceTimersByTimeAsync(1_500);
+        await repeated;
+        const settled = new Promise<string>(resolve => { const off = host.turnLifecycle.onSettled(task.id, (_id, reason) => { off(); resolve(reason); }); });
+        await vi.advanceTimersByTimeAsync(1_500);
+        expect(await settled).toBe('exhausted');
+        await host.storage.flush();
+        expect(native.sent).toHaveLength(2);
+        expect(host.isTurnRunning(task.id)).toBe(false);
+      }
+    } finally { vi.useRealTimers(); }
+  });
+  // Integration: the Desktop sidecar tests do not cover terminal send admission,
+  // journal anchors, runtime capture hooks, or remote restore against live tasks.
+  it('captures real turn edits for GUI restore, rejects conflicts, and preserves patches after restart', async () => {
+    const { host, root, create, nextPush } = await setup();
+    const file = path.join(root, 'revision.txt');
+    await writeFile(file, 'before\n');
+    const task = await host.invoke('maker:create-session', [{ workingDir: root }]) as { id: string };
+    await host.invoke('maker:send', [task.id, { text: 'edit-fixture' }]);
+    await host.changes.store.waitForTurnChangeSetPersistence();
+    const [change] = await host.invoke('maker:turn-change-sets:list', [task.id]) as Array<{ id: string; anchorClientId: string; isReversible: boolean }>;
+    expect(change.isReversible).toBe(true);
+    expect(await readFile(file, 'utf8')).toBe('after\n');
+    const user = (await host.invoke('local-db:messages:list', [task.id]) as Array<{ role: string; clientId: string }>).find(row => row.role === 'user');
+    expect(change.anchorClientId).toBe(user!.clientId);
+    const context = { source: 'remote' as const, deviceId: 'test-controller' };
+    await host.invoke('maker:turn-change-set:apply', [task.id, change.id, 'undo'], context);
+    expect(await readFile(file, 'utf8')).toBe('before\n');
+    await host.invoke('maker:turn-change-set:apply', [task.id, change.id, 'reapply'], context);
+    expect(await readFile(file, 'utf8')).toBe('after\n');
+    await writeFile(file, 'changed separately\n');
+    await expect(host.invoke('maker:turn-change-set:apply', [task.id, change.id, 'undo'], context)).rejects.toThrow('STALE_DIFF');
+    expect(await readFile(file, 'utf8')).toBe('changed separately\n');
+    const approval = nextPush('maker:interaction-request');
+    const sending = host.invoke('maker:send', [task.id, { text: 'permission' }]);
+    const request = await approval as { request: { requestId: string } };
+    await expect(host.invoke('maker:turn-change-set:apply', [task.id, change.id, 'undo'], context)).rejects.toThrow('SESSION_RUNNING');
+    await host.invoke('maker:resolve-interaction', [request.request.requestId, { kind: 'permission', behavior: 'deny' }]);
+    await sending;
+    await host.close();
+    const reopened = create(); await reopened.ready;
+    expect(await reopened.invoke('maker:turn-change-sets:list', [task.id])).toMatchObject([{ id: change.id }]);
+    await expect(host.invoke('maker:turn-change-set:apply', [task.id, change.id, 'undo'], context)).rejects.toThrow('TASK_HOST_CLOSED');
+  });
   // Regression from native CI: a fresh computer has no agent binaries yet.
   // Starting the host and showing model/permission choices must precede engine
   // installation. The normal fixture has a provisioned Claude binary.

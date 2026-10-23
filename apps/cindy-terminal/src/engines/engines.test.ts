@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -13,7 +14,7 @@ import type { EngineRelease } from './types.js';
 // Behavior tier: installer publication/rollback and hostile archive boundary;
 // native auth must select vendor flows without exposing credential output.
 const folders: string[] = [];
-afterEach(async () => { vi.unstubAllGlobals(); await Promise.all(folders.splice(0).map(folder => rm(folder, { recursive: true, force: true }))); });
+afterEach(async () => { vi.unstubAllGlobals(); vi.restoreAllMocks(); await Promise.all(folders.splice(0).map(folder => rm(folder, { recursive: true, force: true }))); });
 async function temporary() { const folder = await mkdtemp(path.join(os.tmpdir(), 'cindy-engines-test-')); folders.push(folder); return folder; }
 function release(data: Buffer, version = '1.2.3'): EngineRelease {
   return { version, assets: { [enginePlatform()]: { url: 'https://engine.invalid/fake', sha256: createHash('sha256').update(data).digest('hex'), size: data.length, format: 'raw', entrypoint: 'claude' } } };
@@ -98,6 +99,31 @@ describe('engine installation', () => {
     const archive = path.join(root, 'bad.tar.gz');
     await tar.c({ cwd: source, file: archive, gzip: true }, ['link']);
     await expect(extractEngineArchive(archive, destination, 'tar.gz')).rejects.toThrow('unsafe_archive_entry');
+  });
+
+  it('waits for the real ZIP reader to close before allowing staging cleanup', async () => {
+    // Behavior: the prior extractor resolved at `end`, before fd close, which
+    // permits Windows staging cleanup to race a still-open archive.
+    const root = await temporary();
+    const archive = path.join(root, 'empty.zip');
+    const zip = Buffer.alloc(22); zip.writeUInt32LE(0x06054b50);
+    await writeFile(archive, zip);
+    const close = fs.close;
+    let releaseClose!: () => void;
+    let reportClose!: () => void;
+    const closing = new Promise<void>(resolve => { reportClose = resolve; });
+    vi.spyOn(fs, 'close').mockImplementation((fd, callback) => {
+      close(fd, error => { releaseClose = () => callback?.(error); reportClose(); });
+    });
+    let settled = false;
+    const extraction = extractEngineArchive(archive, root, 'zip').then(() => { settled = true; });
+    await closing;
+    await Promise.resolve();
+    const settledBeforeClose = settled;
+    releaseClose();
+    await extraction;
+    expect(settledBeforeClose).toBe(false);
+    expect(settled).toBe(true);
   });
 });
 

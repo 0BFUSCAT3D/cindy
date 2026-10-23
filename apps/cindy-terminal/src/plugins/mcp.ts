@@ -60,7 +60,7 @@ export function createTerminalPluginTask(options:TerminalPluginTaskOptions){
       const found=classifyGhostVisibility(target.id,context.workingDir,visibility,target.namespace);if(!found.ok)return found;
       const instance=installedGhostStoragePart(found.ghost),assessment=host.assessment(instance);
       if(assessment.state==='ready'&&assessment.groups.length===0)return {ok:false,errorCode:'PLUGIN_CONNECTION_METHOD_REQUIRED',ghostId:target.id,settingsAvailable:Boolean(found.ghost.manifest.settingsHtml),message:'Use this plugin’s documented connection tool or settings. Do not send credentials in chat.'};
-      const result=await options.setup.coordinator.ensureReady({sessionId:context.sessionId,ghostId:instance,workingDir:context.workingDir,reauthorize:target.reauthorize,signal:combined(signal)});guard();
+      const result=await options.setup.coordinator.ensureReady({sessionId:options.setup.surface.ghostSetupInteractionSessionId({sessionId:context.sessionId,vendorOptions:{source:context.source}}),ghostId:instance,workingDir:context.workingDir,reauthorize:target.reauthorize,signal:combined(signal)});guard();
       if(!result.ok)return result;
       const current=classifyInstalledGhostVisibility(found.ghost,context.workingDir,visibility);if(!current.ok)return current;
       if(host.assessment(instance).state!=='ready')return {ok:false,errorCode:'SETUP_REQUIRED'};
@@ -73,7 +73,7 @@ export function createTerminalPluginTask(options:TerminalPluginTaskOptions){
       if(request.grantOnly&&!request.attachments?.length)return {ok:false,errorCode:'ATTACHMENT_INVALID',message:'grant_only requires attachments.'};
       const signal=combined(request.signal);
       const check=()=>{guard();signal.throwIfAborted();const current=classifyInstalledGhostVisibility(target,context.workingDir,visibility);if(!current.ok||ghostInstallApprovalToken(current.ghost.approval)!==approval)throw new Error('PLUGIN_CHANGED');};
-      const ready=await options.setup.coordinator.ensureReady({sessionId:context.sessionId,ghostId:instance,workingDir:context.workingDir,...(!request.grantOnly?{tool:request.tool}:{}),plan:request.setupPlan,signal});if(!ready.ok)return ready;
+      const ready=await options.setup.coordinator.ensureReady({sessionId:options.setup.surface.ghostSetupInteractionSessionId({sessionId:context.sessionId,vendorOptions:{source:context.source}}),ghostId:instance,workingDir:context.workingDir,...(!request.grantOnly?{tool:request.tool}:{}),plan:request.setupPlan,signal});if(!ready.ok)return ready;
       check();if(host.assessment(instance).state!=='ready')return {ok:false,errorCode:'SETUP_REQUIRED',message:'Plugin setup changed. Retry with the current configuration.'};
       try{
         const granted=await grantPluginCall({...request,signal},{instance,name:target.manifest.name,context,media:options.media,deposits:options.deposits,saves:options.saves,assertCurrent:check});

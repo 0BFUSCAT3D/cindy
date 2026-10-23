@@ -1,4 +1,12 @@
 export type Locale = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko';
+const silentStopMessages: Record<Locale, string> = {
+  en: 'The model repeatedly returned empty responses. Send a message to continue.',
+  'zh-CN': '模型连续返回空响应，自动续跑已暂停。发送消息可继续任务。',
+  'zh-TW': '模型連續傳回空回應，自動接續已暫停。傳送訊息可繼續任務。',
+  ja: 'モデルが空の応答を繰り返したため、自動再開を停止しました。メッセージを送信すると続行できます。',
+  ko: '모델이 반복해서 빈 응답을 반환하여 자동 재개를 중지했습니다. 메시지를 보내면 작업을 계속할 수 있습니다.',
+};
+export function silentStopMessage(locale: Locale) { return silentStopMessages[locale]; }
 const en = {
   emptyResources:'Nothing here yet',
   protocol:'API protocol',engines:'Model engines',install:'Install',update:'Update',notInstalled:'Not installed',providerLogin:'Sign in to provider',you: 'You', tasks: 'Sessions', models: 'Models', connections: 'Connections', service: 'Service',

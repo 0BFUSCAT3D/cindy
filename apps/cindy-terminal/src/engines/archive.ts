@@ -36,15 +36,21 @@ export async function extractEngineArchive(file: string, destination: string, fo
     if (invalid) throw invalid;
     return;
   }
-  await new Promise<void>((resolve, reject) => {
-    yauzl.open(file, { lazyEntries: true, autoClose: true, validateEntrySizes: true }, (error, zip) => {
-      if (error || !zip) { reject(new EngineError('invalid_archive')); return; }
+  const zip = await new Promise<yauzl.ZipFile>((resolve, reject) => {
+    yauzl.open(file, { lazyEntries: true, autoClose: false, validateEntrySizes: true }, (error, value) => {
+      if (error || !value) reject(new EngineError('invalid_archive'));
+      else resolve(value);
+    });
+  });
+  let entryWork: Promise<void> | undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
       let failed = false;
-      const fail = (cause: unknown) => { if (!failed) { failed = true; zip.close(); reject(cause); } };
+      const fail = (cause: unknown) => { failed = true; reject(cause); };
       zip.on('error', fail);
-      zip.on('end', () => { if (!failed) resolve(); });
+      zip.once('end', resolve);
       zip.on('entry', (entry: yauzl.Entry) => {
-        void (async () => {
+        entryWork = (async () => {
           const name = archivePath(entry.fileName);
           const mode = entry.externalFileAttributes >>> 16;
           if ((mode & 0o170000) === 0o120000) throw new EngineError('unsafe_archive_entry');
@@ -57,10 +63,20 @@ export async function extractEngineArchive(file: string, destination: string, fo
             const stream = await new Promise<NodeJS.ReadableStream>((res, rej) => zip.openReadStream(entry, (err, value) => err || !value ? rej(new EngineError('invalid_archive')) : res(value)));
             await pipeline(stream, createWriteStream(output, { flags: 'wx', mode: mode & 0o111 ? 0o700 : 0o600 }));
           }
-          zip.readEntry();
-        })().catch(fail);
+          if (!failed) zip.readEntry();
+        })();
+        void entryWork.catch(fail);
       });
       zip.readEntry();
     });
-  });
+  } finally {
+    // `end` only means that all entries were visited. Windows cannot remove
+    // staging while the archive (or an output stream) still owns a file handle.
+    await entryWork?.catch(() => {});
+    await new Promise<void>((resolve, reject) => {
+      zip.once('close', resolve);
+      zip.once('error', reject);
+      zip.close();
+    });
+  }
 }

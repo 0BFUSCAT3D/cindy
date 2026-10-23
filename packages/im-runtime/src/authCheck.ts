@@ -27,8 +27,8 @@ export interface ImAuthRouteStatus extends ImAuthCheckResult {
 }
 
 export interface ImAuthCheckDeps {
-  readXdGatewayApiKey(): string | null;
-  hasCustomProviderKey(providerId: string, agentKind: AgentKind): boolean;
+  readXdGatewayApiKey(): string | null | Promise<string | null>;
+  hasCustomProviderKey(providerId: string, agentKind: AgentKind): boolean | Promise<boolean>;
   getAgentAuthState(agentKind: AgentKind): Promise<{ authenticated: boolean }>;
   listProviders(): Promise<ProviderView[]>;
   checkRemoteRoute?(
@@ -68,7 +68,7 @@ async function checkImRouteAuthWithResolution(
   if (resolution.kind === "provider") {
     const routing = resolution.provider.routing[row.agentKind];
     if (routing?.authStrategy === "gateway-key") {
-      return deps.readXdGatewayApiKey()
+      return (await deps.readXdGatewayApiKey())
         ? { ok: true, missing: null }
         : { ok: false, missing: "gateway-key" };
     }
@@ -97,7 +97,7 @@ async function checkImRouteAuthWithResolution(
     if (routing?.authStrategy === "api-key-header") {
       if (!resolution.provider.connected)
         return { ok: false, missing: "provider-disconnected" };
-      return hasCustomProviderAuth(resolution.provider, row.agentKind, deps)
+      return (await hasCustomProviderAuth(resolution.provider, row.agentKind, deps))
         ? { ok: true, missing: null }
         : { ok: false, missing: "provider-key" };
     }
@@ -169,14 +169,14 @@ async function checkRemoteAuth(
   }
 }
 
-export function hasCustomProviderAuth(
+export async function hasCustomProviderAuth(
   provider: ProviderView,
   agentKind: AgentKind,
   deps: ImAuthCheckDeps,
-): boolean {
+): Promise<boolean> {
   const routing = provider.routing[agentKind];
   return (
-    deps.hasCustomProviderKey(provider.id, agentKind) ||
+    (await deps.hasCustomProviderKey(provider.id, agentKind)) ||
     hasAuthHeaderOverride(routing?.headerOverride)
   );
 }
@@ -258,7 +258,7 @@ async function fallbackAuthCheckForImRoute(
   row: AuthRow,
   deps: ImAuthCheckDeps,
 ): Promise<ImAuthCheckResult> {
-  const hasGatewayKey = Boolean(deps.readXdGatewayApiKey());
+  const hasGatewayKey = Boolean(await deps.readXdGatewayApiKey());
   if (row.providerId === "xd") {
     return hasGatewayKey
       ? { ok: true, missing: null }

@@ -62,6 +62,7 @@ import { createGuestProviderRouteBinder, guestProviderModelIds, resolveGuestProv
 import { registerRemoteManagementResources } from './remote/resources.js';
 import { readDeviceProviderViews, remoteAgentPollerFor, RemoteAgentRunClient } from '@cindy/remote-agent';
 import type { InvocationContext } from './contracts.js';
+import { silentStopMessage } from './ui/i18n.js';
 
 function valueString(value: unknown): string { if (typeof value !== 'string') throw new Error('INVALID_ARGUMENT'); return value; }
 function object(value: unknown): Record<string, unknown> { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_ARGUMENT'); return value as Record<string,unknown>; }
@@ -298,7 +299,7 @@ export class TerminalService {
       },
     });
     await this.protectedInput.prepare();
-    this.tasks=new TerminalTaskHost({profileDir:ownerDir,logger,deferPendingTasks:true,protectedInput:this.protectedInput,resolveAttachment:async(reference,context,sessionId)=>{
+    this.tasks=new TerminalTaskHost({profileDir:ownerDir,logger,silentStopMessage:()=>silentStopMessage(this.settings.snapshot().effective.language),deferPendingTasks:true,protectedInput:this.protectedInput,resolveAttachment:async(reference,context,sessionId)=>{
       if(reference.startsWith('xdt-oss-attach:')||reference.startsWith('cindy-oss-attach:')||reference.startsWith('cindy-peer-attach:'))return this.media.resolve(reference,context);
       const url=path.isAbsolute(reference)?`xdt-file://open?path=${encodeURIComponent(reference)}`:reference;
       if(context.sharedTask&&url.startsWith('cindy-media:')){

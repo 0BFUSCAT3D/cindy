@@ -8,10 +8,12 @@ import { createPluginOauthCardBindings } from '@cindy/plugin-runtime/authorizati
 import { classifyGhostVisibility, classifyInstalledGhostVisibility, type GhostVisibilityDeps } from '@cindy/plugin-runtime/ghostVisibility';
 import { installedGhostStoragePart } from '@cindy/plugin-runtime/shared/pluginIdentity';
 import type { TerminalPlugins } from './host.js';
+import { createGhostSetupInteractionSurface } from '@cindy/plugin-runtime/ghostSetupInteractionSurface';
 
 /** The same pending-card coordinator serves GUI, Mobile and terminal callers.
  * Values are committed only by the dedicated executor or signed exchange. */
 export class TerminalPluginSetup {
+  readonly surface = createGhostSetupInteractionSurface();
   private closed=false;
   readonly bridge: GhostSetupInteractionBridge;
   readonly coordinator: GhostSetupCoordinator;

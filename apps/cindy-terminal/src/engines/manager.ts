@@ -91,23 +91,40 @@ export class EngineManager {
     const archive = path.join(staging, 'download');
     const files = path.join(staging, 'files');
     await mkdir(files, { mode: 0o700 });
+    let stage = 'download';
     try {
       await this.download(kind, asset, archive, signal);
+      stage = 'extract';
       this.options.onProgress?.({ kind, stage: 'extract' });
       if (asset.format === 'raw') { await rename(archive, path.join(files, asset.entrypoint)); }
       else await extractEngineArchive(archive, files, asset.format);
       signal?.throwIfAborted();
+      stage = 'layout';
       const root = await this.layout(kind, files, asset, release.version);
       const binary = path.join(root, asset.entrypoint);
       if (process.platform !== 'win32') await chmod(binary, 0o700);
       // Validate the actual executable before making it active. Never inspect auth.
+      stage = 'version';
       const reported = await runNative(binary, ['--version'], { signal, timeout: 30_000 });
       if (reported.code !== 0 || !reported.stdout.includes(release.version)) throw new EngineError('engine_version_mismatch');
+      stage = 'publish';
       await rename(root, path.join(home, id));
+      stage = 'receipt';
       await atomicPrivateWrite(path.join(home, 'current.json'), JSON.stringify({ version: release.version, directory: id, entrypoint: asset.entrypoint, sha256: asset.sha256, asset } satisfies Receipt));
       this.options.onProgress?.({ kind, stage: 'ready' });
       return this.status(kind);
-    } finally { await rm(staging, { recursive: true, force: true }); }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code && /^E[A-Z]+$/.test(code)) throw new EngineError(`engine_${stage}_${code.toLowerCase()}`);
+      throw error;
+    } finally {
+      // Defender can briefly retain handles even after our own streams close.
+      // Node's bounded retry applies only to its documented transient rm errors.
+      await rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(error => {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        throw new EngineError(`engine_cleanup_${code && /^E[A-Z]+$/.test(code) ? code.toLowerCase() : 'failed'}`);
+      });
+    }
   }
 
   private async download(kind: EngineKind, asset: EngineAsset, output: string, signal?: AbortSignal): Promise<void> {

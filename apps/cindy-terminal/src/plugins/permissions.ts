@@ -7,6 +7,7 @@ import type { GhostGrantConfirmPayload, GhostGrantConfirmDecision } from '@cindy
 
 export interface PluginTaskContext {
   sessionId:string;workingDir:string;
+  source?: string;
   instanceId():string;
   assertCurrent():void;
   snapshot():Promise<(FsSessionSnapshot & {autoReviewOwner?:'native'|'cindy'})|null>;
