@@ -18,6 +18,33 @@ function harness() {
 }
 
 describe('permanent Bot model selection', () => {
+  // Real companion automation failed before queued dispatch because its ordinary
+  // send reconciler switched back to the profile. Cover that consumer's decision,
+  // including cold startup and companions following the global default (unit tier).
+  it.each([false, true])('preserves an automation route across repeated sends and restart (default=%s)', async (followsCindyDefault) => {
+    const h = harness();
+    const state = { ...h.state, followsCindyDefault, hasScheduledModelOverride: true };
+    const deps = { ownerEpoch: () => 'owner', read: async () => state, apply: h.apply };
+    const reconcile = createBotModelRouteReconciler(deps);
+    await reconcile('canonical');
+    await reconcile('canonical');
+    await createBotModelRouteReconciler(deps)('canonical');
+    expect(h.apply).not.toHaveBeenCalled();
+    state.hasScheduledModelOverride = false;
+    await reconcile('canonical');
+    expect(h.apply).toHaveBeenCalledWith('canonical', expect.objectContaining({ model: 'luna' }), state.current);
+  });
+  it('lands a saved companion choice even when it equals the temporary automation route', async () => {
+    const h = harness();
+    const state = { ...h.state, hasScheduledModelOverride: true };
+    const reconcile = createBotModelRouteReconciler({ ownerEpoch: () => 'owner', read: async () => state, apply: h.apply });
+    await reconcile('canonical');
+    state.chain = [{ harness: 'pi', model: 'glm', providerId: 'xd', effort: 'high', fastMode: false }];
+    await reconcile.profileChanged('canonical');
+    // The landing callback must retire the old saved preference even for a no-op
+    // runtime switch, so the next ordinary message cannot resurrect the old model.
+    expect(h.apply).toHaveBeenCalledExactlyOnceWith('canonical', state.current, state.current);
+  });
   it('stops a send instead of retaining the old runtime model when no enabled default remains', async () => {
     const h = harness();
     h.state.chain = [];
