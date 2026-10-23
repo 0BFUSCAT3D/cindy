@@ -2,6 +2,7 @@ import type { AgentKind, Effort } from '@cindy/maker-core';
 import { connectedProvidersForAgent, effectiveSourceIdForModel, findCatalogModel, isModelSelectableForNewRoute, type ProviderView } from '@cindy/model-providers';
 import { resolveCompatibleSessionRuntimeEffort } from './sessionRuntimeControl';
 import { parseScheduledModelBaseline, type ScheduledModelBaseline } from '../../shared/scheduledModelBaseline';
+import { throwIpcError } from '../utils/ipcValidate';
 
 /** A saved automation choice, applied only while its target's send lock is held. */
 export interface ScheduledModelSelection {
@@ -84,8 +85,10 @@ export function assertScheduledHarnessSupported(
   agentKind: AgentKind | undefined,
 ): void {
   if (target?.status !== 'active' || !agentKind || target.agentKind === agentKind) return;
-  if (target.remoteHostId || target.orcaRole) {
-    throw new Error('SSH and Orca automation targets must keep their current Harness');
+  // Orca Lead/Worker use the ordinary handoff transaction, including restoration
+  // before the next manual send. Only SSH still lacks cross-Harness handoff.
+  if (target.remoteHostId) {
+    throwIpcError('SSH_HARNESS_SWITCH_UNSUPPORTED', 'SSH automation targets must keep their current Harness');
   }
 }
 
@@ -101,7 +104,7 @@ export function resolveScheduledModelSelection(
   const model = findCatalogModel(provider, selection.model, selection.agentKind, { exact: true });
   if (!provider || !model ||
     !isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })) {
-    throw new Error(`Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
+    throwIpcError('MODEL_SELECTION_UNAVAILABLE', `Scheduled model "${selection.model}" is unavailable from provider "${providerId ?? 'default'}"`);
   }
   return {
     ...selection,
@@ -153,7 +156,7 @@ export async function applyScheduledModelSelection(
   const resolved = await deps.resolveSelection(selection, target);
   if (target.agentKind !== resolved.agentKind) {
     const result = await deps.switchHarness(resolved);
-    if (!result.engineReady || result.retryPending) throw new Error('Scheduled Harness switch did not become ready');
+    if (!result.engineReady || result.retryPending) throwIpcError('HARNESS_SWITCH_NOT_READY', 'Scheduled Harness switch did not become ready');
   }
   await deps.applyModel(resolved);
   return resolved;
