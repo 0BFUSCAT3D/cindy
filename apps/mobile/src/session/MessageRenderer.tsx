@@ -19,6 +19,7 @@ import { BotGroupQuote } from './BotGroupQuote';
 import { companionReplyQuoteDisplay, companionReplyQuoteFor } from './companionReplyQuote';
 import type { ChatReplyQuote } from '@cindy/maker-shared/chat-reply-quote';
 import type { NativePullDownAction } from '@/platform/chrome/NativePullDownMenu';
+import { AnchoredPullDownMenu } from '@/platform/chrome/AnchoredPullDownMenu';
 import { Gesture, GestureDetector } from '@/platform/gestureHandler';
 import { useMessageHistoryActive, useMessageHistoryPositioning } from './messageHistoryActivity';
 import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
@@ -3694,7 +3695,8 @@ function MessageBubble({
   const disabled = !!actions.busyClientId;
   // 伙伴私聊：长按消息弹出系统菜单（对应桌面悬停时的「回复」等按钮），消息下方不再常驻图标。
   // iOS 用系统操作表（MenuView 的长按预览在新架构下抬不起气泡，不改原生代码时不用它）；
-  // Android 用平台下拉菜单。都不可用时退回原来的操作行。长按交给菜单后正文不再就地选字，改由「选择文字」打开。
+  // Android 由同一个长按手势打开贴着气泡的下拉菜单（菜单不包住气泡，气泡里的点按照常可用）。
+  // 都不可用时退回原来的操作行。长按交给菜单后正文不再就地选字，改由「选择文字」打开。
   const companionQuote = actions.companionQuoteActions;
   const companionMenuEnabled = !!(actions.companion && hasActions
     && (Platform.OS === 'ios' ? usesSystemActionMenu() : usesNativePullDownMenu()));
@@ -3809,9 +3811,14 @@ function MessageBubble({
       userInterfaceStyle: mode,
     }).then(result => { if (result.kind === 'action') selectCompanionMenuAction(result.key); });
   }, [absoluteTime, companionMenuActions, mode, selectCompanionMenuAction, t]);
+  // Android's anchored menu opens here rather than wrapping the bubble, which would swallow its taps.
+  const [companionMenuOpen, setCompanionMenuOpen] = useRecyclingState(false);
   // Long press fails as soon as the finger moves, so tables and code blocks keep scrolling sideways.
   const companionMenuGesture = useMemo(() => Gesture.LongPress().minDuration(450).runOnJS(true)
-    .onStart(() => openCompanionActionSheet()), [openCompanionActionSheet]);
+    .onStart(() => {
+      if (Platform.OS === 'ios') openCompanionActionSheet();
+      else setCompanionMenuOpen(true);
+    }), [openCompanionActionSheet, setCompanionMenuOpen]);
   const openMessageActionMenu = useCallback(() => {
     if (usesSystemActionMenu()) {
       const disabled = actionBusy
@@ -4138,19 +4145,18 @@ function MessageBubble({
           {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
         </ErrorNotice>
       ) : bubbleShown ? (
-        companionMenuEnabled ? (Platform.OS === 'ios' ? (
+        companionMenuEnabled ? (
           <GestureDetector gesture={companionMenuGesture}>
             <View style={isUser ? styles.companionMenuUser : styles.companionMenuAgent} testID="companion.messageMenu">
-              {bubble}
+              {Platform.OS === 'ios' ? bubble : (
+                <AnchoredPullDownMenu actions={companionMenuActions} onAction={selectCompanionMenuAction}
+                  open={companionMenuOpen} onOpenChange={setCompanionMenuOpen}>
+                  {bubble}
+                </AnchoredPullDownMenu>
+              )}
             </View>
           </GestureDetector>
-        ) : (
-          <NativePullDownMenu longPress actions={companionMenuActions}
-            onAction={selectCompanionMenuAction} style={isUser ? styles.companionMenuUser : styles.companionMenuAgent}
-            testID="companion.messageMenu">
-            {bubble}
-          </NativePullDownMenu>
-        )) : bubble
+        ) : bubble
       ) : null}
       {actions.companion && item.message.kind === 'assistant' && item.message.body.trim() ? (
         <CompanionLearningFooter receipts={item.message.source.agentMeta?.botLearning}
