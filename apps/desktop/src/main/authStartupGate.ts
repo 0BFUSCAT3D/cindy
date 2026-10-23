@@ -81,6 +81,7 @@ export async function resolveColdStartTimeoutRecovery<TCurrent, TPending, TRecov
   ownerTransitionPending: boolean;
   authChangedSinceInitialize: boolean;
   loginCommitPending: boolean;
+  loginCommittedSinceInitialize: boolean;
   isStartupFallbackEpoch: (epoch: number) => boolean;
   timeoutStartEpoch: number;
   currentEpoch: number;
@@ -92,6 +93,10 @@ export async function resolveColdStartTimeoutRecovery<TCurrent, TPending, TRecov
   // the auth epoch before its async vault/owner transaction commits. Neither may
   // race a timeout recovery; their own commit/rollback publishes the settled state.
   if (input.ownerTransitionPending || input.loginCommitPending) return input.pendingState;
+  // A login transaction that settled after this initialize() entered reuses the
+  // epoch snapshotted at entry, so it is invisible to the epoch guards below.
+  // Preserve the authenticated state it published instead of recovering.
+  if (input.loginCommittedSinceInitialize) return input.currentState;
   // Sibling renderers share one refresh but own independent startup timers. A
   // user may complete login after one timeout exposes the login page and before
   // another timer fires; that later timeout must preserve the authenticated state.

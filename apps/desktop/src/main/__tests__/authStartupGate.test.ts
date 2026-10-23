@@ -194,6 +194,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
       ownerTransitionPending: true,
       authChangedSinceInitialize: false,
       loginCommitPending: false,
+      loginCommittedSinceInitialize: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 7,
@@ -214,6 +215,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
       loginCommitPending: false,
+      loginCommittedSinceInitialize: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 7,
@@ -231,6 +233,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
       loginCommitPending: true,
+      loginCommittedSinceInitialize: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 8,
@@ -249,6 +252,7 @@ describe('ColdStartAuthFallbackRegistry', () => {
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
       loginCommitPending: false,
+      loginCommittedSinceInitialize: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: 7,
       currentEpoch: 8,
@@ -273,9 +277,34 @@ describe('ColdStartAuthFallbackRegistry', () => {
       ownerTransitionPending: false,
       authChangedSinceInitialize: authStateEpoch !== initializeStartEpoch,
       loginCommitPending: false,
+      loginCommittedSinceInitialize: false,
       isStartupFallbackEpoch: () => false,
       timeoutStartEpoch: initializeStartEpoch,
       currentEpoch: authStateEpoch,
+      currentState: loggedInState,
+      pendingState: { mode: 'signed-out', ownerBoundaryPending: true },
+      recover,
+    })).resolves.toBe(loggedInState);
+
+    expect(recover).not.toHaveBeenCalled();
+  });
+
+  it('preserves a login whose commit settled after the sibling initialize entered', async () => {
+    // completeLogin increments authStateEpoch before awaiting the durable
+    // commit, so a sibling initialize entering inside that interval snapshots
+    // the in-progress epoch; when the commit finishes before the sibling timer
+    // fires, every epoch guard compares equal and recovery would clear the new
+    // login. Only the settled-login counter distinguishes this case.
+    const loggedInState = { mode: 'cloud', userId: 'new-owner' } as const;
+    const recover = vi.fn(async () => ({ mode: 'signed-out' as const }));
+    await expect(resolveColdStartTimeoutRecovery({
+      ownerTransitionPending: false,
+      authChangedSinceInitialize: false,
+      loginCommitPending: false,
+      loginCommittedSinceInitialize: true,
+      isStartupFallbackEpoch: () => false,
+      timeoutStartEpoch: 7,
+      currentEpoch: 7,
       currentState: loggedInState,
       pendingState: { mode: 'signed-out', ownerBoundaryPending: true },
       recover,

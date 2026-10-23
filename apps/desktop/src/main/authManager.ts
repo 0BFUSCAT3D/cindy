@@ -437,6 +437,12 @@ let loginFlowEpoch = 0;
 // A depth map keeps the guard correct even if two same-epoch commits briefly
 // overlap before authStateEpoch rejects the stale one.
 const sealedLoginFlowCommitDepths = new Map<number, number>();
+// Monotonic count of accepted login commits that have fully settled (including
+// the post-commit notifications in completeLogin). A sibling initialize()
+// snapshots this at entry: a startup timer firing after the snapshot must not
+// run signed-out recovery over a login that landed while it was pending, even
+// though the login reuses the epoch the sibling snapshotted at its entry.
+let settledLoginCommitCount = 0;
 // `accountDeletionRestored` may arrive before membership selection. Keep it
 // main-only until the final resource-token login commits.
 let pendingAccountDeletionRestored = false;
@@ -4539,6 +4545,7 @@ export async function updateServerProfile(
 
 export async function initialize(options: AuthInitializeOptions = {}): Promise<AuthState> {
   const initializeStartEpoch = authStateEpoch;
+  const settledLoginsAtInitialize = settledLoginCommitCount;
   // A renderer can mount after the boundary-pending broadcast. Keep startup
   // fail-closed until the serialized owner transition settles instead of
   // restoring the outgoing owner's credentials and turns from disk.
@@ -4735,6 +4742,13 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
         ownerTransitionPending: ownerChangeShellGate.isPending(),
         loginCommitPending: sealedLoginFlowCommitDepths.size > 0,
         authChangedSinceInitialize: authStateEpoch !== initializeStartEpoch,
+        // A login that committed after this initialize() entered reuses the
+        // epoch snapshotted at entry (completeLogin increments before awaiting
+        // the durable commit), so the epoch guards above cannot see it. Treat a
+        // settled login as an auth change that must never be cleared by the
+        // startup deadline; its own commit already published the settled state.
+        loginCommittedSinceInitialize:
+          settledLoginCommitCount !== settledLoginsAtInitialize,
         isStartupFallbackEpoch: (epoch) =>
           epoch > initializeStartEpoch &&
           coldStartTimeoutFallbacks.containsOnlyFallbacks(initializeStartEpoch, epoch),
@@ -5305,6 +5319,7 @@ async function completeLogin(
     loginFlowState = reduceAuthFlow(loginFlowState, { type: 'outcome', outcome });
     notifyRenderer();
     notifyAuthListeners();
+    settledLoginCommitCount += 1;
     return loginFlowState;
   } finally {
     releaseLoginFlowCommit();
