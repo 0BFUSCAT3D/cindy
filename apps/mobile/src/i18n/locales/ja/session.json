@@ -1,4 +1,8 @@
 {
+  "paneResize": {
+    "label": "列の幅",
+    "hint": "左右にドラッグして列の幅を調整します"
+  },
   "sideChat": {
     "collapse": "サイドチャットを閉じる",
     "resume": "サイドチャットを続ける",

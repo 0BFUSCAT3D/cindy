@@ -1,4 +1,8 @@
 {
+  "paneResize": {
+    "label": "Column width",
+    "hint": "Drag left or right to adjust the column widths"
+  },
   "sideChat": {
     "collapse": "Collapse side chat",
     "resume": "Continue side chat",

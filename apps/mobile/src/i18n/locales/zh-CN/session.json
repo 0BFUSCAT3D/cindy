@@ -1,4 +1,8 @@
 {
+  "paneResize": {
+    "label": "分栏宽度",
+    "hint": "左右拖动可调整两栏宽度"
+  },
   "sideChat": {
     "collapse": "收起追问",
     "resume": "继续追问",

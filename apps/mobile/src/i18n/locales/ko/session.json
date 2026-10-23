@@ -1,4 +1,8 @@
 {
+  "paneResize": {
+    "label": "열 너비",
+    "hint": "좌우로 드래그하여 두 열의 너비를 조절합니다"
+  },
   "sideChat": {
     "collapse": "사이드 채팅 접기",
     "resume": "사이드 채팅 계속",
