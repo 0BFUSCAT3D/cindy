@@ -1,3 +1,9 @@
+import { fileURLToPath } from 'node:url';
+import { TerminalBrowserRuntime } from './plugins/browser.js';
+import { TerminalPlugins } from './plugins/host.js';
+import { registerPluginResources } from './plugins/resources.js';
+import { DirDepositVault, SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
+import { fetchSingleHopWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';
 import { TerminalCompanionRoutines } from './remote/companions/routines.js';
 import { TerminalProtectedInput } from './protected-input.js';
 import { INPUT_HANDOFF_LOCAL_CHANNEL, INPUT_HANDOFF_REMOTE_LOCAL_CHANNEL, PLUGIN_OAUTH_CHANNEL } from '@cindy/device-link';
@@ -74,6 +80,8 @@ export class TerminalService {
   private media!: TerminalMediaTransfer;
   private resources!: TerminalResources;
   private knowledge?: TerminalKnowledge;
+  private plugins?:TerminalPlugins;
+  private readonly pluginBrowser:TerminalBrowserRuntime;
   private projects?: TerminalProjects;
   private tasks!: TerminalTaskHost;
   private protectedInput?: TerminalProtectedInput;
@@ -108,6 +116,7 @@ export class TerminalService {
   private closing?: Promise<void>;
 
   constructor(readonly profileDir: string, readonly region: AuthRegion = 'global') {
+    this.pluginBrowser=new TerminalBrowserRuntime({root:path.join(profileDir,'browser-runtime'),changed:status=>this.transport?.publish('terminal:browser:status',[status])});
     this.settings = new SettingsStore(profileDir);
     this.secrets = new TerminalSecretStore(profileDir);
     this.engines = new EngineManager({ profileDir, onProgress: progress => this.transport?.publish('terminal:engines:progress', [progress]) });
@@ -149,7 +158,7 @@ export class TerminalService {
         await this.sharedTasks?.logout().catch(()=>logger.warn('SHARED_TASK_CLOSE_PENDING'));
         this.files?.stop();this.browser?.stop();this.resources?.close();this.membership?.close();await this.sharedTasks?.close();this.crossShares?.close();this.groupReshare?.stop();await this.reshares?.close();this.guestRoutes?.close();await this.modelGrants?.close();await this.agents?.stop();await this.groups?.close();await this.ssh?.close();
         // close() preserves history and native resume ids; no record is deleted.
-        await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
+        await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
         await this.scheduler?.close();
         if(this.tasks)await this.tasks.close();
         await this.knowledge?.close();await this.projects?.close();
@@ -224,7 +233,7 @@ export class TerminalService {
     const next=snapshot.session?.key ?? 'guest';
     if(next!==this.ownerKey || this.ownerSuspended){
       this.terminals.close();
-      await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
+      await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
         await this.scheduler?.close();
       this.remote.stop();this.files.stop();this.browser.stop();this.resources.close();this.membership.close();await this.sharedTasks.close();this.crossShares.close();this.groupReshare?.stop();await this.reshares.close();this.guestRoutes.close();await this.modelGrants.close();await this.agents.stop();await this.groups.close();await this.ssh.close();await this.tasks.close();await this.knowledge?.close();await this.projects?.close();
       for(const dispose of this.subscriptions.values())dispose();
@@ -335,6 +344,26 @@ export class TerminalService {
     this.resources=new TerminalResources(this.tasks);
     registerKnowledgeResources(this.resources.registry,this.knowledge);
     this.tasks.registerCapabilityResources(this.resources.registry);
+    const guardPlugin=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
+    const pluginAbort=new AbortController();
+    const deposits=new DirDepositVault(),saves=new SaveDepositVault();
+    this.plugins=new TerminalPlugins({root:ownerDir,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),
+      executablePath:()=>this.pluginBrowser.resolve(),locale:()=>this.settings.snapshot().effective.language,assertCurrent:guardPlugin,log:logger,onClose:()=>pluginAbort.abort(),
+      secrets:{get:key=>this.secrets.get(`${owner}:${key}`),set:(key,value)=>this.secrets.set(`${owner}:${key}`,value),delete:key=>this.secrets.delete(`${owner}:${key}`)},
+      changed:()=>{if(this.ownerSuspended||this.closing)return;this.transport.publish('ghosts:changed',[]);void this.remote.publish('maker:remote-resources:changed',{collectionId:'plugins'}).catch(()=>{});},
+      receive:async()=>({ok:false,errorCode:'UNSUPPORTED_CAPABILITY'}),
+      network:{getLoginEmail:()=>this.auth.snapshot().session?.membership.email??null,
+        fetchImpl:(url,init)=>fetch(url,{...init,body:init.body as BodyInit,signal:AbortSignal.any([init.signal,pluginAbort.signal])}),
+        fetchPublicImpl:(url,init,beforeDispatch)=>fetchSingleHopWithSsrFGuard({url,init:{...init,body:init.body as BodyInit},signal:AbortSignal.any([init.signal,pluginAbort.signal]),requireHttps:true,beforeDispatch}),
+        isSupportedMediaMime:mime=>this.tasks.media.supportedMime(mime),
+        readGhostMedia:(id,hash)=>this.tasks.media.readPluginMedia(id,hash,guardPlugin),
+        saveGhostMedia:input=>this.tasks.media.savePluginMedia(input,guardPlugin),
+        takeDirDeposit:(id,token)=>deposits.take(id,token),writeSaveDeposit:(id,token,name,bytes)=>saves.write(id,token,name,bytes),
+      },
+    });
+    await this.plugins.ready;
+    registerPluginResources(this.resources.registry,this.plugins);
+
     this.projects=new TerminalProjects(ownerDir,{guard:guardKnowledge,createSession:async(workingDir,title)=>{const created=await this.tasks.invoke('maker:create-session',[{workingDir,title}],{source:'local',assertCurrent:guardKnowledge}) as {sessionId?:string;id?:string};const id=created.sessionId??created.id;if(!id)throw new Error('SESSION_CREATE_FAILED');return id;}});
     await this.projects.ready;this.projects.register(this.resources.registry);
     registerRemoteManagementResources(this.resources.registry,{agent:this.agents,groups:this.groups,membership:this.membership,modelGrants:this.modelGrants,account:this.account,deviceId:this.settings.deviceId,apiBaseUrl:()=>endpoints().deviceLinkApiBaseUrl,remoteEnabled:()=>this.settings.snapshot().effective.remoteEnabled});
@@ -519,8 +548,8 @@ export class TerminalService {
       this.files?.stop();this.browser?.stop();this.resources?.close();this.membership?.close();await this.sharedTasks?.close();this.crossShares?.close();this.groupReshare?.stop();await this.reshares?.close();this.guestRoutes?.close();await this.modelGrants?.close();await this.agents?.stop();await this.groups?.close();await this.ssh?.close();
       await this.auth?.cancel();await this.ownerChange;
       for(const dispose of this.subscriptions.values())dispose();this.subscriptions.clear();
-      await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
-        await this.scheduler?.close();await this.tasks?.close();await this.knowledge?.close();await this.projects?.close();await this.secrets.flush();this.secrets.lock();await this.transport.close();this.stopWait();
+      await this.plugins?.close();await this.routines?.close();await this.protectedInput?.close();await this.companionCloud?.close();await this.companions?.close();
+        await this.scheduler?.close();await this.tasks?.close();await this.knowledge?.close();await this.projects?.close();await this.pluginBrowser.close();await this.secrets.flush();this.secrets.lock();await this.transport.close();this.stopWait();
     })();
     return this.closing;
   }

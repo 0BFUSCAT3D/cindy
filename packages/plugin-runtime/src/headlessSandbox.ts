@@ -12,7 +12,7 @@ import type { SandboxHandle, SandboxHostAdapter } from './GhostRuntime.js';
 export interface HeadlessSandboxOptions {
   /** Managed or explicitly selected Chromium, never an Electron executable. */
   executablePath: string | (() => Promise<string>);
-  mailRuntimeSource: string;
+  mailRuntimeSource: string | (() => Promise<string>);
   /** Captures owner generation, installation identity and approval revision. */
   capture(ghost: InstalledGhost): () => boolean;
   receive(instanceId: string, payload: unknown): Promise<unknown>;
@@ -149,7 +149,7 @@ class HeadlessHandle implements SandboxHandle {
       if (!response && request.method() !== 'GET') response = new Response(null, { status: 405 });
       if (!response) {
         if (url.pathname === GHOST_BOOT_PATH) response = new Response(ghostBootHtml(this.ghost.manifest.entry), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-        else if (url.pathname === GHOST_MAIL_SDK_PATH) response = new Response(this.host.options.mailRuntimeSource, { headers: { 'Content-Type': 'text/javascript; charset=utf-8' } });
+        else if (url.pathname === GHOST_MAIL_SDK_PATH) response = new Response(typeof this.host.options.mailRuntimeSource === 'function' ? await this.host.options.mailRuntimeSource() : this.host.options.mailRuntimeSource, { headers: { 'Content-Type': 'text/javascript; charset=utf-8' } });
         else {
           const resolved = resolveGhostFilePath(this.ghost.dir, url.pathname);
           if (!resolved) response = new Response(null, { status: 403 });

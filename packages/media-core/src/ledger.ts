@@ -162,3 +162,29 @@ export async function sessionCanRead(hash: string, sessionId: string, db: Ledger
   )).limit(1).all();
   return rows.length > 0;
 }
+
+export async function ghostCanRead(
+  hash: string,
+  ghostId: string,
+  db: LedgerDb,
+): Promise<boolean> {
+  const row = await db
+    .select({ one: sql`1` })
+    .from(mediaRefs)
+    .where(
+      and(
+        eq(mediaRefs.hash, hash),
+        or(
+          and(eq(mediaRefs.originKind, 'ghost'), eq(mediaRefs.originId, ghostId)),
+          and(eq(mediaRefs.refKind, 'ghost-gallery'), eq(mediaRefs.refId, ghostId)),
+          and(eq(mediaRefs.refKind, 'ghost-grant'), eq(mediaRefs.refId, ghostId)),
+          and(eq(mediaRefs.refKind, 'ghost-tool-grant'), eq(mediaRefs.refId, ghostId)),
+          and(eq(mediaRefs.refKind, 'ghost-deposit'), eq(mediaRefs.refId, ghostId)),
+        ),
+      ),
+    )
+    .limit(1)
+    .all();
+  return row.length > 0;
+}
+

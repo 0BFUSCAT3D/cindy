@@ -113,6 +113,9 @@ importers:
       '@cindy/auth-client':
         specifier: workspace:*
         version: link:../../packages/auth-client
+      '@cindy/browser-control-runtime':
+        specifier: workspace:*
+        version: link:../../packages/browser-control-runtime
       '@cindy/companion-core':
         specifier: workspace:*
         version: link:../../packages/companion-core
@@ -176,6 +179,9 @@ importers:
       node-pty:
         specifier: ^1.0.0
         version: 1.1.0(patch_hash=158f936be4b27ebaf010e1b9c2f2ba3b57cd2de917dc557a66272911b4b1de3d)
+      playwright-core:
+        specifier: 1.60.0
+        version: 1.60.0
       react:
         specifier: 19.2.3
         version: 19.2.3
@@ -15434,7 +15440,9 @@ snapshots:
       metro-runtime: 0.84.5
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 

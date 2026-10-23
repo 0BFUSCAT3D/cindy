@@ -107,7 +107,7 @@ export class EngineManager {
       await atomicPrivateWrite(path.join(home, 'current.json'), JSON.stringify({ version: release.version, directory: id, entrypoint: asset.entrypoint, sha256: asset.sha256, asset } satisfies Receipt));
       this.options.onProgress?.({ kind, stage: 'ready' });
       return this.status(kind);
-    } finally { await rm(staging, { recursive: true, force: true }); }
+    } catch(error) { console.error('SYNTHETIC_ENGINE_INSTALL_FAILURE', error); throw error; } finally { try { await rm(staging, { recursive: true, force: true }); } catch(error) { console.error('SYNTHETIC_ENGINE_CLEANUP_FAILURE',error); throw error; } }
   }
 
   private async download(kind: EngineKind, asset: EngineAsset, output: string, signal?: AbortSignal): Promise<void> {

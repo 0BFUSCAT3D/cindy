@@ -380,29 +380,8 @@ export async function removeSessionAttachmentRefIfUnreferencedByLiveMessage(
  * 面板取件、edit_image / edit_video 的源图校验(resolveOwnedMedia 走本函数)
  * 一并成立 —— "画布上的图 = AI 能加工的图"。
  */
-export async function ghostCanRead(
-  hash: string,
-  ghostId: string,
-  db: LedgerDb = defaultDb(),
-): Promise<boolean> {
-  const row = await db
-    .select({ one: sql`1` })
-    .from(mediaRefs)
-    .where(
-      and(
-        eq(mediaRefs.hash, hash),
-        or(
-          and(eq(mediaRefs.originKind, 'ghost'), eq(mediaRefs.originId, ghostId)),
-          and(eq(mediaRefs.refKind, 'ghost-gallery'), eq(mediaRefs.refId, ghostId)),
-          and(eq(mediaRefs.refKind, 'ghost-grant'), eq(mediaRefs.refId, ghostId)),
-          and(eq(mediaRefs.refKind, 'ghost-tool-grant'), eq(mediaRefs.refId, ghostId)),
-          and(eq(mediaRefs.refKind, 'ghost-deposit'), eq(mediaRefs.refId, ghostId)),
-        ),
-      ),
-    )
-    .limit(1)
-    .all();
-  return row.length > 0;
+export async function ghostCanRead(hash: string, ghostId: string, db: LedgerDb = defaultDb()): Promise<boolean> {
+  return coreLedger.ghostCanRead(hash, ghostId, db);
 }
 
 /**

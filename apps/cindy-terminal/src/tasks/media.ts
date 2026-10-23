@@ -1,8 +1,10 @@
 import path from 'node:path';
 import { open, lstat, realpath, chmod } from 'node:fs/promises';
+import { readBoundedFileNoFollow } from '@cindy/remote-agent/readBoundedFile';
+import { GHOST_FETCH_UPLOAD_MAX_BYTES_PER_FILE } from '@cindy/plugin-runtime/shared/ghost';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { createBlobStore, sniffMediaMime, recordBlob, addRef, hasRef, removeRefs, sessionCanRead, getBlobInfo } from '@cindy/media-core';
+import { createBlobStore, sniffMediaMime, recordBlob, addRef, hasRef, removeRefs, sessionCanRead, ghostCanRead, getBlobInfo } from '@cindy/media-core';
 import * as schema from '@cindy/media-core/schema';
 import { privateDirectory } from '../platform.js';
 import type { AttachmentResolution } from './input.js';
@@ -65,5 +67,28 @@ CREATE INDEX IF NOT EXISTS media_refs_ref_idx ON media_refs(ref_kind,ref_id);`);
     return {path:resolved.absPath,managedUrl:url,mimeType:resolved.mimeType};
   }
   removeSession(id:string):Promise<void>{return this.run(async()=>{await removeRefs({refKind:'session-attachment',refId:id},this.db!);});}
+  supportedMime(mime:string){return this.store.supportedMime(mime);}
+  savePluginMedia(input:{ghostId:string;buffer:Uint8Array;mimeType:string;label?:string;assertStillValid?:()=>void},guard:()=>void) {
+    return this.run(async()=>{
+      const check=()=>{guard();input.assertStillValid?.();};check();
+      const written=await this.store.writeBlob({buffer:input.buffer,mimeType:input.mimeType,assertStillValid:check});check();
+      this.native!.exec('BEGIN IMMEDIATE');
+      try {
+        await recordBlob({...written,isCache:false},this.db!);check();
+        if(!await hasRef({hash:written.hash,refKind:'ghost-gallery',refId:input.ghostId},this.db!))await addRef({hash:written.hash,refKind:'ghost-gallery',refId:input.ghostId,originKind:'ghost',originId:input.ghostId,label:input.label},this.db!);
+        check();this.native!.exec('COMMIT');
+      }catch(error){this.native!.exec('ROLLBACK');throw error;}
+      return {url:written.url,hash:written.hash,ext:written.ext};
+    });
+  }
+  async readPluginMedia(instance:string,hash:string,guard:()=>void) {
+    await this.ready;await this.operations;guard();
+    if(!await ghostCanRead(hash,instance,this.db!))return null;
+    const info=await getBlobInfo(hash,this.db!);if(!info)return null;
+    const resolved=await this.resolveManaged(`cindy-media://blobs/${hash}${info.ext}`);guard();
+    const buffer=await readBoundedFileNoFollow(resolved.path,Math.min(info.bytes,GHOST_FETCH_UPLOAD_MAX_BYTES_PER_FILE),{nonBlocking:true});guard();
+    if(!buffer||buffer.length!==info.bytes)return null;
+    return {buffer,mimeType:info.mimeType,ext:info.ext};
+  }
   async close(){await this.ready;await this.operations;this.native?.close();}
 }

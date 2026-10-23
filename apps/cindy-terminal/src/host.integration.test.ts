@@ -78,7 +78,9 @@ describe('terminal private host', () => {
     expect(await restored.get('provider')).toBe('invalid-test-key');
     await restored.delete('provider');expect(await restored.get('provider')).toBeNull();
     restored.lock();
-  });
+  // Native integration: the first Windows ACL operation starts Windows
+  // PowerShell on a cold runner; it has its own 15-second process deadline.
+  },process.platform==='win32'?30_000:5_000);
 
   it('automatically unlocks only an explicitly selected machine-key store', async () => {
     const dir=path.join(directory,'machine');

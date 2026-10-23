@@ -1,0 +1,65 @@
+/** Native integration tier: exercises the product's real consent, encrypted
+ * vault, installed receipt and browser→Node route. Source-byte/owner changes
+ * must revoke a pending approval; keys must never appear in resource responses. */
+import {beforeAll,afterAll,expect,it} from 'vitest';
+import {mkdtemp,writeFile,readFile,copyFile,rm} from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {fileURLToPath} from 'node:url';
+import {build} from 'esbuild';
+import JSZip from 'jszip';
+import {installedGhostStoragePart} from '@cindy/plugin-runtime/shared/pluginIdentity';
+import {RemoteResourceRegistry} from '@cindy/device-link';
+import {TerminalPlugins} from './host.js';
+import {registerPluginResources} from './resources.js';
+import {TerminalSecretStore} from '../secrets.js';
+
+let directory:string,runtime:string;
+beforeAll(async()=>{
+  directory=await mkdtemp(path.join(os.tmpdir(),'cindy-terminal-plugins-'));runtime=path.join(directory,'runtime');
+  const source=fileURLToPath(new URL('../../../../packages/plugin-runtime/src/',import.meta.url));
+  for(const [entry,out] of [['nativeWorkerEntry.ts','plugin-node-worker.cjs'],['nativeSnapshotWorker.ts','plugin-snapshot-worker.cjs']])await build({entryPoints:[path.join(source,entry)],outfile:path.join(runtime,out),bundle:true,platform:'node',target:'node22',format:'cjs',logLevel:'silent'});
+  await copyFile(path.join(source,'mailComposeRuntime.js'),path.join(runtime,'plugin-mail-runtime.js'));
+});
+afterAll(async()=>{await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
+
+it('requires confirmation of exact bytes and keeps native credentials private across restart',async()=>{
+  const archive=new JSZip();
+  archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-fixture',name:'Terminal fixture',version:'1.0.0',kind:'chip',entry:'main.js',settingsHtml:'settings.html',slots:['tool','node'],tools:[{name:'check',description:'Verify fixture'}],node:{entry:'worker.cjs',protocol:'json-rpc-stdio',secretBindings:[{key:'key',label:'Fixture key',methods:['check']}]}}));
+  archive.file('main.js',`cindy.onHostMessage(async request=>{
+    const reply=await cindy.node.request({method:'check',callId:request.callId,cancelWithCall:true});
+    await fetch('/kv',{method:'PUT',body:JSON.stringify({visited:true})});
+    await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:reply});
+  });`);
+  archive.file('settings.html','<!doctype html><html><body>Fixture</body></html>');
+  archive.file('worker.cjs',String.raw`require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{configured:r.cindy?.secrets?.key==='synthetic-acceptance-key'}})+'\n');});`);
+  const file=path.join(directory,'fixture.cindy'),bytes=await archive.generateAsync({type:'nodebuffer'});await writeFile(file,bytes);
+  const vault=new TerminalSecretStore(path.join(directory,'vault'));await vault.open();await vault.initialize('machine');
+  let active=true;
+  const options={root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets:vault,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
+  const host=new TerminalPlugins(options);
+  try{
+    const registry=new RemoteResourceRegistry();registerPluginResources(registry,host);
+    const context={controllerDeviceId:'controller-a',assertCurrent:options.assertCurrent},client={protocolVersion:1 as const,primitives:['text','actions'],locale:'en'};
+    const prepared=await host.prepareInstall(file,'controller-a');
+    expect(await host.list()).toEqual([]);
+    await expect(host.confirmInstall(prepared.id,'controller-b')).rejects.toThrow('PLUGIN_CONFIRMATION_EXPIRED');
+    await writeFile(file,Buffer.concat([bytes,Buffer.from('changed')]));
+    await expect(host.confirmInstall(prepared.id,'controller-a')).rejects.toThrow('PLUGIN_INSTALL_REJECTED');
+    expect(await host.list()).toEqual([]);
+    await writeFile(file,bytes);
+    const valid=await host.prepareInstall(file,'controller-a');const ghost=await host.confirmInstall(valid.id,'controller-a');const instance=installedGhostStoragePart(ghost);
+    await host.saveSecret(instance,'key','synthetic-acceptance-key');
+    const resource=await registry.get(context,{client,ref:{collectionId:'plugins',kind:'plugin',id:instance}});
+    expect(JSON.stringify(resource)).not.toContain('synthetic-acceptance-key');
+    expect((await readFile(path.join(directory,'vault','secrets.enc'),'utf8'))).not.toContain('synthetic-acceptance-key');
+    if(process.env.CINDY_TEST_CHROMIUM){
+      expect(await host.native.dispatcher!.callGhostTool({ghostId:instance,tool:'check',args:{},sessionId:'fixture-task',timeoutMs:2000})).toEqual({ok:true,result:{ok:true,result:{configured:true}}});
+      expect(host.kv.read(instance)).toEqual({visited:true});
+    }
+    const approval=(await host.list())[0].approval;await host.close();
+    const next=new TerminalPlugins(options);
+    try{expect((await next.list())[0].approval).toEqual(approval);await next.setEnabled(instance,false);expect((await next.list())[0].enabled).toBe(false);active=false;await expect(next.list()).rejects.toThrow('OWNER_CHANGED');}
+    finally{await next.close();}
+  }finally{await host.close();vault.lock();}
+});
