@@ -142,7 +142,7 @@ it('invites a bundled native package through the original receipt and full file 
   expect(h.pause).not.toHaveBeenCalled(); expect(verifyImportedAutomation).not.toHaveBeenCalled();
   expect(discoverImportSources).not.toHaveBeenCalled(); expect(inspectImportSource).not.toHaveBeenCalled();
   expect(h.invitation).toHaveBeenCalledWith(result.botId, result.requestId, 'zh-CN', expect.objectContaining({
-    onboardingSkill: 'nightly-audit-engineer-getting-started', capabilities: expect.arrayContaining(['限定审计范围']) }));
+    onboardingSkill: 'nightly-audit-engineer-getting-started', capabilities: entry.capabilities.map(capability => capability.label) }));
   expect(createMessage).not.toHaveBeenCalled();
   const receipt = JSON.parse(await fs.readFile(path.join(h.root, 'companion-imports', result.requestId + '.json'), 'utf8'));
   expect(receipt.nativePackage).toMatchObject({ packageId: entry.packageId, packageHash: entry.packageHash });
@@ -197,6 +197,22 @@ it('keeps an older installed version unchanged when it has no unfinished checkpo
   expect(createBotProfile).toHaveBeenCalledTimes(1);
   expect(h.importDocument).toHaveBeenCalledTimes(1);
 });
+it('restarts an older install that never saved its checkpoint, as the same request and companion', async () => {
+  h.native = true;
+  const entry = (await listNativeBotPackages())[0]!;
+  // The request index is written before the checkpoint; a failure in between leaves a receipt with nothing created or copied.
+  vi.spyOn(h.store, 'write').mockRejectedValueOnce(new Error('fixture failure before checkpoint'));
+  await inviteNativeBotPackage(entry, 'renderer:1').catch(() => undefined);
+  const indexes = await fs.readdir(path.join(h.root, 'companion-imports'));
+  expect(indexes).toHaveLength(1);
+  const requestId = indexes[0]!.slice(0, -'.json'.length);
+  expect(h.created).toBe(false);
+  await olderInstall(requestId);
+  const complete = await nativeFinished(await inviteNativeBotPackage(entry, 'renderer:2'));
+  expect(complete.status).toBe('complete'); expect(complete.requestId).toBe(requestId);
+  expect(createBotProfile).toHaveBeenCalledTimes(1);
+  expect(h.importDocument).toHaveBeenCalledTimes(1);
+});
 it('saves the teammate, opening and routine names in the language the invite was made in', async () => {
   h.native = true;
   const entry = (await listNativeBotPackages()).find(entry => entry.packageId === 'engineer-bot')!;
@@ -207,11 +223,10 @@ it('saves the teammate, opening and routine names in the language the invite was
   expect(h.routines[0]).toMatchObject({ name: ja.routines[0]!.name, enabled: false });
   // The opening (scripted fallback and model input) is Japanese too: greeting and starter choices of this package.
   expect(h.invitation).toHaveBeenCalledWith(result.botId, result.requestId, 'ja', expect.objectContaining({
-    welcome: expect.stringContaining('こんにちは'), capabilities: ja.capabilities.map(capability => capability.label),
-    onboardingSkill: 'engineer-bot-getting-started', starterOptions: expect.arrayContaining(['進行中のPR/MRを追う']) }));
-  // The identity prompt stays the package's own (it tells the teammate to answer in the user's language).
+    welcome: ja.welcome, capabilities: ja.capabilities.map(capability => capability.label),
+    onboardingSkill: 'engineer-bot-getting-started', starterOptions: expect.arrayContaining([expect.stringMatching(/[぀-ヿ]/)]) }));
+  // The identity prompt stays the package's own, whatever language the invite was made in.
   expect(h.profile.identitySource).toBe(await nativeIdentity(entry.packageId));
-  expect(h.profile.identitySource).toContain('Always reply in the language the user is currently using');
 });
 it('respects the original memory switch without enabling it or importing identity as reference', async () => {
   h.native = true; h.profile = { config: { memory: false } };

@@ -111,11 +111,12 @@ export async function inviteNativeBotPackage(input: BotPackageIdentity & { local
       if (existing.nativePackage?.packageVersion === input.packageVersion && existing.nativePackage.packageHash !== input.packageHash) throw new CompanionImportError('SELECTION_CHANGED');
       if (existing.result.status === 'complete') return (await getCompanionImportResult(existing.result.requestId))!;
       // An unfinished save always resumes its own request from the durable snapshot it stored,
-      // whatever version it was installed from. Without that checkpoint an older install is left as it is.
+      // whatever version it was installed from. Without that checkpoint an older install is left as it is,
+      // unless it never got past the request index: nothing was created or copied yet, so it restarts with this package.
       const pending = (await companionEnvironmentStore.read(scope.root, existing.result.botId, scope.assert))?.pendingImport;
       scope.assert();
       if (pending) return startCompanionImport(pending.selection, controller);
-      if (existing.nativePackage?.packageVersion !== input.packageVersion) return existing.result;
+      if (existing.nativePackage?.packageVersion !== input.packageVersion && (existing.checkpointSaved || existing.companionCreated)) return existing.result;
       // The original checkpoint may not have committed. Reuse this request, not
       // a second package progress ledger or another companion.
     }
