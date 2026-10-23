@@ -885,14 +885,47 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://api.moonshot.ai/v1', 'kimi-k3.1-pro-highspeed'],
     ['https://api.kimi.com/coding/v1', 'k3.1-pro'],
     ['https://api.kimi.com/coding/v1', 'k3.1-pro-highspeed'],
+    ['https://api.kimi.com/coding/v1', 'k3'],
+    ['https://api.kimi.com/coding/v1', 'kimi-for-coding'],
   ])('translates image input for Kimi on its official route: %s / %s', async (upstream, model) => {
     const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
-    const capabilities = chatBridgeCapabilitiesForRoute(upstream, model);
+    const { BUNDLED_CATALOG } = await import('@cindy/model-providers');
+    const { setActiveCatalog } = await import('../active-catalog.js');
     const imageUrl = 'data:image/png;base64,eA==';
-    const translated = translateResponsesRequest({ model, input: [{ type: 'message', role: 'user',
-      content: [{ type: 'input_image', image_url: imageUrl }],
-    }] }, { capabilities });
-    expect(translated.messages).toEqual([{ role: 'user', content: [{ type: 'image_url', image_url: { url: imageUrl } }] }]);
+    try {
+      // V5 servers cannot send interface bindings; existing image routes must survive negotiation.
+      for (const modelRegistry of [BUNDLED_CATALOG.modelRegistry, {
+        schemaVersion: 5 as const, updatedAt: BUNDLED_CATALOG.modelRegistry!.updatedAt, models: [],
+      }]) {
+        setActiveCatalog({ ...BUNDLED_CATALOG, modelRegistry });
+        const capabilities = chatBridgeCapabilitiesForRoute(upstream, model);
+        const translated = translateResponsesRequest({ model, input: [{ type: 'message', role: 'user',
+          content: [{ type: 'input_image', image_url: imageUrl }],
+        }] }, { capabilities });
+        expect(translated.messages).toEqual([{ role: 'user', content: [{ type: 'image_url', image_url: { url: imageUrl } }] }]);
+      }
+    } finally {
+      setActiveCatalog(BUNDLED_CATALOG);
+    }
+  });
+
+  it.each(['empty', 'retired'] as const)('honors %s V6 declarations instead of restoring bundled image support', async (state) => {
+    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { BUNDLED_CATALOG } = await import('@cindy/model-providers');
+    const { setActiveCatalog } = await import('../active-catalog.js');
+    const catalog = structuredClone(BUNDLED_CATALOG);
+    const registry = catalog.modelRegistry!;
+    registry.interfaceProfiles = state === 'empty' ? [] : registry.interfaceProfiles!.map(profile => ({ ...profile, retired: true }));
+    try {
+      setActiveCatalog(catalog);
+      const capabilities = chatBridgeCapabilitiesForRoute('https://api.kimi.com/coding/v1', 'k3.1-pro');
+      expect(capabilities.imageInput).toBeUndefined();
+      expect(() => translateResponsesRequest({ model: 'k3.1-pro', input: [{ type: 'message', role: 'user',
+        content: [{ type: 'input_image', image_url: 'data:image/png;base64,eA==' }],
+      }] }, { capabilities })).toThrow(/input_image/);
+    } finally {
+      setActiveCatalog(BUNDLED_CATALOG);
+    }
   });
 
   it.each([

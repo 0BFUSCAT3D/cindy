@@ -1163,8 +1163,11 @@ function isVerifiedImageChatRoute(upstream: string, realModel: string): boolean 
   if (url.protocol !== 'https:') return false;
   const host = url.hostname.toLowerCase();
   // Legacy callers and auxiliary requests use the same catalog bindings, without
-  // restoring a parallel model allowlist. An accepted remote registry is complete.
-  const registry = getActiveCatalog().modelRegistry ?? BUNDLED_CATALOG.modelRegistry;
+  // restoring a parallel model allowlist. Pre-V6 servers cannot declare bindings;
+  // V6 remains authoritative, including empty or retired declarations.
+  const activeRegistry = getActiveCatalog().modelRegistry;
+  const registry = activeRegistry && activeRegistry.schemaVersion >= 6
+    ? activeRegistry : BUNDLED_CATALOG.modelRegistry;
   for (const providerId of new Set((registry?.interfaceProfiles ?? []).map(p => p.providerId))) {
     const declared = availableModelInterfaces(registry, providerId, realModel, upstream, 'codex')
       .find(p => p.api === 'openai-completions' && p.compatibility.includes('chat-image-v1'));
