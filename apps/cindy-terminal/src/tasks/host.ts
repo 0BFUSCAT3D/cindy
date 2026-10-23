@@ -32,6 +32,14 @@ import type { ImTurnHost } from '@cindy/im-runtime/turnHost';
 import { createInboundFileStaging } from '@cindy/im-runtime/inboundFileStaging';
 import { TerminalImBindings } from '../im/bindings.js';
 import { TerminalImDefaults } from '../im/defaults.js';
+import { TerminalImControl } from '../im/control.js';
+import { TerminalImOrchestrators } from '../im/orchestrator.js';
+import { buildImDefaultRouteRecord } from '@cindy/im-runtime/channelDefaultRoute';
+import type { ImCommandHost } from '@cindy/im-runtime/commandHost';
+import type { ImCardHost } from '@cindy/im-runtime/cardHost';
+import { lookupPending, resolvePending } from '@cindy/im-runtime/pendingInteractions';
+import { resolveLenientRoute } from '@cindy/model-providers/model-route-guard';
+import { modelSupportsFastMode, sourcesForModel } from '@cindy/model-providers';
 import { createTerminalChannelRouteFollower, type TerminalChannelRouteConfig } from '../im/routes.js';
 import { createImSessionDefaults } from '@cindy/im-runtime/defaultSessionSettings';
 import { createTerminalImSessionRepo } from '../im/session-repo.js';
@@ -73,6 +81,7 @@ export const TERMINAL_TASK_CHANNELS = [
   'terminal:tasks:turn-status', 'terminal:tasks:submit', 'terminal:tasks:status', 'terminal:tasks:wait',
   'terminal:tasks:list', 'terminal:tasks:get', 'terminal:tasks:history', 'terminal:tasks:delete', 'terminal:tasks:rename',
   'terminal:models:get', 'terminal:models:set-default', 'terminal:models:reset-default',
+  'binding:resolve-session', 'binding:list-attached', 'binding:revoke',
   'local-db:sessions:list', 'local-db:sessions:get', 'local-db:sessions:update', 'local-db:sessions:patch-meta', 'local-db:messages:list',
 ] as const;
 
@@ -139,6 +148,8 @@ export class TerminalTaskHost {
   readonly channelFiles: ReturnType<typeof createInboundFileStaging>;
   readonly channelBindings: TerminalImBindings;
   readonly channelDefaults: TerminalImDefaults;
+  readonly channelControl: TerminalImControl;
+  readonly channelOrchestrators: TerminalImOrchestrators;
   readonly channelSessionDefaults: ReturnType<typeof createImSessionDefaults>;
   private readonly live = new Map<string, LiveTask>();
   private readonly starts = new Map<string, Promise<LiveTask>>();
@@ -146,6 +157,7 @@ export class TerminalTaskHost {
   private pluginSetup?:TerminalPluginSetup;
   private readonly channelPluginSurface = createGhostSetupInteractionSurface();
   private knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>;
+  private channelTools?: (context: () => import('@cindy/mcps').LiziMcpSessionContext) => NonNullable<Parameters<typeof createTaskTools>[0]['extraFactories']>;
   private schedulerDeps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps;
   private readonly taskObservers = new Map<string,Set<(event:AgentEvent)=>void>>();
   private readonly makerObservers = new Set<MakerEventListener>();
@@ -153,6 +165,7 @@ export class TerminalTaskHost {
   private readonly channelVendorOptions = new Map<string, Record<string, unknown>>();
   private channelMaker?: ReturnType<ImTurnHost['getMaker']>;
   private channelHost?: ImTurnHost;
+  private channelCards?: ImCardHost;
   private readonly channelHydration = new Map<string, { providerId?: string | null; effort?: import('@cindy/maker-core').Effort; fastMode?: boolean | 'ultrafast' }>();
   private readonly pending = new Map<string, Pending>();
   private readonly queuedSubmissions = new Map<string, Array<{ requestId: string; message: UserMessage; context: TaskInvocationContext; sendAtMs?: number }>>();
@@ -266,6 +279,17 @@ export class TerminalTaskHost {
       replay: (...args) => this.replayRecoveredTask(...args),
       hasExternalOwner: id => Boolean(this.channelBindings.store.findByTarget(id) || this.pluginSetup?.surface.isHeadlessGhostSetupTurn(id)),
     });
+    this.channelControl = new TerminalImControl({ tasks: this, logger: options.logger,
+      assertCurrent: () => this.guard({ source: 'local' }),
+      readDeviceProviders: id => {
+        if (!options.remoteInvoke) throw new Error('REMOTE_TRANSPORT_UNAVAILABLE');
+        return readDeviceProviderViews(options.remoteInvoke, id);
+      },
+    });
+    this.channelOrchestrators = new TerminalImOrchestrators(this);
+    this.channelBindings.store.onChange(event => this.emit('binding:changed', {
+      sessionId: event.value, attached: event.value !== null, channel: event.identity.channel, userId: event.identity.userId,
+    }));
     this.ready = this.initialize();
   }
   private async initialize() {
@@ -505,6 +529,116 @@ export class TerminalTaskHost {
       prepareUnhealthySession: async id => { await this.routes.withLock(id, () => this.routes.recovery.runtime.prepareUnhealthySession(id)); },
     };
   }
+  channelCardHost(): ImCardHost {
+    const guard = () => this.guard({ source: 'local' });
+    const update = async (id: string, patch: Partial<TerminalTaskMeta>) => {
+      guard();
+      const row = await this.storage.updateIf(id, current => !current.deleted && !current.archived, patch, guard);
+      if (!row) throw new Error('TASK_NOT_FOUND');
+      this.emit('local-db:sessions:patched', { sessionId: id, patch: this.guiSession(row) });
+    };
+    const turns = this.channelTurnHost();
+    return this.channelCards ??= {
+      ...this.channelControl.commands, ...this.channelControl.account,
+      createLogger: scope => this.options.logger.child(scope),
+      bindingStore: this.channelBindings.store,
+      getMaker: () => ({
+        getSessionMeta: async id => { guard(); return this.storage.get(id); },
+        getCapabilities: kind => this.channelRuntime().getCapabilities(kind),
+        createSession: async input => {
+          guard();
+          const id = input.id && await this.storage.get(input.id) ? input.id : (await this.create({ ...input }, guard)).id;
+          return (await this.ensureLive(id)).session;
+        },
+        closeSession: async id => { guard(); await this.closeTask(id); },
+      }),
+      normalizeSessionProviderId: value => value === undefined ? undefined : value?.trim() || null,
+      setSessionProvider: (id, provider) => this.routes.hydrateProvider(id, provider),
+      withSendToSessionLock: (id, action) => this.routes.withLock(id, action),
+      selectModelUnderLock: async (id, model, provider, effort) => { await this.routes.selectModelUnderLock(id, model, provider, { effort }, undefined, guard); },
+      cancelPendingAgentSwitchForSession: id => this.routes.cancel(id),
+      getTaskDefaults: () => {
+        guard(); const selection = this.models.snapshot().defaultSelection;
+        return selection?.agentKind === 'claude-code' ? { ...selection, effort: selection.effort ?? 'high', permissionMode: 'ask', fastMode: false } : null;
+      },
+      resolveNewTaskDefaultModelRoute: async kind => {
+        await this.ready; guard();
+        const saved = this.models.snapshot().defaultSelection;
+        try { const route = await this.selection(saved?.agentKind === kind ? { ...saved } : { agentKind: kind }); guard(); return route.selection; }
+        catch { guard(); return null; }
+      },
+      resolveLenientSessionRoute: async (kind, model, providerId, options) => {
+        guard(); const views = await this.models.views(); guard();
+        const route: Awaited<ReturnType<ImCardHost['resolveLenientSessionRoute']>> = resolveLenientRoute(views, kind, model, providerId, options);
+        if (options.desiredFastMode && route.model && (route.model !== model || route.providerId !== providerId)) {
+          const provider = route.providerId ? views.find(row => row.id === route.providerId) : sourcesForModel(views, route.model, kind)[0];
+          route.fastMode = provider && modelSupportsFastMode(provider, route.model, kind)
+            && (options.desiredFastMode !== 'ultrafast' || kind === 'codex' && provider.models.codex?.some(row => row.id === route.model && row.supportsUltrafastMode)) ? options.desiredFastMode : false;
+        }
+        return route;
+      },
+      listSessionsForWorkspace: this.channelControl.projects.listSessionsForWorkspace,
+      exitControl: (...args) => { guard(); this.channelControl.state.exitControl(...args); },
+      generateTakeoverSummary: async id => {
+        guard(); const rows = await this.messages(id, { limit: Infinity }); guard();
+        return rows.find(row => row.role === 'assistant' && row.content.trim())?.content ?? null;
+      },
+      broadcastSessionCreated: id => { guard(); this.emit('local-db:sessions:created', { sessionId: id }); },
+      readImDefaultSettings: channel => this.channelDefaults.read(channel),
+      readModelRouteSnapshot: async id => {
+        guard(); const row = await this.storage.get(id); guard();
+        return row ? { model: row.model, providerId: row.providerId ?? null, agentDeviceId: row.agentDeviceId ?? null, effort: row.effort ?? 'high' } : null;
+      },
+      switchSessionWorkingDir: (id, directory, workspaceKind) => this.routes.withLock(id, async () => {
+        guard();
+        if (!path.isAbsolute(directory) || !(await stat(directory)).isDirectory()) throw new Error('WORKING_DIRECTORY_NOT_FOUND');
+        await this.closeTask(id);
+        await update(id, { workDir: directory, workspaceKind, sdkSessionId: undefined, clearedAt: Date.now(), pendingHandoff: undefined });
+        this.taskContext.refresh(id);
+        this.emit('local-db:sessions:created', { sessionId: id });
+      }),
+      touchUserSent: id => turns.repoTouchUserSent(id),
+      updateModelEffort: async (id, model, effort, provider) => {
+        guard(); const row = await this.storage.get(id); if (!row) throw new Error('TASK_NOT_FOUND');
+        const resolved = await this.selection({ ...row, model, effort, providerId: provider === undefined ? row.providerId : provider });
+        await update(id, resolved.selection);
+      },
+      markImSessionManualRouteOverride: async id => { await this.routes.deps.onUserRouteSelectionLanded?.(id); },
+      readImRemoteProviderRoute: turns.readImRemoteProviderRoute,
+      readPermissionMode: turns.readPermissionMode, updatePermissionMode: turns.updatePermissionMode,
+      changeSessionPermissionMode: turns.changeSessionPermissionMode,
+      lookupPending, resolvePending,
+    };
+  }
+  resetChannelTask: ImCommandHost['resetImSessionToChannelDefaults'] = async (id, config, prepared, channel) => {
+    await this.ready;
+    const guard = () => this.guard({ source: 'local' });
+    await this.routes.withLock(id, async () => {
+      const row = await this.storage.get(id);
+      if (!row || row.deleted || row.archived) throw new Error('TASK_NOT_FOUND');
+      const defaults = prepared ?? await this.channelSessionDefaults.resolveImSessionDefaults(config, undefined, channel);
+      const directory = channel === 'wechat' && prepared?.workingDir ? prepared.workingDir : row.workDir;
+      const { input, resolved, cwd } = await this.admitTask({ ...defaults, workingDir: directory }, id, guard);
+      await this.closeTask(id);
+      guard();
+      const fingerprint = prepared?.defaultRouteFingerprint ?? ('fingerprint' in defaults ? defaults.fingerprint : this.channelSessionDefaults.readImDefaultSettingsFingerprint(channel));
+      const patch: Partial<TerminalTaskMeta> = {
+        ...resolved.selection, workDir: cwd, permissionMode: permission(defaults.permissionMode), fastMode: defaults.fastMode,
+        agentDeviceId: input.agentDeviceId ? string(input.agentDeviceId) : undefined,
+        groupBinding: input.groupBinding as TerminalTaskMeta['groupBinding'],
+        sdkSessionId: undefined, clearedAt: Date.now(), pendingHandoff: undefined,
+        ...(row.usage ? { usage: { ...row.usage, contextTokens: 0, contextWindow: resolved.route.model.contextWindow ?? 0 } } : {}),
+        imDefaultRoute: buildImDefaultRouteRecord(fingerprint, { ...resolved.selection, agentDeviceId: input.agentDeviceId ? string(input.agentDeviceId) : null, effort: resolved.selection.effort ?? null }),
+      };
+      const updated = await this.storage.updateIf(id, current => !current.deleted && !current.archived, patch, guard);
+      if (!updated) throw new Error('TASK_NOT_FOUND');
+      this.routes.cancel(id);
+      this.taskContext.refresh(id);
+      this.channelHydration.delete(id);
+      if (updated.groupBinding) this.groupBindings.set(id, updated.groupBinding); else this.groupBindings.delete(id);
+      this.emit('local-db:sessions:patched', { sessionId: id, patch: this.guiSession(updated) });
+    });
+  };
   async persistChannelMessage(args: Parameters<ImTurnHost['persistUserMessage']>[0]): ReturnType<ImTurnHost['persistUserMessage']> {
     await this.ready;
     const guard = () => this.guard({ source: 'local' });
@@ -607,6 +741,7 @@ export class TerminalTaskHost {
     }
   }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
+  configureChannelTools(factory: NonNullable<TerminalTaskHost['channelTools']>) { this.channelTools = factory; }
   async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<(import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot & {autoReviewOwner:'native'|'cindy'})|null>{
     const task=this.live.get(id);if(this.closed||!task||instanceId&&task.session.instanceId!==instanceId)return null;
     const session=task.session,permission=session.stablePermissionModeState,plan=session.stablePlanModeState;
@@ -797,7 +932,12 @@ export class TerminalTaskHost {
     catch(error){await knowledge?.close();await capability.close();throw error;}
     let tools: Awaited<ReturnType<typeof createTaskTools>>;
     try { tools = await createTaskTools({ sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind,
-      extraFactories: {...capability.factories,...knowledge?.factories,...plugin?.factories},
+      extraFactories: {...capability.factories,...knowledge?.factories,...plugin?.factories,...this.channelTools?.(() => {
+        if (!isCurrent()) throw new Error('TASK_TOOLS_REVOKED');
+        const session = this.live.get(id)?.session;
+        if (!session) throw new Error('TASK_NOT_ACTIVE');
+        return { sessionId: id, sessionInstanceId: session.instanceId, workingDir: row.workDir, agentKind: chosen.selection.agentKind };
+      })},
       isCurrent,
       scheduler: this.schedulerDeps,
       helper: this.helperDeps({sessionId:id,workingDir:row.workDir,agentKind:chosen.selection.agentKind,title:()=>row.title}),
@@ -812,7 +952,7 @@ export class TerminalTaskHost {
       }
     });
     try {
-      const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, thinkingEnabled: row.thinkingEnabled, vendorOptions: this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
+      const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, thinkingEnabled: row.thinkingEnabled, vendorOptions: this.channelBindings.store.findByTarget(id) ? undefined : this.channelOrchestrators.vendorOptionsForSession(id) ?? this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
       const task: LiveTask = { revoke:()=>{revoked=true;plugin?.close();},plugin,capabilityRevision:capability.revision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
       installDesktopInteractionHandler(session,(request,shared)=>this.interaction(id,request,undefined,shared),(sourceRequestId,decision)=>{
         for(const pending of this.pending.values())if(pending.sessionId===id&&pending.sourceRequestId===sourceRequestId){pending.settle(decision);return true;}
@@ -1059,6 +1199,23 @@ export class TerminalTaskHost {
         return {ok:true,agentKind:row.agentKind,wakeKind:receipt.status==='queued'?'queued':'already-active',targetTitle:row.title,targetLastUserSendAt:null};
       }
 
+      case 'binding:resolve-session': {
+        if (context.sharedTask) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
+        const identity = typeof args[0] === 'string' ? this.channelBindings.store.findByTarget(args[0]) : null;
+        return { attached: identity !== null, identity, displayName: null };
+      }
+      case 'binding:list-attached': {
+        if (context.sharedTask) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
+        return { sessionIds: this.channelBindings.store.listAttachedTargets() };
+      }
+      case 'binding:revoke': {
+        if (context.sharedTask) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
+        const id = string(args[0]), identity = this.channelBindings.store.findByTarget(id);
+        if (!identity || !await this.channelBindings.store.detachIfTarget(identity, id)) return { ok: true, alreadyDetached: true };
+        this.guard(context);
+        await this.channelOrchestrators.notifyRevoked(identity).catch(() => this.options.logger.warn('IM_DETACH_NOTICE_FAILED'));
+        return { ok: true, alreadyDetached: false };
+      }
       case 'local-db:history:messages': return createRemoteHistory(this.historyDeps(), id => this.storage.get(id), () => this.guard(context)).messages(args[0]);
       case 'local-db:history:query': {
         if (context.sharedTask) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
@@ -1448,6 +1605,9 @@ export class TerminalTaskHost {
   private async shutdown() {
     this.closed = true;
     this.utilityAbort.abort();
+    const channelHandlers = this.channelControl.close();
+    await this.channelOrchestrators.close();
+    await channelHandlers;
     this.turnLifecycle.close();
     for (const timer of this.queueTimers.values()) clearTimeout(timer); this.queueTimers.clear();
     // Initializers have all settled even when one failed. Close the stores and

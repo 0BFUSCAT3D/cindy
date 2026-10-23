@@ -32,6 +32,17 @@ Desktop 的原路径保留兼容导出或宿主接线。`ImTurnHost` / `ImComman
 恢复的执行责任仍留在宿主。渠道适配器只有接入完整 `ImTurnHost` / `ImCommandHost` /
 `ImCardHost` 并通过实际收发验收后才算支持，单独抽出共用模块不算渠道交付。
 
+终端 `TerminalImConnections` 装配官方纯 Node 的 Discord、企业微信、钉钉与 Telegram
+transport。这些渠道的适配器位于 `im-runtime/channels`，Desktop 只注入原有的目录、
+设置和存储，不改变渠道行为。终端的群历史使用当前账号私有 SQLite；消息入窗、全文
+检索、已读游标及受理失败补偿复用同一实现。关闭宿主先停止入站，再等待已受理操作及
+连接初始化退出；游标补偿持有原账号数据库，不能被数据库提前关闭打断。
+
+Telegram 的人格、回复行为、群参与设置与在线开关可通过 Remote Resources 表单操作。
+`cindy_telegram_bot` 与 `cindy_group_history` 仍依赖当前任务实例的逐轮作用域，
+已结束、重建或已换账号的实例不能借新实例继续调用。平台网络替身下的组合测试只证明
+接线和持久化，不替代各平台上的真实渠道连接、附件和授权验收。
+
 | 步骤 | 个人 IM 现状 | 官方 hook 现状 | 目标归属 |
 |---|---|---|---|
 | 入站 | 各渠道 adapter → `im/shared/messageHandler.ts`（微信经 `WechatTaskStore` 持久队列） | `hook-control/manager.ts` 收 `task.dispatch` → `dispatcher.handleDispatch` | 渠道适配（入站来源各自保留） |

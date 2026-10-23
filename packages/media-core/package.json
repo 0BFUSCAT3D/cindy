@@ -14,7 +14,9 @@
     "./task-image-source": "./src/task-image-source.ts",
     "./local-markdown-images": "./src/local-markdown-images.ts",
     "./legacy-image-cache": "./src/legacy-image-cache.ts",
-    "./attachment-safety": "./src/attachment-safety.ts"
+    "./attachment-safety": "./src/attachment-safety.ts",
+    "./integration-cache": "./src/integration-cache.ts",
+    "./inbound-media-verify": "./src/inbound-media-verify.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

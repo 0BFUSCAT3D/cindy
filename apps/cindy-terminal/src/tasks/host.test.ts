@@ -6,6 +6,11 @@ import { createProviderProxy } from '../models/proxy.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as platform from '../platform.js';
 import { TerminalImBindings } from '../im/bindings.js';
+import { TerminalImConnections } from '../im/connections.js';
+import { registerImResources } from '../im/resources.js';
+import { TerminalGroupWindows } from '../im/group-window.js';
+import { TerminalConfiguration } from '../configuration.js';
+import { TerminalSecretStore } from '../secrets.js';
 import { access, appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,10 +35,11 @@ import { TerminalPluginAccount } from '../plugins/account.js';
 import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
 import type { SharedPermission } from '@cindy/im-runtime/sharedPermission';
 import { createTurnRunner } from '@cindy/im-runtime/turnRunner';
+import { createSlashHandlers } from '@cindy/im-runtime/slashCommands';
 import { createCardBuilders } from '@cindy/im-runtime/cardBuilders';
 import type { ImChannelAdapter } from '@cindy/im-runtime/types';
-import type { TextChannelIM, ImFinalOutput } from '@cindy/im';
-import { ui as wechatUi } from '../../../desktop/src/main/im/wechat/uiText';
+import type { TextChannelIM, ImFinalOutput, RichChannelIM, IMMessageEvent, IMCardActionEvent, InteractiveCardSpec } from '@cindy/im';
+import { ui as wechatUi } from '@cindy/im-runtime/channels/wechat/uiText';
 
 const logger: Logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child: () => logger };
 const roots: string[] = [];
@@ -140,6 +146,241 @@ async function setup(native = engine(), overrides: Partial<ConstructorParameters
 }
 
 describe('terminal task host', () => {
+  // The terminal SQLite schema must preserve the shared cursor receipt and
+  // bot namespace rules, including a daemon restart between inbound turns.
+  it('persists group history and compensated cursors without mixing bot identities', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-terminal-group-test-')); roots.push(root);
+    let store = new TerminalGroupWindows(root, () => {}, logger);
+    try {
+      let window = store.channel('wecom-personal');
+      const entry = { botId: 'bot-a', chatId: 'group', threadId: '', messageId: 'earlier', author: { name: 'Alice' }, text: 'retained group context', sentAt: Date.now() };
+      await window.record(entry);
+      await window.record({ ...entry, botId: 'bot-b', text: 'isolated bot context' });
+      await window.record({ ...entry, messageId: 'trigger', text: 'current trigger' });
+      const query = { botId: 'bot-a', chatId: 'group', threadId: '', triggerMessageId: 'trigger' };
+      const first = await window.buildContextPrefix(query);
+      expect(first.prefix).toContain('retained group context');
+      expect(first.prefix).not.toContain('isolated bot context');
+      expect(first.prefix).not.toContain('current trigger');
+      const receipt = await first.commit();
+      expect((await window.buildContextPrefix(query)).prefix).toBe('');
+      expect(receipt).toBeDefined(); await receipt!.rollback();
+      const replay = await window.buildContextPrefix(query);
+      expect(replay.prefix).toContain('retained group context');
+      await replay.commit();
+      await store.close();
+      store = new TerminalGroupWindows(root, () => {}, logger);
+      window = store.channel('wecom-personal');
+      expect((await window.buildContextPrefix(query)).prefix).toBe('');
+      expect((await window.buildContextPrefix({ ...query, botId: 'bot-b' })).prefix).toContain('isolated bot context');
+      expect(await window.listKnownGroups('bot-a')).toEqual([{ chatId: 'group', chatName: null }]);
+      expect(await store.search({ lane: { provider: 'wecom-personal:bot-b', chatId: 'group', threadId: '' }, query: 'isolated' })).toMatchObject([{ messageId: 'earlier' }]);
+      expect(await store.search({ lane: { provider: 'wecom-personal:bot-a', chatId: 'group', threadId: '' }, query: 'isolated' })).toEqual([]);
+      await window.record({ ...entry, messageId: 'not-admitted', text: 'must remain unread after shutdown' });
+      const unaccepted = await window.buildContextPrefix({ ...query, triggerMessageId: '' });
+      let continueGuard!: (valid: boolean) => void, reached!: () => void;
+      const checkpoint = new Promise<void>(resolve => { reached = resolve; });
+      let guardCalls = 0;
+      const committing = unaccepted.commit(async () => {
+        if (++guardCalls === 1) return true;
+        reached(); return new Promise<boolean>(resolve => { continueGuard = resolve; });
+      });
+      await checkpoint;
+      const closing = store.close();
+      continueGuard(false);
+      await committing; await closing;
+      store = new TerminalGroupWindows(root, () => {}, logger);
+      expect((await store.channel('wecom-personal').buildContextPrefix({ ...query, triggerMessageId: '' })).prefix).toContain('must remain unread after shutdown');
+    } finally { await store.close(); }
+  });
+  // Real Discord transport, encrypted vault, media ledger and task composition;
+  // only Discord's remote gateway and vendor process are replaced at their I/O.
+  it('connects the official Discord transport to encrypted settings and terminal tasks', async () => {
+    const { host, native, root } = await setup();
+    await host.channelDefaults.update({ agentKind: 'claude-code', agents: { 'claude-code': { model: 'test-model', providerId: 'fixture', effort: 'high' } } }, 'discord');
+    const secrets = new TerminalSecretStore(path.join(root, 'vault'));
+    await secrets.open(); await secrets.initialize('machine');
+    type GatewayFactory = NonNullable<import('@cindy/im').DiscordIMOptions['gatewayFactory']>;
+    let inbound!: Parameters<GatewayFactory>[0];
+    const output: unknown[] = [];
+    const connected: string[] = [];
+    const channel = { id: 'dm-owner', send: async (payload: unknown) => { output.push(payload); return { id: String(output.length) }; },
+      messages: { fetch: async () => ({ edit: async (payload: unknown) => { output.push(payload); }, delete: async () => {} }) } };
+    const client = { users: { fetch: async () => ({ createDM: async () => channel }) }, channels: { fetch: async () => channel } };
+    let current = true;
+    const guard = () => { if (!current) throw new Error('OWNER_CHANGED'); };
+    const connections = new TerminalImConnections({ tasks: host, root, logger, assertCurrent: guard, emit() {}, secrets: {
+      getSync: key => secrets.getSync(key), setSync: (key, value) => secrets.setSync(key, value), deleteSync: key => secrets.deleteSync(key), available: () => !secrets.status().locked,
+    } }, { discord: { gatewayFactory: handlers => {
+      inbound = handlers;
+      return { appId: 'test-app', botTag: 'test#0001', client: client as unknown as ReturnType<GatewayFactory>['client'],
+        connect: async token => { connected.push(token); handlers.onStatus({ kind: 'connected', appId: 'test#0001' }); }, destroy: async () => {} };
+    } } });
+    const configuration = new TerminalConfiguration(host.capabilities, undefined, {
+      revision: () => connections.version(), save: async (id, value, context) => { expect(id).toBe('discord'); context.assertCurrent?.(); await connections.invoke('discordBot:set-config', value); },
+    });
+    try {
+      await connections.start();
+      const token = 'synthetic-discord-token-not-a-real-credential';
+      await configuration.save({ collectionId: 'channels', actionId: 'edit', resourceId: 'discord' }, { token, ownerUserId: 'owner' }, { source: 'local', assertCurrent: guard });
+      expect(connected).toEqual([token]);
+      expect(JSON.stringify(await connections.invoke('discordBot:get-status', undefined))).not.toContain(token);
+      const persisted = new TerminalSecretStore(path.join(root, 'vault')); await persisted.open();
+      expect(persisted.getSync('discord-bot-token')).toBe(token); persisted.lock();
+      const media = connections.transport.host.media!;
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/7xkAAAAASUVORK5CYII=', 'base64');
+      const cached = await media.cacheImage({ integration: 'discord', token: 'attachment-1', buffer: png, mimeType: 'image/png', staging: true });
+      expect(await readFile(cached.absPath)).toEqual(png);
+      expect(await media.getCachedImage('discord', 'attachment-1', { shouldReuse: () => false })).toBeNull();
+      expect(await media.getCachedImage('discord', 'attachment-1')).toMatchObject({ url: cached.url });
+      await cached.discard?.();
+      expect(await media.getCachedImage('discord', 'attachment-1')).toBeNull();
+      inbound.onDmMessage({ id: 'incoming', content: 'hello through Discord', author: { id: 'owner' }, channelId: 'dm-owner', attachments: [], stickers: [] } as unknown as Parameters<typeof inbound.onDmMessage>[0]);
+      await vi.waitFor(() => expect(JSON.stringify(output)).toContain('Echo:'));
+      expect(native.sent).toHaveLength(1);
+      expect((await host.storage.list()).find(row => row.source === 'discord')).toMatchObject({ imUserId: 'owner', imBotContextId: 'test-app', workspaceKind: 'dialogue' });
+      await connections.close(); current = false;
+      await expect(media.cacheImage({ integration: 'discord', token: 'late', buffer: png, mimeType: 'image/png' })).rejects.toThrow('IM_ACCOUNT_SCOPE_CLOSED');
+      await expect(connections.invoke('discordBot:set-config', { token: 'late', ownerUserId: 'intruder' })).rejects.toThrow('IM_ACCOUNT_SCOPE_CLOSED');
+    } finally { await connections.close(); configuration.close(); secrets.lock(); }
+  });
+  // The transport callbacks enter the production command/card/turn composition.
+  // Telegram must retain topic history while /new rotates to a distinct task.
+  // Only the Bot API and native engine I/O are substituted (integration tier).
+  it('runs Telegram polling, topic history, settings and task rotation in the terminal host', async () => {
+    const { host, native, root } = await setup();
+    await host.channelDefaults.update({ agentKind: 'claude-code', agents: { 'claude-code': { model: 'test-model', providerId: 'fixture', effort: 'high' } } }, 'telegram');
+    const secrets = new TerminalSecretStore(path.join(root, 'vault')); await secrets.open(); await secrets.initialize('machine');
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    let receive: ((updates: unknown[]) => void) | undefined, sequence = 1000;
+    const api: import('@cindy/im').TelegramApiClient = {
+      fileUrl: file => `https://files.invalid/${file}`,
+      callForm: async () => { throw new Error('UNEXPECTED_UPLOAD'); },
+      call: async (method, params = {}, signal) => {
+        calls.push({ method, params });
+        if (method === 'getMe') return { id: 999, is_bot: true, first_name: 'Cindy', username: 'terminal_cindy_bot' } as never;
+        if (method === 'getUpdates') return new Promise((resolve, reject) => {
+          const abort = () => { receive = undefined; reject(new Error('aborted')); };
+          receive = updates => { signal?.removeEventListener('abort', abort); receive = undefined; resolve(updates as never); };
+          if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+        });
+        if (method.startsWith('send')) return { message_id: ++sequence, date: Math.floor(Date.now() / 1000), chat: { id: Number(params.chat_id), type: Number(params.chat_id) < 0 ? 'supergroup' : 'private' } } as never;
+        return {} as never;
+      },
+    };
+    const connections = new TerminalImConnections({ tasks: host, root, logger, assertCurrent() {}, emit() {}, secrets: {
+      getSync: key => secrets.getSync(key), setSync: (key, value) => secrets.setSync(key, value), deleteSync: key => secrets.deleteSync(key), available: () => !secrets.status().locked,
+    } }, { telegram: { apiFactory: () => api } });
+    const configuration = new TerminalConfiguration(host.capabilities, undefined, { revision: () => connections.version(), save: (id, input) => connections.saveConfiguration(id, input) });
+    const registry = new RemoteResourceRegistry(); registerImResources(registry, connections, host, configuration);
+    const context = { controllerDeviceId: 'terminal' }, client = { protocolVersion: 1, primitives: ['text', 'form', 'actions'], locale: 'zh-CN' };
+    const resourceRef = { collectionId: 'channels', kind: 'im-channel', id: 'telegram' };
+    const push = async (id: number, text: string, topic = 77, owner = true) => {
+      await vi.waitFor(() => expect(receive).toBeTypeOf('function'));
+      receive!([{ update_id: id, message: { message_id: id, message_thread_id: topic, is_topic_message: true, date: Math.floor(Date.now() / 1000), text,
+        chat: { id: -100, type: 'supergroup', title: 'Terminal group' }, from: { id: owner ? 111 : 222, is_bot: false, first_name: owner ? 'Owner' : 'Alice' },
+        ...(text.startsWith('@terminal_cindy_bot') ? { entities: [{ type: 'mention', offset: 0, length: '@terminal_cindy_bot'.length }] } : {}),
+      } }]);
+    };
+    try {
+      await connections.start();
+      await connections.saveConfiguration('telegram', { token: '999:synthetic-token', ownerUserId: '111' });
+      expect(connections.telegram.getStatus().kind).toBe('connected');
+      const view = await registry.get(context, { client, ref: resourceRef });
+      expect(view.actions?.find(action => action.id === 'edit')?.fields).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'token', kind: 'secret' })]));
+      expect(JSON.stringify(view)).not.toContain('synthetic-token');
+      await registry.invoke(context, { client, collectionId: 'channels', resourceRef, actionId: 'persona', input: { botName: 'Terminal helper', soul: 'Shared persona fixture' } });
+      await registry.invoke(context, { client, collectionId: 'channels', resourceRef, actionId: 'behavior', input: { emojiReactions: 'off' } });
+      await registry.invoke(context, { client, collectionId: 'channels', resourceRef, actionId: 'permissions', input: { permissionMode: 'ask', groupPermissionMode: 'ask' } });
+      expect(host.channelDefaults.read('telegram').groupPermissionMode).toBe('ask');
+      await push(1, 'topic history amber-47', 77, false);
+      await vi.waitFor(async () => expect(await connections.groups.search({ lane: { provider: 'telegram-personal:999', chatId: '-100', threadId: '77' }, query: 'amber' })).toHaveLength(1));
+      await push(2, '@terminal_cindy_bot recall topic history');
+      await vi.waitFor(() => expect(native.sent).toHaveLength(1));
+      expect(JSON.stringify(native.sent[0])).toContain('amber-47');
+      expect(JSON.stringify(native.sent[0])).toContain('Shared persona fixture');
+      await vi.waitFor(() => expect(JSON.stringify(calls)).toContain('Echo:'));
+      const first = (await host.storage.list()).find(row => row.source === 'telegram')!;
+      expect(first.imUserId).toBe('g/-100/77');
+      expect(native.inputs.find(input => input.taskId === first.id)?.tools?.providers.map(provider => provider.name)).toEqual(expect.arrayContaining(['cindy_telegram_bot', 'cindy_group_history']));
+      await push(3, '/new');
+      await vi.waitFor(async () => expect((await host.storage.list()).filter(row => row.source === 'telegram')).toHaveLength(2));
+      await push(4, '@terminal_cindy_bot new topic task');
+      await vi.waitFor(() => expect(native.sent).toHaveLength(2));
+      const latest = (await host.storage.list()).filter(row => row.source === 'telegram').find(row => row.id !== first.id)!;
+      expect(latest.imUserId).toBe(first.imUserId);
+      expect(await connections.invoke('telegramBot:list-groups', undefined)).toMatchObject({ groups: [{ chatId: '-100', activation: 'mention' }] });
+      await connections.close();
+      const { TerminalTelegramSettings } = await import('../im/telegram-settings.js');
+      const settings = new TerminalTelegramSettings(root, () => {}); await settings.ready;
+      expect(settings.persona().botName).toBe('Terminal helper'); expect(settings.behavior().emojiReactions).toBe('off'); await settings.close();
+    } finally { await connections.close(); configuration.close(); secrets.lock(); }
+  });
+  // The transport callbacks enter the production command/card/turn composition.
+  // Regression: a successful picker must affect the next native turn and remain
+  // durable; an invalid picker or a logged-out callback must not replace it.
+  it('runs inbound messages and model cards through the terminal channel composition', async () => {
+    const { host, native, root, create } = await setup();
+    await host.invoke('maker:provider:custom:create', [{ id: 'card-provider', name: 'Card provider', auth: { method: 'none' }, runtimes: { 'claude-code': { baseUrl: 'http://127.0.0.1:1', models: [{ id: 'card-model', name: 'Card model', contextWindow: 200000, defaultEnabled: true }] } } }]);
+    await host.channelDefaults.update({ agentKind: 'claude-code', agents: { 'claude-code': { model: 'test-model', providerId: 'fixture', effort: 'high' } } }, 'feishu');
+    let inbound!: (event: IMMessageEvent) => void;
+    let action!: (event: IMCardActionEvent) => void;
+    const cards: InteractiveCardSpec[] = [];
+    const final: string[] = [];
+    const unsubscribed: string[] = [];
+    const im: RichChannelIM = {
+      name: 'feishu', getStatus: () => ({ kind: 'connected', appId: 'bot', botName: 'Test' }),
+      onMessage: handler => { inbound = handler; return () => { unsubscribed.push('message'); }; },
+      onCardAction: handler => { action = handler; return () => { unsubscribed.push('card'); }; },
+      onStatusChange: () => () => {},
+      sendText: async (_id, text) => { final.push(text); return { messageId: 'text' }; },
+      sendMarkdownText: async (_id, text) => { final.push(text); return { messageId: 'markdown' }; },
+      sendFile: async () => ({ ok: true, messageId: 'file' }),
+      sendInteractiveCard: async (_id, card) => { cards.push(card); return { messageId: 'picker' }; },
+      updateInteractiveCard: async (_id, card) => { cards.push(card); },
+      patchMarkdownCard: async (_id, text) => { final.push(text); },
+      startStreamingText: async () => ({ messageId: 'stream', append() {}, replace() {}, close() {}, finalize: async text => { final.push(text); } }),
+    };
+    const connection = host.channelOrchestrators.attach({
+      channel: 'feishu', im, output: { kind: 'rich-card', im }, ui: wechatUi,
+      config: { agentKind: 'claude-code', defaultModel: 'test-model', defaultPermissionMode: 'ask' },
+      sessions: { source: 'feishu', sessionIdFor: (bot, user) => `feishu_${bot}_${user}`, defaultTitle: () => 'Card task', ensureWorkingDir: () => root, extraInsertColumns: () => ({}) },
+      processingEmoji: '', buildVendorOptions: () => ({ source: 'feishu' }),
+    });
+    const message = (text: string): IMMessageEvent => ({ channelName: 'feishu', senderId: 'owner', contextId: 'bot', chatId: 'dm', messageId: text, text, attachments: [], unsupported: [] });
+    inbound(message('remember the card context'));
+    await vi.waitFor(() => expect(final.some(text => text.includes('Echo:'))).toBe(true));
+    const id = (await connection.repo.peekSession('bot', 'owner'))!.id;
+    const originalSdk = (await host.storage.get(id))!.sdkSessionId;
+    inbound(message('/model'));
+    await vi.waitFor(() => expect(JSON.stringify(cards)).toContain('card-model'));
+    const pick: IMCardActionEvent = { channelName: 'feishu', senderId: 'owner', chatId: 'dm', messageId: 'picker', buttonId: 'model:pick', payload: { sessionId: id, modelId: 'card-model', providerId: 'card-provider', effort: 'high' } };
+    await action(pick);
+    inbound(message('continue after card selection'));
+    await vi.waitFor(() => expect(final.some(text => text.includes('continue after card selection'))).toBe(true));
+    expect(native.inputs.at(-1)?.selection).toMatchObject({ model: 'card-model', providerId: 'card-provider' });
+    expect(originalSdk).toBeTruthy();
+    expect(native.starts.at(-1)?.resumeSessionId).toBe(originalSdk);
+    expect(JSON.stringify(await host.invoke('local-db:messages:list', [id, { limit: 20 }]))).toContain('remember the card context');
+    expect(JSON.parse((await host.storage.get(id))!.imDefaultRoute!).manual).toBe(true);
+    await action({ ...pick, payload: { ...pick.payload, modelId: 'not-a-real-model' } });
+    expect((await host.storage.get(id))?.model).toBe('card-model');
+    expect((await host.invoke('maker:get-session-agent-switch-intent', [id]))).toBeNull();
+    const identity = { channel: 'feishu', botContextId: 'bot', userId: 'owner' };
+    await host.channelBindings.store.attach(identity, id);
+    expect(await host.invoke('binding:resolve-session', [id])).toMatchObject({ attached: true, identity });
+    expect(await host.invoke('binding:revoke', [id])).toEqual({ ok: true, alreadyDetached: false });
+    expect(await host.invoke('binding:list-attached')).toEqual({ sessionIds: [] });
+    await host.close();
+    expect(unsubscribed.sort()).toEqual(['card', 'message']);
+    const sent = native.sent.length;
+    await action({ ...pick, payload: { ...pick.payload, modelId: 'test-model', providerId: 'fixture' } });
+    inbound(message('stale callback after logout'));
+    const restored = create(); await restored.ready;
+    expect((await restored.storage.get(id))?.model).toBe('card-model');
+    expect(native.sent).toHaveLength(sent);
+    await connection.close();
+  });
   // Real runner/send lane: configuration changes follow, while an explicit
   // same-value GUI choice persists across restart and ends automatic following.
   it('follows channel model defaults with context and preserves an explicit task override after restart', async () => {
@@ -194,6 +435,17 @@ describe('terminal task host', () => {
       expect(await send('continue after restart')).toBe(id);
       expect(fixture.native.inputs.at(-1)?.selection.model).toBe('channel-one');
       expect((await host.storage.get(id))?.model).toBe('channel-one');
+      const repo = host.channelRepository(adapter.config, adapter.sessions);
+      const slash = createSlashHandlers(adapter, repo, createCardBuilders(adapter.ui, repo.getDefaultEffortFor), runner, host.channelControl.commands);
+      expect(await slash.handleSlashCommand('/new', { botContextId: 'bot', userId: 'owner' })).toBe(true);
+      const reset = await host.storage.get(id);
+      expect(reset).toMatchObject({ model: 'channel-two' });
+      expect(reset?.sdkSessionId).toBeUndefined();
+      expect(reset?.pendingHandoff).toBeUndefined();
+      expect(JSON.parse(reset!.imDefaultRoute!).manual).toBeUndefined();
+      expect(await send('start fresh with the channel default')).toBe(id);
+      expect(fixture.native.starts.at(-1)?.resumeSessionId).toBeUndefined();
+      expect(JSON.stringify(fixture.native.sent.at(-1))).not.toContain('channel context before switching');
     } finally { await runner.disposeAllSessions(); }
   });
   // Real remote-agent controller/host on two isolated task owners. Only the

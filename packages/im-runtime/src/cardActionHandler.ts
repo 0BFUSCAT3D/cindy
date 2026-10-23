@@ -325,6 +325,17 @@ export function createCardActionHandler(
     };
 
     const failureReason = await withSendToSessionLock(sessionId, async () => {
+      if (host.selectModelUnderLock) {
+        try {
+          await host.selectModelUnderLock(sessionId, modelId, providerId, effort ?? 'high');
+          return null;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }
+      if (!applyPiImModelSelectionUnderLock || !applyRuntimeModelChange || !clearPendingCredentialSwitchForSession || !cancelPendingSessionRuntimeMutation) {
+        throw new Error('IM model selection host is incomplete');
+      }
       let previousRoute: Awaited<ReturnType<typeof readModelRouteSnapshot>> =
         null;
       try {

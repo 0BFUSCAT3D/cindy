@@ -1,4 +1,6 @@
 import { TerminalPluginTasks } from './plugins/tasks.js';
+import { TerminalImConnections } from './im/connections.js';
+import { registerImResources } from './im/resources.js';
 import { TerminalPluginMarket } from './plugins/market.js';
 import { TerminalPluginAccount } from './plugins/account.js';
 import { fileURLToPath } from 'node:url';
@@ -96,6 +98,7 @@ export class TerminalService {
   private readonly pluginBrowser:TerminalBrowserRuntime;
   private projects?: TerminalProjects;
   private tasks!: TerminalTaskHost;
+  private im?: TerminalImConnections;
   private protectedInput?: TerminalProtectedInput;
   private configuration?: TerminalConfiguration;
   private scheduler!: TerminalSchedulerHost;
@@ -253,6 +256,7 @@ export class TerminalService {
   private async closeOwnerServices(logout = false): Promise<void> {
     const errors: unknown[] = [];
     const close = async (operation: () => unknown) => { try { await operation(); } catch (error) { errors.push(error); } };
+    await close(() => this.im?.close());
     await close(() => this.terminals.close()); await close(() => this.remote?.stop());
     if (logout) await this.sharedTasks?.logout().catch(() => logger.warn('SHARED_TASK_CLOSE_PENDING'));
     await close(() => this.files?.stop()); await close(() => this.browser?.stop());
@@ -372,7 +376,19 @@ export class TerminalService {
     this.tasks.configureKnowledge(this.knowledge);
     this.resources=new TerminalResources(this.tasks);
     registerKnowledgeResources(this.resources.registry,this.knowledge);
-    this.configuration=new TerminalConfiguration(this.tasks.capabilities,{revision:()=>this.tasks.models.revision(),save:(action,provider,keys,context)=>this.tasks.configureProvider(action,provider,keys,context)});
+    const guardIm = () => { if (this.ownerKey !== owner || this.ownerGeneration !== generation || this.closing) throw new Error('OWNER_CHANGED'); };
+    const im = new TerminalImConnections({ tasks: this.tasks, root: ownerDir, logger, assertCurrent: guardIm, knowledge: this.knowledge,
+      secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key, value) => this.secrets.setSync(`${owner}:${key}`, value), deleteSync: key => this.secrets.deleteSync(`${owner}:${key}`), available: () => !this.secrets.status().locked },
+      emit: (channel, payload) => { guardIm(); if (this.ownerSuspended) return; this.transport.publish(channel, [payload]); void this.remote?.publish(channel, payload).catch(() => {}); },
+    });
+    this.im = im;
+    this.configuration=new TerminalConfiguration(this.tasks.capabilities,{revision:()=>this.tasks.models.revision(),save:(action,provider,keys,context)=>this.tasks.configureProvider(action,provider,keys,context)}, {
+      revision: () => im.version(), save: async (id, input, context) => {
+        context.assertCurrent?.(); guardIm();
+        await im.saveConfiguration(id, input);
+      },
+    });
+    registerImResources(this.resources.registry, im, this.tasks, this.configuration);
     this.protectedInput.configureSettings(this.configuration);
     this.tasks.registerCapabilityResources(this.resources.registry,this.configuration);
     registerModelConfigurationResources(this.resources.registry,this.tasks.models,this.configuration,(channel,args,context)=>this.tasks.invoke(channel,args,context));
@@ -442,8 +458,7 @@ export class TerminalService {
     }else {this.companionCloud=undefined;await this.companions.resumePending();}
     await this.routines.open();this.routines.registerResources(this.resources.registry);
     registerCompanionResources(this.resources.registry,this.companions,this.companionCloud);
-
-
+    void im.start().catch(() => logger.warn('IM_CONNECTION_START_FAILED'));
   }
 
   private async invokeRemoteResult(deviceId:string,channel:string,args:unknown[]) {
@@ -592,6 +607,10 @@ export class TerminalService {
     await this.ownerChange;
     if(this.ownerSuspended)throw new Error('ACCOUNT_CHANGE_IN_PROGRESS');
     context.assertCurrent?.();
+    if (this.im?.accepts(channel)) {
+      if (!local || context.sharedTask) throw new Error('LOCAL_CONFIGURATION_REQUIRED');
+      return this.im.invoke(channel, args[0]);
+    }
     if(channel==='terminal:files:download'){
       const owner=this.ownerKey,generation=this.ownerGeneration;
       return downloadRemoteFile({files:this.files,media:this.media,invokeRemote:(peer,channel,args)=>this.remote.invoke(peer,channel,args)},args,{...context,assertCurrent:()=>{

@@ -129,6 +129,7 @@ export class TerminalTaskRoutes {
     };
   }
   provider(id: string) { return this.providers.get(id) ?? null; }
+  hydrateProvider(id: string, provider: string | null) { this.host.assertCurrent(); this.providers.set(id, provider); }
   private async prepareWindow(id: string, contextWindow: number) {
     const result = await this.recovery.runtime.prepareModelWindowSwitch(id, { contextWindow, recheckTargetPressure: true, confirmedTargetPressure: true, assertCanCommit: this.host.assertCurrent });
     if (result === 'busy' || result === 'in-flight' || result === 'remote-unsupported' || result === 'confirmation-required') throw new Error('TASK_MODEL_WINDOW_NOT_READY');
@@ -201,14 +202,15 @@ export class TerminalTaskRoutes {
     return this.withLock(params.sessionId, () => performSessionAgentSwitch(this.deps, params));
   }
   selectModel(id: string, model: string, providerId: unknown, options: Record<string, unknown>, expectedRevision: unknown, guard: () => void) {
-    return this.withLock(id, async () => {
+    return this.withLock(id, () => this.selectModelUnderLock(id, model, providerId, options, expectedRevision, guard));
+  }
+  async selectModelUnderLock(id: string, model: string, providerId: unknown, options: Record<string, unknown>, expectedRevision: unknown, guard: () => void) {
       guard();
       if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 0)) throw new Error('INVALID_PARAMS');
       if (expectedRevision !== undefined && this.pending.revision?.(id) !== expectedRevision) return { deferred: false, superseded: true };
       const row = await this.host.storage.get(id); if (!row || row.deleted || row.archived) throw new Error('TASK_NOT_FOUND');
       return performSessionAgentSwitch(this.deps, { sessionId: id, targetAgentKind: row.agentKind, model, providerId, effort: options.effort, fastMode: options.fastMode,
         thinking: options.thinking, confirmedContextWindow: options.confirmedContextWindow, assertSelectionCurrent: guard });
-    });
   }
   async acquireForSend(id: string, synchronize?: () => Promise<boolean>): Promise<() => void> {
     const release = await this.acquire(id);

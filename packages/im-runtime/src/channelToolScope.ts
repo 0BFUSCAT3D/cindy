@@ -14,6 +14,13 @@
 
 import type { FeishuIM, TelegramIM } from "@cindy/im";
 
+/** Minimal host-owned identity required by channel MCP servers. */
+export interface ChannelToolSessionContext {
+  sessionId?: string;
+  sessionInstanceId?: string;
+  workingDir: string;
+}
+
 /** MCP 侧用到的 TelegramIM 子集(结构类型, 测试可用假对象)。 */
 export type TelegramToolTransport = Pick<
   TelegramIM,

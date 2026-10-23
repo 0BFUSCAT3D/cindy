@@ -112,7 +112,11 @@
     "./teammate-todo": "./src/teammateTodo.ts",
     "./agent-kind-conversion": "./src/agentKindConversion.ts",
     "./orca-remote-worker": "./src/orcaRemoteWorker.ts",
-    "./input-error": "./src/inputError.ts"
+    "./input-error": "./src/inputError.ts",
+    "./working-dir": "./src/workingDir.ts",
+    "./session-source": "./src/sessionSource.ts",
+    "./chatHistorySearch.pure": "./src/chatHistorySearch.pure.ts",
+    "./cjkSeg": "./src/cjkSeg.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

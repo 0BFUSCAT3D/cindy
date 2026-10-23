@@ -10,6 +10,7 @@ export async function invokeResourceAction(client:TerminalClient,raw:Omit<import
   const request=parseRemoteActionInvokeRequest(raw);if(!request)throw new Error('INVALID_RESOURCE_ACTION');
   if(request.collectionId==='plugins'&&request.resourceRef&&request.actionId==='credentials')return submitPluginSecret(client,request.resourceRef.id,request.input,device);
   if(request.collectionId==='mcp'&&(request.actionId==='create'||request.actionId==='edit'))return submitConfiguration(client,{collectionId:'mcp',actionId:request.actionId,...(request.resourceRef?{resourceId:request.resourceRef.id}:{})},request.input,device);
+  if(request.collectionId==='channels'&&request.actionId==='edit'&&request.resourceRef)return submitConfiguration(client,{collectionId:'channels',actionId:'edit',resourceId:request.resourceRef.id},request.input,device);
   return client.invoke('maker:remote-resources:invoke',[request],device);
 }
 

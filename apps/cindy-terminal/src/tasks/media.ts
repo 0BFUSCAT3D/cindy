@@ -9,6 +9,10 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { createBlobStore, sniffMediaMime, recordBlob, addRef, hasRef, removeRefs, removeRefById, sessionCanRead, ghostCanRead, getBlobInfo } from '@cindy/media-core';
 import { createLegacyImageCache } from '@cindy/media-core/legacy-image-cache';
+import { createIntegrationCache, integrationCacheKey } from '@cindy/media-core/integration-cache';
+import { getIntegrationCacheHash, touchBlob, pinBlob, type LedgerDb } from '@cindy/media-core/ledger';
+import { verifiedInboundMediaMime } from '@cindy/media-core/inbound-media-verify';
+import type { IMHost } from '@cindy/im';
 import { taskImageRoots, readTaskImage, type SessionImageScope } from '@cindy/media-core/task-image-source';
 import { hasLocalTaskImages, materializeTaskImageMarkdown } from '@cindy/media-core/task-image-markdown';
 import { materializeLocalMarkdownImages } from '@cindy/media-core/local-markdown-images';
@@ -72,6 +76,49 @@ CREATE INDEX IF NOT EXISTS ghost_cards_updated_at_idx ON ghost_cards(updated_at)
   }
   resolveMediaUrl(url: string) { return this.store.resolveSafe(url); }
   resolveLegacyImageUrl(url: string) { return this.legacyImages.resolveSafe(url); }
+  channelMedia(guard: () => void, warn: (message: string) => void, fetchRemoteImage: NonNullable<IMHost['media']>['fetchRemoteImage']): NonNullable<IMHost['media']> {
+    const cache = createIntegrationCache<LedgerDb>({
+      blobStore: this.store,
+      ledger: {
+        getIntegrationCacheHash: (key, db) => getIntegrationCacheHash(key, db ?? this.db!),
+        getBlobInfo: (hash, db) => getBlobInfo(hash, db ?? this.db!),
+        touchBlob: (hash, db) => touchBlob(hash, db ?? this.db!),
+        addRef: (params, db) => addRef(params, db ?? this.db!),
+        removeRefById: (id, db) => removeRefById(id, db ?? this.db!),
+      },
+      ingestMedia: async params => {
+        guard();
+        const written = await this.store.writeBlob({ ...params, assertStillValid: guard });
+        guard(); await recordBlob({ ...written, isCache: params.isCache }, this.db!); guard();
+        return written;
+      },
+      log: { warn },
+    });
+    const put = (params: Parameters<NonNullable<IMHost['media']>['cacheImage']>[0], kind: 'image' | 'av', isCache: boolean) => this.run(async () => {
+      guard();
+      const hit = await cache.integrationCachePut({
+        ...params, cacheKey: integrationCacheKey(params.integration, params.token),
+        mimeType: verifiedInboundMediaMime(params.buffer, params.mimeType, kind), isCache, assertStillValid: guard,
+      }, this.db!);
+      return { absPath: hit.absPath, url: hit.url, mimeType: hit.mimeType, discard: () => this.run(hit.rollbackRef) };
+    });
+    return {
+      cacheImage: params => put(params, 'image', params.staging === true),
+      cacheMedia: params => put(params, 'av', true),
+      getCachedImage: (integration, token, options) => this.run(async () => {
+        guard(); const hit = await cache.integrationCacheGet(integrationCacheKey(integration, token), this.db!); guard();
+        if (!hit || options?.shouldReuse?.() === false) return null;
+        await pinBlob(hit.hash, this.db!); guard();
+        return { absPath: hit.absPath, url: hit.url, mimeType: hit.mimeType };
+      }),
+      resolveMediaUrl: url => {
+        guard();
+        try { return url.startsWith('cindy-media://') ? this.resolveMediaUrl(url).absPath : url.startsWith('xdt-image://') ? this.resolveLegacyImageUrl(url).absPath : null; }
+        catch { return null; }
+      },
+      fetchRemoteImage,
+    };
+  }
   /** Import only this task's workdir/native scratchpad. New refs are recorded as
    * tool output; a stale task rolls back only the pins created by this import. */
   materializeTaskImages(scope: SessionImageScope, text: string, guard: () => void, assertTaskCurrent: () => Promise<void>): Promise<string> {

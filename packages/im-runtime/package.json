@@ -19,7 +19,11 @@
     "@cindy/model-providers": "workspace:*",
     "@cindy/maker-scheduler": "workspace:*",
     "@cindy/slack-hook-protocol": "workspace:*",
-    "@cindy/plugin-runtime": "workspace:*"
+    "@cindy/plugin-runtime": "workspace:*",
+    "@cindy/browser-control-runtime": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "*",

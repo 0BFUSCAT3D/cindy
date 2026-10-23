@@ -261,6 +261,12 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   'maker:set-session-model-pref',
   // —— 能力查询 ——
   'maker:get-capabilities',
+  // Same-account controllers can inspect and reclaim IM takeover on their host.
+  // These existing Desktop channels also work on terminal hosts; guest task
+  // allowlists intentionally exclude account-wide channel identities.
+  'binding:resolve-session',
+  'binding:list-attached',
+  'binding:revoke',
   'maker:list-available-agents',
   // device-link 远程草稿镜像(只读):控制端为被控设备新建项目草稿时,读被控端**当前 New Maker
   // 草稿**在该 vendor 的完整选择(model/effort/fast/permission/source),1:1 seed 控制端草稿。
@@ -730,6 +736,7 @@ export const REMOTE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
  * 命中这些 channel 的事件才会经 link 转发给控制端。
  */
 export const PUSH_FORWARD_ALLOWLIST: ReadonlySet<string> = new Set([
+  'binding:changed',
   'maker:bot-delegation:changed',
   // 伙伴自主跟进状态变化（payload 只有 { botIds? }，节流 ≤1 次/秒），控制端据此重读「一眼」。
   'maker:bot-autonomy:changed',

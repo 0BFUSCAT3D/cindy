@@ -197,14 +197,7 @@ export async function getIntegrationCacheHash(
   cacheKey: string,
   db: LedgerDb = defaultDb(),
 ): Promise<string | null> {
-  const rows = await db
-    .select({ hash: mediaRefs.hash })
-    .from(mediaRefs)
-    .where(and(eq(mediaRefs.refKind, 'integration-cache'), eq(mediaRefs.refId, cacheKey)))
-    .orderBy(desc(mediaRefs.createdAt))
-    .limit(1)
-    .all();
-  return rows[0]?.hash ?? null;
+  return coreLedger.getIntegrationCacheHash(cacheKey, db);
 }
 
 /** 某指纹在某引用方名下是否已有引用(commit 幂等去重用,避免重发消息刷重复行)。 */
@@ -650,13 +643,6 @@ export async function listGhostGallery(
 
 /** 惰性刷新 blob 最近读取时间(cache LRU 依据;失败静默,不影响读路径)。 */
 export async function touchBlob(hash: string, db?: LedgerDb): Promise<void> {
-  try {
-    await (db ?? defaultDb())
-      .update(mediaBlobs)
-      .set({ lastAccessAt: Date.now() })
-      .where(eq(mediaBlobs.hash, hash))
-      .run();
-  } catch {
-    // 账本瞬时不可用不应拖垮媒体读取(含 DbClient 未就绪)。
-  }
+  try { await coreLedger.touchBlob(hash, db ?? defaultDb()); }
+  catch { /* Preserve best-effort reads before the Desktop database is ready. */ }
 }

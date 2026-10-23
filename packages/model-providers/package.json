@@ -23,7 +23,10 @@
     "./model-route-guard": "./src/modelRouteGuard.ts",
     "./modelSwitchAssessment": "./src/modelSwitchAssessment.ts",
     "./runtimeModelSwitchGate": "./src/runtimeModelSwitchGate.ts",
-    "./verifiedContextWindow": "./src/verifiedContextWindow.ts"
+    "./verifiedContextWindow": "./src/verifiedContextWindow.ts",
+    "./utilityModelProfiles": "./src/utilityModelProfiles.ts",
+    "./utilityTextResult": "./src/utilityTextResult.ts",
+    "./utilityTextRequest": "./src/utilityTextRequest.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

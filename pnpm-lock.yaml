@@ -1279,6 +1279,9 @@ importers:
 
   packages/im-runtime:
     dependencies:
+      '@cindy/browser-control-runtime':
+        specifier: workspace:*
+        version: link:../browser-control-runtime
       '@cindy/companion-core':
         specifier: workspace:*
         version: link:../companion-core
@@ -1306,6 +1309,15 @@ importers:
       '@cindy/slack-hook-protocol':
         specifier: workspace:*
         version: link:../slack-hook-protocol
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.3.6)
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: '*'
@@ -15525,7 +15537,9 @@ snapshots:
       metro-runtime: 0.84.5
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 

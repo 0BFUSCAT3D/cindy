@@ -13,7 +13,7 @@ import type { TerminalCapabilities } from "./tasks/capabilities.js";
 export const CONFIGURATION_ID = "__cindy_configuration__";
 const LIFETIME_MS = 5 * 60_000;
 type Operation = {
-  collectionId: "mcp" | "providers";
+  collectionId: "mcp" | "providers" | "channels";
   actionId: "create" | "edit";
   resourceId?: string;
 };
@@ -30,14 +30,15 @@ export function configurationOperation(raw: unknown): Operation {
     throw new Error("INVALID_CONFIGURATION");
   const value = raw as Record<string, unknown>;
   if (
-    !["mcp", "providers"].includes(String(value.collectionId)) ||
+    !["mcp", "providers", "channels"].includes(String(value.collectionId)) ||
     !["create", "edit"].includes(String(value.actionId)) ||
     (value.resourceId !== undefined &&
       (typeof value.resourceId !== "string" ||
         !value.resourceId ||
         value.resourceId.length > 256)) ||
     (value.actionId === "edit" && !value.resourceId) ||
-    (value.actionId === "create" && value.resourceId !== undefined)
+    (value.actionId === "create" && value.resourceId !== undefined) ||
+    (value.collectionId === "channels" && value.actionId !== "edit")
   )
     throw new Error("INVALID_CONFIGURATION");
   return {
@@ -63,10 +64,18 @@ export class TerminalConfiguration {
         context: InvocationContext,
       ): Promise<unknown>;
     },
+    private readonly channels?: {
+      revision(): number;
+      save(id: string, value: Record<string, unknown>, context: InvocationContext): Promise<void>;
+    },
   ) {}
 
   private revision(operation: Operation) {
     if (operation.collectionId === "mcp") return this.capabilities.revision();
+    if (operation.collectionId === "channels") {
+      if (!this.channels) throw new Error("PROTECTED_CONFIGURATION_UNAVAILABLE");
+      return this.channels.revision();
+    }
     if (!this.providers) throw new Error("PROTECTED_CONFIGURATION_UNAVAILABLE");
     return this.providers.revision();
   }
@@ -170,6 +179,11 @@ export class TerminalConfiguration {
     if (!input || typeof input !== "object" || Array.isArray(input))
       throw new Error("INVALID_CONFIGURATION");
     const value = input as Record<string, unknown>;
+    if (operation.collectionId === "channels") {
+      if (!this.channels || !operation.resourceId) throw new Error("INVALID_CONFIGURATION");
+      await this.channels.save(operation.resourceId, value, context);
+      return;
+    }
     if (operation.collectionId === "providers") {
       if (
         !this.providers ||

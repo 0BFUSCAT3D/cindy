@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { mkdtemp } from 'node:fs/promises';
 import * as tar from 'tar';
 import * as yauzl from 'yauzl';
+import { runtimePackages, imRuntimePackages } from './runtime-externals.mjs';
 
 const app = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(path.join(app, 'package.json'));
@@ -93,7 +94,8 @@ try {
   };
   // Install the renderer's singleton peer first. A nested React copied while
   // traversing Ink/reconciler would cause real TUI hooks to use another runtime.
-  for (const name of ['react', 'ink', '@roamhq/wrtc', 'better-sqlite3', 'sharp', 'node-pty', 'ssh2', 'playwright-core']) await copyPackage(name, app, path.join(output, 'app'));
+  for (const name of runtimePackages) await copyPackage(name, app, path.join(output, 'app'));
+  for (const name of imRuntimePackages) await copyPackage(name, path.join(app, '../../packages/lizi-im'), path.join(output, 'app'));
 
   // The published macOS node-pty prebuild can have mode 0644 even though
   // posix_spawn requires its spawn-helper to be executable. Fix the shipped

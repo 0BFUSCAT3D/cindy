@@ -1,9 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema.js';
 import { mediaBlobs, mediaRefs } from './schema.js';
 export type LedgerDb = BetterSQLite3Database<typeof schema>;
+export async function getIntegrationCacheHash(cacheKey: string, db: LedgerDb): Promise<string | null> {
+  const rows = await db.select({ hash: mediaRefs.hash }).from(mediaRefs)
+    .where(and(eq(mediaRefs.refKind, 'integration-cache'), eq(mediaRefs.refId, cacheKey)))
+    .orderBy(desc(mediaRefs.createdAt)).limit(1).all();
+  return rows[0]?.hash ?? null;
+}
+
+export async function touchBlob(hash: string, db: LedgerDb): Promise<void> {
+  try { await db.update(mediaBlobs).set({ lastAccessAt: Date.now() }).where(eq(mediaBlobs.hash, hash)).run(); }
+  catch { /* A temporarily unavailable ledger must not fail a media read. */ }
+}
 export type MediaRefKind =
   | 'message'
   | 'session-attachment'
@@ -187,4 +198,3 @@ export async function ghostCanRead(
     .all();
   return row.length > 0;
 }
-

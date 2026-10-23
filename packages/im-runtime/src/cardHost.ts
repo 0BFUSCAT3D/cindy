@@ -70,21 +70,26 @@ export interface ImCardHost
     sessionId: string,
     action: () => Promise<T>,
   ): Promise<T>;
-  applyPiImModelSelectionUnderLock(
+  /** Hosts with a unified route transaction use it for the whole card choice,
+   * including effort, deferred delivery and the manual-default override. */
+  selectModelUnderLock?(
+    sessionId: string, model: string, providerId: string | null | undefined, effort: Effort,
+  ): Promise<void>;
+  applyPiImModelSelectionUnderLock?(
     sessionId: string,
     model: string,
     providerId: string | null | undefined,
     previous: { model: string; providerId: string | null } | null,
   ): Promise<ModelChange>;
-  applyRuntimeModelChange(
+  applyRuntimeModelChange?(
     sessionId: string,
     model: string,
     providerId: string | null | undefined,
     logger: Pick<Logger, "debug" | "info">,
   ): Promise<ModelChange>;
-  clearPendingCredentialSwitchForSession(sessionId: string): void;
+  clearPendingCredentialSwitchForSession?(sessionId: string): void;
   cancelPendingAgentSwitchForSession(sessionId: string): void;
-  cancelPendingSessionRuntimeMutation(
+  cancelPendingSessionRuntimeMutation?(
     sessionId: string,
     generation: number,
   ): void;
