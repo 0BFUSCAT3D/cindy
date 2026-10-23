@@ -14535,6 +14535,7 @@ describe('usage-limit wait (ordinary tasks)', () => {
       getSession: () => rehydrate ? session : undefined,
       closeSession: async () => {}, preflightBotRuntimeResources: async () => {},
       getSessionMeta: async () => ({}), ensureRemoteReadyForSessionStart: async () => {},
+      statDirectory: async () => ({ isDirectory: () => true }),
       checkWorkDirExists: async () => true, isOrcaMcpHydrated: () => !rehydrate,
       buildCreateOptsWithStderr: x => x, synthesizeOrcaVendorOptionsFromDb: async () => rehydrate,
       readSessionExtraDirsFromDb: async () => [], readSessionWorkingDirFromDb: async () => '/repo',
