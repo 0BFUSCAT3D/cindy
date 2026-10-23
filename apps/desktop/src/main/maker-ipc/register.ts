@@ -21907,6 +21907,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return { deferred: false, superseded: true };
       }
       const routeExplicit = internalOptions.routeExplicit !== false;
+      // Pi configuration refreshes (including scheduled sends) omit selection.
+      // Omission must preserve the effective effort, including an explicit null;
+      // otherwise the UI and the next send see a different axis from native Pi.
+      const currentRuntimeProfile = getSessionRuntimeControlSnapshot(sessionId).effectiveOverride;
+      const currentEffort = currentRuntimeProfile
+        ? currentRuntimeProfile.effort
+        : ((getSessionEffort(sessionId) ?? runtimeStatus.effort ?? null) as SessionRuntimeProfile['effort']);
       // 同引擎重选是 switch ack 后的第二段写入。另一控制端若在两段之间更新（含
       // set→clear ABA），修订号已变化：旧 SET_MODEL 必须在任何 route/DB 副作用前让位。
       if (
@@ -22141,6 +22148,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                     ? getSessionProvider(sessionId)
                     : (normalizeSessionProviderId(effectiveProviderId) ?? null),
                 atomicSelection,
+                currentEffort,
                 currentFastMode: getSessionFastMode(sessionId),
               }),
             })
@@ -23105,13 +23113,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           generation = acceptSessionRuntimeAxisMutation({
             sessionId,
             source: internalOptions.source,
-            profile: {
+            profile: buildDeferredRuntimeSelectionProfile({
               agentKind: maker.getSession(sessionId)?.agentKind ?? meta?.agentKind ?? 'claude-code',
               model,
               providerId: getSessionProvider(sessionId),
-              effort: atomicSelection?.effort ?? previousRuntime.effort ?? null,
-              fastMode: atomicSelection?.fastMode ?? previousRuntime.fastMode,
-            },
+              atomicSelection,
+              currentEffort,
+              currentFastMode: previousRuntime.fastMode,
+            }),
             pendingPatch: pendingAxisPatch,
           });
         } else {
@@ -23121,16 +23130,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             source: internalOptions.source,
             previousProfile: internalOptions.previousProfile,
             deferred: response.deferred,
-            profile: {
+            profile: buildDeferredRuntimeSelectionProfile({
               agentKind: maker.getSession(sessionId)?.agentKind ?? meta?.agentKind ?? 'claude-code',
               model,
               providerId:
                 effectiveProviderId === undefined
                   ? getSessionProvider(sessionId)
                   : (normalizeSessionProviderId(effectiveProviderId) ?? null),
-              effort: atomicSelection?.effort ?? null,
-              fastMode: atomicSelection?.fastMode ?? getSessionFastMode(sessionId),
-            },
+              atomicSelection,
+              currentEffort,
+              currentFastMode: getSessionFastMode(sessionId),
+            }),
           });
         }
         if (!internalOptions.applyingPiCredentialPending && (rebuildLiveOrcaWorker || modelWindowRebuilt || atomicSelection ||
@@ -23184,7 +23194,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const projectionMeta = await maker.getSessionMeta(sessionId);
         const userBaselineOverride =
           internalOptions.source === 'user'
-            ? {
+            ? buildDeferredRuntimeSelectionProfile({
                 agentKind:
                   maker.getSession(sessionId)?.agentKind ??
                   projectionMeta?.agentKind ??
@@ -23194,13 +23204,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                   effectiveProviderId === undefined
                     ? getSessionProvider(sessionId)
                     : (normalizeSessionProviderId(effectiveProviderId) ?? null),
-                effort:
-                  atomicSelection?.effort ??
-                  (getSessionEffort(sessionId) as SessionRuntimeProfile['effort'] | undefined) ??
-                  projectionMeta?.effort ??
-                  null,
-                fastMode: atomicSelection?.fastMode ?? getSessionFastMode(sessionId),
-              }
+                atomicSelection,
+                currentEffort,
+                currentFastMode: getSessionFastMode(sessionId),
+              })
             : undefined;
         await broadcastSessionRuntimeProjection(sessionId, userBaselineOverride).catch((error) => {
           log.debug('session runtime projection broadcast failed', {
