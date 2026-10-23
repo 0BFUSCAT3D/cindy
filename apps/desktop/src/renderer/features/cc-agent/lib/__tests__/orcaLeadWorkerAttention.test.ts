@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { Session } from '@/lib/ccAgent.types';
+import { countAppAttention } from '../appAttentionCount';
+import type { SessionStatusInfo } from '@/lib/makerChatStore';
 import type { WorkersSnapshot } from '../../hooks/workerProjectionStore';
 
 const projection = vi.hoisted(() => ({
@@ -7,6 +10,32 @@ const projection = vi.hoisted(() => ({
   retained: [] as Array<readonly [string, WorkersSnapshot]>,
   listeners: new Set<() => void>(),
 }));
+
+const chat = vi.hoisted(() => ({
+  statuses: new Map<string, SessionStatusInfo>(),
+  listeners: new Set<() => void>(),
+}));
+vi.mock('@/lib/makerChatStore', () => ({
+  makerChatStore: {
+    getRunningSnapshot: () => chat.statuses,
+    subscribeAll: (listener: () => void) => {
+      chat.listeners.add(listener);
+      return () => chat.listeners.delete(listener);
+    },
+  },
+}));
+function setPending(sessionId: string, pending: Partial<SessionStatusInfo>) {
+  chat.statuses = new Map(chat.statuses).set(sessionId, {
+    isRunning: true,
+    hasError: false,
+    hasPendingAskUser: false,
+    hasPendingPermission: false,
+    hasPendingPlanReview: false,
+    hasPendingPluginSetup: false,
+    ...pending,
+  });
+  for (const listener of chat.listeners) listener();
+}
 
 vi.mock('@/lib/makerTransport', () => ({
   isRemoteSessionSticky: (sessionId: string) => sessionId === 'remote-lead',
@@ -79,6 +108,7 @@ function kinds(entries: Array<[string, AttentionKind]>): Map<string, AttentionKi
 afterEach(() => {
   clearSessionAttentionMany([...getSessionAttentionKinds().keys()], { intent: 'explicit' });
   setProjections([]);
+  chat.statuses = new Map();
 });
 
 describe('deriveOrcaLeadWorkerAttention', () => {
@@ -94,10 +124,12 @@ describe('deriveOrcaLeadWorkerAttention', () => {
         ['w3', 'awaiting'],
       ]),
     );
-    expect(result).toEqual(new Map([
-      ['lead-a', 'error'],
-      ['lead-b', 'awaiting'],
-    ]));
+    expect(result).toEqual(
+      new Map([
+        ['lead-a', 'error'],
+        ['lead-b', 'awaiting'],
+      ]),
+    );
   });
 
   it('Worker 的完成不汇总;没有 Worker attention 时不出条目', () => {
@@ -156,7 +188,9 @@ describe('整表合并', () => {
     expect(mergeOrcaLeadNotifications(notifications, new Map())).toBe(notifications);
     // Lead 自身已是更高档:不新建 Map。
     expect(
-      mergeOrcaLeadAttentionKinds(kinds([['lead', 'error']]), new Map([['lead', 'awaiting']])).get('lead'),
+      mergeOrcaLeadAttentionKinds(kinds([['lead', 'error']]), new Map([['lead', 'awaiting']])).get(
+        'lead',
+      ),
     ).toBe('error');
   });
 
@@ -174,6 +208,86 @@ describe('整表合并', () => {
 });
 
 describe('模块级派生快照', () => {
+  it.each([
+    'hasPendingAskUser',
+    'hasPendingPermission',
+    'hasPendingPlanReview',
+    'hasPendingPluginSetup',
+    'hasPendingInputHandoff',
+  ] as const)(
+    '%s 在任务 awaiting 被动清除后仍汇总，确认处理完才消失，且不写回任务提醒',
+    (field) => {
+      setProjections([['lead', snapshot('worker')]]);
+      const listener = vi.fn();
+      const unsubscribe = subscribeOrcaLeadWorkerAttention(listener);
+      try {
+        const dockCount = () => countAppAttention({
+          sessions: [{ id: 'lead', status: 'active' } as Session],
+          attentionKinds: getSessionAttentionKinds(), runningSessionIds: new Set(),
+          localActivities: new Map(), localSchedules: new Map(),
+          orcaLeadWorkerAttention: getOrcaLeadWorkerAttention(),
+        });
+        setPending('worker', { [field]: true });
+        expect(dockCount()).toBe(1);
+        expect(getOrcaLeadWorkerAttention().get('lead')).toBe('awaiting');
+        expect(getSessionAttentionKindsWithOrcaLeads().get('lead')).toBe('awaiting');
+        addSessionAttention('worker', 'awaiting');
+        clearSessionAttentionMany(['worker']);
+        expect(getSessionAttentionKinds().has('worker')).toBe(false);
+        expect(getOrcaLeadWorkerAttention().get('lead')).toBe('awaiting');
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect(dockCount()).toBe(1);
+        addSessionAttention('worker', 'error');
+        expect(getOrcaLeadWorkerAttention().get('lead')).toBe('error');
+        clearSessionAttentionMany(['worker'], { intent: 'explicit' });
+        expect(getOrcaLeadWorkerAttention().get('lead')).toBe('awaiting');
+        setPending('worker', {});
+        expect(getOrcaLeadWorkerAttention().size).toBe(0);
+        expect(dockCount()).toBe(0);
+        expect(getSessionAttentionKinds().size).toBe(0);
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
+  it('普通任务、运行设备与远程 Lead 的 pending 不汇总；大量输出不通知 Lead 消费方', () => {
+    const remote = snapshot('device-worker');
+    remote.workers[0].executionDevice = {
+      deviceId: 'host',
+      remoteSessionId: 'remote',
+      deviceName: 'Host',
+      reachable: true,
+      workingDir: null,
+    };
+    setProjections([
+      ['lead', snapshot('worker')],
+      ['device-lead', remote],
+      ['remote-lead', snapshot('remote-worker')],
+    ]);
+    const listener = vi.fn();
+    const unsubscribe = subscribeOrcaLeadWorkerAttention(listener);
+    try {
+      for (const id of ['ordinary', 'device-worker', 'remote-worker'])
+        setPending(id, { hasPendingAskUser: true });
+      expect(getOrcaLeadWorkerAttention().size).toBe(0);
+      expect(listener).not.toHaveBeenCalled();
+      setPending('worker', { hasPendingAskUser: true });
+      const before = getOrcaLeadWorkerAttention();
+      listener.mockClear();
+      for (let i = 0; i < 100; i++)
+        setPending('worker', { hasPendingAskUser: true, isRunning: i % 2 === 0 });
+      expect(listener).not.toHaveBeenCalled();
+      expect(getOrcaLeadWorkerAttention()).toBe(before);
+      // 普通任务仍由原 store 被动清除，本模块不替它保留提醒。
+      addSessionAttention('ordinary', 'awaiting');
+      clearSessionAttentionMany(['ordinary']);
+      expect(getSessionAttentionKindsWithOrcaLeads().has('ordinary')).toBe(false);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('跟随 Worker 自己的 attention 出现与消失,且不写回 attention store', () => {
     setProjections([['lead', snapshot('worker')]]);
     expect(getOrcaLeadWorkerAttention().size).toBe(0);
@@ -249,6 +363,8 @@ describe('Worker 通知', () => {
     expect(formatOrcaWorkerNotificationTitle('Worker · developer', '重构登录')).toBe(
       '重构登录 · Worker · developer',
     );
-    expect(formatOrcaWorkerNotificationTitle('Worker · developer', null)).toBe('Worker · developer');
+    expect(formatOrcaWorkerNotificationTitle('Worker · developer', null)).toBe(
+      'Worker · developer',
+    );
   });
 });

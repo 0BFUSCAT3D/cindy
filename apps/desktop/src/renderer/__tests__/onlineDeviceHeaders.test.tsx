@@ -11,7 +11,10 @@ import {
   type ProjectsSectionProps,
 } from '../features/cc-agent/sidebar/sections/ProjectsSection';
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => {} },
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
 const feature = vi.hoisted(() => ({ enabled: true }));
 vi.mock('@cindy/maker-shared/cindy-make-feature', async (importOriginal) => ({
   ...await importOriginal<typeof import('@cindy/maker-shared/cindy-make-feature')>(),
