@@ -38,9 +38,11 @@ IM 专线有逐轮租约时以租约为准，桌面看起来像主人的输入�
 | `set_workbench_task_responsibility` | 只能解除；接手需要主人开口 |
 | Orca 写工具 | 只限自己当 Lead 的现有团队，且本轮来自该团队的 Worker；不能新开团队 |
 
-例行任务的保存、删除、立即运行和前置脚本安装（`routine_save` / `routine_delete` / `routine_run_now` /
-`schedule_set_pre_run_hook`）只在主人代办或受托轮里可用：主人设的例行任务会以受托身份运行，伙伴不能在
-自主轮里自己造出这份授权。读取类（`routine_list` / `routine_sources` / `routine_history`）不受限。
+例行任务与定时任务的写操作只在主人代办或受托轮里可用：主人设的例行任务会以受托身份运行，伙伴不能在
+自主轮里自己造出或改写这份授权。覆盖两个工具面：`cindy_helper` 的 `routine_save` / `routine_delete` /
+`routine_run_now` / `schedule_set_pre_run_hook`，以及按 id 直达任意定时任务（含 `routine-*`）的
+`cindy_scheduler` 写工具（新建、修改、删除、立即运行、暂停、恢复、安装前置脚本，及其 `routine_*` 写工具）。
+读取类与本轮自身的 `schedule_notify_current_run` / `schedule_silence_current_run` 不受限。
 
 其它对主人任务的写操作返回 `NEEDS_OWNER_REQUEST`，不弹卡。伙伴应改为写待办或通知主人，
 写清目标、动作和理由；主人在近况里点那条待办、说一句话，就成为主人代办轮。

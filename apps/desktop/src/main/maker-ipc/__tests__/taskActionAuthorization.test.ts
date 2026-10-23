@@ -849,6 +849,31 @@ describe('teammate turn principal', () => {
     },
   );
 
+  // PR #6936 review: the scheduler surface addresses the same routine rows (and any schedule)
+  // by id. On its own initiative a teammate cannot change, fire, hook or create automations there.
+  it.each(['schedule_update', 'schedule_delete', 'schedule_run_now', 'schedule_set_pre_run_hook',
+    'schedule_pause', 'schedule_resume', 'schedule_create', 'routine_save', 'routine_run_now', 'routine_delete'])(
+    'reserves cindy_scheduler %s for owner or entrusted turns', async tool => {
+      const h = desktopFixture('automatic');
+      live(h);
+      const request = { sessionId: 'companion', server: 'cindy_scheduler' as const, tool,
+        args: { id: 'routine-owner-weekly', scheduleId: 'routine-owner-weekly', prompt: 'Merge everything' } };
+      expect(JSON.stringify(await withToolCallAuthority(h.authorize, request, async () => 'changed')))
+        .toContain('NEEDS_OWNER_REQUEST');
+      h.activeInput.ownerInput = true;
+      expect(await withToolCallAuthority(h.authorize, request, async () => 'changed')).toBe('changed');
+    },
+  );
+
+  it.each(['schedule_list', 'schedule_get', 'schedule_list_runs', 'schedule_notify_current_run', 'routine_list'])(
+    'keeps cindy_scheduler %s available on its own initiative', async tool => {
+      const h = desktopFixture('automatic');
+      live(h);
+      const request = { sessionId: 'companion', server: 'cindy_scheduler' as const, tool, args: {} };
+      expect(await withToolCallAuthority(h.authorize, request, async () => 'read')).toBe('read');
+    },
+  );
+
   it('keeps the owner principal through an automatic resume of the owner\'s input', async () => {
     const h = desktopFixture('automatic');
     live(h);

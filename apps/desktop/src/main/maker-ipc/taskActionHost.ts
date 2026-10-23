@@ -59,6 +59,17 @@ export const TEAMMATE_STANDING_GRANT_TOOLS: ReadonlySet<string> = new Set([
   'routine_save', 'routine_delete', 'routine_run_now', 'schedule_set_pre_run_hook',
 ]);
 
+/**
+ * The same standing grants through the scheduler surface, which addresses any schedule
+ * (including `routine-*` rows) by id and can create new automations. Reads and the
+ * current run's own notify/silence stay available.
+ */
+export const TEAMMATE_SCHEDULER_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'routine_save', 'routine_delete', 'routine_run_now',
+  'schedule_create', 'schedule_update', 'schedule_delete', 'schedule_run_now',
+  'schedule_pause', 'schedule_resume', 'schedule_set_pre_run_hook',
+]);
+
 /** The live turn identifies a continuation, not consent. Only its existing
  * permission reviewer may approve the exact action against restored user intent. */
 function captureScheduledRuntime(
@@ -202,7 +213,8 @@ export function createDesktopTaskActionAuthorizer(deps: {
     });
   };
   return async (call) => {
-    if (call.server === 'cindy_helper' && TEAMMATE_STANDING_GRANT_TOOLS.has(call.tool)) {
+    if ((call.server === 'cindy_helper' && TEAMMATE_STANDING_GRANT_TOOLS.has(call.tool))
+      || (call.server === 'cindy_scheduler' && TEAMMATE_SCHEDULER_WRITE_TOOLS.has(call.tool))) {
       if (!call.sessionId) return { ok: true };
       return (await callerTeammatePrincipal(call.sessionId)) === 'autonomous' ? NEEDS_OWNER_REQUEST : { ok: true };
     }
