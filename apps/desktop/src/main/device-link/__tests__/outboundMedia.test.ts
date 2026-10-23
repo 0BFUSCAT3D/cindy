@@ -18,6 +18,7 @@ vi.mock('../../logger', () => ({
 }));
 
 import { rewriteOutboundMedia, withPeerAttachmentUpload, __testing } from '../outboundMedia';
+import { withSourceFileAccessRecovery } from '../sourceFileAccessRecovery';
 import { buildPeerAttachmentRef, parsePeerAttachmentRef } from '@cindy/device-link';
 import { buildUserMessageAttachmentPayload } from '../../../renderer/lib/messageAttachmentPayload';
 import { REVIEW_START_REQUEST_LIMITS } from '../../maker-ipc/reviewStartHandler';
@@ -49,6 +50,78 @@ beforeEach(() => {
 });
 
 describe('rewriteOutboundMedia — channel gating', () => {
+  // #6530: native confirmation resumes the same attachment rewrite, never a second message.
+  // Unit tier; existing access-denial coverage stops before this recovery boundary.
+  it('confirms the denied original and resumes its upload without changing the draft payload', async () => {
+    const file = '/private/wechat/test.pdf';
+    const args = ['session', { type: 'user', content: [{ type: 'file', path: file }] }];
+    const denied = Object.assign(new Error('denied'), { code: 'EPERM', syscall: 'open', path: file });
+    uploadLocalFile.mockRejectedValueOnce(denied);
+    const selectFile = vi.fn(async () => file);
+    const result = await withSourceFileAccessRecovery({ selectFile, assertCurrent: () => {} },
+      () => rewriteOutboundMedia('maker:send', args));
+    expect(isAttachmentOssRef((result[1] as any).content[0].path)).toBe(true);
+    expect(selectFile).toHaveBeenCalledWith(file);
+    expect(uploadLocalFile).toHaveBeenCalledTimes(2);
+    expect((args[1] as any).content[0].path).toBe(file);
+  });
+
+  it.each([null, '/private/another.pdf'])('keeps the original unsent when confirmation returns %s', async selected => {
+    const file = '/private/wechat/test.pdf';
+    uploadLocalFile.mockRejectedValue(Object.assign(new Error('denied'), { code: 'EACCES', syscall: 'open', path: file }));
+    await expect(withSourceFileAccessRecovery({ selectFile: async () => selected, assertCurrent: () => {} },
+      () => rewriteOutboundMedia('maker:send', ['session', { type: 'user', content: [{ type: 'file', path: file }] }]))
+    ).rejects.toMatchObject({ code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED' });
+    expect(uploadLocalFile).toHaveBeenCalledOnce();
+  });
+
+  it('does not read again after the confirmation owner changes', async () => {
+    const file = '/private/wechat/test.pdf';
+    let current = true;
+    uploadLocalFile.mockRejectedValue(Object.assign(new Error('denied'), { code: 'EPERM', syscall: 'open', path: file }));
+    await expect(withSourceFileAccessRecovery({
+      selectFile: async () => { current = false; return file; },
+      assertCurrent: () => { if (!current) throw new Error('cancelled'); },
+    }, () => rewriteOutboundMedia('maker:send', ['session', { type: 'user', content: [{ type: 'file', path: file }] }]))
+    ).rejects.toThrow('cancelled');
+    expect(uploadLocalFile).toHaveBeenCalledOnce();
+  });
+
+  it('asks once per denied file and does not confirm transport failures', async () => {
+    const file = '/private/wechat/test.pdf';
+    const selectFile = vi.fn(async () => file);
+    const run = () => withSourceFileAccessRecovery({ selectFile, assertCurrent: () => {} },
+      () => rewriteOutboundMedia('maker:send', ['session', { type: 'user', content: [{ type: 'file', path: file }] }]));
+    uploadLocalFile.mockRejectedValue(Object.assign(new Error('denied'), { code: 'EPERM', syscall: 'open', path: file }));
+    await expect(run()).rejects.toMatchObject({ code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED' });
+    expect(selectFile).toHaveBeenCalledOnce();
+    expect(uploadLocalFile).toHaveBeenCalledTimes(2);
+    selectFile.mockClear();
+    uploadLocalFile.mockRejectedValue(new Error('network'));
+    await expect(run()).rejects.toThrow('network');
+    expect(selectFile).not.toHaveBeenCalled();
+  });
+
+  it('isolates a cancelled confirmation from another controller send', async () => {
+    const first = '/private/one.pdf';
+    const second = '/private/two.pdf';
+    const attempted = new Set<string>();
+    uploadLocalFile.mockImplementation(async (file: string) => {
+      if (!attempted.has(file)) {
+        attempted.add(file);
+        throw Object.assign(new Error('denied'), { code: 'EPERM', syscall: 'open', path: file });
+      }
+      return { key: 'cindy/device-link/u/ok.pdf', size: 10, contentType: 'application/pdf', sha256: SHA256 };
+    });
+    const send = (file: string, selected: string | null) => withSourceFileAccessRecovery({
+      selectFile: async source => { expect(source).toBe(file); return selected; }, assertCurrent: () => {},
+    }, () => rewriteOutboundMedia('maker:send', ['session', { type: 'user', content: [{ type: 'file', path: file }] }]));
+    const [cancelled, completed] = await Promise.allSettled([send(first, null), send(second, second)]);
+    expect(cancelled.status).toBe('rejected');
+    expect(completed.status).toBe('fulfilled');
+    if (completed.status === 'fulfilled') expect(isAttachmentOssRef((completed.value[1] as any).content[0].path)).toBe(true);
+    expect(uploadLocalFile.mock.calls.map(([file]) => file)).toEqual([first, second, second]);
+  });
   it.each([
     ['count', () => Array.from({ length: 21 }, () => ({ name: 'a', path: '/controller/a' }))],
     ['metadata', () => [{ name: 'a', path: '/controller/a' }, { name: 'x'.repeat(4097), path: '/controller/b' }]],
@@ -86,6 +159,48 @@ describe('rewriteOutboundMedia — channel gating', () => {
       sourceSessionId: 'source', attachments: [{ name: 'notes.md', path: '/controller/notes.md' }],
     }])).rejects.toThrow('upload failed');
   });
+  // #6530: a source-file permission denial needs recovery guidance, not a network retry.
+  // Existing upload-failure coverage did not distinguish local open/stat from transport errors.
+  it.each(['EPERM', 'EACCES'])('classifies %s on the source file without exposing its path', async code => {
+    const file = '/private/wechat/temp/drag/inventory.xlsx';
+    uploadLocalFile.mockRejectedValue(Object.assign(new Error(`${code}: open '${file}'`), {
+      code, syscall: 'open', path: file,
+    }));
+    await expect(rewriteOutboundMedia('maker:send', ['session', {
+      type: 'user', content: [{ type: 'file', path: file }],
+    }])).rejects.toMatchObject({
+      code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED',
+      message: '[DEVICE_LINK_MEDIA_ACCESS_DENIED] Cannot read the source attachment. Save a copy to an accessible folder, remove the original attachment, and add the copy again.',
+    });
+  });
+
+  it.each(['open', 'fstat', 'read'])('does not try OSS after the peer source %s is denied', async syscall => {
+    const file = '/private/source.xlsx';
+    const direct = vi.fn().mockRejectedValue(Object.assign(new Error('access denied'), {
+      code: 'EPERM', syscall, path: file,
+    }));
+    await expect(withPeerAttachmentUpload(direct, () => rewriteOutboundMedia('maker:send', ['session', {
+      type: 'user', content: [{ type: 'file', path: file }],
+    }]))).rejects.toMatchObject({ code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED' });
+    expect(uploadLocalFile).not.toHaveBeenCalled();
+  });
+
+  it('does not classify transport or another file permission error as source access denial', async () => {
+    for (const details of [
+      { code: 'EACCES', syscall: 'connect' },
+      { code: 'EPERM', syscall: 'open', path: '/other/cache' },
+      { code: 'EACCES', syscall: 'fstat' },
+      { code: 'EPERM', syscall: 'read' },
+      {},
+    ]) {
+      const error = Object.assign(new Error('upload failed'), details);
+      uploadLocalFile.mockRejectedValue(error);
+      await expect(rewriteOutboundMedia('maker:send', ['session', {
+        type: 'user', content: [{ type: 'file', path: '/source.xlsx' }],
+      }])).rejects.toBe(error);
+    }
+  });
+
   it('uses peer staging for exact file bytes, preserves the name and retains OSS fallback', async () => {
     const direct = vi.fn(async () => buildPeerAttachmentRef({ ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', size: 10, sha256: SHA256, mimeType: 'text/plain' }));
     const args = ['session', { type: 'user', content: [{ type: 'file', path: '/controller/a.txt', originalName: 'a.txt' }] }];

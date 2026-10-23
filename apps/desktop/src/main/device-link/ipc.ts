@@ -83,6 +83,7 @@ import { createSentImageRetainer } from './remoteMediaPersistentCache';
 import { withOutboundReviewConfirmation } from '../maker-ipc/reviewOutboundInput.js';
 import { confirmReviewArtifacts } from '../reviewer/confirmReviewArtifacts.js';
 import { tryUploadPeerAttachment } from './filePeer';
+import { withSourceFileAccessRecovery } from './sourceFileAccessRecovery';
 import { parseSharedTaskPeer, scrubSharedProviderCatalog } from '@cindy/device-link';
 import { withSharedTaskMedia } from './sharedTaskMediaContext.js';
 import {
@@ -726,7 +727,8 @@ export async function handleInvoke(
           () => existing ? deps.rewriteOutboundMedia!(channel, callArgs, existing) : deps.rewriteOutboundMedia!(channel, callArgs)),
         createSentImageRetainer(normalizedDeviceId));
      } catch (err) {
-       if (isIpcError(err) && err.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED') {
+       if (isIpcError(err) && (err.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED'
+         || err.code === 'DEVICE_LINK_MEDIA_ACCESS_DENIED')) {
          throw err;
        }
        // Review 走同一条出方向改写管线, 但它的授权/校验拒绝不是媒体传输失败:
@@ -1688,6 +1690,45 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
         (items) => confirmReviewArtifacts(e, items),
         () => handleInvoke(diagnostics.forWindow(deps, e.sender.id), p.deviceId, p.channel, p.args),
       );
+    }
+    const interactiveAttachmentSend = ['maker:send', 'maker:steer', 'maker:input:enqueue', 'maker:input:steer'].includes(String(p.channel))
+      && !(p.scheduling && typeof p.scheduling === 'object' && 'background' in p.scheduling && p.scheduling.background === true);
+    if (interactiveAttachmentSend) {
+      assertTrustedAppRendererEvent(e);
+      const owner = getActiveAppSession();
+      const frame = e.senderFrame;
+      const targetWindow = BrowserWindow.fromWebContents(e.sender);
+      const assertCurrent = () => {
+        const current = getActiveAppSession();
+        if (isAppSessionBoundaryPending() || !owner.dataOwnerId
+          || current.dataOwnerId !== owner.dataOwnerId || current.generation !== owner.generation
+          || e.sender.isDestroyed() || !frame || frame.detached || e.sender.mainFrame !== frame
+          || !targetWindow || targetWindow.isDestroyed()) {
+          throwIpcError('PERMISSION_DENIED', 'Attachment confirmation is no longer current');
+        }
+        assertTrustedAppRendererEvent(e);
+      };
+      const scopedDeps = diagnostics.forWindow(deps, e.sender.id);
+      // This guard also runs immediately before final message dispatch, after all file awaits.
+      const guardedDeps: DeviceLinkIpcDeps = {
+        ...scopedDeps,
+        invoke: (...args) => { assertCurrent(); return scopedDeps.invoke(...args); },
+      };
+      return withSourceFileAccessRecovery({
+        assertCurrent,
+        selectFile: async (source) => {
+          assertCurrent();
+          const selected = await dialog.showOpenDialog(targetWindow!, {
+            title: t('attachmentAccessConfirmation.title'),
+            message: t('attachmentAccessConfirmation.message'),
+            buttonLabel: t('attachmentAccessConfirmation.button'),
+            defaultPath: source,
+            properties: ['openFile'],
+          });
+          assertCurrent();
+          return selected.canceled || selected.filePaths.length !== 1 ? null : selected.filePaths[0];
+        },
+      }, () => handleInvoke(guardedDeps, p.deviceId, p.channel, p.args, p.scheduling));
     }
     return handleInvoke(diagnostics.forWindow(deps, e.sender.id), p.deviceId, p.channel, p.args, p.scheduling);
   });

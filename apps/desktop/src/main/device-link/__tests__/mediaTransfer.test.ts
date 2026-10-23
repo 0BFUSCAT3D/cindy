@@ -241,6 +241,51 @@ describe('uploadLocalFile — 小文件整体 PUT', () => {
 });
 
 describe('uploadLocalFile — bounded snapshots', () => {
+  // #6530 / r4322420399, unit: the OSS entry must classify pathless local fd denials,
+  // unlike fetch failures. Existing source-error tests cover EIO, not permission recovery.
+  it.each(['buffer', 'bounded-stream', 'large-stream'] as const)(
+    'returns a safe access error for a pathless %s source denial', async mode => {
+      const size = mode === 'large-stream' ? __testing.STREAM_THRESHOLD + 1 : 100;
+      statMock.mockResolvedValue({ isFile: () => true, size });
+      const denial = Object.assign(new Error('read denied'), {
+        code: 'EACCES', syscall: mode === 'buffer' ? 'fstat' : 'read',
+      });
+      if (mode === 'buffer') readFileMock.mockRejectedValueOnce(denial);
+      createReadStreamMock.mockImplementation(() => new Readable({
+        read() { this.destroy(denial); },
+      }));
+      undiciFetchMock.mockImplementation(drainingPut);
+      const failure = await uploadLocalFile('/private/source.xlsx',
+        mode === 'bounded-stream' ? { maxBytes: size } : undefined).catch(error => error);
+      expect(failure).toMatchObject({ code: 'DEVICE_LINK_MEDIA_ACCESS_DENIED' });
+      expect(String(failure)).not.toContain('/private/');
+      expect(failure).not.toHaveProperty('path');
+      expect(failure).not.toHaveProperty('cause');
+      expect(netFetchMock).not.toHaveBeenCalled();
+      if (mode !== 'large-stream') expect(undiciFetchMock).not.toHaveBeenCalled();
+      expect(apiFetch).toHaveBeenCalledWith(
+        DEL_PATH, expect.objectContaining({ method: 'DELETE', body: { key: KEY } }),
+      );
+    },
+  );
+
+  it.each(['network', 'other-source'] as const)(
+    'does not label %s permission errors as attachment access denial', async kind => {
+      statMock.mockResolvedValue({ isFile: () => true, size: 100 });
+      const denial = Object.assign(new Error('permission failure'), kind === 'network'
+        ? { code: 'EACCES', syscall: 'connect' }
+        : { code: 'EPERM', syscall: 'read', path: '/other/source' });
+      readFileMock.mockResolvedValue(Buffer.alloc(100));
+      if (kind === 'other-source') readFileMock.mockRejectedValueOnce(denial);
+      undiciFetchMock.mockRejectedValue(denial);
+      netFetchMock.mockRejectedValue(denial);
+      const failure = await uploadLocalFile('/private/source.xlsx').catch(error => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.code).not.toBe('DEVICE_LINK_MEDIA_ACCESS_DENIED');
+      if (kind === 'other-source') expect(failure).toBe(denial);
+    },
+  );
+
   it.each([NaN, Infinity, -1, 1.5, 99])(
     'rejects invalid or exceeded budget %s before presign',
     async (maxBytes) => {
