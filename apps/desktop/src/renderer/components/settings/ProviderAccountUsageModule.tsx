@@ -21,6 +21,7 @@ import { useProviderAccountUsage } from '../../hooks/useProviderAccountUsage';
 
 import { cn } from '@/lib/utils';
 import { Tip } from '@/components/ui/tooltip';
+import { QuotaBar } from '@/components/status/QuotaBar';
 
 function formatCurrency(value: string, currency: string, locale: string): string {
   try {
@@ -54,6 +55,78 @@ function UsageMetric({ label, value }: { label: string; value: string }) {
       <p className="mt-0.5 truncate text-13 font-medium tabular-nums text-[var(--text-primary)]">
         {value}
       </p>
+    </div>
+  );
+}
+
+/** 智谱 GLM Coding Plan 额度体：套餐档位 + 5 小时 / 每周窗口进度。 */
+function ZhipuQuotaBody({
+  snapshot,
+  locale,
+}: {
+  snapshot: Extract<ProviderAccountUsageResult, { status: 'ready' }>['snapshot'];
+  locale: string;
+}) {
+  const { t } = useTranslation();
+  if (snapshot.kind !== 'zhipu-coding-plan-quota') return null;
+  if (snapshot.noPlan) {
+    return (
+      <p className="mt-3 flex items-start gap-2 text-13 text-[var(--text-secondary)]">
+        <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--warning-fg)]" aria-hidden />
+        <span>{t('providerAccountUsage.zhipuCodingPlan.noPlan')}</span>
+      </p>
+    );
+  }
+  const resetFmt = (resetsAt: number | null) =>
+    resetsAt == null
+      ? null
+      : new Intl.DateTimeFormat(locale, { timeStyle: 'short' }).format(resetsAt);
+  const windows: { label: string; usedPercent: number; resetsAt: number | null }[] = [];
+  if (snapshot.fiveHour) {
+    windows.push({ label: t('providerAccountUsage.zhipuCodingPlan.fiveHour'), ...snapshot.fiveHour });
+  }
+  if (snapshot.weekly) {
+    windows.push({ label: t('providerAccountUsage.zhipuCodingPlan.weekly'), ...snapshot.weekly });
+  }
+  return (
+    <div className="mt-3 space-y-3">
+      {snapshot.level && (
+        <p className="text-11 text-[var(--text-tertiary)]">
+          {t('providerAccountUsage.zhipuCodingPlan.level', { level: snapshot.level })}
+        </p>
+      )}
+      {windows.length === 0 ? (
+        <p className="text-13 text-[var(--text-secondary)]">
+          {t('providerAccountUsage.zhipuCodingPlan.empty')}
+        </p>
+      ) : (
+        windows.map((window) => {
+          const resets = resetFmt(window.resetsAt);
+          return (
+            <div key={window.label} className="rounded-lg bg-[var(--surface-chip)] px-3 py-2.5">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-12 font-medium text-[var(--text-secondary)]">{window.label}</span>
+                <span className="text-13 font-medium tabular-nums text-[var(--text-primary)]">
+                  {t('providerAccountUsage.zhipuCodingPlan.usedPercent', {
+                    value: Math.round(window.usedPercent),
+                  })}
+                </span>
+              </div>
+              <div className="mt-2">
+                <QuotaBar
+                  usedPercent={window.usedPercent}
+                  ariaLabel={window.label}
+                />
+              </div>
+              {resets && (
+                <p className="mt-1.5 text-11 text-[var(--text-tertiary)]">
+                  {t('providerAccountUsage.zhipuCodingPlan.resetsAt', { time: resets })}
+                </p>
+              )}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }
@@ -200,14 +273,17 @@ export function ProviderAccountUsageModule({ provider }: { provider?: ProviderVi
               )}
             </div>
             <BalanceBody result={result} locale={locale} />
-            <button
-              type="button"
-              onClick={() => void window.electronAPI.openExternal('https://platform.deepseek.com/usage')}
-              className="mt-3 inline-flex items-center gap-1.5 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]"
-            >
-              {t('providerAccountUsage.openDashboard')}
-              <ExternalLink size={12} aria-hidden />
-            </button>
+            <ZhipuQuotaBody snapshot={result.snapshot} locale={locale} />
+            {result.snapshot.kind === 'deepseek-balance' ? (
+              <button
+                type="button"
+                onClick={() => void window.electronAPI.openExternal('https://platform.deepseek.com/usage')}
+                className="mt-3 inline-flex items-center gap-1.5 text-12 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]"
+              >
+                {t('providerAccountUsage.openDashboard')}
+                <ExternalLink size={12} aria-hidden />
+              </button>
+            ) : null}
           </>
         ) : null)}
 

@@ -5,6 +5,7 @@ import type { AgentKind, Provider } from '@cindy/model-providers';
 import {
   isZhipuCodingPlanProvider,
   parseDeepSeekAccountUsage,
+  parseZhipuCodingPlanQuota,
   readProviderAccountUsage,
   resetProviderAccountUsageForTest,
   resolveProviderAccountUsage,
@@ -97,6 +98,48 @@ describe('parseDeepSeekAccountUsage', () => {
   });
 });
 
+const ZHIPU_QUOTA = {
+  code: 200,
+  msg: 'Operation successful',
+  success: true,
+  data: {
+    limits: [
+      { type: 'TIME_LIMIT', unit: 5, number: 1, usage: 1000, currentValue: 0, remaining: 1000, percentage: 0, nextResetTime: 1793129464999 },
+      { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 18, nextResetTime: 1792786868808 },
+      { type: 'TOKENS_LIMIT', unit: 6, number: 2, percentage: 44, nextResetTime: 1793129464999 },
+    ],
+    level: 'pro',
+  },
+};
+
+describe('parseZhipuCodingPlanQuota', () => {
+  it('maps unit 3 to the 5-hour window and unit 6 to weekly, keeping level', () => {
+    const snapshot = parseZhipuCodingPlanQuota(ZHIPU_QUOTA, 7);
+    expect(snapshot).toEqual({
+      kind: 'zhipu-coding-plan-quota',
+      noPlan: false,
+      level: 'pro',
+      fiveHour: { usedPercent: 18, resetsAt: 1792786868808 },
+      weekly: { usedPercent: 44, resetsAt: 1793129464999 },
+      fetchedAt: 7,
+    });
+  });
+
+  it('recognizes pay-as-you-go accounts (200 + business error mentioning coding plan)', () => {
+    const snapshot = parseZhipuCodingPlanQuota(
+      { code: 500, msg: '当前用户不存在coding plan', success: false },
+      7,
+    );
+    expect(snapshot).toMatchObject({ kind: 'zhipu-coding-plan-quota', noPlan: true, level: null });
+  });
+
+  it('rejects unrelated business errors and malformed payloads', () => {
+    expect(() => parseZhipuCodingPlanQuota({ success: false, msg: 'server busy' }, 1)).toThrow(/invalid/);
+    expect(() => parseZhipuCodingPlanQuota({ success: true }, 1)).toThrow(/invalid/);
+    expect(() => parseZhipuCodingPlanQuota(null, 1)).toThrow(/invalid/);
+  });
+});
+
 describe('resolveProviderAccountUsage', () => {
   beforeEach(() => {
     resetProviderAccountUsageForTest();
@@ -119,6 +162,44 @@ describe('resolveProviderAccountUsage', () => {
     setAccountUsageProviderReader(() => mkProvider());
     setAccountUsageKeyReader((_id, agent) => (agent === 'pi' ? 'sk-pi' : null));
     expect(resolveProviderAccountUsage('deepseek')?.agent).toBe('pi');
+  });
+
+  it('claims zhipu coding-plan routes with the monitor endpoint, not pay-as-you-go', () => {
+    setAccountUsageProviderReader(() =>
+      mkProvider({
+        id: 'glm-coding-plan',
+        routing: {
+          'claude-code': { upstream: 'https://open.bigmodel.cn/api/anthropic', authStrategy: 'api-key-header' as const },
+          codex: { upstream: 'https://open.bigmodel.cn/api/coding/paas/v4', authStrategy: 'api-key-header' as const },
+        },
+      }),
+    );
+    setAccountUsageKeyReader(() => 'glm-key');
+    expect(resolveProviderAccountUsage('glm-coding-plan')).toMatchObject({
+      integrationId: 'zhipu-coding-plan-quota-v1',
+      endpoint: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+    });
+    // 按量付费（/api/paas）同域不认领。
+    setAccountUsageProviderReader(() =>
+      mkProvider({
+        id: 'zhipu-glm',
+        routing: { codex: { upstream: 'https://open.bigmodel.cn/api/paas/v4', authStrategy: 'api-key-header' as const } },
+      }),
+    );
+    expect(resolveProviderAccountUsage('zhipu-glm')).toBeNull();
+  });
+
+  it('routes the global coding plan to the z.ai monitor endpoint', () => {
+    setAccountUsageProviderReader(() =>
+      mkProvider({
+        id: 'zai-coding',
+        routing: { pi: { upstream: 'https://api.z.ai/api/coding/paas/v4', authStrategy: 'api-key-header' as const } },
+      }),
+    );
+    setAccountUsageKeyReader(() => 'zai-key');
+    expect(resolveProviderAccountUsage('zai-coding')).toMatchObject({
+      endpoint: 'https://api.z.ai/api/monitor/usage/quota/limit',
+    });
   });
 
   it('never claims proxied base URLs or oauth providers', () => {
@@ -263,6 +344,34 @@ describe('readProviderAccountUsage', () => {
     setAccountUsageOwnerStampReader(() => ({ dataOwnerId: 'owner-b', generation: 2 }));
     await readProviderAccountUsage({ providerId: 'deepseek' });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fetches zhipu quota with raw-key authorization', async () => {
+    setAccountUsageProviderReader(() =>
+      mkProvider({
+        id: 'glm-coding-plan',
+        routing: {
+          'claude-code': { upstream: 'https://open.bigmodel.cn/api/anthropic', authStrategy: 'api-key-header' as const },
+        },
+      }),
+    );
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('https://open.bigmodel.cn/api/monitor/usage/quota/limit');
+      // 智谱不加 Bearer 前缀。
+      expect((init?.headers as Record<string, string>).Authorization).toBe('sk-test');
+      return jsonRes(ZHIPU_QUOTA);
+    });
+    setAccountUsageFetch(fetchMock as unknown as typeof fetch);
+    const result = await readProviderAccountUsage({ providerId: 'glm-coding-plan' });
+    expect(result).toMatchObject({
+      status: 'ready',
+      snapshot: {
+        kind: 'zhipu-coding-plan-quota',
+        level: 'pro',
+        fiveHour: { usedPercent: 18 },
+        weekly: { usedPercent: 44 },
+      },
+    });
   });
 
   it('classifies invalid JSON as invalid-response', async () => {

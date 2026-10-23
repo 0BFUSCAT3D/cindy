@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProviderView } from '@cindy/model-providers';
 
 import type { ProviderAccountUsageResult } from '../../shared/providerAccountUsage';
+import { isZhipuCodingPlanProviderView } from '../lib/zhipuCodingPlan';
 
 export interface ProviderAccountUsageState {
   /** false = 该供应商没有可读的账户接口，调用方不应渲染模块。 */
@@ -23,7 +24,7 @@ export interface ProviderAccountUsageState {
 
 const DEEPSEEK_ORIGIN = 'https://api.deepseek.com';
 
-/** 供应商任一 runtime 是否指向官方 DeepSeek 端点（与 main 的认领规则同一口径，仅用于首屏免查询裁剪）。 */
+/** 任一 runtime 是否指向官方 DeepSeek 端点（与 main 认领规则同口径，首屏免查询裁剪用）。 */
 function hasDeepSeekOfficialRoute(provider: ProviderView | undefined): boolean {
   if (!provider) return false;
   return Object.values(provider.routing ?? {}).some((route) => {
@@ -44,7 +45,7 @@ export function useProviderAccountUsage(
   const supported =
     !!provider
     && provider.auth?.method !== 'oauth'
-    && hasDeepSeekOfficialRoute(provider);
+    && (hasDeepSeekOfficialRoute(provider) || isZhipuCodingPlanProviderView(provider));
   const [result, setResult] = useState<ProviderAccountUsageResult | null>(null);
   const [busy, setBusy] = useState(false);
   const requestId = useRef(0);

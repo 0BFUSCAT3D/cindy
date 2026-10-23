@@ -23,6 +23,8 @@ import {
   type ProviderAccountUsageError,
   type ProviderAccountUsageRequest,
   type ProviderAccountUsageResult,
+  type ProviderAccountUsageSnapshot,
+  type ZhipuCodingPlanQuotaSnapshot,
 } from '../../shared/providerAccountUsage.js';
 import { createMakerLogger } from './logger-adapter.js';
 
@@ -37,12 +39,32 @@ const MAX_RETRY_AFTER_MS = 60 * 60_000;
 /** 官方账户接口清单。端点是唯一事实源，不从目录 / 用户配置推导。 */
 const INTEGRATIONS = {
   'deepseek-balance-v1': {
-    origin: 'https://api.deepseek.com',
+    origins: ['https://api.deepseek.com'],
     endpoint: 'https://api.deepseek.com/user/balance',
+  },
+  // 智谱 GLM Coding Plan 额度（GET /api/monitor/usage/quota/limit，裸 key 鉴权）。
+  // CN 与 Global 共享路径，端点跟认领到的 runtime 同域；按量付费（/api/paas）不认领。
+  'zhipu-coding-plan-quota-v1': {
+    origins: ['https://open.bigmodel.cn', 'https://api.z.ai'],
+    endpointFor: (origin: string) =>
+      origin === 'https://api.z.ai'
+        ? 'https://api.z.ai/api/monitor/usage/quota/limit'
+        : 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+    // Coding Plan 专属接入路径：/api/anthropic（cc）或 /api/coding/*（codex/pi）。
+    // 按量付费连接也在这两个域，但路径是 /api/paas/*，不认领。
+    pathPrefixes: ['/api/anthropic', '/api/coding/'],
   },
 } as const;
 
 export type ProviderAccountUsageIntegrationId = keyof typeof INTEGRATIONS;
+
+/** 迭代时的宽化视图（异构配置统一成可选字段集合）。 */
+type IntegrationView = {
+  origins: readonly string[];
+  pathPrefixes?: readonly string[];
+  endpoint?: string;
+  endpointFor?: (origin: string) => string;
+};
 
 /** 该供应商是否命中智谱 GLM Coding Plan 的官方接入端点（设置页给「查看套餐用量」入口用）。 */
 export function isZhipuCodingPlanProvider(provider: Provider | undefined | null): boolean {
@@ -65,7 +87,6 @@ export interface ProviderAccountUsageResolution {
   agent: AgentKind;
   key: string;
 }
-
 type ProviderReader = (providerId: string) => Provider | undefined;
 type KeyReader = (providerId: string, agent: AgentKind) => string | null;
 type OwnerStampReader = () => { dataOwnerId: string | null; generation: number };
@@ -103,7 +124,7 @@ export function setAccountUsageNow(now: () => number): void {
 }
 
 interface CacheRecord {
-  snapshot?: DeepSeekAccountUsageSnapshot;
+  snapshot?: ProviderAccountUsageSnapshot;
   expiresAt: number;
   lastAttemptAt: number;
   lastError?: ProviderAccountUsageError;
@@ -162,52 +183,75 @@ export function parseDeepSeekAccountUsage(
 }
 
 /**
- * 认领规则：apiKey 鉴权 + 某 runtime 的 baseUrl origin 与官方端点 origin 全等。
+ * 认领规则：apiKey 鉴权 + 某 runtime 的 baseUrl 与官方端点同域且路径匹配。
  * https 之外一律不认领（规则同 provider-route 的上游判定，不做子串包含）。
+ * 智谱只认领 Coding Plan 接入路径，按量付费（/api/paas）同域也不认领。
  */
 export function resolveProviderAccountUsage(
   providerId: string,
 ): ProviderAccountUsageResolution | null {
   const provider = providerReader(providerId);
   if (!provider || provider.auth.method !== 'apiKey') return null;
-  for (const [integrationId, integration] of Object.entries(INTEGRATIONS) as [
-    ProviderAccountUsageIntegrationId,
-    (typeof INTEGRATIONS)[ProviderAccountUsageIntegrationId],
-  ][]) {
-    for (const agent of PROVIDER_ACCOUNT_USAGE_AGENTS) {
-      const upstream = provider.routing[agent]?.upstream;
-      if (!upstream) continue;
-      let matches = false;
-      try {
-        const url = new URL(upstream);
-        matches = url.protocol === 'https:' && url.origin === integration.origin;
-      } catch {
-        matches = false;
+  for (const agent of PROVIDER_ACCOUNT_USAGE_AGENTS) {
+    const upstream = provider.routing[agent]?.upstream;
+    if (!upstream) continue;
+    let url: URL;
+    try {
+      url = new URL(upstream);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== 'https:') continue;
+    const origin = url.origin;
+    for (const [integrationId, integration] of Object.entries(INTEGRATIONS) as [
+      ProviderAccountUsageIntegrationId,
+      IntegrationView,
+    ][]) {
+      if (!integration.origins.includes(origin)) continue;
+      if (
+        integration.pathPrefixes
+        && !integration.pathPrefixes.some((p) => url.pathname === p || url.pathname.startsWith(p))
+      ) {
+        continue;
       }
-      if (!matches) continue;
       const key = keyReader(providerId, agent)?.trim();
       if (!key) continue;
-      return { integrationId, endpoint: integration.endpoint, agent, key };
+      const endpoint = integration.endpointFor
+        ? integration.endpointFor(origin)
+        : integration.endpoint!;
+      return { integrationId, endpoint, agent, key };
     }
   }
   return null;
 }
 
-/** key 归属该 provider 的哪个 runtime 都不关键；余额接口对全账号生效，取任一可用 key。 */
+/** key 归属该 provider 的哪个 runtime 都不关键；额度对全账号生效，取任一可用 key。 */
 export function providerAccountUsageSupported(providerId: string): boolean {
   const provider = providerReader(providerId);
   if (!provider || provider.auth.method !== 'apiKey') return false;
-  return Object.entries(INTEGRATIONS).some(([, integration]) =>
-    PROVIDER_ACCOUNT_USAGE_AGENTS.some((agent) => {
-      const upstream = provider.routing[agent]?.upstream;
-      if (!upstream) return false;
-      try {
-        return new URL(upstream).protocol === 'https:' && new URL(upstream).origin === integration.origin;
-      } catch {
-        return false;
-      }
-    }),
-  );
+  return PROVIDER_ACCOUNT_USAGE_AGENTS.some((agent) => {
+    const upstream = provider.routing[agent]?.upstream;
+    if (!upstream) return false;
+    return matchesAnyIntegration(upstream);
+  });
+}
+
+function matchesAnyIntegration(upstream: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(upstream);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:') return false;
+  return Object.values(INTEGRATIONS).some((integration) => {
+    const view = integration as IntegrationView;
+    if (!view.origins.includes(url.origin)) return false;
+    if (view.pathPrefixes) {
+      return view.pathPrefixes.some((p) => url.pathname === p || url.pathname.startsWith(p));
+    }
+    return true;
+  });
 }
 
 function mapHttpStatusToError(status: number): ProviderAccountUsageError | null {
@@ -215,6 +259,70 @@ function mapHttpStatusToError(status: number): ProviderAccountUsageError | null 
   if (status === 429) return 'rate-limited';
   if (status >= 500) return 'server';
   return null;
+}
+
+/**
+ * 解析智谱 /api/monitor/usage/quota/limit 响应。
+ * 按量付费账户回 200 + 业务错误（success:false 且 msg 提到没有 coding plan）→ noPlan
+ * 快照（不是故障）；其余业务错误 → invalid-response。
+ */
+export function parseZhipuCodingPlanQuota(
+  value: unknown,
+  fetchedAt: number,
+): ZhipuCodingPlanQuotaSnapshot {
+  const fail = (): never => {
+    throw new Error('invalid Zhipu coding plan quota response');
+  };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
+  const body = value as Record<string, unknown>;
+  if (body.success === false) {
+    const msg = typeof body.msg === 'string' ? body.msg : '';
+    const compact = msg.replace(/[\s_-]/g, '').toLowerCase();
+    if (
+      compact.includes('codingplan')
+      && /不存在|没有|未开通|not exist|not found|not have|doesn't have|no coding plan|not subscribed/.test(msg)
+    ) {
+      return { kind: 'zhipu-coding-plan-quota', noPlan: true, level: null, fiveHour: null, weekly: null, fetchedAt };
+    }
+    return fail();
+  }
+  const data = body.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return fail();
+  const payload = data as Record<string, unknown>;
+  const level = typeof payload.level === 'string' && payload.level.trim() ? payload.level.trim() : null;
+  const limits = Array.isArray(payload.limits) ? payload.limits : [];
+  let fiveHour: ZhipuCodingPlanQuotaSnapshot['fiveHour'] = null;
+  let weekly: ZhipuCodingPlanQuotaSnapshot['weekly'] = null;
+  const unclassified: { reset: number | null; percent: number }[] = [];
+  for (const item of limits) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const line = item as Record<string, unknown>;
+    const type = typeof line.type === 'string' ? line.type.toUpperCase() : '';
+    if (type !== 'TOKENS_LIMIT' && type !== 'CREDIT_LIMIT') continue;
+    const percent = typeof line.percentage === 'number' && Number.isFinite(line.percentage)
+      ? Math.max(0, Math.min(100, line.percentage))
+      : null;
+    if (percent === null) continue;
+    const resetsAt =
+      typeof line.nextResetTime === 'number' && Number.isFinite(line.nextResetTime) && line.nextResetTime > 0
+        ? line.nextResetTime
+        : null;
+    const unit = typeof line.unit === 'number' ? line.unit : null;
+    // unit 3 = 5 小时窗口、6 = 每周窗口；缺失时兑底：无 reset 优先归 5 小时。
+    if (unit === 3 && !fiveHour) fiveHour = { usedPercent: percent, resetsAt };
+    else if (unit === 6 && !weekly) weekly = { usedPercent: percent, resetsAt };
+    else if (unit == null) unclassified.push({ reset: resetsAt, percent });
+  }
+  for (const entry of unclassified) {
+    if (!fiveHour && entry.reset === null) fiveHour = { usedPercent: entry.percent, resetsAt: null };
+    else if (!fiveHour || !weekly) {
+      const target = fiveHour ? 'weekly' : 'fiveHour';
+      const window = { usedPercent: entry.percent, resetsAt: entry.reset };
+      if (target === 'weekly') weekly = window;
+      else fiveHour = window;
+    }
+  }
+  return { kind: 'zhipu-coding-plan-quota', noPlan: false, level, fiveHour, weekly, fetchedAt };
 }
 
 function parseRetryAfterMs(header: string | null, now: number): number | undefined {
@@ -227,13 +335,31 @@ function parseRetryAfterMs(header: string | null, now: number): number | undefin
 async function fetchDeepSeekBalance(
   resolution: ProviderAccountUsageResolution,
 ): Promise<DeepSeekAccountUsageSnapshot> {
+  return fetchAccountJson(resolution, `Bearer ${resolution.key}`, parseDeepSeekAccountUsage);
+}
+
+async function fetchZhipuCodingPlanQuota(
+  resolution: ProviderAccountUsageResolution,
+): Promise<ZhipuCodingPlanQuotaSnapshot> {
+  // 智谱额度接口用裸 key（不带 Bearer），与 cc 实测一致（Bearer 亦可用，取裸 key 更稳）。
+  return fetchAccountJson(resolution, resolution.key, parseZhipuCodingPlanQuota);
+}
+
+async function fetchAccountJson<T>(
+  resolution: ProviderAccountUsageResolution,
+  authorization: string,
+  parse: (value: unknown, fetchedAt: number) => T,
+): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(resolution.endpoint, {
-      headers: { Authorization: `Bearer ${resolution.key}` },
-      signal: controller.signal,
-    });
+    const headers: Record<string, string> = { Authorization: authorization };
+    if (resolution.integrationId === 'zhipu-coding-plan-quota-v1') {
+      // 与社区工具（cc-switch）实测口径一致：要求 JSON + 英文文案，响应 msg 语言稳定。
+      headers['Content-Type'] = 'application/json';
+      headers['Accept-Language'] = 'en-US,en';
+    }
+    const response = await fetchImpl(resolution.endpoint, { headers, signal: controller.signal });
     const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'), accountUsageNow());
     const mapped = mapHttpStatusToError(response.status);
     if (mapped) throw new AccountUsageRequestError(mapped, retryAfterMs);
@@ -248,7 +374,7 @@ async function fetchDeepSeekBalance(
       throw new AccountUsageRequestError('invalid-response');
     }
     try {
-      return parseDeepSeekAccountUsage(payload, accountUsageNow());
+      return parse(payload, accountUsageNow());
     } catch {
       throw new AccountUsageRequestError('invalid-response');
     }
@@ -295,7 +421,10 @@ export async function readProviderAccountUsage(
     return { status: 'ready', snapshot: record.snapshot, stale: false };
   }
   try {
-    const snapshot = await fetchDeepSeekBalance(resolution);
+    const snapshot =
+      resolution.integrationId === 'zhipu-coding-plan-quota-v1'
+        ? await fetchZhipuCodingPlanQuota(resolution)
+        : await fetchDeepSeekBalance(resolution);
     cache.set(cacheKey, {
       snapshot,
       expiresAt: accountUsageNow() + CACHE_TTL_MS,

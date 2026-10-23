@@ -33,7 +33,32 @@ export interface DeepSeekAccountUsageSnapshot {
   fetchedAt: number;
 }
 
-export type ProviderAccountUsageSnapshot = DeepSeekAccountUsageSnapshot;
+export type ProviderAccountUsageSnapshot =
+  | DeepSeekAccountUsageSnapshot
+  | ZhipuCodingPlanQuotaSnapshot;
+
+/** 智谱 GLM Coding Plan 一个计费窗口的已用比例与重置时间。 */
+export interface ZhipuCodingPlanWindow {
+  /** 已用百分比（0-100，上游原值）。 */
+  usedPercent: number;
+  /** epoch ms；null = 上游未提供（如 0% 状态下可能缺席）。 */
+  resetsAt: number | null;
+}
+
+/**
+ * 智谱 GLM Coding Plan 额度快照（GET /api/monitor/usage/quota/limit，鉴权用裸 key）。
+ * 窗口语义按上游 unit 字段：3 = 5 小时积分、6 = 每周积分；老套餐只回 5 小时一条。
+ * 按量付费账户无套餐：HTTP 200 + 业务错误（msg 提 coding plan 不存在）→ noPlan=true。
+ */
+export interface ZhipuCodingPlanQuotaSnapshot {
+  kind: 'zhipu-coding-plan-quota';
+  noPlan: boolean;
+  /** 套餐档位（如 lite / pro / max）；noPlan 或未回时为 null。 */
+  level: string | null;
+  fiveHour: ZhipuCodingPlanWindow | null;
+  weekly: ZhipuCodingPlanWindow | null;
+  fetchedAt: number;
+}
 
 export type ProviderAccountUsageError =
   | 'no-credentials'
@@ -59,10 +84,8 @@ export type ProviderAccountUsageResult =
     };
 
 /**
- * 智谱 GLM Coding Plan 的官方用量页。套餐额度（5 小时 / 每周积分）只能在这页看：
- * 开放平台对 Coding Plan key 没有公开的余额 / 配额查询 API（2026-10 实测 + 官方文档
- * 「积分额度」节指引），余额接口对 Coding key 也是 404。因此 GLM Coding Plan 不做余额
- * 拉取，只给这个入口。
+ * 智谱 GLM Coding Plan 的官方用量页。无套餐（noPlan）/ 想看积分细则时的一键入口；
+ * 额度数值由 /api/monitor/usage/quota/limit 拉取（2026-10 实测可用）。
  */
 export const ZHIPU_CODING_PLAN_USAGE_URL = 'https://www.bigmodel.cn/coding-plan/personal/usage';
 
