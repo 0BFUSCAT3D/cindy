@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { cindyDark } from '../builtin/cindy-dark';
 import { cindyLight } from '../builtin/cindy-light';
+import { renderOAuthResultPage } from '../../../main/oauthResultPage';
 import { colorRegistry } from '../color-registry';
 import '../colors';
 
@@ -30,6 +31,69 @@ describe('登录页文字档 = 主界面墨水阶梯', () => {
       const ink = theme.colors[inkTierId];
       expect(ink, `${theme.id} 缺少 ${inkTierId}`).toMatch(/^rgba\((0, 0, 0|255, 255, 255), 0\.\d+\)$/);
       expect(colorRegistry.resolveDefault(loginId, mode)).toBe(ink);
+    });
+  }
+});
+
+/**
+ * 浏览器登录回调页(`oauthResultPage.ts`)在系统浏览器里打开,拿不到 renderer 的 token,
+ * 颜色以内联 CSS 变量写在三段规则里:浅色、强制深色(`data-theme="dark"`)、系统深色回退
+ * (`prefers-color-scheme: dark` 且未指定主题)。只比较注册 token 会漏掉这里,
+ * 所以直接解析生成的页面。标题 = 正文档,正文 = 次要档,错误码细节 = 三级档。
+ */
+const CALLBACK_VARS: ReadonlyArray<readonly [cssVar: string, inkTierId: string]> = [
+  ['--title', 'text-primary'],
+  ['--body', 'text-secondary'],
+  ['--detail', 'text-tertiary'],
+];
+
+function normalizeRgba(value: string): string {
+  const match = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/.exec(value.trim());
+  if (!match) throw new Error(`不是 rgba 墨水色: ${value}`);
+  return `${match[1]},${match[2]},${match[3]},${Number(match[4])}`;
+}
+
+function callbackPageVars(theme: 'light' | 'dark' | undefined) {
+  const html = renderOAuthResultPage({
+    htmlLang: 'zh-CN',
+    theme,
+    pageKind: 'desktop-login',
+    copyKind: 'login.browserCallback',
+    variant: 'error',
+    title: 'title',
+    body: 'body',
+    detail: 'STATE_MISMATCH',
+    action: { href: 'cindy://login', label: 'back' },
+  });
+  const block = (pattern: RegExp) => {
+    const body = pattern.exec(html)?.[1];
+    if (body === undefined) throw new Error(`回调页缺少 CSS 规则: ${pattern}`);
+    return Object.fromEntries(
+      body
+        .split(';')
+        .map((declaration) => declaration.split(/:(.+)/))
+        .filter(([name, value]) => name?.startsWith('--') && value)
+        .map(([name, value]) => [name, value]),
+    ) as Record<string, string>;
+  };
+  return {
+    light: block(/:root\{([^}]*)\}/),
+    dark: block(/:root\[data-theme="dark"\]\{([^}]*)\}/),
+    systemDark: block(/@media\(prefers-color-scheme:dark\)\{:root:not\(\[data-theme\]\)\{([^}]*)\}/),
+  };
+}
+
+describe('浏览器登录回调页文字 = 主界面墨水阶梯', () => {
+  const vars = callbackPageVars(undefined);
+  for (const [rule, theme] of [
+    ['light', cindyLight],
+    ['dark', cindyDark],
+    ['systemDark', cindyDark],
+  ] as const) {
+    it.each(CALLBACK_VARS)(`${rule}: %s 与 %s 同值`, (cssVar, inkTierId) => {
+      const ink = theme.colors[inkTierId];
+      expect(vars[rule][cssVar], `${rule} 规则缺少 ${cssVar}`).toBeDefined();
+      expect(normalizeRgba(vars[rule][cssVar])).toBe(normalizeRgba(ink));
     });
   }
 });

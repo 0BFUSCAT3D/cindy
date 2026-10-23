@@ -2485,7 +2485,7 @@ registerColor('login-control-border', GENERATED_DEFAULTS["login-control-border"]
 registerColor('login-control-border-active', GENERATED_DEFAULTS["login-control-border-active"], 'Login — 控件 focus/filled 描边(亮色 #2A2828 / 暗色 #EEEEEE 反相)');
 registerColor('login-control-border-disabled', GENERATED_DEFAULTS["login-control-border-disabled"], 'Login — disabled 控件描边(两模式同构,§16.5 disabled 特例)');
 registerColor('login-control-text', GENERATED_DEFAULTS["login-control-text"], 'Login — 控件已填文本(墨水正文档 黑 88% / 白 82%)');
-registerColor('login-control-placeholder', GENERATED_DEFAULTS["login-control-placeholder"], 'Login — 控件 placeholder/countdown(墨水占位档 黑 32% / 白 30%)');
+registerColor('login-control-placeholder', GENERATED_DEFAULTS["login-control-placeholder"], 'Login — 控件 placeholder(墨水占位档 黑 32% / 白 30%);倒计时与提示文本走 login-secondary-text');
 registerColor('login-title-text', GENERATED_DEFAULTS["login-title-text"], 'Login — 面板标题 32 Bold(墨水正文档 黑 88% / 白 82%)');
 registerColor('login-secondary-text', GENERATED_DEFAULTS["login-secondary-text"], 'Login — 副标题/说明文字(墨水次要档 黑 56% / 白 55%)');
 registerColor('login-primary-button-bg', GENERATED_DEFAULTS["login-primary-button-bg"], 'Login — 主按钮/第三方圆钮底(亮色深 #2A2828 / 暗色白 #EEEEEE 反相;社交圆图标保品牌色)');

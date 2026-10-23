@@ -670,7 +670,9 @@ export function LoginBackButton({
  * Text_link(§4.7 状态表 + U-9 裁决):(70,238) 540×50 Regular 20 居中。
  * - link:default #2A2828 underline(247:1612)/hover #4A4848(358:792,仅桌面)/
  *   pressed #1A1818(U-9,--login-link-pressed;underline·字号·字重不变);
- * - countdown/info 变体:#D4D4D4 无 underline 不可交互(247:1614);
+ * - countdown/info 变体:次要档(--login-secondary-text,2026-10-23 起;原 figma 247:1614
+ *   为 #D4D4D4,与占位同档只有 1.3~2.2:1,倒计时与「验证码已发送至 X」是要读的信息)
+ *   无 underline 不可交互;
  *   binding code 子态「验证码已发送至 X」提示复用本变体(demo bindingPanel)。
  * 色变全走 CSS 类(hover:/active:),不改布局(design §2.3-1)。
  *
@@ -708,7 +710,7 @@ export function LoginTextLink({
       <span
         data-testid={testId ?? 'login-text-link-countdown'}
         className="absolute flex items-center justify-center overflow-hidden whitespace-nowrap"
-        style={{ ...geometry, color: LOGIN_COLORS.controlPlaceholder, textOverflow: 'ellipsis' }}
+        style={{ ...geometry, color: LOGIN_COLORS.secondaryText, textOverflow: 'ellipsis' }}
       >
         {children}
       </span>
@@ -1378,21 +1380,16 @@ function ShareIcon() {
   return (
     <svg width="100%" height="100%" viewBox="0 0 20 20" fill="none" aria-hidden>
       <path
-        d="M12 1H19V8"
-        stroke={LOGIN_COLORS.controlText}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
         d="M19 12.7368V17.5C19 18.3285 18.3285 19 17.5 19H2.5C1.67158 19 1 18.3285 1 17.5V2.5C1 1.67158 1.67158 1 2.5 1H7"
         stroke={LOGIN_COLORS.controlText}
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      {/* 箭头的拐角与斜线尖端在右上角重叠:合成同一条 path,一次描边只上一次透明度;
+          拆成两条 path 时,控件文字色是半透明墨水,交叠处会叠出深点(浅色)/亮点(深色)。 */}
       <path
-        d="M10.8999 9.09995L18.5499 1.44995"
+        d="M12 1H19V8M10.8999 9.09995L18.5499 1.44995"
         stroke={LOGIN_COLORS.controlText}
         strokeWidth="2"
         strokeLinecap="round"
