@@ -264,10 +264,22 @@ export function useSessionListActions(options?: {
       Alert.alert(t('devices.list.alert.actionFailed'), t('devices.list.error.sessionDeviceNotFound'));
       return;
     }
-    const maker = createMobileMakerTransport({ deviceId: devices.rpcDeviceId, invoke });
+    const activityAtSwipe = remoteSessionStore.getSessionLiveActivity(session.id);
+    const runAtSwipe = remoteSessionStore.getSessionRunStatus(session.id);
+    const superseded = new Error('RECEIPT_SUPERSEDED');
+    const maker = createMobileMakerTransport({
+      deviceId: devices.rpcDeviceId,
+      invoke: (deviceId, channel, args) => channel !== 'notification:clear-session-attention'
+        ? invoke(deviceId, channel, args)
+        : invoke(deviceId, channel, args, { preSend: () => {
+          // Recheck after reconnect/backpressure. A new run invalidates even an identical completion label.
+          if (remoteSessionStore.getSessionLiveActivity(session.id) !== activityAtSwipe
+            || remoteSessionStore.getSessionRunStatus(session.id) !== runAtSwipe) throw superseded;
+        } }),
+    });
     const writes: Promise<unknown>[] = [maker.clearSessionAttention(session.id, 'explicit').catch((err: unknown) => {
       // Older Hosts lack this channel. Preserve schedule-read below and surface real failures.
-      if (!isWorktreeChannelNotAllowedError(err)) throw err;
+      if (err !== superseded && !isWorktreeChannelNotAllowedError(err)) throw err;
     })];
     if (sessionMayHaveScheduleRuns(devices.rpcDeviceId, session.id, session.source)) {
       writes.push(markSessionScheduleRunsRead(maker, session.id, devices.rpcDeviceId));

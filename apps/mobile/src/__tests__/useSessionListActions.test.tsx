@@ -7,6 +7,7 @@ import { useSessionListActions } from '@/session/useSessionListActions';
 import { loadSharedSessionScheduleIndex, resetScheduleIndexThrottleForTesting } from '@/session/scheduleIndex';
 import { createMobileMakerTransport, type RemoteInvoke } from '@/device-link/mobileMakerTransport';
 import type { RemoteSession } from '@/session/types';
+import { remoteSessionStore } from '@/session/remoteSessionStore';
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('react-native', () => ({ Alert: { alert: vi.fn() } }));
@@ -39,6 +40,7 @@ async function markRead(session = task) {
 beforeEach(() => {
   vi.clearAllMocks();
   resetScheduleIndexThrottleForTesting();
+  remoteSessionStore.clear();
   mocks.invoke.mockImplementation(async (_device: string, channel: string) => {
     if (channel === 'maker:schedule:list') return [];
     if (channel === 'maker:schedule:list-sidebar-index-runs') return { runs: [] };
@@ -49,13 +51,43 @@ beforeEach(() => {
 afterEach(() => act(() => root.unmount()));
 
 describe('task list mark-read', () => {
+  it.each(['unchanged', 'error', 'completed', 'restart-and-complete'])('checks queued attention against the swipe snapshot (%s)', async (change) => {
+    remoteSessionStore.applySessionActivity('host', { sessionId: 'task', phase: 'completed', attention: true, compactDetail: 'original' });
+    const send = vi.fn();
+    let flush!: () => void;
+    mocks.invoke.mockImplementation((_device: string, channel: string, _args: unknown[], options?: { preSend?: () => void }) => {
+      if (channel !== 'notification:clear-session-attention') {
+        return Promise.resolve(channel === 'maker:schedule:list-sidebar-index-runs' ? { runs: [] } : []);
+      }
+      return new Promise<void>((resolve, reject) => {
+        flush = () => {
+          try { options?.preSend?.(); send(); resolve(); } catch (error) { reject(error); }
+        };
+      });
+    });
+    mount();
+    act(() => actions.sessionSwipeControls.onMarkRead(task));
+    if (change === 'restart-and-complete') {
+      remoteSessionStore.applySessionActivity('host', { sessionId: 'task', phase: 'running' });
+      // Same final label and phase: the newer run must still invalidate the old receipt.
+      remoteSessionStore.applySessionActivity('host', { sessionId: 'task', phase: 'completed', attention: true, compactDetail: 'original' });
+    } else if (change !== 'unchanged') {
+      remoteSessionStore.applySessionActivity('host', { sessionId: 'task', phase: change, attention: true, compactDetail: 'new' });
+    }
+    const latest = remoteSessionStore.getSessionLiveActivity('task');
+    await act(async () => flush());
+    expect(send).toHaveBeenCalledTimes(change === 'unchanged' ? 1 : 0);
+    expect(remoteSessionStore.getSessionLiveActivity('task')).toBe(latest);
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, 'route-host'])('writes ordinary task attention to the resolved Host (%s)', async (preferred) => {
     const host = preferred ?? 'host';
     await loadSharedSessionScheduleIndex(host, createMobileMakerTransport({ deviceId: host, invoke: mocks.invoke as RemoteInvoke }));
     mocks.invoke.mockClear();
     mount(preferred);
     await markRead();
-    expect(mocks.invoke.mock.calls).toEqual([[host, 'notification:clear-session-attention', ['task', 'explicit']]]);
+    expect(mocks.invoke.mock.calls).toEqual([[host, 'notification:clear-session-attention', ['task', 'explicit'], { preSend: expect.any(Function) }]]);
     expect(Alert.alert).not.toHaveBeenCalled();
   });
 
@@ -73,7 +105,7 @@ describe('task list mark-read', () => {
     });
     mount();
     await markRead({ ...task, source: 'scheduler' });
-    expect(mocks.invoke).toHaveBeenCalledWith('host', 'notification:clear-session-attention', ['task', 'explicit']);
+    expect(mocks.invoke).toHaveBeenCalledWith('host', 'notification:clear-session-attention', ['task', 'explicit'], { preSend: expect.any(Function) });
     expect(mocks.invoke.mock.calls.filter((call) => call[1] === 'maker:schedule:mark-run-read'))
       .toEqual([['host', 'maker:schedule:mark-run-read', ['unread']]]);
     expect(Alert.alert).not.toHaveBeenCalled();
