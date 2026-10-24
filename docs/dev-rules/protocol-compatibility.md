@@ -3197,6 +3197,24 @@ Restored inactive tabs and a hidden sidebar must not mark mail read merely by mo
 Mark only the successfully resolved, visibly opened message, never the whole thread or drafts. A failed
 mark must retain the body and return `markReadFailed:true` for a non-blocking notice.
 It returns `MailMessage` (maker-shared/mail-message).
+Optional `participantPhotos:[{email,url}]` supplies exact normalized-email contact
+photos (at most 64, credential-free HTTPS URLs). Invalid photo entries are discarded
+without dropping the message. Old providers omit this field; old clients ignore it.
+It travels in the existing message response/resource with no new IPC or permission.
+Desktop uses it before Gravatar (SHA-256 normalized email), a fixed DuckDuckGo domain
+favicon endpoint for non-public mailbox domains, and initials. External avatars use
+no referrer and bounded load fallbacks; they do not enable remote images in the body.
+Desktop loads avatar sources for at most the first 12 participant positions per
+message, shared across from/to/cc/bcc; duplicates also consume a position. Remaining
+participants use initials and retain their complete addresses, without photo or hash lookups.
+Domain icons are presentation, not authenticated sender identity. Other clients may
+continue displaying addresses alone. Provider contact enrichment must remain optional
+when new contact scopes are missing; Gmail bounds its lookup budget and account cache.
+Desktop activates only HTTP(S) body links through the chat opening policy and keeps
+their underline visible despite sender CSS. Unsupported targets, including mailto,
+stay inert without an href or explicit link role in the reader, so they are not
+keyboard/screen-reader links. Reader paint and authored link attributes are restored
+before editing or serializing a draft; the system shell protocol allowlist is unchanged.
 Credentials and MIME parsing remain with the provider. Cindy validates the data
 and reuses its inert HTML/CID/recipient renderers for delivered mail. Multiple
 matching providers/accounts cannot silently select the first. Host setup metadata

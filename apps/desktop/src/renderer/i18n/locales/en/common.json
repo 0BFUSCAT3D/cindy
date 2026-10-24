@@ -6,6 +6,7 @@
     "button": "Use Original File"
   },
   "mailReader": {
+    "showExternalImages": "Show External Images",
     "markReadFailed": "Could not sync read status. Check mailbox authorization and reopen this email.",
     "title": "Mail",
     "openMailbox": "Open in mailbox",

@@ -6,6 +6,7 @@
     "button": "원본 파일 사용"
   },
   "mailReader": {
+    "showExternalImages": "외부 이미지 표시",
     "markReadFailed": "읽음 상태를 동기화하지 못했습니다. 메일함 인증을 확인하고 다시 여세요.",
     "title": "메일",
     "openMailbox": "메일함에서 열기",
