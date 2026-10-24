@@ -308,6 +308,9 @@ describe('interaction shared model', () => {
     expect(describePermissionAction('mcp:cindy_browser:call_tool', {
       name: 'browser', args: { action: 'recipe', recipeId: 'post-reply', site: 'x.com', text: 'hello' },
     }).preview).toBe('recipe {"recipeId":"post-reply","site":"x.com","text":"hello"}');
+    // argv arrays keep argument boundaries.
+    expect(describePermissionAction('shell', { command: ['printf', '%s', 'a b', "it's", ''] }).preview)
+      .toBe("printf %s 'a b' 'it'\\''s' ''");
     expect(describePermissionAction('exec', { command: 'rm -rf build', cwd: '/repo/app' }).preview)
       .toBe('rm -rf build\n# cwd: /repo/app');
     expect(describePermissionAction('Grep', { pattern: 'AKIA', path: '/Users/me' }).preview).toBe('AKIA \u2192 /Users/me');

@@ -914,10 +914,17 @@ function argsPreview(args: Record<string, unknown>): string {
   return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }
 
+function shellQuote(arg: string): string {
+  return /^[A-Za-z0-9_\/.:=@%+,-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
+}
+
 function commandText(input: Record<string, unknown>): string | null {
   const command = input.command ?? input.cmd;
   if (typeof command === 'string' && command.trim()) return command;
-  if (Array.isArray(command) && command.every((part) => typeof part === 'string')) return command.join(' ');
+  // argv arrays: quote each element so "one value with a space" and "two values" stay distinguishable.
+  if (Array.isArray(command) && command.length > 0 && command.every((part) => typeof part === 'string')) {
+    return command.map(shellQuote).join(' ');
+  }
   return null;
 }
 
