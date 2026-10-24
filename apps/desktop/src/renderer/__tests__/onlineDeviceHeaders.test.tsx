@@ -399,7 +399,14 @@ describe('Cindy Make sidebar entry', () => {
       name: 'settings.cindyMake.create.title',
     });
     fireEvent.click(create);
-    const dialog = await screen.findByRole('dialog', { name: 'settings.cindyMake.create.title' });
+    // 弹窗是 React.lazy 动态载入的(见 ProjectsSection 的 CindyMakeCreateDialog),
+    // 首次打开要等 import 落地;并行跑时这一步可能超过 findByRole 默认的 1s 上限,
+    // 表现为该用例偶发失败(上游既有 flaky,与业务断言无关)。给足等待窗口。
+    const dialog = await screen.findByRole(
+      'dialog',
+      { name: 'settings.cindyMake.create.title' },
+      { timeout: 5000 },
+    );
     expect(header.getAttribute('aria-expanded')).toBe('false');
     fireEvent.change(within(dialog).getByRole('textbox'), {
       target: { value: 'Change the sidebar' },
@@ -409,7 +416,7 @@ describe('Cindy Make sidebar entry', () => {
     );
     expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(create);
-    const reopened = await screen.findByRole('dialog');
+    const reopened = await screen.findByRole('dialog', {}, { timeout: 5000 });
     expect((within(reopened).getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
   });
 
