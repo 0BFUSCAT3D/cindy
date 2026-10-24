@@ -1150,7 +1150,10 @@ export async function touchSessionActivityInDb(
   try {
     const db = getDbClient().drizzle;
     const updated = await db.update(sessions)
-      .set({ lastActivityAt: sql`MAX(COALESCE(${sessions.lastActivityAt}, 0), ${atMs})` })
+      .set({
+        lastActivityAt: sql`MAX(COALESCE(${sessions.lastActivityAt}, 0), ${atMs})`,
+        updatedAt: sql`MAX(COALESCE(${sessions.updatedAt}, 0), ${atMs})`,
+      })
       .where(and(
         eq(sessions.id, id),
         sql`COALESCE(${sessions.lastActivityAt}, 0) < ${atMs}`,
@@ -1158,10 +1161,11 @@ export async function touchSessionActivityInDb(
           ? sql`NOT EXISTS (SELECT 1 FROM session_goals WHERE session_id = ${id} AND status = 'active')`
           : undefined,
       ))
-      .returning({ lastActivityAt: sessions.lastActivityAt });
+      .returning({ lastActivityAt: sessions.lastActivityAt, updatedAt: sessions.updatedAt });
     if (updated[0]?.lastActivityAt != null && isOwnerScopeCurrent(ownerScope)) {
       broadcastSessionPatched(id, {
         lastActivityAt: new Date(updated[0].lastActivityAt).toISOString(),
+        updatedAt: new Date(updated[0].updatedAt).toISOString(),
       }, ownerScope);
     }
   } catch (error) {

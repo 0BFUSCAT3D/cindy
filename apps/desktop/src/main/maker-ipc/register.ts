@@ -1364,6 +1364,7 @@ import {
   isSessionTurnDispatchBoundaryBusy,
   isTerminalTurnErrorEvent,
   SessionTurnActivityTracker,
+  SessionListActivityTracker,
 } from './sessionTurnActivityTracker.js';
 import { SilentStopTurnLeaseGate, SessionTurnLeaseTracker } from './sessionTurnLease.js';
 import { ProductTurnUsageTargetTracker, ProductTurnWallClockTracker } from './turnWallClock.js';
@@ -1998,6 +1999,7 @@ function settleDeferredProductTurnFailure(sessionId: string): void {
     sessionId,
     isCurrentProductTurnFailureOwner,
     (owner) => {
+      sessionListActivityTracker.commit(sessionId);
       void interruptProductTurn(sessionId, owner).catch(() =>
         log.warn('Could not interrupt product turn follow-up'));
     },
@@ -4606,6 +4608,9 @@ function resolveSwitchedSessionVendorOptions(sessionId: string): Record<string, 
 }
 let gitSnapshotCoordinator: GitSnapshotCoordinator | null = null;
 const sessionTurnActivityTracker = new SessionTurnActivityTracker();
+const sessionListActivityTracker = new SessionListActivityTracker((sessionId, atMs) => {
+  void touchSessionActivityInDb(sessionId, atMs, true);
+});
 let providerGroupLeaseReporter: ProviderGroupLeaseReporter | null = null;
 const reviewRunOwner: ReviewRunOwner = { instanceId: randomUUID(), processId: process.pid };
 const sessionTurnLeaseTracker = new SessionTurnLeaseTracker({
@@ -5687,6 +5692,7 @@ async function settleSilentStopDone(
     return;
   }
   void finalizeTurnChangeSet(sessionId, null, 'complete');
+  sessionListActivityTracker.commit(sessionId);
   productTurnWallClockTracker.clear(sessionId);
   productTurnUsageTargetTracker.clear(sessionId);
   sessionTurnActivityTracker.scheduleIdleAfterTerminalBroadcast(sessionId);
@@ -5763,6 +5769,7 @@ async function handleSilentStopTurnEnd(
   }
   const decision = silentStopAutoResumeGuard.onSilentStop(session.id, doneAt);
   if (decision.action === 'resume') {
+    const discardEndedActivity = sessionListActivityTracker.captureContinuation(session.id);
     // 续跑绕过 send 事务:generation 的绑定/失败回滚接线集中在 binding 对象
     // (bindSilentStopContinuationGeneration,见该文件头)。漏掉任一半边会让
     // 协调器残留的 activeTurn 与续跑的真实 done 永久失配，输入边界卡在忙
@@ -5790,6 +5797,7 @@ async function handleSilentStopTurnEnd(
           // silentStopContinuationBinding.ts 文件头。
           ...binding.sendOpts,
           onAccepted: async () => {
+            discardEndedActivity();
             await createDbMessage(session.id, {
               clientId,
               role: 'user',
@@ -5971,6 +5979,7 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     finalizeSessionClose(context.closedDirectAbortBoundary !== null, {
       clearTurnState: () => {
         sessionTurnActivityTracker.deleteSession(session.id);
+        sessionListActivityTracker.deleteSession(session.id);
         sessionTurnBoundaryGenerationById.delete(session.id);
         markSessionTurnEnded(session.id);
       },
@@ -6210,9 +6219,7 @@ const sessionEventDependencies: SessionEventDependencies = {
   get markTurnEndedAfterPersistDrain() {
     return markTurnEndedAfterPersistDrain;
   },
-  noteSessionListActivity: (sessionId: string) => {
-    void touchSessionActivityInDb(sessionId, Date.now(), true);
-  },
+  sessionListActivityTracker,
   get contextOverflowRolloverHolder() {
     return contextOverflowRolloverHolder;
   },
@@ -19197,6 +19204,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         });
       }
       sessionTurnActivityTracker.deleteSession(sessionId);
+      sessionListActivityTracker.deleteSession(sessionId);
       void sessionTurnLeaseTracker.markTurnEnded(sessionId);
       notifyGoalIdleAfterTurnSettled(sessionId);
       try {
