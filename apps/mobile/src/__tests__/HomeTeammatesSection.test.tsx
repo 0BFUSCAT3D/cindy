@@ -6,7 +6,7 @@ const h = vi.hoisted(() => ({ cloudRefresh: vi.fn(async () => {}), collapsed: fa
 vi.mock('react-native', () => ({
   View: ({ children, testID }: any) => el('div', { 'data-testid': testID }, children),
   ScrollView: ({ children, testID }: any) => el('div', { 'data-testid': testID }, children),
-  Pressable: ({ children, testID, disabled, onPress }: any) => el('button', { 'data-testid': testID, disabled, onClick: onPress }, children),
+  Pressable: ({ children, testID, disabled, onPress, accessibilityLabel }: any) => el('button', { 'data-testid': testID, disabled, onClick: onPress, 'aria-label': accessibilityLabel }, children),
   ActivityIndicator: () => el('i', { 'data-testid': 'spinner' }),
   Keyboard: { dismiss: () => {} },
   StyleSheet: { create: (v: unknown) => v, hairlineWidth: 1 },
@@ -14,6 +14,7 @@ vi.mock('react-native', () => ({
 vi.mock('expo-router/react-navigation', () => ({
   NavigationContext: createContext(null), NavigationRouteContext: createContext(null), useIsFocused: () => true,
 }));
+vi.mock('expo-router', () => ({ useFocusEffect: () => {} }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
 vi.mock('lucide-react-native', () => ({ ChevronDown: () => null, ChevronRight: () => null, ChevronUp: () => null, Plus: () => null, RefreshCw: () => null, UsersRound: () => null }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ user: { id: 'owner' } }) }));
@@ -45,6 +46,7 @@ vi.mock('@/session/useTeammateNavigation', () => ({ useTeammateNavigation: () =>
   owner: 'owner', teammatesCollapsed: h.collapsed, lastTeammate: null,
   setTeammatesCollapsed: async () => {}, openTeammate: async () => {}, openCreatedTeammate: async () => {} }) }));
 import { HomeTeammatesSection } from '../session/HomeTeammatesSection';
+import { CONNECTION_NOTICE_DELAY_MS } from '../components/connectionNoticeDelay';
 
 const item = { key: 'host:bot', host: { deviceId: 'host', deviceName: 'Mac' }, item: {
   ref: { collectionId: 'teammates', kind: 'bot', id: 'bot' }, revision: '1', links: [], display: { title: 'Mimi' } } };
@@ -52,24 +54,43 @@ const roster = { items: [item], createTargets: [], groupTargets: [], loading: fa
   isOnline: () => true, connectionState: undefined, refresh: vi.fn(async () => {}) };
 const groups = { items: [] as any[], supported: true, refreshing: false, error: null, isOnline: () => true, refresh: vi.fn(async () => {}) };
 let root: Root; let node: HTMLDivElement;
-beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); node = document.createElement('div'); root = createRoot(node); vi.clearAllMocks(); h.collapsed = false; h.unread = false; groups.items = []; });
-afterEach(async () => { await act(async () => root.unmount()); });
+beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); node = document.createElement('div'); root = createRoot(node); vi.clearAllMocks(); vi.useFakeTimers(); roster.error = 'LIST_FAILED'; h.collapsed = false; h.unread = false; groups.items = []; });
+afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(); });
 const render = (refreshKey: number) => act(async () => root.render(el(HomeTeammatesSection, {
   context: { navigation: null, route: null, shared: { roster, groups } } as any, active: true, refreshKey,
   visible: true, query: '', showFooter: false, runDisclosure: (apply: () => void) => apply(), prepareDisclosure: () => {},
 })));
 const byId = (id: string) => node.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 
-// The retired teammate page showed read failures with a retry; the home section must not lose them.
-it('keeps cached teammates, names a failed read and retries every teammate source', async () => {
+// Unit regression: a failed background read must not insert a row above cached teammates.
+// The previous test required an immediate alert; now test the real delayed header action.
+it('keeps cached teammates and offers a quiet header retry only for a lasting failure', async () => {
   await render(0);
   expect(node.textContent).toContain('Mimi');
-  expect(byId('home.teammatesError')?.textContent).toBe('devices.companions.stale');
+  expect(byId('home.teammatesRetry')).toBeNull();
+  await act(async () => vi.advanceTimersByTimeAsync(CONNECTION_NOTICE_DELAY_MS));
+  expect(byId('home.teammatesError')).toBeNull();
+  expect(byId('home.teammatesRetry')?.getAttribute('aria-label')).toContain('devices.companions.stale');
+  expect(byId('home.teammatesRetry')?.parentElement).toBe(byId('home.teammatesHeader')?.parentElement);
   h.cloudRefresh.mockClear();
   await act(async () => byId('home.teammatesRetry')!.click());
   expect(roster.refresh).toHaveBeenCalledTimes(1);
   expect(groups.refresh).toHaveBeenCalledTimes(1);
   expect(h.cloudRefresh).toHaveBeenCalledTimes(1);
+  roster.error = null;
+  await render(0);
+  expect(byId('home.teammatesRetry')).toBeNull();
+});
+
+it('never flashes a recovered background error', async () => {
+  await render(0);
+  await act(async () => vi.advanceTimersByTimeAsync(CONNECTION_NOTICE_DELAY_MS - 1));
+  roster.error = null;
+  await render(0);
+  await act(async () => vi.advanceTimersByTimeAsync(CONNECTION_NOTICE_DELAY_MS));
+  expect(byId('home.teammatesRetry')).toBeNull();
+  expect(byId('home.teammatesError')).toBeNull();
+  expect(node.textContent).toContain('Mimi');
 });
 
 // Pull-to-refresh lives on the home list; it reaches the section's cloud companions through the key.

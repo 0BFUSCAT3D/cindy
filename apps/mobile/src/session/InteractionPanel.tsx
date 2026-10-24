@@ -25,6 +25,7 @@ import {
   Plus,
 } from 'lucide-react-native';
 import {
+  ActivityIndicator,
   Image,
   Pressable,
   type PressableProps,
@@ -998,19 +999,21 @@ type AskUserQuestionCardProps = {
   touchLayout: InteractionTouchLayout;
 };
 
-function AskCardVoiceButton({ listening, onPress }: { listening: boolean; onPress: () => void }) {
+function AskCardVoiceButton({ listening, starting, disabled, onPress }: { listening: boolean; starting: boolean; disabled?: boolean; onPress: () => void }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   return (
     <Pressable
-      accessibilityLabel={listening ? t('session.common.voiceStopRecording') : t('session.screen.voiceStartInput')}
+      accessibilityLabel={listening || starting ? t('session.common.voiceStopRecording') : t('session.screen.voiceStartInput')}
       accessibilityRole="button"
+      accessibilityState={{ busy: starting, disabled: Boolean(disabled) }}
+      disabled={disabled}
       hitSlop={8}
       onPress={onPress}
       style={{ alignItems: 'center', height: 44, justifyContent: 'center', width: 44 }}
       testID="interaction.ask.voice"
     >
-      <Mic color={listening ? colors.ctaText : colors.textSecondary} size={iconSize.md} />
+      {starting ? <ActivityIndicator color={colors.textSecondary} size="small" /> : <Mic color={listening ? colors.ctaText : colors.textSecondary} size={iconSize.md} />}
     </Pressable>
   );
 }
@@ -1051,7 +1054,6 @@ function AskUserQuestionForm({
   const [showCustomInput, setShowCustomInput] = useState(() => initialDraft?.showCustomInput ?? false);
   const answerTextRef = useRef(customInput);
   answerTextRef.current = customInput;
-  const voiceSubmitPendingRef = useRef(false);
   const selectionRef = useRef({ start: customInput.length, end: customInput.length });
   const voice = useAskCardVoice({
     deviceId,
@@ -1068,7 +1070,16 @@ function AskUserQuestionForm({
       return selection;
     },
   });
+  const [voiceSubmitting, setVoiceSubmitting] = useState(false);
+  const voiceSubmitRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const voiceLocked = voice.busy || voiceSubmitting;
   const beginVoice = () => {
+    if (voiceSubmitRef.current) return;
     if (optionsLengthRef.current > 0 && !showCustomInputRef.current) setShowCustomInput(true);
     voice.toggle();
   };
@@ -1183,11 +1194,13 @@ function AskUserQuestionForm({
   };
 
   const submitAnswer = async () => {
-    if (voiceSubmitPendingRef.current) return;
-    voiceSubmitPendingRef.current = true;
+    if (busy || voiceSubmitRef.current) return;
+    voiceSubmitRef.current = true;
+    setVoiceSubmitting(voice.busy);
     try {
-      const text = await voice.stop();
-      if (text === null) return;
+      if (voice.busy && !await voice.stop()) return;
+      if (!mountedRef.current) return;
+      const text = answerTextRef.current;
       if (isMulti) {
         if (selectedLabels.size === 0 && !text.trim()) return;
         advance(encodeMultiSelectAnswer(options, selectedLabels, text));
@@ -1196,7 +1209,8 @@ function AskUserQuestionForm({
         if (answer?.trim()) advance(answer);
       }
     } finally {
-      voiceSubmitPendingRef.current = false;
+      voiceSubmitRef.current = false;
+      if (mountedRef.current) setVoiceSubmitting(false);
     }
   };
 
@@ -1241,7 +1255,7 @@ function AskUserQuestionForm({
               <InteractionTouchButton
                 accessibilityLabel={t('interaction.panel.selectAnswer', { label: option.label })}
                 accessibilityHint={busy ? t('interaction.panel.submittingHint') : undefined}
-                disabled={busy || voice.listening}
+                disabled={busy || voiceLocked}
                 key={option.label}
                 onPress={() => toggleLabel(option.label)}
                 selected={selected}
@@ -1291,7 +1305,7 @@ function AskUserQuestionForm({
               <TextInput
                 accessibilityLabel={t('interaction.panel.customAnswerInputAccessibility')}
                 autoFocus
-                editable={!busy && !voice.listening}
+                editable={!busy && !voiceLocked}
                 onKeyPress={({ nativeEvent }) => { if (nativeEvent.key.length === 1) onStartAnswer(); }}
                 onChangeText={(text) => {
                   answerTextRef.current = text;
@@ -1305,13 +1319,13 @@ function AskUserQuestionForm({
                 testID="interaction.ask.customInput"
                 value={customInput}
               />
-              <AskCardVoiceButton listening={voice.listening} onPress={beginVoice} />
+              <AskCardVoiceButton listening={voice.listening} starting={voice.starting} disabled={voice.stopping || voiceSubmitting} onPress={beginVoice} />
             </View>
           ) : (
             <View style={[styles.customInputRow, { gap: touchLayout.actionGap }]}>
               <InteractionTouchButton
                 accessibilityLabel={t('interaction.panel.customAnswerPlaceholder')}
-                disabled={busy || voice.listening}
+                disabled={busy || voiceLocked}
                 onPress={() => {
                   if (!isMulti) {
                     clearCurrentAnswer();
@@ -1332,7 +1346,7 @@ function AskUserQuestionForm({
               >
                 <Text style={styles.optionCustom}>{t('interaction.panel.customAnswerButtonText')}</Text>
               </InteractionTouchButton>
-              <AskCardVoiceButton listening={voice.listening} onPress={beginVoice} />
+              <AskCardVoiceButton listening={voice.listening} starting={voice.starting} disabled={voice.stopping || voiceSubmitting} onPress={beginVoice} />
             </View>
           )}
         </View>
@@ -1345,7 +1359,7 @@ function AskUserQuestionForm({
           <TextInput
             accessibilityLabel={t('interaction.panel.answerInput')}
             autoFocus
-            editable={!busy && !voice.listening}
+            editable={!busy && !voiceLocked}
             onKeyPress={({ nativeEvent }) => { if (nativeEvent.key.length === 1) onStartAnswer(); }}
             onChangeText={(text) => {
               answerTextRef.current = text;
@@ -1359,7 +1373,7 @@ function AskUserQuestionForm({
             testID="interaction.ask.textInput"
             value={customInput}
           />
-          <AskCardVoiceButton listening={voice.listening} onPress={beginVoice} />
+          <AskCardVoiceButton listening={voice.listening} starting={voice.starting} disabled={voice.stopping || voiceSubmitting} onPress={beginVoice} />
         </View>
       )}
 
@@ -1377,7 +1391,7 @@ function AskUserQuestionForm({
         {currentIndex > 0 ? (
           <InteractionTouchButton
             accessibilityLabel={t('interaction.panel.previous')}
-            disabled={busy || voice.listening}
+            disabled={busy || voiceLocked}
             onPress={() => {
               const answer = isMulti
                 ? encodeMultiSelectAnswer(options, selectedLabels, customInput)
@@ -1397,7 +1411,7 @@ function AskUserQuestionForm({
         <ResolveButton
           accessibilityLabel={t('interaction.panel.skipAccessibility')}
           busy={busy}
-          disabled={voice.listening}
+          disabled={voiceLocked}
           label={t('interaction.panel.skip')}
           onPress={() => advance('')}
           requestId={requestId}
@@ -1407,11 +1421,12 @@ function AskUserQuestionForm({
         />
         {isMulti ? (
           <ResolveButton
-            accessibilityLabel={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
-            busy={busy}
-            invalidReason={!canSubmitMulti && !voice.listening ? t('interaction.panel.answerRequired') : null}
-            label={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
-            onPress={submitAnswer}
+            accessibilityLabel={voiceSubmitting ? t('session.presentation.composer.voice.submitting') : isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
+            busy={busy || voiceSubmitting}
+            disabled={voiceSubmitting}
+            invalidReason={!voice.busy && !canSubmitMulti ? t('interaction.panel.answerRequired') : null}
+            label={voiceSubmitting ? t('session.presentation.composer.voice.submitting') : isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
+            onPress={() => { void submitAnswer(); }}
             requestId={requestId}
             touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary', companion)}
             testID="interaction.ask.submitButton"
@@ -1419,11 +1434,12 @@ function AskUserQuestionForm({
           />
         ) : (
           <ResolveButton
-            accessibilityLabel={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
-            busy={busy}
-            invalidReason={!canSubmitSingle && !voice.listening ? t('interaction.panel.answerRequired') : null}
-            label={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
-            onPress={submitAnswer}
+            accessibilityLabel={voiceSubmitting ? t('session.presentation.composer.voice.submitting') : isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
+            busy={busy || voiceSubmitting}
+            disabled={voiceSubmitting}
+            invalidReason={!voice.busy && !canSubmitSingle ? t('interaction.panel.answerRequired') : null}
+            label={voiceSubmitting ? t('session.presentation.composer.voice.submitting') : isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
+            onPress={() => { void submitAnswer(); }}
             requestId={requestId}
             touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary', companion)}
             testID="interaction.ask.submitButton"

@@ -11,13 +11,15 @@ import { AskUserQuestionPrompt } from '../components/new-chat/AskUserQuestionPro
 import type { VoiceQuestionBridge } from '../components/new-chat/voiceQuestionSelection';
 
 const start = vi.fn(() => true);
-const stop = vi.fn(async (): Promise<string | undefined> => undefined);
+const stop = vi.fn(async () => true);
+let finalTranscript = '完整回答';
+let idleBeforeStop = false;
 
 // Stateful stand-in for the dictation hook: starting flips the card into the
 // busy state, which is what disables question navigation.
 vi.mock('../components/new-chat/useAskUserDictation', () => ({
   useAskUserDictation: (target: { setText: (text: string) => void }) => {
-    const [state, setState] = useState<'idle' | 'listening' | 'done' | 'error'>('idle');
+    const [state, setState] = useState<'idle' | 'listening'>('idle');
     return {
       state,
       isBusy: state === 'listening',
@@ -29,13 +31,11 @@ vi.mock('../components/new-chat/useAskUserDictation', () => ({
         return true;
       },
       stop: async () => {
-        try {
-          const text = await stop();
-          if (text !== undefined) target.setText(text);
-          setState('done');
-        } catch {
-          setState('error');
-        }
+        if (idleBeforeStop) setState('idle');
+        const ok = await stop();
+        if (ok) target.setText(finalTranscript);
+        setState('idle');
+        return ok;
       },
     };
   },
@@ -43,7 +43,9 @@ vi.mock('../components/new-chat/useAskUserDictation', () => ({
 
 beforeEach(async () => {
   start.mockClear();
-  stop.mockReset();
+  stop.mockReset().mockResolvedValue(true);
+  finalTranscript = '完整回答';
+  idleBeforeStop = false;
   await i18n.changeLanguage('zh-CN');
 });
 
@@ -117,7 +119,7 @@ describe('AskUserQuestion voice entry', () => {
     const cluster = voice.parentElement!;
     // Sharing one container is what keeps the two on the same center line as the
     // answer grows; self-end pins the pair to the row's bottom edge.
-    expect(within(cluster).getByText('提交').tagName).toBe('BUTTON');
+    expect(within(cluster).getByRole('button', { name: '提交' }).tagName).toBe('BUTTON');
     expect(cluster.className).toContain('items-center');
     expect(cluster.className).toContain('self-end');
   });
@@ -127,7 +129,7 @@ describe('AskUserQuestion voice entry', () => {
     const voice = view.getByTestId('ask-user-voice');
     expect(voice).toBeTruthy();
     expect(view.getByPlaceholderText('请输入回答…')).toBeTruthy();
-    expect(within(voice.parentElement!).getByText('提交').tagName).toBe('BUTTON');
+    expect(within(voice.parentElement!).getByRole('button', { name: '提交' }).tagName).toBe('BUTTON');
   });
 
   it('bottom-pins the voice button in multi-select where the row has no send button', () => {
@@ -267,43 +269,81 @@ describe('AskUserQuestion voice entry', () => {
     expect((view.getByText('跳过').closest('button') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  // Regression: recording disabled Send, and Enter only stopped capture. Unit
-  // coverage previously asserted the broken disabled state; defer the final
-  // transcript to prove submission uses it exactly once across all answer forms.
-  it.each(['free', 'custom', 'multi', 'enter'])(
-    'finishes dictation and submits the final %s answer once', async (mode) => {
-      let finish!: (text: string) => void;
-      stop.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-      const { view, onAnswer } = renderAsk([{
-        question: '问题',
-        ...(mode === 'custom' || mode === 'multi' ? { options: [{ label: '甲' }] } : {}),
-        multiSelect: mode === 'multi',
-      }]);
-      if (mode === 'multi') fireEvent.click(view.getByText('甲'));
-      fireEvent.click(view.getByTestId('ask-user-voice'));
-      const send = view.getByRole('button', { name: '提交' }) as HTMLButtonElement;
-      expect(send.disabled).toBe(false);
-      if (mode === 'enter') fireEvent.keyDown(view.getByPlaceholderText('请输入回答…'), { key: 'Enter' });
-      else fireEvent.click(send);
-      fireEvent.click(send);
-      expect(onAnswer).not.toHaveBeenCalled();
-      await act(async () => finish('最后一句'));
-      expect(stop).toHaveBeenCalledOnce();
-      expect(onAnswer).toHaveBeenCalledExactlyOnceWith('req-voice', {
-        '问题': mode === 'multi' ? '["甲","最后一句"]' : '最后一句',
-      });
-    },
-  );
-
-  it('keeps the existing answer when finishing dictation fails', async () => {
-    const { view, onAnswer } = renderAsk([{ question: '问题' }]);
-    fireEvent.change(view.getByPlaceholderText('请输入回答…'), { target: { value: '已有草稿' } });
+  // #6785: the old card disabled submit until the user stopped the mic.
+  // Unit: real card actions must wait for the final transcript, submit once,
+  // and leave failures editable. Existing cases only tested the voice entry.
+  it.each(['click', 'enter', 'custom'] as const)('stops and submits the final answer once via %s', async (action) => {
+    let finish!: (ok: boolean) => void;
+    stop.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    const { view, onAnswer } = renderAsk([{ question: '补充一句', ...(action === 'custom' ? { options: [{ label: '甲' }] } : {}) }]);
     fireEvent.click(view.getByTestId('ask-user-voice'));
-    stop.mockRejectedValueOnce(new Error('voice failed'));
-    await act(async () => fireEvent.click(view.getByRole('button', { name: '提交' })));
+    const submit = view.getByText('提交').closest('button')!;
+    expect(submit.disabled).toBe(false);
+    if (action !== 'enter') fireEvent.click(submit);
+    else fireEvent.keyDown(view.getByPlaceholderText('请输入回答…'), { key: 'Enter' });
+    fireEvent.click(submit);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(view.getByRole('button', { name: '提交' }).getAttribute('aria-busy')).toBe('true');
+    expect(onAnswer).not.toHaveBeenCalled();
+    await act(async () => finish(true));
+    expect(onAnswer).toHaveBeenCalledExactlyOnceWith('req-voice', { '补充一句': '完整回答' });
+  });
+
+  it('keeps navigation locked after done until stop finishes restoring audio', async () => {
+    idleBeforeStop = true;
+    let finish!: (ok: boolean) => void;
+    stop.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    const { view, onAnswer } = renderAsk([{ question: '选哪些？', multiSelect: true, options: [{ label: '甲' }, { label: '乙' }] }]);
+    fireEvent.click(view.getByTestId('ask-user-voice'));
+    fireEvent.click(view.getByText('提交'));
+    const submit = view.getByRole('button', { name: '提交' });
+    expect(submit.getAttribute('aria-busy')).toBe('true');
+    expect((view.getByText('跳过').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(view.getByText('乙'));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: '2' });
+    expect(onAnswer).not.toHaveBeenCalled();
+    await act(async () => finish(true));
+    expect(onAnswer).toHaveBeenCalledExactlyOnceWith('req-voice', { '选哪些？': JSON.stringify(['完整回答']) });
+  });
+
+  it('keeps the answer editable instead of submitting after a failed stop', async () => {
+    stop.mockResolvedValueOnce(false);
+    const { view, onAnswer } = renderAsk([{ question: '补充一句' }]);
+    fireEvent.change(view.getByPlaceholderText('请输入回答…'), { target: { value: '保留文字' } });
+    fireEvent.click(view.getByTestId('ask-user-voice'));
+    await act(async () => fireEvent.click(view.getByText('提交')));
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect((view.getByPlaceholderText('请输入回答…') as HTMLTextAreaElement).value).toBe('保留文字');
+  });
+
+  it('does not submit an empty finalized transcript', async () => {
+    finalTranscript = '';
+    const { view, onAnswer } = renderAsk([{ question: '补充一句' }]);
+    fireEvent.click(view.getByTestId('ask-user-voice'));
+    await act(async () => fireEvent.click(view.getByText('提交')));
     expect(stop).toHaveBeenCalledOnce();
     expect(onAnswer).not.toHaveBeenCalled();
-    expect((view.getByPlaceholderText('请输入回答…') as HTMLTextAreaElement).value).toBe('已有草稿');
+    expect(view.getByText('提交').closest('button')!.disabled).toBe(true);
+  });
+
+  it('does not submit a late result after leaving the card', async () => {
+    let finish!: (ok: boolean) => void;
+    stop.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    const { view, onAnswer } = renderAsk([{ question: '补充一句' }]);
+    fireEvent.click(view.getByTestId('ask-user-voice'));
+    fireEvent.click(view.getByText('提交'));
+    view.unmount();
+    await act(async () => finish(true));
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it('encodes checked options together with the final voice answer', async () => {
+    const { view, onAnswer } = renderAsk([{ question: '选哪些？', multiSelect: true, options: [{ label: '甲' }, { label: '乙' }] }]);
+    fireEvent.click(view.getByText('甲'));
+    fireEvent.click(view.getByTestId('ask-user-voice'));
+    await act(async () => fireEvent.click(view.getByText('提交')));
+    expect(onAnswer).toHaveBeenCalledExactlyOnceWith('req-voice', { '选哪些？': JSON.stringify(['甲', '完整回答']) });
   });
 });
 
