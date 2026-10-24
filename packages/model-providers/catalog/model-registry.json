@@ -1,6 +1,6 @@
 {
   "schemaVersion": 6,
-  "updatedAt": "2026-10-23T19:45:53.486Z",
+  "updatedAt": "2026-10-24T02:52:43.075Z",
   "models": [
     {
       "id": "openai/gpt-6.1-sol",
@@ -9250,6 +9250,19 @@
       ]
     },
     {
+      "id": "zhipu-glm-cn-coding-openai-completions",
+      "providerId": "zhipu-glm-cn",
+      "api": "openai-completions",
+      "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "inputBaseUrls": [
+        "https://open.bigmodel.cn/api/coding/paas/v4"
+      ],
+      "defaultFor": [
+        "codex",
+        "pi"
+      ]
+    },
+    {
       "id": "zhipu-glm-global-anthropic-messages",
       "providerId": "zhipu-glm-global",
       "api": "anthropic-messages",
@@ -9273,6 +9286,19 @@
       "inputBaseUrls": [
         "https://api.z.ai/api/anthropic",
         "https://api.z.ai/api/paas/v4"
+      ],
+      "defaultFor": [
+        "codex",
+        "pi"
+      ]
+    },
+    {
+      "id": "zhipu-glm-global-coding-openai-completions",
+      "providerId": "zhipu-glm-global",
+      "api": "openai-completions",
+      "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+      "inputBaseUrls": [
+        "https://api.z.ai/api/coding/paas/v4"
       ],
       "defaultFor": [
         "codex",

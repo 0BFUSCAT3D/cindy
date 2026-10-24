@@ -4,6 +4,25 @@ import { alignModelApiRoute, providerInterfaceModelRoute } from '../providerInte
 import { BUNDLED_CATALOG } from '../catalog.js';
 
 describe('documented supplier interfaces', () => {
+  it.each([
+    ['zhipu-glm-cn', 'https://open.bigmodel.cn/api/coding/paas/v4'],
+    ['zhipu-glm-global', 'https://api.z.ai/api/coding/paas/v4'],
+  ])('declares the server %s Coding endpoint without redirecting public API connections', (presetId, codingBase) => {
+    const preset = BUNDLED_CATALOG.presets!.find(p => p.id === presetId)!;
+    for (const [baseUrl, profileId] of [
+      [codingBase, `${presetId}-coding-openai-completions`],
+      [codingBase.replace('/coding/', '/'), `${presetId}-openai-completions`],
+    ]) {
+      const provider = buildUserProvider({ id: 'glm', name: 'GLM', runtimes: { codex: {
+        ...preset.runtimes.codex!, baseUrl, catalogPresetId: presetId,
+        models: [{ id: 'glm-5.3-flash', name: 'GLM', contextWindow: 64000, defaultEnabled: false }],
+      } } }, { presets: BUNDLED_CATALOG.presets });
+      expect(provider.models.codex![0]).toMatchObject({
+        api: 'openai-completions', contextWindow: 64000, defaultEnabled: false,
+        selectedInterface: { profileId, route: { baseUrl, wireProtocol: 'openai-chat' } },
+      });
+    }
+  });
   it('imports OpenCode Go DeepSeek 4.1 Flash capabilities for every engine', () => {
     const preset = BUNDLED_CATALOG.presets!.find(p => p.id === 'opencode-go')!;
     const provider = buildUserProvider({ id: 'go', name: 'Go', runtimes:
