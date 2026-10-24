@@ -520,8 +520,8 @@ IM 与官方 Hook 确认卡统一显示为「自动审批需要你决定：…�
 无法核对原始参数的 Host 回调不享受免复审。
 Claude 订阅的本地会话即使挂了 Host MCP 也保持原生 Auto：原生会跳过 `canUseTool`，由
 `nativeAutoPolicyHook`（PreToolUse，排在其他守卫之后）只把 Cindy 必须判断的调用交回
-`canUseTool`——可信 MCP 直接放行，逐次确认的 MCP 与 IM 轮次（原生看不到发起者身份，
-此时 `getAutoReviewOwner()` 返回 `cindy`）返回 `ask`，其余只由原生 classifier 判断。
+`canUseTool`——可信 MCP（由 Host 快捷放行、不调用模型，但插件委派任务仍先复核实时委派范围）、逐次确认的 MCP 与 IM 轮次（原生看不到发起者身份，
+此时 `getAutoReviewOwner()` 返回 `cindy`）一律返回 `ask`，其余只由原生 classifier 判断。
 远程 SSH 与设备托管会话无法在本机执行该 hook，挂 MCP 时仍回落 Cindy；额外目录授权仍回落 Cindy。
 插件委派任务与 Codex 现状一致交给原生审核，不再额外套用 Cindy 的委派范围。
 Codex 的 IM 轮次继续由 Cindy 审核（策略轮次需要 Host 观察每次执行）。

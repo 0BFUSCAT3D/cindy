@@ -923,7 +923,9 @@ function commandText(input: Record<string, unknown>): string | null {
 
 function filePaths(input: Record<string, unknown>, search: boolean): string | null {
   const path = readString(input.file_path) ?? readString(input.path) ?? readString(input.notebook_path);
-  const direct = search ? readString(input.pattern) ?? readString(input.query) ?? path : path;
+  // A search reads everything under its path: show the query and where it looks.
+  const query = search ? readString(input.pattern) ?? readString(input.query) : null;
+  const direct = query ? (path ? `${query} \u2192 ${path}` : query) : path;
   if (direct) return direct;
   const changes = Array.isArray(input.changes) ? input.changes : isRecord(input.changes) ? Object.keys(input.changes) : [];
   const lines = changes.map((change) => {

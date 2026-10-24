@@ -2218,7 +2218,9 @@ export class ClaudeCodeAgent extends BaseAgent {
       // Requester authority (owner / group guest) and forceConfirmToolCall are only known to
       // Cindy, and a channel policy outranks trusted-MCP approval: route every call to canUseTool.
       if (activeTurnPermissionPolicy) return decide('ask', 'Cindy reviews tool calls in channel turns.');
-      if (mcpPolicy === 'auto-approve') return decide('allow', 'Trusted Cindy tool.');
+      // Trusted MCP still goes through canUseTool: the Host shortcut allows it without a model call,
+      // but a plugin-delegated task must be re-checked against its live delegation scope first.
+      if (mcpPolicy === 'auto-approve') return decide('ask', 'Trusted Cindy tool: Host shortcut and delegation check.');
       if (mcpPolicy === 'prompt-each-time') return decide('ask', 'This tool requires Cindy confirmation.');
       return { continue: true };
     };

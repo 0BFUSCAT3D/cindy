@@ -293,7 +293,8 @@ describe('Auto-review wiring: native first, Cindy fallback', () => {
     });
     expect(queryPermissionMode).toBe('auto');
     expect(handle.getAutoReviewOwner?.()).toBe('native');
-    expect(await preToolUse('mcp__cindy_orca__create_workers', { workers: [] })).toEqual(['allow']);
+    // Trusted MCP goes to canUseTool (Host shortcut, no model) so delegated scope is still re-checked.
+    expect(await preToolUse('mcp__cindy_orca__create_workers', { workers: [] })).toEqual(['ask']);
     expect(await preToolUse('mcp__always_confirm_mcp__send', { to: 'x' })).toEqual(['ask']);
     // Ordinary MCP calls and shell commands are left to the native classifier alone.
     expect(await preToolUse('mcp__custom_prompt_mcp__write_record', { value: 1 })).toEqual([]);

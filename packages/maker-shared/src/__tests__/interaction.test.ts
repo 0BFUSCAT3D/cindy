@@ -308,6 +308,8 @@ describe('interaction shared model', () => {
     expect(describePermissionAction('mcp:cindy_browser:call_tool', {
       name: 'browser', args: { action: 'recipe', recipeId: 'post-reply', site: 'x.com', text: 'hello' },
     }).preview).toBe('recipe {"recipeId":"post-reply","site":"x.com","text":"hello"}');
+    expect(describePermissionAction('Grep', { pattern: 'AKIA', path: '/Users/me' }).preview).toBe('AKIA \u2192 /Users/me');
+    expect(describePermissionAction('grep', { pattern: 'TODO' }).preview).toBe('TODO');
     // call_tool.args stringified by the caller (issue #350) is parsed like the approval policy does.
     expect(describePermissionAction('mcp:cindy_browser:call_tool', {
       name: 'browser', args: JSON.stringify({ action: 'recipe', recipeId: 'post-reply' }),

@@ -24,7 +24,8 @@ describe('formatToolInput (harness-agnostic)', () => {
 
   it('extracts pattern/path for search tools including pi grep/find/ls', () => {
     expect(formatToolInput('Grep', { pattern: 'TODO' })).toBe('TODO');
-    expect(formatToolInput('grep', { pattern: 'TODO', path: '/src' })).toBe('TODO');
+    // A search shows both the query and where it looks.
+    expect(formatToolInput('grep', { pattern: 'TODO', path: '/src' })).toBe('TODO \u2192 /src');
     expect(formatToolInput('find', { path: '/src' })).toBe('/src');
     expect(formatToolInput('ls', { path: '/src' })).toBe('/src');
   });
