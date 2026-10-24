@@ -146,8 +146,7 @@ export function useBranchSync(
     : state.error;
   let hint = t('newChat.branchSync.action', vars);
   if (status?.remoteOnly) hint = t('newChat.branchSync.remoteAction', vars);
-  if (status?.checkoutPath)
-    hint += `\n${t('newChat.branchSync.checkedOut', { ...vars, directory: status.checkoutPath.split(/[\\/]/).filter(Boolean).at(-1) })}`;
+  if (status?.checkoutPath) hint += `\n${t('newChat.branchSync.checkedOut')}`;
   if (status?.blocked) hint = blockedHint(status);
   if (state.result && !status?.blocked)
     hint = state.result.updated

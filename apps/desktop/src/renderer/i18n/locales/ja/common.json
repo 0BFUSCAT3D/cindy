@@ -11336,7 +11336,7 @@
       "changed": "ブランチの状態が変わりました。再試行してください",
       "action": "{{remote}}/{{remoteBranch}} の最新コミットを取得",
       "remoteAction": "{{remote}}/{{remoteBranch}} の最新コミットを取得",
-      "checkedOut": "{{directory}} 内のファイルも更新します。未コミットの変更は保持されます",
+      "checkedOut": "現在のブランチのコミット済みファイルも更新します。未コミットの変更は保持されます",
       "fetching": "取得中…",
       "updated": "{{count}} コミット更新しました",
       "current": "すでに最新です",

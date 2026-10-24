@@ -11336,7 +11336,7 @@
       "changed": "分支狀態已變更，請重試",
       "action": "取得 {{remote}}/{{remoteBranch}} 的最新提交",
       "remoteAction": "取得 {{remote}}/{{remoteBranch}} 的最新提交",
-      "checkedOut": "會同步更新 {{directory}} 中的檔案，未提交的變更會保留",
+      "checkedOut": "會同步更新目前分支已提交的檔案，未提交的變更會保留",
       "fetching": "正在取得更新…",
       "updated": "已更新 {{count}} 個提交",
       "current": "已是最新",
