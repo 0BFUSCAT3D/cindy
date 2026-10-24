@@ -234,6 +234,7 @@
     "cancel": "取消",
     "edit": "編輯",
     "steer": "插話",
+    "steerQueued": "尚未送達，訊息仍保留在佇列中。",
     "moveUp": "提前一位",
     "moveDown": "延後一位",
     "cancelSend": "取消傳送",
