@@ -1013,7 +1013,7 @@ function AskCardVoiceButton({ listening, starting, disabled, onPress }: { listen
       style={{ alignItems: 'center', height: 44, justifyContent: 'center', width: 44 }}
       testID="interaction.ask.voice"
     >
-      {starting ? <ActivityIndicator color={colors.textSecondary} size="small" /> : <Mic color={listening ? colors.ctaText : colors.textSecondary} size={iconSize.md} />}
+      {starting ? <ActivityIndicator color={colors.textSecondary} size="small" /> : <Mic color={colors.textSecondary} size={iconSize.md} />}
     </Pressable>
   );
 }
