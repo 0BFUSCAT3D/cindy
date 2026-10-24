@@ -880,7 +880,11 @@ export function BranchWorktreeChip({
             side="top"
             className="max-w-[320px] whitespace-pre-line break-normal [overflow-wrap:anywhere]"
           >
-            {sync.hint}
+            <div className="space-y-2">
+              {sync.hint.split('\n').map((paragraph, index) => (
+                <p key={index}>{paragraph}</p>
+              ))}
+            </div>
           </Tooltip.Content>
         </Tooltip.Root>
       )}

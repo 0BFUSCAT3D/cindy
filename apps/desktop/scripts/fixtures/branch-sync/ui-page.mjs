@@ -23,6 +23,18 @@ export default {
     });
     await trigger.waitFor();
     await ui.capture('capsule');
+    if (ui.case === 'default' || ui.case === 'worker') {
+      const action = page.getByRole('button', {
+        name: await ui.t('newChat.branchSync.action', {
+          remote: 'origin',
+          remoteBranch: 'main',
+        }),
+        exact: false,
+      });
+      await action.hover();
+      await page.getByRole('tooltip').waitFor();
+      await ui.capture('action-hint');
+    }
     if (ui.case === 'conflict' || ui.case === 'diverged') {
       const action = page.getByRole('button', {
         name: await ui.t(`newChat.branchSync.${ui.case}`, {
