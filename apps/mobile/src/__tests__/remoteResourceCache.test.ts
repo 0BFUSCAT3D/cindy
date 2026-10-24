@@ -57,6 +57,24 @@ it('finds the teammates following a task on its own computer, by name, and drops
   await cacheRemoteResourceItems('alice', 'teammates', [follower('home', 'lizi', 'LiZi', []), follower('home', 'cindy', 'Cindy', ['task'])]);
   expect(cachedTaskFollowers('alice', 'home', 'task').map((row) => row.item.ref.id)).toEqual(['cindy']);
 });
+// A task row can ask before the disk cache answers on a cold start (#7066 review).
+it('tells rows that read before the saved roster loaded once it arrives', async () => {
+  disk.set('cindy.remoteResources.v1.alice', JSON.stringify({ items: { teammates: [{
+    key: JSON.stringify(['home', 'teammates', 'bot', 'cindy']), host: { deviceId: 'home', deviceName: 'home' },
+    item: { ref: { collectionId: 'teammates', kind: 'bot', id: 'cindy' }, display: { title: 'Cindy' }, revision: '1',
+      links: [{ rel: 'following', target: { kind: 'session', sessionId: 'task' } }] },
+  }] } }));
+  expect(cachedTaskFollowers('alice', 'home', 'task')).toEqual([]);
+  const listener = vi.fn();
+  const unsubscribe = subscribeRemoteResourceCache(listener);
+  try {
+    await readRemoteResourceSnapshot('alice');
+    expect(listener).toHaveBeenCalledOnce();
+    expect(cachedTaskFollowers('alice', 'home', 'task').map((row) => row.item.ref.id)).toEqual(['cindy']);
+  } finally {
+    unsubscribe();
+  }
+});
 it('keeps device-qualified read positions and treats only later host replies as unread', async () => {
   await cacheRemoteResourceItems('alice', 'teammates', [...rows('home', 100), ...rows('office', 100)]);
   expect(isRemoteResourceUnread('alice', 'home', 'writer', 100)).toBe(false);

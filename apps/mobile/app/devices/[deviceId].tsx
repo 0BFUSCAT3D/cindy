@@ -83,6 +83,7 @@ import {
 import { useConversationSearch } from '@/session/useConversationSearch';
 import { selectVisibleDeviceSessions, sessionMatchesProjectDir } from '@/session/mobileHome';
 import { HomeListViewportContext, HomeSessionRow } from '@/session/HomeSurface';
+import { useTeammateRoster } from '@/session/useTeammateRoster';
 import { createDisclosureListCell, ListDisclosureScope, useListDisclosureTransition } from '@/session/listDisclosureTransition';
 import { RenameSessionModal } from '@/session/RenameSessionModal';
 import { SessionOptionsPresenter } from '@/session/SessionOptionsExpoSheet';
@@ -145,6 +146,8 @@ const DeviceListCell = createDisclosureListCell();
 function DeviceDetailScreenContent() {
   const viewport = useContext(HomeListViewportContext);
   const screenFocused = useIsFocused();
+  // Task rows mark the teammate looking after them from the roster cache; keep it current here too.
+  useTeammateRoster(screenFocused);
   const screenFocusedRef = useRef(screenFocused);
   screenFocusedRef.current = screenFocused;
   const [appStateActive, setAppStateActive] = useState(AppState.currentState === 'active');

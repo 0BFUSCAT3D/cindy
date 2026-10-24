@@ -76,7 +76,11 @@ export async function readRemoteResourceSnapshot(userId: string): Promise<Snapsh
   let value = empty();
   try { if (raw && raw.length <= MAX_CHARS) value = normalize(JSON.parse(raw)); } catch { /* cache miss */ }
   if (epoch !== expected) return empty();
-  if (!snapshots.has(userId)) snapshots.set(userId, value);
+  if (!snapshots.has(userId)) {
+    snapshots.set(userId, value);
+    // Rows read before the disk answered (e.g. task follow marks) must see the restored roster.
+    if (raw) emit();
+  }
   return snapshots.get(userId)!;
 }
 
