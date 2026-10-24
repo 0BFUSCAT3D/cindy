@@ -86,7 +86,7 @@ function fixtureApi() {
   return {
     authListAccounts: async () => ({ accounts: [{ displayName: 'Owner', email: 'owner@private.test', avatarUrl: 'https://example.test/avatar', isCurrent: true }] }),
     deviceLink: { listDevices: async () => ({ devices: [{ name: 'Private Laptop', deviceId: 'device-private' }] }) },
-    providerShare: { command: async c => c.action === 'owned' ? { shares: [{ shareId: 'share-private', members: [{ displayName: 'Guest' }], requests: [] }] } : [{ shareId: 'received-private', owner: { displayName: 'Sharer' }, deviceName: 'Remote Laptop' }] },
+    providerShare: { command: async c => c.action === 'owned' ? { shares: [{ shareId: 'share-private', members: [{ displayName: 'Guest' }], requests: [] }] } : { received: [{ shareId: 'received-private', owner: { displayName: 'Sharer' }, deviceName: 'Remote Laptop' }] } },
     sharedTask: { account: async c => c.action === 'get' ? { memberLabels: [{ displayName: 'Member' }] } : [{ sharedTaskId: 'shared-private' }] },
   };
 }
@@ -152,4 +152,11 @@ test('observer rescans do not mistake generated examples for short names or loca
   assert.equal(r.replace(once), once);
   assert.equal(r.count(once), 0);
   assert.equal(r.count('A'), 1);
+});
+
+test('short known names match Chinese sentences but not unrelated longer words', () => {
+  const r = createReplacer([{ source: '小王', replacement: '用户 A', category: 'person' },
+    { source: 'A', replacement: '用户 B', category: 'person' }]);
+  assert.equal(r.replace('移除小王？正在复制到小王；小王子；移除A？API'), '移除用户 A？正在复制到用户 A；小王子；移除用户 B？API');
+  assert.equal(r.count('移除小王？'), 1);
 });

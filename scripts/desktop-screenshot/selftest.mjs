@@ -24,7 +24,7 @@ import React from ${JSON.stringify(require.resolve('react'))};
 import {createRoot} from ${JSON.stringify(require.resolve('react-dom/client'))};
 import {flushSync} from ${JSON.stringify(require.resolve('react-dom'))};
 const root=createRoot(document.getElementById('root'));
-window.electronAPI={authListAccounts:async()=>({accounts:[{displayName:'Synthetic Alice',email:'alice@private.test',avatarUrl:'https://example.invalid/avatar.png',isCurrent:true}]}),deviceLink:{listDevices:async()=>({devices:[{name:'Synthetic Laptop'}]})},providerShare:{command:async c=>c.action==='owned'?{shares:[]}:[]},sharedTask:{account:async()=>[]}};
+window.electronAPI={authListAccounts:async()=>({accounts:[{displayName:'Synthetic Alice',email:'alice@private.test',avatarUrl:'https://example.invalid/avatar.png',isCurrent:true}]}),deviceLink:{listDevices:async()=>({devices:[{name:'Synthetic Laptop'}]})},providerShare:{command:async c=>c.action==='owned'?{shares:[]}:{received:[]}},sharedTask:{account:async()=>[]}};
 function SharedPerson(props){return React.createElement('span',{id:'remote-person'},props.displayName)}
 function Page({version}){const [tip,setTip]=React.useState(false);return React.createElement('main',{id:'fixture'},
  React.createElement('p',{id:'name',title:'Synthetic Alice', 'aria-label':'alice@PRIVATE.test'},'Hello Synthetic Alice '+version),
@@ -38,6 +38,7 @@ function Page({version}){const [tip,setTip]=React.useState(false);return React.c
  React.createElement('span',{id:'link'},'https://relay.example.test/provider-share/join#synthetic-secret'))}
 window.renderFixture=(version)=>flushSync(()=>root.render(React.createElement(Page,{version})));
 window.renderFixture(1);
+window.electronAPI.providerShare.onReceivedChanged=fn=>{window.refreshReceived=()=>fn([{owner:{displayName:'Synthetic Alice',avatarUrl:'https://example.invalid/avatar.png'}}]);return ()=>{delete window.refreshReceived}};
 `;
 try {
   await build({ stdin: { contents: fixtures, resolveDir: process.cwd() }, bundle: true, outfile: path.join(dir, 'fixture.js'), logLevel: 'silent' });
@@ -87,10 +88,13 @@ try {
   assert.equal(state.src, 'https://example.invalid/avatar.png');
   console.log('PASS React 重绘、悬停提示、属性、输入值、头像、分享链接、数值保留、最新状态还原');
 
-  const result = await screenshot(client, parseArgs(['--selector', '#fixture', '--padding', '4']), local);
+  const result = await screenshot(client, parseArgs(['--selector', '#fixture', '--padding', '4']), local, { capture: async params => {
+    await client.evaluate('refreshReceived()');
+    return client.send('Page.captureScreenshot', params);
+  } });
   assert.equal(result.data.readUInt32BE(0), 0x89504e47);
   assert.ok((await view()).text.includes('Synthetic Alice'));
-  console.log('PASS 真实 CDP PNG 截图、区域裁剪、成功还原');
+  console.log('PASS 真实 CDP PNG 截图、区域裁剪、同内容刷新不中断、成功还原');
   await assert.rejects(screenshot(client, parseArgs([]), local, { capture: async () => { throw new Error('injected capture failure'); } }), /injected capture failure/);
   assert.ok((await view()).text.includes('Synthetic Alice'));
   assert.equal(await client.evaluate("Object.keys(window).filter(k=>k.startsWith('__cindyScreenshot_')).length"), 0);

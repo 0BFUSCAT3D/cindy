@@ -17,7 +17,7 @@ export function createReplacer(entries, keep = []) {
     const source = rule.category === 'email'
       ? [...rule.source].map(c => /[a-z]/i.test(c) ? `[${c.toLowerCase()}${c.toUpperCase()}]` : escape(c)).join('')
       : escape(rule.source);
-    return [...rule.source].length <= 2 ? `(?<![\\p{L}\\p{N}_])(?:${source})(?![\\p{L}\\p{N}_])` : source;
+    return source;
   });
   const automatic = [
     String.raw`[A-Za-z0-9.!#$%&'*+/=?^_\x60{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`,
@@ -35,12 +35,23 @@ export function createReplacer(entries, keep = []) {
   const dynamic = new Map();
   const transform = (value, audit = false) => {
     let count = 0;
+    let boundaries;
     const result = value.replace(regex, (...args) => {
       const found = args.slice(1, protectedPatterns.length + rules.length + automatic.length + 1).findIndex(group => group !== undefined);
       const source = args[0];
       if (found < protectedPatterns.length) return source;
       const index = found - protectedPatterns.length;
-      if (index < rules.length) { count++; return audit ? source : rules[index].replacement; }
+      if (index < rules.length) {
+        if ([...rules[index].source].length <= 2) {
+          // Unicode letter lookarounds incorrectly skip 移除小王. Word segmentation
+          // recognizes both Chinese sentence boundaries and embedded Latin names,
+          // while keeping A out of API and 小王 out of 小王子.
+          boundaries ??= new Set([0, value.length, ...[...new Intl.Segmenter('zh', { granularity: 'word' }).segment(value)].flatMap(s => [s.index, s.index + s.segment.length])]);
+          const offset = args.at(-2);
+          if (!boundaries.has(offset) || !boundaries.has(offset + source.length)) return source;
+        }
+        count++; return audit ? source : rules[index].replacement;
+      }
       const type = index - rules.length;
       if (retained.has(source.toLocaleLowerCase()) || (type === 0 && /@example\.com$/i.test(source))) return source;
       count++;
@@ -119,13 +130,14 @@ export async function collectIdentities(api, local, readRendered) {
   snapshot.accounts.forEach(person);
   const loggedIn = snapshot.accounts.some(account => account.isCurrent);
   if (loggedIn) {
-    const [devices, owned, received, shared, hosted] = await Promise.all([
+    const [devices, owned, receivedSnapshot, shared, hosted] = await Promise.all([
       api.deviceLink.listDevices(),
       api.providerShare.command({ action: 'owned', range: 'all' }),
-      api.providerShare.command({ action: 'received' }),
+      api.providerShare.command({ action: 'received-snapshot' }),
       api.sharedTask.account({ action: 'list' }),
       api.sharedTask.account({ action: 'owned' }),
     ]);
+    const received = receivedSnapshot?.received;
     if (!Array.isArray(devices?.devices) || !Array.isArray(owned?.shares) || !Array.isArray(received)
       || !Array.isArray(shared) || !Array.isArray(hosted)) throw new Error('identity-shape');
     for (const device of devices.devices) {
@@ -266,12 +278,23 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
   const unsubscribers = [];
   const invalidate = () => { fault = true; };
   const api = window.electronAPI;
+  const known = new Set([...entries.map(e => e.source), ...avatars].filter(Boolean));
+  const identityChanged = value => {
+    if (!value || typeof value !== 'object') return false;
+    return Object.entries(value).some(([field, child]) => {
+      if (typeof child === 'string' && ['displayName', 'avatarUrl', 'email', 'deviceName', 'avatar', 'name'].includes(field)) return child && !known.has(child);
+      return child && typeof child === 'object' && identityChanged(child);
+    });
+  };
+  // A received-share refresh emits even for unchanged identities. Do not turn
+  // routine refresh/presence notifications into a permanently failing screenshot.
   for (const subscribe of [api?.onAuthStateChange, api?.deviceLink?.onPresenceChanged,
-    api?.providerShare?.onRequested, api?.providerShare?.onOwnedChanged,
-    api?.providerShare?.onReceivedChanged, api?.providerShare?.onReshareRequested]) {
+    api?.providerShare?.onReceivedChanged]) {
+    if (subscribe) unsubscribers.push(subscribe(value => { if (identityChanged(value)) invalidate(); }));
+  }
+  for (const subscribe of [api?.providerShare?.onRequested, api?.providerShare?.onReshareRequested]) {
     if (subscribe) unsubscribers.push(subscribe(invalidate));
   }
-  const known = new Set([...entries.map(e => e.source), ...avatars].filter(Boolean));
   const renderedChanged = () => {
     const current = readRendered?.();
     if (!current) return false;
