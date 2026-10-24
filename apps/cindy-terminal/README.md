@@ -45,6 +45,22 @@ Installations continue on that host if the controller disconnects; a failed
 installation preserves the previous executable. Switching Cindy accounts aborts
 that account's pending installation. Reopening the engine page shows its result.
 
+## Plugin task settings
+
+`cindy plugins` opens installed plugins on the selected host. Task-capable plugins
+expose their model and default permission settings, plus a Background tasks link.
+Changing the default model affects new tasks; existing tasks retain their selected
+model. Lowering a plugin's default permission prevents its existing higher-permission
+tasks from accepting further plugin input. Uninstalling a plugin reveals its hidden
+tasks while preserving their history.
+
+After declining a plugin's write request, open its task locally and choose
+“Confirm plugin write permission again” from the task command menu. Over SSH,
+run `cindy attach <id>` on that server. The matching CLI inspection command is
+`cindy tasks plugin-permission <id>`; append `retry` to request confirmation again.
+The pending question can be answered in another attached TUI or with `cindy requests`.
+This recovery operation retains Desktop's local-owner boundary.
+
 ## Local models
 
 Models → Local models opens Ollama and llama.cpp on the selected computer. Installation uses

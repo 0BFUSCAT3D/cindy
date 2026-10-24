@@ -380,7 +380,12 @@
     "settings.ghosts.backgroundTasks.open": "Open Task",
     "settings.ghosts.backgroundTasks.reveal": "Show in Task List",
     "settings.ghosts.backgroundTasks.revealed": "Task shown in the task list",
-    "settings.ghosts.backgroundTasks.revealFailed": "Could not show the task in the task list"
+    "settings.ghosts.backgroundTasks.revealFailed": "Could not show the task in the task list",
+    "terminal.plugin.permission.title": "Write access",
+    "terminal.plugin.permission.plan": "Plan mode",
+    "terminal.plugin.permission.ask": "Default permissions",
+    "terminal.plugin.permission.acceptEdits": "Auto accept edits",
+    "terminal.plugin.permission.auto": "Auto-review"
   },
   "zh-CN": {
     "settings.ghosts.installConsent.installTitle": "安装插件「{{name}}」？",
@@ -763,7 +768,12 @@
     "settings.ghosts.backgroundTasks.open": "打开任务",
     "settings.ghosts.backgroundTasks.reveal": "显示到任务列表",
     "settings.ghosts.backgroundTasks.revealed": "任务已显示到任务列表",
-    "settings.ghosts.backgroundTasks.revealFailed": "未能将任务显示到任务列表"
+    "settings.ghosts.backgroundTasks.revealFailed": "未能将任务显示到任务列表",
+    "terminal.plugin.permission.title": "动手权限",
+    "terminal.plugin.permission.plan": "计划模式",
+    "terminal.plugin.permission.ask": "默认权限",
+    "terminal.plugin.permission.acceptEdits": "允许编辑",
+    "terminal.plugin.permission.auto": "自动审批"
   },
   "zh-TW": {
     "settings.ghosts.installConsent.installTitle": "安裝插件「{{name}}」？",
@@ -1146,7 +1156,12 @@
     "settings.ghosts.backgroundTasks.open": "開啟任務",
     "settings.ghosts.backgroundTasks.reveal": "顯示到任務列表",
     "settings.ghosts.backgroundTasks.revealed": "任務已顯示到任務列表",
-    "settings.ghosts.backgroundTasks.revealFailed": "未能將任務顯示到任務列表"
+    "settings.ghosts.backgroundTasks.revealFailed": "未能將任務顯示到任務列表",
+    "terminal.plugin.permission.title": "動手權限",
+    "terminal.plugin.permission.plan": "計劃模式",
+    "terminal.plugin.permission.ask": "預設權限",
+    "terminal.plugin.permission.acceptEdits": "允許編輯",
+    "terminal.plugin.permission.auto": "自動審批"
   },
   "ja": {
     "settings.ghosts.installConsent.installTitle": "プラグイン「{{name}}」をインストールしますか？",
@@ -1529,7 +1544,12 @@
     "settings.ghosts.backgroundTasks.open": "セッションを開く",
     "settings.ghosts.backgroundTasks.reveal": "セッションリストに表示",
     "settings.ghosts.backgroundTasks.revealed": "セッションをセッションリストに表示しました",
-    "settings.ghosts.backgroundTasks.revealFailed": "セッションをセッションリストに表示できませんでした"
+    "settings.ghosts.backgroundTasks.revealFailed": "セッションをセッションリストに表示できませんでした",
+    "terminal.plugin.permission.title": "書き込み権限",
+    "terminal.plugin.permission.plan": "計画モード",
+    "terminal.plugin.permission.ask": "デフォルト権限",
+    "terminal.plugin.permission.acceptEdits": "編集を自動承認",
+    "terminal.plugin.permission.auto": "自動レビュー"
   },
   "ko": {
     "settings.ghosts.installConsent.installTitle": "플러그인 \"{{name}}\"을(를) 설치할까요?",
@@ -1912,6 +1932,11 @@
     "settings.ghosts.backgroundTasks.open": "세션 열기",
     "settings.ghosts.backgroundTasks.reveal": "세션 목록에 표시",
     "settings.ghosts.backgroundTasks.revealed": "세션을 세션 목록에 표시했습니다",
-    "settings.ghosts.backgroundTasks.revealFailed": "세션을 세션 목록에 표시하지 못했습니다"
+    "settings.ghosts.backgroundTasks.revealFailed": "세션을 세션 목록에 표시하지 못했습니다",
+    "terminal.plugin.permission.title": "쓰기 권한",
+    "terminal.plugin.permission.plan": "계획 모드",
+    "terminal.plugin.permission.ask": "기본 권한",
+    "terminal.plugin.permission.acceptEdits": "편집 자동 승인",
+    "terminal.plugin.permission.auto": "자동 리뷰"
   }
 }

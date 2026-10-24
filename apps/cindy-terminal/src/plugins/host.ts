@@ -72,8 +72,8 @@ export class TerminalPlugins {
   readonly library:TerminalPluginLibrary;
   readonly downloads:PluginDownloadSlot;
   readonly models?:TerminalPluginModels;
-  private taskSessions?: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'>;
-  configureTaskSessions(service: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'>) { this.guard();this.taskSessions=service; }
+  private taskSessions?: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'|'models'>;
+  configureTaskSessions(service: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'|'models'>) { this.guard();this.taskSessions=service; }
   async start(){await this.ready;this.guard();await this.native.start();this.guard();}
   readonly setupChanges=new GhostSetupChangeBus();
   private readonly pending = new Map<string,PendingInstall>();
@@ -93,7 +93,7 @@ export class TerminalPlugins {
     });
     this.kv=createGhostKvStore({getRootDir:()=>path.join(options.root,'plugin-kv'),log:options.log});
     const getGhost=(id:string)=>{this.guard();return this.native.list().find(ghost=>installedGhostStoragePart(ghost)===id)??null;};
-    if(options.models)this.models=new TerminalPluginModels({...options.models,root:options.root,installed:getGhost,guard:()=>this.guard(),changed:()=>{this.revision++;options.changed();}});
+    if(options.models)this.models=new TerminalPluginModels({...options.models,root:options.root,installed:getGhost,taskModels:()=>this.taskSessions?.models()??Promise.resolve([]),guard:()=>this.guard(),changed:()=>{this.revision++;options.changed();}});
     this.library=new TerminalPluginLibrary({root:options.root,runtimeDirectory:options.runtimeDirectory,getGhost,current:()=>this.current(),log:options.log});
     this.downloads=new PluginDownloadSlot({getGhost,root:id=>path.join(options.root,'plugin-downloads',id),
       scope:()=>{this.guard();return options.root;},send:(id,event)=>{if(this.current())this.native.web?.send(id,event);},
@@ -197,8 +197,16 @@ export class TerminalPlugins {
     return this.mutate(async()=>{
       const ghost=this.installed(id);
       if(!ghost||this.removing.has(id))throw new Error('PLUGIN_CHANGED');
-      if(!this.models||!ghost.manifest.cindy?.text?.includes('oneshot'))throw new Error('INVALID_ACTION');
+      if(!this.models||!(ghost.manifest.agent?.tasks||ghost.manifest.cindy?.text?.includes('oneshot')))throw new Error('INVALID_ACTION');
       await this.models.setModel(id,pin,current);
+    });
+  }
+  setTaskPermission(id:string,mode:unknown,current:()=>void=()=>{}){
+    return this.mutate(async()=>{
+      const ghost=this.installed(id);
+      if(!ghost||this.removing.has(id))throw new Error('PLUGIN_CHANGED');
+      if(!this.models||!ghost.manifest.agent?.tasks)throw new Error('INVALID_ACTION');
+      await this.models.setPermissionPreference(id,mode,current);
     });
   }
   async list(){await this.ready;this.guard();await this.native.refresh();this.guard();return this.native.list();}

@@ -110,6 +110,19 @@ const backgroundLabel = (name: string): RemoteLocalizedText => {
     ),
   };
 };
+const taskPermissionLabel = (key: string): RemoteLocalizedText => ({
+  fallback:
+    (translations.en as Record<string, string>)[
+      `terminal.plugin.permission.${key}`
+    ] ?? key,
+  translations: Object.fromEntries(
+    Object.entries(translations).map(([locale, values]) => [
+      locale,
+      (values as Record<string, string>)[`terminal.plugin.permission.${key}`] ??
+        key,
+    ]),
+  ),
+});
 function permissionText(items: GhostPermissionItem[], locale = "en") {
   const dictionary =
     (permissions as Record<string, Record<string, string>>)[locale] ??
@@ -390,7 +403,37 @@ export function registerPluginResources(
           label: backgroundLabel("title"),
           target: { kind: "resource", ref: backgroundRef(request.ref.id) },
         });
-      if (host.models && ghost.manifest.cindy?.text?.includes("oneshot")) {
+      if (host.models && ghost.manifest.agent?.tasks) {
+        const config = await host.models.config(request.ref.id);
+        context.assertCurrent?.();
+        const permissionMode = config.permissionMode ?? "ask";
+        resource.actions?.push({
+          id: "task-permission",
+          label: taskPermissionLabel("title"),
+          fields: [
+            {
+              id: "permissionMode",
+              kind: "select",
+              required: true,
+              label: taskPermissionLabel("title"),
+              options: ["ask", "plan", "acceptEdits", "auto"].map((value) => ({
+                value,
+                label: taskPermissionLabel(value),
+              })),
+            },
+          ],
+        });
+        resource.blocks?.push({
+          id: "task-permission",
+          primitive: "form",
+          fallbackMarkdown:
+            taskPermissionLabel(permissionMode).translations?.[
+              request.client.locale ?? "en"
+            ] ?? taskPermissionLabel(permissionMode).fallback,
+          data: { actionId: "task-permission", values: { permissionMode } },
+        });
+      }
+      if (host.models && (ghost.manifest.agent?.tasks || ghost.manifest.cindy?.text?.includes("oneshot"))) {
         const state = await host.models.state(request.ref.id);
         context.assertCurrent?.();
         const options = state.options.map((option) => ({
@@ -499,6 +542,12 @@ export function registerPluginResources(
       } else if (["enable", "disable"].includes(request.actionId))
         await host.setEnabled(id, request.actionId === "enable");
       else if (request.actionId === "remove") await host.uninstall(id);
+      else if (request.actionId === "task-permission")
+        await host.setTaskPermission(
+          id,
+          request.input?.permissionMode,
+          context.assertCurrent,
+        );
       else if (request.actionId === "model" && host.models) {
         await host.setModel(
           id,

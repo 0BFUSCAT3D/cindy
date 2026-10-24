@@ -1,4 +1,4 @@
-import type { RemoteActionDescriptor, RemoteCollectionDescriptor, RemoteCollectionItem, RemoteResource } from '@cindy/device-link';
+import type { RemoteActionDescriptor, RemoteCollectionDescriptor, RemoteResource } from '@cindy/device-link';
 import { parseRemoteActionInvokeRequest } from '@cindy/device-link';
 import type { TerminalClient } from './contracts.js';
 import type { Locale } from './ui/i18n.js';
@@ -37,15 +37,10 @@ export async function runResourceCommand(client:TerminalClient,options:{collecti
   if(options.operation==='list'||options.operation==='search')return call('list',{collectionId:collection.id,limit:options.limit??100,...(options.cursor?{cursor:options.cursor}:{}),...(options.query?{query:options.query}:{})});
   let resource:RemoteResource|undefined;
   if(options.id){
-    let cursor:string|undefined;const seen=new Set<string>();
-    for(;;){
-      const page=await call<{items:RemoteCollectionItem[];nextCursor?:string}>('list',{collectionId:collection.id,limit:100,...(cursor?{cursor}:{})});
-      const item=page.items.find(item=>item.ref.id===options.id);
-      if(item){resource=await call<RemoteResource>('get',{ref:item.ref});break;}
-      if(!page.nextCursor)throw new Error('RESOURCE_NOT_FOUND');
-      if(seen.has(page.nextCursor))throw new Error('INVALID_RESOURCE_CURSOR');
-      cursor=page.nextCursor;seen.add(cursor);
-    }
+    // Child resources (plugin pages, background tasks and model details) are
+    // reachable by links without appearing in the root collection. The host's
+    // advertised kind and authenticated get handler define their identity.
+    resource=await call<RemoteResource>('get',{ref:{collectionId:collection.id,kind:collection.resourceKind,id:options.id}});
   }
   if(options.operation==='get'||options.operation==='show'){
     if(!resource)throw new Error('RESOURCE_ID_REQUIRED');return resource;

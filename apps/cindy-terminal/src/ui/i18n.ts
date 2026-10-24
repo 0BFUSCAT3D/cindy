@@ -118,11 +118,11 @@ export function resolveLocale(input = process.env.LC_ALL || process.env.LC_MESSA
 }
 
 const controls = {
-  en:{attachment:'Attachment',effort:'Reasoning effort',permission:'Permissions',plan:'Plan mode',fast:'Fast mode',contextRebuilt:'Context rebuilt',compact:'Compact context',attach:'Add attachment',on:'On',off:'Off',removeAttachments:'Remove attachments',filePath:'Local file path'},
-  'zh-CN':{attachment:'附件',effort:'思考强度',permission:'权限',plan:'计划模式',fast:'快速模式',contextRebuilt:'已整理上下文',compact:'压缩上下文',attach:'添加附件',on:'开启',off:'关闭',removeAttachments:'移除附件',filePath:'本地文件路径'},
-  'zh-TW':{attachment:'附件',effort:'思考強度',permission:'權限',plan:'計畫模式',fast:'快速模式',contextRebuilt:'已整理上下文',compact:'壓縮上下文',attach:'新增附件',on:'開啟',off:'關閉',removeAttachments:'移除附件',filePath:'本機檔案路徑'},
-  ja:{attachment:'添付ファイル',effort:'推論の強度',permission:'権限',plan:'計画モード',fast:'高速モード',contextRebuilt:'コンテキストを再構築しました',compact:'コンテキストを圧縮',attach:'添付ファイルを追加',on:'オン',off:'オフ',removeAttachments:'添付ファイルを削除',filePath:'ローカルファイルのパス'},
-  ko:{attachment:'첨부 파일',effort:'추론 강도',permission:'권한',plan:'계획 모드',fast:'빠른 모드',contextRebuilt:'컨텍스트를 다시 구성했습니다',compact:'컨텍스트 압축',attach:'첨부 파일 추가',on:'켜기',off:'끄기',removeAttachments:'첨부 파일 제거',filePath:'로컬 파일 경로'},
+  en:{pluginWriteRecovery:"Confirm plugin write permission again",attachment:'Attachment',effort:'Reasoning effort',permission:'Permissions',plan:'Plan mode',fast:'Fast mode',contextRebuilt:'Context rebuilt',compact:'Compact context',attach:'Add attachment',on:'On',off:'Off',removeAttachments:'Remove attachments',filePath:'Local file path'},
+  'zh-CN':{pluginWriteRecovery:"重新确认插件写权限",attachment:'附件',effort:'思考强度',permission:'权限',plan:'计划模式',fast:'快速模式',contextRebuilt:'已整理上下文',compact:'压缩上下文',attach:'添加附件',on:'开启',off:'关闭',removeAttachments:'移除附件',filePath:'本地文件路径'},
+  'zh-TW':{pluginWriteRecovery:"重新確認插件寫入權限",attachment:'附件',effort:'思考強度',permission:'權限',plan:'計畫模式',fast:'快速模式',contextRebuilt:'已整理上下文',compact:'壓縮上下文',attach:'新增附件',on:'開啟',off:'關閉',removeAttachments:'移除附件',filePath:'本機檔案路徑'},
+  ja:{pluginWriteRecovery:"プラグインの書き込み権限を再確認",attachment:'添付ファイル',effort:'推論の強度',permission:'権限',plan:'計画モード',fast:'高速モード',contextRebuilt:'コンテキストを再構築しました',compact:'コンテキストを圧縮',attach:'添付ファイルを追加',on:'オン',off:'オフ',removeAttachments:'添付ファイルを削除',filePath:'ローカルファイルのパス'},
+  ko:{pluginWriteRecovery:"플러그인 쓰기 권한 다시 확인",attachment:'첨부 파일',effort:'추론 강도',permission:'권한',plan:'계획 모드',fast:'빠른 모드',contextRebuilt:'컨텍스트를 다시 구성했습니다',compact:'컨텍스트 압축',attach:'첨부 파일 추가',on:'켜기',off:'끄기',removeAttachments:'첨부 파일 제거',filePath:'로컬 파일 경로'},
 };
 export function getControlMessages(locale:Locale){return controls[locale];}
 

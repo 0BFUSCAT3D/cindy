@@ -55,6 +55,7 @@ export function InteractionView({ request, locale, resolve, back, busy }: {
   const lines = wrapAnsi(terminalText(description),Math.max(8,columns-2),{hard:true,trim:false}).split('\n');
   const count = Math.max(3, rows - options.length - 14);
   const start = Math.min(offset, Math.max(0, lines.length - count));
+  const hasDetails=request.kind==='permission'&&request.input&&typeof request.input==='object'&&Object.keys(request.input).length>0;
   return <Box flexDirection="column" gap={1}>
     <Text bold>{t.requests}</Text>
     <Box flexDirection="column" maxHeight={count} overflow="hidden">
@@ -64,7 +65,7 @@ export function InteractionView({ request, locale, resolve, back, busy }: {
       : options.map((option,index) => <Text key={index} bold={selected === index}>
         {selected === index ? '› ' : '  '}{question?.multiSelect && index < options.length - 1 ? chosen.includes(option) ? '[x] ' : '[ ] ' : ''}{terminalText(option)}
       </Text>)}
-    {request.kind==='permission'&&<Text dimColor>D · {permissionCopy[locale].details}{lines.length>count?'   PgUp / PgDn':''}</Text>}
+    {request.kind==='permission'&&(hasDetails||lines.length>count)&&<Text dimColor>{hasDetails?`D · ${permissionCopy[locale].details}`:''}{lines.length>count?'   PgUp / PgDn':''}</Text>}
     {busy && <Text dimColor>{t.working}</Text>}
   </Box>;
 }
@@ -79,5 +80,5 @@ function permissionDescription(request:Extract<InteractionRequest,{kind:'permiss
   if(!details&&typeof input?.serverName==='string'&&typeof input.toolName==='string'&&input.toolParams&&typeof input.toolParams==='object'){
     return [permissionCopy[locale].tool,`${input.serverName} · ${input.toolName}`,'',JSON.stringify(input.toolParams,null,2)].join('\n');
   }
-  return [request.title??request.displayName??request.toolName,request.description??'',JSON.stringify(request.input,null,2)].join('\n');
+  return [request.title??request.displayName??request.toolName,request.description??'',input&&Object.keys(input).length?JSON.stringify(input,null,2):''].filter(Boolean).join('\n');
 }

@@ -468,7 +468,7 @@ export class TerminalTaskHost {
         const task=await this.ensureLive(id);guard();current();
         // This is an owner setting, not permission to resume a paused turn.
         // It uses the same authenticated pending UI without releasing the queue.
-        const result=await this.interaction(id,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.task.writeAccess',input},signal,undefined,true);
+        const result=await this.interaction(id,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.task.writeAccess',title:input.title,description:`${input.message}\n\n${input.detail}`,input:{}},signal,undefined,true);
         guard();current();
         return this.live.get(id)===task&&result.kind==='permission'&&result.behavior==='allow';
       },

@@ -441,6 +441,63 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
       },
     });
   }
+  async models(): Promise<
+    Array<{
+      id: string;
+      label: string;
+      route: PluginTaskRoute;
+      efforts: readonly string[];
+      supportsFastMode: boolean;
+    }>
+  > {
+    this.guard();
+    const views = await this.options.tasks.models.views();
+    const available = await Promise.all(
+      ENGINES.map(
+        async (kind) =>
+          [kind, await this.options.tasks.isAgentAvailable(kind)] as const,
+      ),
+    );
+    this.guard();
+    return availableAppDefaultModels({
+      providers: views,
+      availableAgents: new Set(
+        available
+          .filter(([, ready]) => ready)
+          .map(([kind]) => (kind === "claude-code" ? "cc" : kind)),
+      ),
+      enabled: (kind, providerId, model) => {
+        const provider = views.find((p) => p.id === providerId);
+        return (
+          provider?.models[kind]?.some(
+            (candidate) =>
+              candidate.id === model.id &&
+              !candidate.disabled &&
+              (provider.source === "user" ||
+                candidate.defaultEnabled !== false),
+          ) === true
+        );
+      },
+    }).map((option) => ({
+      id: option.id,
+      label: [
+        views.find((p) => p.id === option.route.providerId)?.name ??
+          option.route.providerId,
+        option.route.harness,
+        option.route.model,
+      ].join(" / "),
+      route: {
+        agentKind:
+          option.route.harness === "claude" ? "cc" : option.route.harness,
+        providerId: option.route.providerId!,
+        model: option.route.model,
+        effort: option.route.effort,
+        fastMode: option.route.fastMode,
+      },
+      efforts: option.efforts,
+      supportsFastMode: option.supportsFastMode,
+    }));
+  }
   private async handle(
     id: string,
     request: PluginTaskRequest,
@@ -454,48 +511,9 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
           request.mode ?? "acceptEdits",
         );
       case "models": {
-        const views = await this.options.tasks.models.views();
-        const available = await Promise.all(
-          ENGINES.map(
-            async (kind) =>
-              [kind, await this.options.tasks.isAgentAvailable(kind)] as const,
-          ),
-        );
+        const models = await this.models();
         this.authorized(id);
-        return {
-          models: availableAppDefaultModels({
-            providers: views,
-            availableAgents: new Set(
-              available
-                .filter(([, ready]) => ready)
-                .map(([kind]) => (kind === "claude-code" ? "cc" : kind)),
-            ),
-            enabled: (kind, providerId, model) => {
-              const provider = views.find((p) => p.id === providerId);
-              return (
-                provider?.models[kind]?.some(
-                  (candidate) =>
-                    candidate.id === model.id &&
-                    !candidate.disabled &&
-                    (provider.source === "user" ||
-                      candidate.defaultEnabled !== false),
-                ) === true
-              );
-            },
-          }).map((option) => ({
-            id: option.id,
-            route: {
-              agentKind:
-                option.route.harness === "claude" ? "cc" : option.route.harness,
-              providerId: option.route.providerId,
-              model: option.route.model,
-              effort: option.route.effort,
-              fastMode: option.route.fastMode,
-            },
-            efforts: option.efforts,
-            supportsFastMode: option.supportsFastMode,
-          })),
-        };
+        return { models };
       }
       case "readMessages": {
         await service.get(id, request.taskId);

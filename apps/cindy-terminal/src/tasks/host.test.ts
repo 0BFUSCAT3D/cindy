@@ -1,5 +1,6 @@
 import { TerminalPluginSessions } from '../plugins/sessions.js';
 import { registerPluginResources } from '../plugins/resources.js';
+import { runResourceCommand } from '../resource-commands.js';
 import { encodeCatalogModelPin } from '@cindy/model-providers/catalogModelPin';
 import { enqueueMessage, waitForTurn } from '../client-operations.js';
 import type { TerminalClient } from '../contracts.js';
@@ -1252,11 +1253,11 @@ describe('terminal task host', () => {
       await plugins.ready;await tasks.ready;
       // Integration tier: task ownership, durable replay, terminal input source
       // and cancellation were previously unavailable behind the plugin pipe.
-      const installed = {dir:path.join(root,'fixture-plugin'),enabled:true,approval:{state:'approved',revision:'fixture-approved'},taskCapabilityApproved:true,
-        manifest:{id:'fixture-plugin',name:'Task fixture',version:'1.0.0',agent:{tasks:true,hiddenTasks:true}}} as unknown as import('@cindy/plugin-runtime/shared/ghost').InstalledGhost;
-      const lookup=vi.spyOn(plugins,'installed').mockImplementation(id=>id==='fixture-plugin'?installed:null);
+      const installed = {dir:path.join(root,'_root__fixture-plugin'),enabled:true,approval:{state:'approved',revision:'fixture-approved'},taskCapabilityApproved:true,
+        instanceKey:'_root__fixture-plugin',namespace:null,manifest:{id:'fixture-plugin',name:'Task fixture',version:'1.0.0',agent:{tasks:true,hiddenTasks:true}}} as unknown as import('@cindy/plugin-runtime/shared/ghost').InstalledGhost;
+      const lookup=vi.spyOn(plugins.native,'list').mockReturnValue([installed]);
       const call=async(kind:string,args:Record<string,unknown>={})=>{
-        const result=await plugins.receive('fixture-plugin',{type:'tasks-request',kind,...args}) as {ok:boolean;data:any;error?:{code:string;message?:string}};
+        const result=await plugins.receive('_root__fixture-plugin',{type:'tasks-request',kind,...args}) as {ok:boolean;data:any;error?:{code:string;message?:string}};
         if(!result.ok)throw new Error(`${result.error?.code}: ${result.error?.message}`);return result.data;
       };
       let created=await call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true});
@@ -1267,20 +1268,47 @@ describe('terminal task host', () => {
       const owner={controllerDeviceId:'terminal-owner'},client={protocolVersion:1,primitives:['text','actions'],locale:'en'};
       const get=vi.spyOn(plugins,'get').mockResolvedValue(installed);
       try{
-        const detail=await registry.get(owner,{client,ref:{collectionId:'plugins',kind:'plugin',id:'fixture-plugin'}});
+        const detail=await registry.get(owner,{client,ref:{collectionId:'plugins',kind:'plugin',id:'_root__fixture-plugin'}});
         const target=detail.links.find(link=>link.rel==='background-tasks')!.target;
         expect(target.kind).toBe('resource');if(target.kind!=='resource')throw new Error('Expected task list');
         installed.enabled=false;
         const background=await registry.get(owner,{client,ref:target.ref});
         expect(background.links).toEqual(expect.arrayContaining([expect.objectContaining({target:{kind:'session',sessionId:created.taskId}})]));
-        await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:target.ref,actionId:'reveal-background',input:{taskId:created.taskId}});
-        expect(await tasks.sessions.background('fixture-plugin')).toEqual([]);
+        const controller:TerminalClient={invoke:(async(channel:string,args:unknown[]=[],device?:string)=>{
+          expect(device).toBe('plugin-server');const request=args[0] as never;
+          // These child pages are deliberately absent from the root list.
+          if(channel.endsWith(':list'))throw new Error('CHILD_IS_NOT_A_COLLECTION_ITEM');
+          return channel.endsWith(':manifest')?registry.manifest(owner,request):channel.endsWith(':get')?registry.get(owner,request):registry.invoke(owner,request);
+        }) as TerminalClient['invoke'],subscribe:()=>()=>{},close(){}};
+        expect(await runResourceCommand(controller,{collection:'plugins',operation:'get',id:target.ref.id,device:'plugin-server',locale:'en'})).toMatchObject({ref:target.ref});
+        await runResourceCommand(controller,{collection:'plugins',operation:'reveal-background',id:target.ref.id,input:{taskId:created.taskId},device:'plugin-server',locale:'en'});
+        expect(await tasks.sessions.background('_root__fixture-plugin')).toEqual([]);
         expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(true);
       }finally{installed.enabled=true;get.mockRestore();}
       await call('setHidden',{taskId:created.taskId,hidden:true});
       expect((await call('models')).models).toEqual(expect.arrayContaining([expect.objectContaining({route:expect.objectContaining({model:'test-model'})})]));
       const provider=host.models.snapshot().providers.find(p=>p.id==='fixture')!;
-      await host.models.saveProvider({...provider,runtimes:{'claude-code':{...provider.runtimes['claude-code']!,models:[...provider.runtimes['claude-code']!.models,{id:'test-second',name:'Second',contextWindow:200000}]}}});
+      await host.models.saveProvider({...provider,runtimes:{'claude-code':{...provider.runtimes['claude-code']!,models:[...provider.runtimes['claude-code']!.models,{id:'test-second',name:'Second',contextWindow:200000}]},pi:{baseUrl:'http://127.0.0.1:1',wireProtocol:'openai-chat',models:[{id:'test-pi',name:'Pi fixture',contextWindow:200000}]}}},{pi:'invalid-test-key-only'});
+      // Owner settings must expose task routes even for a task-only plugin,
+      // and persist the chosen engine/model without changing existing tasks.
+      const preferences=await registry.get(owner,{client,ref:{collectionId:'plugins',kind:'plugin',id:'_root__fixture-plugin'}});
+      const modelField=preferences.actions?.find(action=>action.id==='model')?.fields?.find(field=>field.id==='model');
+      if(modelField?.kind!=='select')throw new Error('TASK_MODEL_PICKER_MISSING');
+      const second=modelField.options?.find(option=>String(option.label).includes('test-second'));
+      expect(second).toBeDefined();
+      await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:preferences.ref,actionId:'model',input:{model:second!.value}});
+      const usingPreference=await call('create',{title:'Plugin default model',requestKey:'configured-model'});
+      expect(usingPreference.resolvedConfig).toMatchObject({agentKind:'cc',providerId:'fixture',model:'test-second'});
+      expect((await call('get',{taskId:created.taskId})).resolvedConfig.model).toBe('test-model');
+      const pi=modelField.options?.find(option=>String(option.label).includes('test-pi'));
+      expect(pi).toBeDefined();
+      await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:preferences.ref,actionId:'model',input:{model:pi!.value}});
+      const piTask=await call('create',{title:'Plugin Pi model',requestKey:'configured-pi-model'});
+      expect(piTask.resolvedConfig).toMatchObject({agentKind:'pi',providerId:'fixture',model:'test-pi'});
+      const piRun=await call('send',{taskId:piTask.taskId,requestKey:'pi-send',expectedRevision:piTask.revision,text:'plugin-pi-input'});
+      await vi.waitFor(async()=>expect(await call('getRun',{runId:piRun.runId})).toMatchObject({status:'completed'}));
+      expect(native.inputs.at(-1)?.selection.agentKind).toBe('pi');
+      await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:preferences.ref,actionId:'model',input:{model:''}});
       const previous=created;
       created=(await call('setModel',{taskId:created.taskId,expectedRevision:created.revision,route:{...created.resolvedConfig,model:'test-second'}})).task;
       expect(created.resolvedConfig.model).toBe('test-second');
@@ -1305,7 +1333,7 @@ describe('terminal task host', () => {
       const granted=host.invoke('maker:retry-plugin-write-access',[created.taskId]);
       await confirm(created.taskId,'allow');expect(await granted).toMatchObject({granted:true,available:false,mode:'acceptEdits'});
       created=await call('get',{taskId:created.taskId});
-      expect(created.permissionMode).toBe('acceptEdits');expect((await plugins.models!.config('fixture-plugin')).permissionMode).toBe('acceptEdits');
+      expect(created.permissionMode).toBe('acceptEdits');expect((await plugins.models!.config('_root__fixture-plugin')).permissionMode).toBe('acceptEdits');
       const run=await call('send',{taskId:created.taskId,requestKey:'send-1',expectedRevision:created.revision,text:'plugin-owned-input'});
       await vi.waitFor(async()=>expect(await call('getRun',{runId:run.runId})).toMatchObject({status:'completed'}));
       const firstPage=await call('readMessages',{taskId:created.taskId,limit:1});expect(firstPage.items[0]).toMatchObject({role:'user',content:'plugin-owned-input'});
@@ -1315,7 +1343,7 @@ describe('terminal task host', () => {
       expect(native.sent).toHaveLength(sent);
       expect(native.sends.at(-1)?.[AUTO_REVIEW_USER_INTENT]).toBe('');
       const history=await host.invoke('local-db:messages:list',[created.taskId,{limit:20}]) as Array<{role:string;agentMeta?:any}>;
-      expect(history.find(row=>row.role==='user')?.agentMeta).toMatchObject({sourcePlugin:{pluginId:'fixture-plugin'},autoReviewUserText:{kind:'delegated-continuation'}});
+      expect(history.find(row=>row.role==='user')?.agentMeta).toMatchObject({sourcePlugin:{pluginId:'_root__fixture-plugin'},autoReviewUserText:{kind:'delegated-continuation'}});
       await host.invoke('maker:set-permission-mode',[created.taskId,'ask']);
       await expect(call('requestWriteAccess',{taskId:created.taskId})).rejects.toThrow('TASK_BUSY');
       created=await call('get',{taskId:created.taskId});
@@ -1337,14 +1365,18 @@ describe('terminal task host', () => {
       await confirm(rollback.taskId,'allow');expect(await failed).toBeInstanceOf(Error);persist.mockRestore();
       expect((await host.storage.get(rollback.taskId))?.permissionMode).toBe('acceptEdits');
       expect(native.permissionModes.slice(-2)).toEqual(['auto','acceptEdits']);
-      expect((await plugins.models!.config('fixture-plugin')).permissionMode).toBe('acceptEdits');
+      expect((await plugins.models!.config('_root__fixture-plugin')).permissionMode).toBe('acceptEdits');
       expect(await host.invoke('maker:input:get-projection',[rollback.taskId])).toMatchObject({queuePaused:true});
+      await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:{collectionId:'plugins',kind:'plugin',id:'_root__fixture-plugin'},actionId:'task-permission',input:{permissionMode:'ask'}});
+      expect((await plugins.models!.config('_root__fixture-plugin')).permissionMode).toBe('ask');
+      await expect(call('send',{taskId:rollback.taskId,expectedRevision:rollback.revision,requestKey:'after-owner-revocation',text:'must not dispatch'})).rejects.toThrow('PERMISSION_DENIED');
+      await expect(plugins.setTaskPermission('_root__fixture-plugin','bypassPermissions')).rejects.toThrow('INVALID_PERMISSION_MODE');
       await tasks.sessions.close();
       const reopened=new TerminalPluginSessions({root,host:plugins,tasks:host,guard:()=>{}});plugins.configureTaskSessions(reopened);
       try{
         await reopened.ready;
         expect(await call('getRun',{runId:run.runId})).toMatchObject({status:'completed'});
-        await reopened.withUninstall('fixture-plugin',async()=>{});
+        await reopened.withUninstall('_root__fixture-plugin',async()=>{});
         expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(true);
         await expect(call('get',{taskId:created.taskId})).rejects.toThrow('TASK_NOT_FOUND');
         await expect(call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true})).rejects.toThrow('TASK_NOT_FOUND');

@@ -161,9 +161,22 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     const providers=await call('maker:provider:list');
     const provider=array(record(providers).providers??providers).find(item=>item.id===(taskInfo.providerId??taskInfo.provider_id));
     const model=array(record(provider?.models)[kind]).find(item=>item.id===taskInfo.model);
-    const choices=[t.models,controls.permission,controls.plan,controls.compact,controls.attach,...(attachments.length?[controls.removeAttachments]:[]),...(Array.isArray(model?.efforts)&&model.efforts.length?[controls.effort]:[]),...(model?.supportsFastMode?[controls.fast]:[]),...(pending.length?[t.requests]:[]),t.stop];
+    const recovery = device ? false : record(await call('maker:get-plugin-write-access-recovery',[taskId])).available === true;
+    const choices=[...(recovery?[controls.pluginWriteRecovery]:[]),t.models,controls.permission,controls.plan,controls.compact,controls.attach,...(attachments.length?[controls.removeAttachments]:[]),...(Array.isArray(model?.efforts)&&model.efforts.length?[controls.effort]:[]),...(model?.supportsFastMode?[controls.fast]:[]),...(pending.length?[t.requests]:[]),t.stop];
     edit(t.commands,[{key:'action',label:t.commands,choices}],async values=>{
       const chosen=values.action;
+      if(chosen===controls.pluginWriteRecovery){
+        setForm(null);setReviewRequest(true);
+        // The RPC completes only after consent. Keep the pending-request UI
+        // responsive while it waits for that answer on this same connection.
+        void call('maker:retry-plugin-write-access',[taskId]).then(async()=>{
+          if(current.current.task===taskId&&current.current.device===device)await load();
+        }).catch(reason=>{
+          if(current.current.task!==taskId||current.current.device!==device)return;
+          const code=reason instanceof Error&&/^[A-Z][A-Z0-9_]+$/.test(reason.message)?reason.message:'OPERATION_FAILED';
+          setError(`${t.error} · ${code}`);
+        });return;
+      }
       if(chosen===controls.attach){edit(controls.attach,[{key:'path',label:controls.filePath}],async value=>{const file=path.resolve(value.path);setAttachments(items=>[...items,{path:file,name:path.basename(file)}]);setForm(null);});return;}
       if(chosen===controls.removeAttachments){setAttachments([]);setForm(null);return;}
       if(chosen===t.requests){setForm(null);setReviewRequest(true);return;}
