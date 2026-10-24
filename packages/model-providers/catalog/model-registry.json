@@ -1,6 +1,6 @@
 {
   "schemaVersion": 6,
-  "updatedAt": "2026-10-24T02:52:43.075Z",
+  "updatedAt": "2026-10-24T03:51:23.033Z",
   "models": [
     {
       "id": "openai/gpt-6.1-sol",
@@ -9507,6 +9507,56 @@
       ],
       "legacyApis": [
         "openai-completions"
+      ]
+    },
+    {
+      "id": "aliyun-model-studio-cn-anthropic-messages",
+      "providerId": "aliyun-model-studio-cn",
+      "api": "anthropic-messages",
+      "baseUrl": "https://dashscope.aliyuncs.com/apps/anthropic",
+      "inputBaseUrls": [
+        "https://dashscope.aliyuncs.com/apps/anthropic"
+      ],
+      "defaultFor": [
+        "claude-code",
+        "pi"
+      ]
+    },
+    {
+      "id": "aliyun-model-studio-cn-openai-completions",
+      "providerId": "aliyun-model-studio-cn",
+      "api": "openai-completions",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "inputBaseUrls": [
+        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      ],
+      "defaultFor": [
+        "codex"
+      ]
+    },
+    {
+      "id": "aliyun-model-studio-global-anthropic-messages",
+      "providerId": "aliyun-model-studio-global",
+      "api": "anthropic-messages",
+      "baseUrl": "https://dashscope-intl.aliyuncs.com/apps/anthropic",
+      "inputBaseUrls": [
+        "https://dashscope-intl.aliyuncs.com/apps/anthropic"
+      ],
+      "defaultFor": [
+        "claude-code",
+        "pi"
+      ]
+    },
+    {
+      "id": "aliyun-model-studio-global-openai-completions",
+      "providerId": "aliyun-model-studio-global",
+      "api": "openai-completions",
+      "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "inputBaseUrls": [
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+      ],
+      "defaultFor": [
+        "codex"
       ]
     },
     {

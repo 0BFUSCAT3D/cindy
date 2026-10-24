@@ -4,6 +4,29 @@ import { alignModelApiRoute, providerInterfaceModelRoute } from '../providerInte
 import { BUNDLED_CATALOG } from '../catalog.js';
 
 describe('documented supplier interfaces', () => {
+  // r4365890304 (unit): import saved Model Studio connections through the
+  // production resolver. Previous coverage checked protocol shape, not whether
+  // these products actually exposed a selected catalog interface.
+  it.each([
+    ['aliyun-model-studio-cn', 'https://dashscope.aliyuncs.com'],
+    ['aliyun-model-studio-global', 'https://dashscope-intl.aliyuncs.com'],
+  ])('selects the declared %s saved interfaces without changing user settings', (presetId, host) => {
+    const provider = buildUserProvider({ id: 'studio', name: 'Studio', runtimes:
+      Object.fromEntries(['claude-code', 'codex', 'pi'].map(agent => [agent, {
+        baseUrl: `${host}/${agent === 'codex' ? 'compatible-mode/v1' : 'apps/anthropic'}`,
+        wireProtocol: agent === 'codex' ? 'openai-chat' : 'anthropic-messages', catalogPresetId: presetId,
+        models: [{ id: 'qwen3.7-flash', contextWindow: 64000, defaultEnabled: false }],
+      }])) });
+    for (const agent of provider.agents) {
+      const api = agent === 'codex' ? 'openai-completions' : 'anthropic-messages';
+      expect(provider.models[agent]![0]).toMatchObject({
+        api, contextWindow: 64000, defaultEnabled: false,
+        selectedInterface: { profileId: `${presetId}-${api}`, route: {
+          baseUrl: `${host}/${agent === 'codex' ? 'compatible-mode/v1' : 'apps/anthropic'}`,
+        } },
+      });
+    }
+  });
   it.each([
     ['zhipu-glm-cn', 'https://open.bigmodel.cn/api/coding/paas/v4'],
     ['zhipu-glm-global', 'https://api.z.ai/api/coding/paas/v4'],
