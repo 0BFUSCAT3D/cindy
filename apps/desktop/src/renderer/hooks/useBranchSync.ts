@@ -156,15 +156,25 @@ export function useBranchSync(
         : t('newChat.branchSync.current');
   if (state.error) hint = t('newChat.branchSync.failed', { reason: errorText });
   if (state.busy) hint = t('newChat.branchSync.fetching', vars);
+  const ahead = status?.ahead ?? 0;
+  const behind = status?.behind ?? 0;
+  const diverging = ahead > 0 && behind > 0;
   const details = [
-    status?.ahead
-      ? t('newChat.branchSync.ahead', {
-          ...vars,
+    diverging
+      ? t('newChat.branchSync.diverging', {
           remote: `${vars.remote}/${vars.remoteBranch}`,
-          count: status.ahead,
+          ahead,
+          behind,
+          count: ahead,
         })
-      : '',
-    status?.behind
+      : status?.ahead
+        ? t('newChat.branchSync.ahead', {
+            ...vars,
+            remote: `${vars.remote}/${vars.remoteBranch}`,
+            count: status.ahead,
+          })
+        : '',
+    !diverging && status?.behind
       ? t('newChat.branchSync.behind', {
           ...vars,
           remote: `${vars.remote}/${vars.remoteBranch}`,

@@ -36,9 +36,9 @@ mountPage({
       remote: 'origin',
       remoteBranch: 'main',
       remoteOnly: req.branch.startsWith('refs/'),
-      ahead: ctx.case === 'diverged' ? 2 : 0,
-      behind: 3,
-      dirtyFiles: 3,
+      ahead: ['diverged', 'unchecked'].includes(ctx.case) ? 1 : 0,
+      behind: ctx.case === 'unchecked' ? 0 : ctx.case === 'default' ? 3 : 1,
+      dirtyFiles: ctx.case === 'diverged' ? 2 : ctx.case === 'default' ? 3 : 1,
       checkoutPath: '/projects/cindy',
       ...(ctx.case === 'diverged' || ctx.case === 'conflict' ? { blocked: ctx.case } : {}),
     });
@@ -51,7 +51,7 @@ mountPage({
       worktreeBranchSyncStatus: async (req: BranchSyncRequest) => read(req),
       worktreeSyncBranch: async (req: BranchSyncRequest) => ({
         status: { ...read(req), behind: 0 },
-        updated: 3,
+        updated: ctx.case === 'unchecked' ? 0 : ctx.case === 'worker' ? 1 : 3,
       }),
     };
   },

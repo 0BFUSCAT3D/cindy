@@ -57,6 +57,23 @@ export default {
     });
     assert.equal(await remote.count(), ['unchecked', 'old-host'].includes(ui.case) ? 0 : 1);
     await ui.capture('branches');
+    if (ui.case === 'unchecked') {
+      await page.keyboard.press('Escape');
+      await page
+        .getByRole('button', {
+          name: await ui.t('newChat.branchSync.action', { remote: 'origin', remoteBranch: 'main' }),
+          exact: false,
+        })
+        .click();
+      const result = page.getByRole('button', {
+        name: await ui.t('newChat.branchSync.keptAhead', { count: 1 }),
+        exact: true,
+      });
+      await page.mouse.move(340, 350);
+      await result.hover();
+      await page.getByRole('tooltip').waitFor();
+      await ui.capture('kept-ahead');
+    }
     if (ui.case === 'default' || ui.case === 'worker') {
       await page.getByRole('combobox').fill('origin/main');
       assert.equal(await page.getByRole('option').count(), 2);
@@ -72,10 +89,18 @@ export default {
       await action.click();
       await page
         .getByRole('button', {
-          name: await ui.t('newChat.branchSync.updated', { count: 3 }),
+          name: await ui.t('newChat.branchSync.updated', { count: ui.case === 'worker' ? 1 : 3 }),
           exact: true,
         })
         .waitFor();
+      await page.mouse.move(340, 350);
+      await page
+        .getByRole('button', {
+          name: await ui.t('newChat.branchSync.updated', { count: ui.case === 'worker' ? 1 : 3 }),
+          exact: true,
+        })
+        .hover();
+      await page.getByRole('tooltip').waitFor();
       await ui.capture('updated');
     }
   },

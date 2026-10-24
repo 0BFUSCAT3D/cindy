@@ -103,6 +103,28 @@ it('shares counts with the selected row and keeps full remote refs distinct duri
   fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' });
   expect(props.onPick).toHaveBeenLastCalledWith('origin/main');
 });
+// Product rule: diverged branch details name the remote once and retain dirty-file counts.
+// Standard tier: exercise the real capsule with both counts positive; the existing case covers behind-only.
+it('combines diverged counts into one status segment and keeps dirty files', async () => {
+  status.mockResolvedValue({ ...baseStatus, ahead: 1, behind: 1, blocked: 'diverged' });
+  render(<BranchWorktreeChip {...props} />);
+  await waitFor(() => expect(status).toHaveBeenCalledOnce());
+  await act(async () => {
+    fireEvent.click(branchButton());
+  });
+  const expected = [
+    mocks.t('newChat.branchSync.diverging', {
+      remote: 'origin/main',
+      ahead: 1,
+      behind: 1,
+      count: 1,
+    }),
+    mocks.t('newChat.branchSync.dirty', { count: 2 }),
+  ].join(' · ');
+  expect(screen.getByText(expected)).toBeTruthy();
+  expect(screen.queryByText(/newChat.branchSync.ahead/)).toBeNull();
+  expect(screen.queryByText(/newChat.branchSync.behind/)).toBeNull();
+});
 it('shows remote sources only when worktree is checked or branchOnly is used', async () => {
   const view = render(<BranchWorktreeChip {...props} checked={false} />);
   await waitFor(() => expect(refreshButton().hasAttribute('disabled')).toBe(false));
