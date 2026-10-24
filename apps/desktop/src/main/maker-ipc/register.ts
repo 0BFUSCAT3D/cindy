@@ -6550,7 +6550,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       catalog, agent, providerId, modelId: row.model,
       previous, next: latestBudget,
     })) {
-      pendingSessionContextWindowBudgetReconciles.delete(sessionId);
+      // **不能**在这里清重放意图：`previous` 只是「上一个保存值」，不是活实例当前的窗口。
+      // 例：实例 300K、模型级上限 500K，回合中先存 500K 再存 600K —— 第二次比较的两个保存
+      // 值都收敛到 500K，判为「没变」，但实例仍是 300K；此刻清掉意图，随后重选模型取消
+      // pending，预算就永久不生效（Greptile P1，2026-10-24）。
+      // 意图只在三种终态清除：真正 applied、记账值等于偏好值（已应用）、实例已关。
       log.debug('session context window budget does not change the effective window', {
         sessionId, previous, next: latestBudget,
       });

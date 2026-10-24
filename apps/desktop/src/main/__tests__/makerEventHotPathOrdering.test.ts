@@ -1272,6 +1272,53 @@ describe('session context window budget reconciler', () => {
     else expect(pending.has('task-1')).toBe(true);
   });
 
+  it('keeps a pending rebuild intent when a later save collapses to the same window', async () => {
+    // 实例 300K、模型级上限 500K：回合中先存 500K（有效窗口 300K→500K），再存 600K
+    // （两个保存值都收敛到 500K，判为「没变」）。此时**不能**清意图：实例还是 300K，
+    // 一旦 pending 被取消就永久不生效（Greptile P1，2026-10-24）。
+    const { js } = loadBudgetReconciler();
+    const applied = new Map<string, number | null>();
+    const pending = new Set<string>();
+    const deps = {
+      getMakerIfReady: () => ({ getSession: () => ({ model: 'grok-4.6' }) }),
+      getDbClient: () => ({
+        drizzle: {
+          select: () => ({
+            from: () => ({ where: () => ({ limit: async () => [{ agentKind: 'cc', model: 'grok-4.6', providerId: 'xd' }] }) }),
+          }),
+        },
+      }),
+      sessions: { agentKind: 'agentKind', model: 'model', providerId: 'providerId', id: 'id' },
+      eq: () => ({}),
+      dbToMakerAgentKind: () => 'claude-code',
+      getSessionProvider: () => 'xd',
+      getActiveCatalog: () => ({}),
+      readStoredSessionContextWindowBudget: async () => 600_000,
+      appliedContextWindowBudgets: applied,
+      pendingSessionContextWindowBudgetReconciles: pending,
+      // 第一次：300K→500K 变了；第二次：500K→500K 没变。
+      contextWindowBudgetChangesEffectiveWindow: vi.fn()
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(false),
+      getPendingCredentialSwitchTarget: () => ({ model: 'grok-4.6', providerId: 'xd' }),
+      registerPendingCredentialSwitchForSession: vi.fn(async () => {}),
+      applyRuntimeSetModelChange: vi.fn(),
+      runtimeMutationDeps: () => ({}),
+      withSendToSessionLock: (_id: string, fn: () => Promise<void>) => fn(),
+      log: { debug: vi.fn(), info: vi.fn() },
+    };
+    const applier = new Function(
+      ...Object.keys(deps),
+      `${js}; return sessionContextWindowBudgetApplier;`,
+    )(...Object.values(deps)) as (sessionId: string, change: { previous: number | null }) => Promise<void>;
+
+    await applier('task-1', { previous: null });
+    expect(pending.has('task-1')).toBe(true);
+    await applier('task-1', { previous: 500_000 });
+    expect(pending.has('task-1')).toBe(true);
+    expect(applied.has('task-1')).toBe(false);
+  });
+
   it('keeps the budget intent when it merges into an already pending route switch', async () => {
     // 已有待处理的模型/来源切换时，改预算只补 forceSessionRebuild 后返回。用户随后重选
     // 当前模型 → SET_MODEL 清掉那条 pending → 没人再应用预算（Greptile P1，2026-10-24）。
