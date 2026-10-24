@@ -3134,6 +3134,33 @@ describe('Bot canonical Session lifecycle', () => {
     }
   });
 
+  // P1 integration: a quarantined persisted row used to duplicate the native
+  // capability id, making selection operate on the wrong entry.
+  it('lists and selects native Apps once despite a retained custom collision', async () => {
+    h.customMcpConfigs.push({ id: 'codex_apps', name: 'Legacy custom Apps', transport: 'http',
+      url: 'https://example.invalid/legacy', headers: {} });
+    await refreshCustomMcpProviders();
+    await invoke('local-db:bots:update', {
+      id: 'bot-1', capabilities: { mcpServers: [], mcpMode: 'allowlist' },
+    });
+    const created = await invoke('local-db:bots:create-canonical-session', {
+      botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 2,
+    });
+    const service = createBotCapabilityService({ ...capabilityDeps, resolveBotAgentKind: async () => 'codex' });
+    h.validateCapabilityAdditions.mockImplementation(service.validateAdditions);
+    const input = { callerSessionId: created.session.id, kind: 'mcp' as const, id: 'codex_apps' };
+    const result = await service.list(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.capabilities.filter((entry) => entry.id === 'codex_apps')).toEqual([
+      expect.objectContaining({ name: 'codex_apps', available: true, joined: false }),
+    ]);
+    await expect(service.select({ ...input, joined: true })).resolves.toMatchObject({ ok: true });
+    await expect(service.select({ ...input, joined: false })).resolves.toMatchObject({ ok: true });
+    expect(h.mcpProviders.some((provider) => provider.name === 'codex_apps')).toBe(false);
+    expect(h.customMcpConfigs.some((entry) => entry.id === 'codex_apps')).toBe(true);
+  });
+
   it('rejects unforwarded custom MCPs on SSH Codex while preserving saved references and supported routes', async () => {
     await invoke('local-db:bots:update', {
       id: 'bot-1', capabilities: { mcpServers: ['shared-docs'], mcpMode: 'allowlist' },
@@ -3146,7 +3173,11 @@ describe('Bot canonical Session lifecycle', () => {
     for (const agentKind of ['codex', 'claude-code', 'pi'] as const) {
       const service = createBotCapabilityService({ ...capabilityDeps, resolveBotAgentKind: async () => agentKind });
       await expect(service.list(input)).resolves.toMatchObject({
-        capabilities: [expect.objectContaining({ id: 'shared-docs', joined: true, available: agentKind !== 'codex' })],
+        capabilities: [
+          expect.objectContaining({ id: 'shared-docs', joined: true, available: agentKind !== 'codex' }),
+          // Native Apps is discoverable but cannot be selected on SSH Codex.
+          ...(agentKind === 'codex' ? [expect.objectContaining({ id: 'codex_apps', joined: false, available: false })] : []),
+        ],
       });
       const opts: MakerSessionCreateOpts = {
         id: created.session.id, agentKind, workingDir: '/srv/bot', remoteHostId: 'ssh-host',
@@ -3161,6 +3192,8 @@ describe('Bot canonical Session lifecycle', () => {
     }
     const service = createBotCapabilityService({ ...capabilityDeps, resolveBotAgentKind: async () => 'codex' });
     h.validateCapabilityAdditions.mockImplementation(service.validateAdditions);
+    await expect(service.select({ ...input, id: 'codex_apps', joined: true }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'CAPABILITY_UNAVAILABLE' });
     await expect(service.select({ ...input, joined: false })).resolves.toMatchObject({ ok: true, joined: false });
     await expect(service.select({ ...input, joined: true })).resolves.toMatchObject({ ok: false, errorCode: 'CAPABILITY_UNAVAILABLE' });
     await expect(invoke('local-db:bots:update', { id: 'bot-1', capabilities: { mcpServers: ['shared-docs'] } }))
