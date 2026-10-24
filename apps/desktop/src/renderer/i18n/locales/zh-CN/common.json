@@ -6,6 +6,7 @@
     "button": "使用原文件"
   },
   "mailReader": {
+    "showExternalImages": "显示外部图片",
     "markReadFailed": "未能同步已读状态，请检查邮箱授权后重新打开。",
     "title": "邮件",
     "openMailbox": "在邮箱中打开",
@@ -10192,8 +10193,10 @@
         }
       },
       "lanes": {
-        "title": "隐藏任务",
-        "hint": "每个群、话题和其他人的私聊各有一条隐藏任务。哪条卡住或答非所问，可以让它重新开始，记录会保留。",
+        "title": "{{platform}}任务",
+        "expand": "展开{{platform}}任务",
+        "collapse": "收起{{platform}}任务",
+        "hint": "每个群、话题和其他人的私聊各有一条任务。卡住或答非所问，可以让它重新开始，记录会保留。归档只收起列表记录，不影响任务运行、上下文和历史；有新消息时会重新出现。",
         "ownerName": "你的私聊",
         "kind": {
           "ownerDm": "主任务",
@@ -10211,15 +10214,17 @@
         "resetAria": "让「{{lane}}」重新开始",
         "resetConfirm": {
           "title": "让「{{lane}}」重新开始？",
-          "description": "下一条消息会从干净的上下文开始，正在进行的回复会停下。完整记录仍留在这条隐藏任务里，{{name}} 的记忆不变。",
+          "description": "下一条消息会从干净的上下文开始，正在进行的回复会停下。完整记录仍留在这条任务里，{{name}} 的记忆不变。",
           "ownerDescription": "这是 {{name}} 的主任务，桌面上的对话和这里的私聊共用它。下一条消息会从干净的上下文开始，正在进行的回复会停下；记录、记忆和文件都保留。",
           "confirm": "重新开始",
           "cancel": "取消"
         },
         "resetDone": "「{{lane}}」已重新开始，下一条消息从干净的上下文开始。",
         "resetFailed": "没能重新开始，请稍后再试",
-        "loadFailed": "未能读取隐藏任务",
-        "empty": "还没有群或其他人的私聊。有人在群里或私聊里和 {{name}} 说话后，会出现在这里。"
+        "loadFailed": "未能读取任务",
+        "empty": "还没有群或其他人的私聊。有人在群里或私聊里和 {{name}} 说话后，会出现在这里。",
+        "archiveAria": "归档「{{lane}}」",
+        "archiveFailed": "未能归档任务"
       },
       "add": {
         "button": "添加平台",
@@ -11351,6 +11356,38 @@
           "label": "把这封邮件整理成回复草稿",
           "prompt": "帮我为这封邮件写一份回复草稿，结合邮件往来和我的想法，先不发送。"
         }
+      }
+    },
+    "branchSync": {
+      "multiple-checkouts": "{{branch}} 在多个目录中打开，无法更新",
+      "changed": "分支状态已变化，请重试",
+      "action": "拉取 {{remote}}/{{remoteBranch}} 的最新提交",
+      "remoteAction": "拉取 {{remote}}/{{remoteBranch}} 的最新提交",
+      "checkedOut": "会同步更新当前分支已提交的文件，未提交的改动会保留",
+      "fetching": "正在拉取…",
+      "updated_other": "已更新 {{count}} 个提交",
+      "current": "已是最新",
+      "keptAhead_other": "本地有 {{count}} 个未推送的提交，无需更新",
+      "failed": "拉取失败：{{reason}}",
+      "diverged": "本地与 {{remote}} 各有新提交，无法自动更新",
+      "conflict": "未提交的改动与远程更新冲突，请先提交或 stash",
+      "missing-remote": "{{remote}} 上没有 {{remoteBranch}}",
+      "no-remote": "未设置远程仓库",
+      "not-local": "请先选择本地分支或远程主分支",
+      "ahead_other": "领先 {{remote}} {{count}} 个提交",
+      "behind_other": "落后 {{remote}} {{count}} 个提交",
+      "dirty_other": "未提交 {{count}} 个文件",
+      "diverging_other": "领先 {{ahead}}、落后 {{behind}} 个提交（{{remote}}）",
+      "remoteGroup": "远程",
+      "localGroup": "本地分支",
+      "errors": {
+        "git": "Git 无法更新分支，请检查仓库访问权限后重试",
+        "timeout": "Git 操作超时，请检查网络连接后重试",
+        "auth": "Git 认证失败，请检查远程仓库凭证",
+        "network": "无法连接远程仓库，请检查网络连接",
+        "missing": "远程分支已不存在",
+        "busy": "仓库正忙，请稍后重试",
+        "changed": "检出的分支已变化，请重试"
       }
     }
   },

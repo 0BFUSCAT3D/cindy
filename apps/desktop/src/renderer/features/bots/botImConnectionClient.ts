@@ -117,6 +117,16 @@ export function resetBotImConnectionLane(api: BotImConnectionApi | null, id: str
   return api.resetLane({ id, sessionId });
 }
 
+/** Old preload keeps viewing/restart available without advertising archive. */
+export function botImConnectionLaneArchiveSupported(api: BotImConnectionApi | null = botImConnectionApi()): boolean {
+  return typeof api?.archiveLane === 'function';
+}
+
+export function archiveBotImConnectionLane(api: BotImConnectionApi | null, id: string, sessionId: string): Promise<BotImConnectionLanesPayload> {
+  if (!api?.archiveLane) return Promise.reject(new Error('botImConnection IPC unavailable'));
+  return api.archiveLane({ id, sessionId });
+}
+
 /** 设置 → IM 机器人 里可以移给伙伴的个人 bot; 旧 preload 没有这个接口时当作没有。 */
 export function listAdoptablePersonalBots(api: BotImConnectionApi | null): Promise<BotImAdoptablePersonalBotsPayload> {
   if (!api?.listAdoptable) return Promise.resolve({ bots: [] });

@@ -2504,6 +2504,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       sessionId: string;
     }): Promise<import('../shared/botImConnection').BotImConnectionLanesPayload> =>
       ipcRenderer.invoke('botImConnection:reset-lane', payload),
+    archiveLane: (payload: {
+      id: string;
+      sessionId: string;
+    }): Promise<import('../shared/botImConnection').BotImConnectionLanesPayload> =>
+      ipcRenderer.invoke('botImConnection:archive-lane', payload),
     listAdoptable: (): Promise<import('../shared/botImConnection').BotImAdoptablePersonalBotsPayload> =>
       ipcRenderer.invoke('botImConnection:list-adoptable'),
     adopt: (
@@ -5259,6 +5264,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('worktree:reveal', req),
   worktreeSuggestName: (req: { baseRepo: string }): Promise<unknown> =>
     ipcRenderer.invoke('worktree:suggest-name', req),
+  worktreeBranchSyncStatus: (req: import('../shared/worktreeBranchSync').BranchSyncRequest): Promise<import('../shared/worktreeBranchSync').BranchSyncStatus> => ipcRenderer.invoke('worktree:branch-sync-status', req),
+  worktreeSyncBranch: (req: import('../shared/worktreeBranchSync').BranchSyncRequest): Promise<import('../shared/worktreeBranchSync').BranchSyncResult> => ipcRenderer.invoke('worktree:sync-branch', req),
   worktreeListBranches: (req: { baseRepo: string }): Promise<unknown> =>
     ipcRenderer.invoke('worktree:list-branches', req),
   // P1: 删除/归档确认预检(有无 worktree、是否有未提交更改)

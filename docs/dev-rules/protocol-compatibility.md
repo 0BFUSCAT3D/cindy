@@ -10,6 +10,23 @@
 不增加 IPC 白名单、身份权限或原生依赖，不重置连接、不重放发送操作；单群读位失败
 留待该群下次可见或重连刷新，不影响其它设备连接。
 
+## 手动对齐 worktree 源分支
+
+`worktree:list-branches` 的 IPC 响应可选追加 `remoteDefaultBranch`
+（完整的 `refs/remotes/origin/*` 引用）；仅 UI 查询补充，失败不影响本地分支列表，
+创建使用的 `listBranches()` 保持原样。列表仍按原有约定懒加载。
+本地支持刷新；控制端查询 `worktree:branch-sync-status`，旧被控端返回
+`DEVICE_LINK_CHANNEL_NOT_ALLOWED` 时隐藏刷新按钮，缺少可选字段时不显示远程分组，
+本地分支选择与创建保持原行为。新被控端继续接受旧请求。
+状态查询只读本地 Git；缺本地 tracking ref 不代表远程分支不存在，仍允许拉取。
+仅拉取确认远程分支不存在后，在本次胶囊选择内置灰；换分支或重新挂载即重新判断。
+同步仅由用户点击触发，按配置的 tracking remote/ref（否则 origin 同名分支）拉取一个显式
+refspec，再按需快进本地分支。
+设备互联对单次同步预留 90 秒（网络 Git 30 秒及清理、本地探测），失败不重放写请求、
+不重置 peer 或 relay；创建和发送不等待同步，不改用其它源引用。手机本轮不提供入口。
+实现见 `apps/desktop/src/main/worktree/branchSync.ts`；真实 Git 回归在
+`branchSync.git-integration.test.ts`。
+
 ## IM 状态表情由客户端声明
 
 官方 Slack / Telegram 的 `hello` 新增可选 `statusReactions`：`queued`、`error` 为
@@ -3207,6 +3224,24 @@ Restored inactive tabs and a hidden sidebar must not mark mail read merely by mo
 Mark only the successfully resolved, visibly opened message, never the whole thread or drafts. A failed
 mark must retain the body and return `markReadFailed:true` for a non-blocking notice.
 It returns `MailMessage` (maker-shared/mail-message).
+Optional `participantPhotos:[{email,url}]` supplies exact normalized-email contact
+photos (at most 64, credential-free HTTPS URLs). Invalid photo entries are discarded
+without dropping the message. Old providers omit this field; old clients ignore it.
+It travels in the existing message response/resource with no new IPC or permission.
+Desktop uses it before Gravatar (SHA-256 normalized email), a fixed DuckDuckGo domain
+favicon endpoint for non-public mailbox domains, and initials. External avatars use
+no referrer and bounded load fallbacks; they do not enable remote images in the body.
+Desktop loads avatar sources for at most the first 12 participant positions per
+message, shared across from/to/cc/bcc; duplicates also consume a position. Remaining
+participants use initials and retain their complete addresses, without photo or hash lookups.
+Domain icons are presentation, not authenticated sender identity. Other clients may
+continue displaying addresses alone. Provider contact enrichment must remain optional
+when new contact scopes are missing; Gmail bounds its lookup budget and account cache.
+Desktop activates only HTTP(S) body links through the chat opening policy and keeps
+their underline visible despite sender CSS. Unsupported targets, including mailto,
+stay inert without an href or explicit link role in the reader, so they are not
+keyboard/screen-reader links. Reader paint and authored link attributes are restored
+before editing or serializing a draft; the system shell protocol allowlist is unchanged.
 Credentials and MIME parsing remain with the provider. Cindy validates the data
 and reuses its inert HTML/CID/recipient renderers for delivered mail. Multiple
 matching providers/accounts cannot silently select the first. Host setup metadata

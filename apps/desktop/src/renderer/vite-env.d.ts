@@ -2402,6 +2402,10 @@ interface ElectronAPI {
       id: string;
       sessionId: string;
     }) => Promise<import('../shared/botImConnection').BotImConnectionLanesPayload>;
+    archiveLane?: (payload: {
+      id: string;
+      sessionId: string;
+    }) => Promise<import('../shared/botImConnection').BotImConnectionLanesPayload>;
     /** 设置 → IM 机器人 里已配好、可以移给伙伴的个人 bot(只给身份, 不含凭证)。 */
     listAdoptable: () => Promise<import('../shared/botImConnection').BotImAdoptablePersonalBotsPayload>;
     /**
@@ -4411,6 +4415,8 @@ interface ElectronAPI {
   worktreeSuggestName: (req: {
     baseRepo: string;
   }) => Promise<import('@/lib/worktree.types').SuggestNameResp>;
+  worktreeBranchSyncStatus: (req: import('../shared/worktreeBranchSync').BranchSyncRequest) => Promise<import('../shared/worktreeBranchSync').BranchSyncStatus>;
+  worktreeSyncBranch: (req: import('../shared/worktreeBranchSync').BranchSyncRequest) => Promise<import('../shared/worktreeBranchSync').BranchSyncResult>;
   worktreeListBranches: (req: {
     baseRepo: string;
   }) => Promise<import('@/lib/worktree.types').ListBranchesResp>;
