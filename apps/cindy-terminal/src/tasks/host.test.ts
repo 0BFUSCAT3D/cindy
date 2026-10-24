@@ -562,6 +562,9 @@ describe('terminal task host', () => {
     const worker = await host.orcaLifecycle.createWorker(args);
     if (!worker.ok) throw new Error(worker.message);
     await vi.waitFor(async () => expect((await host.orcaStore.workerForLead(lead.id, worker.workerId))?.status).toBe('done'));
+    // The Lead receipt commits before the Worker finishes its own turn journal.
+    // An idle scan must protect that live tail, so age it only after settlement.
+    await vi.waitFor(() => expect(host.isTurnRunning(worker.workerSessionId)).toBe(false));
     const sdkId = (await host.storage.get(worker.workerSessionId))!.sdkSessionId;
     await host.invoke('maker:collaboration-settings:set', [{ key: 'workerIdleReleaseMinutes', value: 1 }]);
     await host.orcaStore.touchWorker(worker.workerId, Date.now() - 120_000);
@@ -2722,11 +2725,28 @@ describe('terminal task host', () => {
         await connect('fixture_mcp', peer);
         expect(await peer.callTool({ name: 'echo', arguments: { text: 'companion' } })).toMatchObject({ content: [{ type: 'text', text: 'upstream:companion' }] });
         await connect('cindy_helper', helper);
+        const control=async(name:string,args:Record<string,unknown>={})=>{
+          const response=await helper.callTool({name:'call_tool',arguments:{name,args}});
+          const payload=response.isError?null:JSON.parse((response.content as Array<{text:string}>)[0].text);
+          return {response,payload};
+        };
+        const before=await control('get_teammate_state');
+        expect(before.payload.state).toMatchObject({profile:{id:profile.id,name:'MCP companion',version:1},memory:{enabled:false,scope:'self'}});
+        const available=await control('get_app_default_model');
+        const model=available.payload.available.find((choice:any)=>choice.route.providerId==='fixture'&&choice.route.harness==='claude');
+        expect(model).toBeDefined();
+        const edit={expectedVersion:1,name:'Personal companion',identitySource:'Independent personality',modelChain:[{id:model.id,fastMode:false}]};
+        expect((await control('update_teammate_profile',edit)).payload).toMatchObject({ok:true,effective:'next-turn'});
+        expect(await companion.profiles.read(profile.id,'SOUL.md')).toBe('Independent personality');
+        expect((await control('update_teammate_profile',edit)).response.isError).toBe(true);
+        expect((await control('set_app_default_model',{id:model.id})).payload).toMatchObject({ok:true,effective:'new-tasks'});
+        expect((await companion.modelSettings.defaults())[0].providerId).toBe('fixture');
         const selected = await helper.callTool({ name: 'call_tool', arguments: { name: 'set_teammate_capability', args: { kind: 'mcp', id: 'fixture_mcp', joined: false } } });
         expect(selected.isError).not.toBe(true);
         expect((await companion.profiles.get(profile.id))?.capabilities).toMatchObject({ mcpMode: 'allowlist', mcpServers: [] });
         await (await companion.send(profile.id, 'next turn', 'second')).completion;
         expect(native.inputs.at(-1)!.tools!.providers.map(provider => provider.name)).not.toContain('fixture_mcp');
+        expect(native.starts.at(-1)?.botProfilePrompt).toContain('Independent personality');
         expect((await host.invoke('maker:mcp:custom:list', []))).toMatchObject({ servers: [expect.objectContaining({ id: 'fixture_mcp', enabled: true })] });
         await knowledge.configure({ memory: true });
         await (await companion.send(profile.id, 'memory enabled', 'third')).completion;

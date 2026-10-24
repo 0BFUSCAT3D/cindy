@@ -6,6 +6,8 @@ import {
   companionCapabilities,
   type TerminalCompanionProfiles,
 } from "./profiles.js";
+import type { TerminalModelConfig } from "../../models/config.js";
+import type { TerminalCompanionModels, CompanionModel } from "./models.js";
 
 /** References belong to this Profile; shared installations and secrets stay owned
  * by the account. A stale model tool cannot overwrite another saved selection. */
@@ -17,6 +19,13 @@ export function companionCapabilityCallbacks(options: {
   capabilities: TerminalCapabilities;
   current(): Promise<void>;
   changed(): void;
+  models: TerminalModelConfig;
+  modelSettings: TerminalCompanionModels;
+  memoryEnabled(): boolean;
+  change(
+    patch: Parameters<TerminalCompanionProfiles["change"]>[1],
+    expectedVersion: number,
+  ): Promise<unknown>;
 }): NonNullable<XdtHelperMcpDeps["botCapabilities"]> {
   type Kind = "skill" | "mcp" | "toolset";
   type Entry = {
@@ -92,6 +101,177 @@ export function companionCapabilityCallbacks(options: {
     };
   };
   return {
+    models: async (input) => {
+      await profile(input.callerSessionId);
+      const optionsList = await options.modelSettings.choices();
+      let current: CompanionModel | null = null;
+      try {
+        current = {
+          ...(await options.models.select()).selection,
+          fastMode: false,
+        };
+      } catch {
+        await options.current();
+      }
+      const route = (choice: CompanionModel) => ({
+        harness:
+          choice.agentKind === "claude-code"
+            ? ("claude" as const)
+            : choice.agentKind,
+        providerId: choice.providerId,
+        model: choice.model,
+        effort: choice.effort ?? "",
+        fastMode: choice.fastMode,
+        ...(choice.agentDeviceId
+          ? { agentDeviceId: choice.agentDeviceId }
+          : {}),
+      });
+      await options.current();
+      return {
+        ok: true,
+        current: current ? route(current) : null,
+        available: optionsList
+          .filter((item) => item.available)
+          .map((item) => ({
+            id: item.id,
+            route: route(item.choice),
+            efforts: item.efforts,
+            supportsFastMode: item.fast,
+            supportsUltrafastMode: item.ultrafast,
+          })),
+      };
+    },
+    setDefaultModel: async (input) => {
+      await profile(input.callerSessionId);
+      const choice = (await options.modelSettings.choices()).find(
+        (choice) => choice.id === input.id && choice.available,
+      );
+      if (!choice || choice.choice.agentDeviceId)
+        return {
+          ok: false,
+          errorCode: "MODEL_DEFAULT_UNAVAILABLE",
+          message:
+            "Choose an available model on this computer for the application default.",
+        };
+      const selected = {
+        ...choice.choice,
+        ...(input.effort
+          ? { effort: input.effort as CompanionModel["effort"] }
+          : {}),
+      };
+      await options.modelSettings.validate(selected);
+      await options.current();
+      await options.models.setDefault(selected);
+      await options.current();
+      const saved = options.models.snapshot().defaultSelection;
+      if (!saved) throw new Error("MODEL_DEFAULT_NOT_CONFIRMED");
+      return {
+        ok: true,
+        effective: "new-tasks",
+        current: {
+          harness:
+            saved.agentKind === "claude-code"
+              ? ("claude" as const)
+              : saved.agentKind,
+          providerId: saved.providerId,
+          model: saved.model,
+          effort: saved.effort ?? "",
+          fastMode: false,
+        },
+      };
+    },
+    inspect: async (input) => {
+      const row = await profile(input.callerSessionId),
+        config = companionCapabilities(row.capabilities);
+      const candidates = row.models.length
+        ? row.models
+        : await options.modelSettings.defaults();
+      const identitySource =
+        (await options.profiles.read(row.id, "SOUL.md")) ?? "";
+      await options.current();
+      return {
+        ok: true,
+        state: {
+          profile: {
+            id: row.id,
+            name: row.name,
+            description: row.description,
+            identitySource,
+            version: row.version,
+          },
+          session: {
+            id: row.sessionId,
+            workingDir: path.join(options.profiles.home(row.id), "workspace"),
+            remoteHostId: null,
+          },
+          model: {
+            source: row.models.length ? "override" : "default",
+            candidates: candidates.map((choice) => ({
+              harness:
+                choice.agentKind === "claude-code"
+                  ? "claude"
+                  : choice.agentKind,
+              providerId: choice.providerId,
+              model: choice.model,
+              effort: choice.effort,
+              fastMode: choice.fastMode,
+              ...(choice.agentDeviceId
+                ? { agentDeviceId: choice.agentDeviceId }
+                : {}),
+            })),
+          },
+          memory: { enabled: options.memoryEnabled(), scope: "self" },
+          references: {
+            skills: config.skills,
+            mcpServers: config.mcpServers,
+            toolsets: [],
+          },
+        },
+      };
+    },
+    updateProfile: async (input) => {
+      const row = await profile(input.callerSessionId);
+      if (row.version !== input.expectedVersion)
+        throw new Error("COMPANION_PROFILE_CHANGED");
+      let models: CompanionModel[] | undefined;
+      if (input.modelChain === null) models = [];
+      else if (input.modelChain !== undefined) {
+        if (!input.modelChain.length || input.modelChain.length > 5)
+          throw new Error("INVALID_MODEL_CHAIN");
+        const choices = await options.modelSettings.choices(row.models);
+        models = input.modelChain.map((selection) => {
+          const choice = choices.find(
+            (choice) => choice.id === selection.id && choice.available,
+          );
+          if (!choice) throw new Error("MODEL_ROUTE_UNAVAILABLE");
+          return {
+            ...choice.choice,
+            ...(selection.effort !== undefined
+              ? { effort: selection.effort || undefined }
+              : {}),
+            ...(selection.fastMode !== undefined
+              ? { fastMode: selection.fastMode }
+              : {}),
+          } as CompanionModel;
+        });
+      }
+      await options.current();
+      await options.change(
+        {
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.description !== undefined
+            ? { description: input.description }
+            : {}),
+          ...(input.identitySource !== undefined
+            ? { identitySource: input.identitySource }
+            : {}),
+          ...(models !== undefined ? { models } : {}),
+        },
+        input.expectedVersion,
+      );
+      await options.current();
+      return { ok: true, effective: "next-turn" };
+    },
     list: async (input) => {
       const { entries } = await catalog(input.callerSessionId, input.kind);
       return {

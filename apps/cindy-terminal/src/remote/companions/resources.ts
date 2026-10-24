@@ -237,9 +237,8 @@ export function registerCompanionResources(
           name: string(input.name),
           description:
             typeof input.description === "string" ? input.description : "",
+          ...(typeof input.soul === 'string' ? {identitySource: input.soul} : {}),
         });
-        if (typeof input.soul === "string")
-          await host.profiles.write(id, "SOUL.md", input.soul);
       } else if (request.actionId === "pause" || request.actionId === "resume")
         await host.change(id, {
           status: request.actionId === "pause" ? "paused" : "active",

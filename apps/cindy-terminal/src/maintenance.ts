@@ -23,7 +23,7 @@ const OWNER_PATHS = new Set(['models.json', 'projects.json', 'tasks', 'orca', 's
   'plugins', 'plugin-approvals', 'plugin-kv', 'plugin-fs', 'plugin-market', 'plugin-cleanup.json', 'ghost-workdir-prefs.json', 'ghost-sidebar-prefs.json', 'plugin-tasks', 'ghost-errand-prefs.json', 'ghost-cindy-prefs.json',
   'libraries', 'libraries-binding.json', 'library-staging', 'libraries-trash']);
 const PLUGIN_MARKET_FILES = new Set(['ledger.v1.json', 'organization.v1.json', 'current-organization.json', 'install.pending.json']);
-const COMPANION_PATHS = new Set(['profiles.json', 'homes', 'history', 'memory', 'backups', 'cloud']);
+const COMPANION_PATHS = new Set(['profiles.json', 'profile-update.json', 'model-defaults.json', 'homes', 'history', 'memory', 'backups', 'cloud']);
 // Cloud installation / homes snapshots bind this machine to server identities.
 // Keep only sync cursors and demotion history; fresh sign-in must resolve homes.
 const portableCloudFile = (name: string) => name === 'shadows.json' || /^[a-f0-9]{64}\.json$/.test(name);

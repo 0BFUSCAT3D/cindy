@@ -1,5 +1,7 @@
-import { afterEach, expect, it } from "vitest";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { afterEach, expect, it, vi } from "vitest";
+import { mkdtemp, rm, symlink, readFile, access } from "node:fs/promises";
+import * as platform from "../../platform.js";
+import { TerminalCompanionProfiles } from "./profiles.js";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -246,6 +248,70 @@ it("rejects a linked private shelf and preserves deletion across restart", async
   ).rejects.toThrow("UNSAFE_PROFILE_DIRECTORY");
   await f.host.remove(profile.id);
   expect(await f.host.profiles.list()).toEqual([]);
+});
+
+/** Tier: integration. A failed profile write used to leave the new identity
+ * under the old runtime version. Exercise the real file/metadata commit and
+ * startup recovery after a write fault, then reject an obsolete editor. */
+it("recovers an interrupted profile and identity change as one version", async () => {
+  const f = await setup(),
+    profile = await f.host.create({ name: "Before", soul: "Old identity" });
+  const root = path.join(f.root, "companions"),
+    file = path.join(root, "profiles.json");
+  const write = platform.atomicPrivateWrite;
+  const fault = vi
+    .spyOn(platform, "atomicPrivateWrite")
+    .mockImplementation(async (target, ...args) => {
+      if (target === file) throw new Error("FIXTURE_PROFILE_WRITE_FAILED");
+      return write(target, ...args);
+    });
+  try {
+    await expect(
+      f.host.change(
+        profile.id,
+        {
+          name: "After",
+          identitySource: "New identity",
+          userContextSource: "Owner context",
+        },
+        profile.version,
+      ),
+    ).rejects.toThrow("FIXTURE_PROFILE_WRITE_FAILED");
+    expect(
+      await readFile(
+        path.join(f.host.profiles.home(profile.id), "SOUL.md"),
+        "utf8",
+      ),
+    ).toBe("New identity");
+    expect(JSON.parse(await readFile(file, "utf8")).profiles[0].name).toBe(
+      "Before",
+    );
+    await expect(f.host.profiles.get(profile.id)).rejects.toThrow(
+      "FIXTURE_PROFILE_WRITE_FAILED",
+    );
+  } finally {
+    fault.mockRestore();
+    await f.host.close();
+  }
+  const restored = new TerminalCompanionProfiles(root, () => {});
+  expect(await restored.get(profile.id)).toMatchObject({
+    name: "After",
+    version: profile.version + 1,
+  });
+  expect(await restored.read(profile.id, "SOUL.md")).toBe("New identity");
+  expect(await restored.read(profile.id, "USER.md")).toBe("Owner context");
+  await expect(
+    access(path.join(root, "profile-update.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(
+    restored.change(
+      profile.id,
+      { identitySource: "Stale editor" },
+      profile.version,
+    ),
+  ).rejects.toThrow("COMPANION_PROFILE_CHANGED");
+  expect(await restored.read(profile.id, "SOUL.md")).toBe("New identity");
+  await restored.close();
 });
 
 /** Tier: integration. Task defaults previously leaked into companion routing,

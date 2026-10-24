@@ -49,6 +49,52 @@ const fileOf = (value: string) => {
     throw new Error("INVALID_COMPANION_FILE");
   return value;
 };
+type ProfileFileWrite = {
+  id: string;
+  name: "SOUL.md" | "USER.md";
+  text: string;
+};
+type ProfileTransaction = {
+  version: 1;
+  before: string;
+  profiles: TerminalCompanionProfile[];
+  files: ProfileFileWrite[];
+};
+function parseProfiles(value: unknown): TerminalCompanionProfile[] {
+  if (!Array.isArray(value)) throw new Error("INVALID_COMPANION_PROFILES");
+  return value.map((row) => {
+    if (!row || typeof row !== "object")
+      throw new Error("INVALID_COMPANION_PROFILE");
+    idOf(row.id);
+    idOf(row.sessionId);
+    if (
+      typeof row.name !== "string" ||
+      !["active", "paused"].includes(row.status) ||
+      !Array.isArray(row.models) ||
+      row.models.length > 5
+    )
+      throw new Error("INVALID_COMPANION_PROFILE");
+    return {
+      ...row,
+      models: row.models.map(parseCompanionModel),
+      capabilities: companionCapabilities(row.capabilities),
+    };
+  });
+}
+const profilesHash = (rows: TerminalCompanionProfile[]) =>
+  createHash("sha256")
+    .update(
+      JSON.stringify(parseProfiles(rows), (_key, value) =>
+        value && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(
+              Object.keys(value)
+                .sort()
+                .map((key) => [key, value[key]]),
+            )
+          : value,
+      ),
+    )
+    .digest("hex");
 
 /** Permanent account-owned Profiles; native sessions are replaceable handles.
  * Secrets, native login and long model history never travel inside this file. */
@@ -57,6 +103,10 @@ export class TerminalCompanionProfiles {
   private value: TerminalCompanionProfile[] = [];
   private writes: Promise<void> = Promise.resolve();
   private readonly ready: Promise<void>;
+  private fault: unknown;
+  private transactionFile() {
+    return path.join(this.root, "profile-update.json");
+  }
   constructor(
     readonly root: string,
     private readonly guard: () => void,
@@ -66,43 +116,104 @@ export class TerminalCompanionProfiles {
     this.ready = (async () => {
       await privateDirectory(root);
       const raw = await readPrivateFile(file);
-      if (!raw) return;
-      const data = JSON.parse(raw.toString()) as {
-        version?: unknown;
-        profiles?: unknown;
-      };
+      const data = raw
+        ? (JSON.parse(raw.toString()) as {
+            version?: unknown;
+            profiles?: unknown;
+          })
+        : { version: 1, profiles: [] };
       if (data.version !== 1 || !Array.isArray(data.profiles))
         throw new Error("INVALID_COMPANION_PROFILES");
-      this.value = data.profiles.map((row) => {
-        if (!row || typeof row !== "object")
-          throw new Error("INVALID_COMPANION_PROFILE");
-        idOf(row.id);
-        idOf(row.sessionId);
-        if (
-          typeof row.name !== "string" ||
-          !["active", "paused"].includes(row.status) ||
-          !Array.isArray(row.models) ||
-          row.models.length > 5
-        )
-          throw new Error("INVALID_COMPANION_PROFILE");
-        return {
-          ...row,
-          models: row.models.map(parseCompanionModel),
-          capabilities: companionCapabilities(row.capabilities),
-        };
-      });
+      this.value = parseProfiles(data.profiles);
+      const pending = await readPrivateFile(this.transactionFile());
+      if (pending)
+        await this.materialize(
+          this.parseTransaction(JSON.parse(pending.toString())),
+        );
     })();
   }
   home(id: string) {
     return path.join(this.root, "homes", idOf(id));
   }
-  private update(run: (next: TerminalCompanionProfile[]) => Promise<void>) {
+  private parseTransaction(value: unknown): ProfileTransaction {
+    const input = value as Partial<ProfileTransaction> | null;
+    if (
+      !input ||
+      input.version !== 1 ||
+      typeof input.before !== "string" ||
+      !Array.isArray(input.files) ||
+      input.files.length < 1 ||
+      input.files.length > 2
+    )
+      throw new Error("INVALID_COMPANION_PROFILE_UPDATE");
+    const profiles = parseProfiles(input.profiles);
+    for (const file of input.files)
+      if (
+        !file ||
+        !profiles.some((row) => row.id === file.id) ||
+        !["SOUL.md", "USER.md"].includes(file.name) ||
+        typeof file.text !== "string" ||
+        Buffer.byteLength(file.text) > 1024 * 1024
+      )
+        throw new Error("INVALID_COMPANION_PROFILE_UPDATE");
+    return { version: 1, before: input.before, profiles, files: input.files };
+  }
+  /** A prepared change is recovered as one version, even if a file rename or
+   * profile write was interrupted. Never overwrite newer profile state. */
+  private async materialize(transaction: ProfileTransaction) {
+    const current = profilesHash(this.value);
+    if (
+      current !== transaction.before &&
+      current !== profilesHash(transaction.profiles)
+    )
+      throw new Error("COMPANION_PROFILE_UPDATE_CONFLICT");
+    for (const file of transaction.files)
+      await atomicPrivateWrite(
+        await this.checkedExistingPath(file.id, file.name),
+        file.text,
+      );
+    await atomicPrivateWrite(
+      this.file,
+      JSON.stringify({ version: 1, profiles: transaction.profiles }),
+    );
+    await rm(this.transactionFile(), { force: true });
+    this.value = transaction.profiles;
+  }
+  private update(
+    run: (
+      next: TerminalCompanionProfile[],
+    ) => Promise<void | ProfileFileWrite[]>,
+  ) {
     const job = this.writes.then(async () => {
       await this.ready;
       this.guard();
+      if (this.fault) throw this.fault;
       const next = structuredClone(this.value);
-      await run(next);
+      const files = await run(next);
       this.guard();
+      if (files?.length) {
+        const transaction = this.parseTransaction({
+          version: 1,
+          before: profilesHash(this.value),
+          profiles: next,
+          files,
+        });
+        // Validate every destination before accepting the durable intent.
+        for (const file of files)
+          await this.checkedExistingPath(file.id, file.name);
+        this.guard();
+        try {
+          await atomicPrivateWrite(
+            this.transactionFile(),
+            JSON.stringify(transaction),
+          );
+          await this.materialize(transaction);
+        } catch (error) {
+          this.fault = error;
+          throw error;
+        }
+        return;
+      }
       await atomicPrivateWrite(
         this.file,
         JSON.stringify({ version: 1, profiles: next }),
@@ -116,6 +227,7 @@ export class TerminalCompanionProfiles {
     await this.ready;
     await this.writes;
     this.guard();
+    if (this.fault) throw this.fault;
     return structuredClone(this.value);
   }
   async get(id: string) {
@@ -178,7 +290,7 @@ export class TerminalCompanionProfiles {
         TerminalCompanionProfile,
         "name" | "description" | "avatar" | "status" | "models" | "capabilities"
       >
-    >,
+    > & { identitySource?: string; userContextSource?: string },
     expectedVersion?: number,
     guard: () => void = () => {},
   ) {
@@ -188,6 +300,20 @@ export class TerminalCompanionProfiles {
       if (!row) throw new Error("COMPANION_NOT_FOUND");
       if (expectedVersion !== undefined && row.version !== expectedVersion)
         throw new Error("COMPANION_PROFILE_CHANGED");
+      const { identitySource, userContextSource, ...metadata } = patch;
+      const files: ProfileFileWrite[] = [];
+      if (identitySource !== undefined)
+        files.push({ id, name: "SOUL.md", text: identitySource });
+      if (userContextSource !== undefined)
+        files.push({ id, name: "USER.md", text: userContextSource });
+      if (
+        files.some(
+          (file) =>
+            typeof file.text !== "string" ||
+            Buffer.byteLength(file.text) > 1024 * 1024,
+        )
+      )
+        throw new Error("COMPANION_FILE_TOO_LARGE");
       if (
         patch.name !== undefined &&
         (!patch.name.trim() || patch.name.length > 128)
@@ -206,7 +332,7 @@ export class TerminalCompanionProfiles {
       Object.assign(
         row,
         {
-          ...patch,
+          ...metadata,
           ...(patch.models
             ? { models: patch.models.map(parseCompanionModel) }
             : {}),
@@ -216,11 +342,16 @@ export class TerminalCompanionProfiles {
         },
         { updatedAt: Date.now(), version: row.version + 1 },
       );
+      guard();
+      return files;
     });
     return (await this.get(id))!;
   }
   private async checkedPath(id: string, ...parts: string[]) {
     if (!(await this.get(id))) throw new Error("COMPANION_NOT_FOUND");
+    return this.checkedExistingPath(id, ...parts);
+  }
+  private async checkedExistingPath(id: string, ...parts: string[]) {
     const home = this.home(id);
     for (const directory of [path.join(this.root, "homes"), home]) {
       if ((await lstat(directory)).isSymbolicLink())
@@ -250,6 +381,15 @@ export class TerminalCompanionProfiles {
     return raw?.toString() ?? null;
   }
   async write(id: string, name: string, text: string) {
+    if (name === "SOUL.md" || name === "USER.md") {
+      await this.change(
+        id,
+        name === "SOUL.md"
+          ? { identitySource: text }
+          : { userContextSource: text },
+      );
+      return;
+    }
     const file = await this.checkedPath(id, fileOf(name));
     if (Buffer.byteLength(text) > 1024 * 1024)
       throw new Error("COMPANION_FILE_TOO_LARGE");

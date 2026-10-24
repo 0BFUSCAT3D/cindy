@@ -121,7 +121,8 @@ async function fixture() {
 
 /** Integration tier: the terminal previously had no production worktree host.
  * Exercise its actual registry, encrypted vault, bundled worker and Git, then
- * reopen the host before restoring staged, unstaged, ignored and binary data. */
+ * reopen the host before restoring staged, unstaged, ignored and binary data.
+ * Native Git and the packaged worker need the integration budget on Windows. */
 it("recovers a real terminal worktree after host restart using the packaged Node archive worker", async () => {
   const f = await fixture();
   await writeFile(path.join(f.meta.path, "tracked.txt"), "staged\n");
@@ -161,7 +162,7 @@ it("recovers a real terminal worktree after host restart using the packaged Node
   expect(await readFile(path.join(f.meta.path, "binary.dat"))).toEqual(
     Buffer.from([0, 255, 1, 128]),
   );
-});
+}, 30_000);
 
 /** Safety tier: a released GUI must see the Node host's v1 runtime lease, and
  * newer readers must retain inactive task references across owner profiles. */
@@ -184,9 +185,14 @@ it("exposes native occupancy to the existing GUI lease reader and preserves unre
   expect(await gui.readWorktreeRuntimePaths()).toContain(worktreeKey);
   f.host.close();
   expect(await gui.readWorktreeRuntimePaths()).toContain(worktreeKey);
-  const before = await readFile(path.join(f.owner, "worktree-task-references.json"), "utf8");
+  const before = await readFile(
+    path.join(f.owner, "worktree-task-references.json"),
+    "utf8",
+  );
   await f.create();
-  expect(await readFile(path.join(f.owner, "worktree-task-references.json"), "utf8")).toBe(before);
+  expect(
+    await readFile(path.join(f.owner, "worktree-task-references.json"), "utf8"),
+  ).toBe(before);
   const lease = await f.host.runtime.acquireWorktreeRuntimeLease(
     "task",
     f.meta.path,

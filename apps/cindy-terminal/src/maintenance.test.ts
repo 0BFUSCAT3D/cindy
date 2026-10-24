@@ -43,6 +43,8 @@ describe('terminal offline maintenance', () => {
     // Plugin data is user work too. Test actual encrypted export/restore, not
     // the path allowlist, and keep download caches out of the portable archive.
     const pluginData = {
+      'companions/model-defaults.json': '{"version":1,"models":[{"agentKind":"pi","model":"retained-model","providerId":"owner-provider"}]}',
+      'companions/profile-update.json': '{"version":1,"before":"pending-profile-update","profiles":[],"files":[]}',
       'orca/state.json': '{"version":1,"teams":[],"workers":[],"reservations":[],"remoteOpens":[],"taskJournal":[]}',
       'plugins/example/ghost.json': '{"id":"example"}',
       'plugin-approvals/example.json': '{"receipt":"synthetic"}',
