@@ -1823,6 +1823,16 @@ describe('new session model', () => {
     expect(buildRecentWorkspaceOptions(sessions, 'mac-a', 6, new Map())[0].title).toBe('app');
   });
 
+  it('keeps mixed local/SSH recent-workspace names independent of row order', () => {
+    const aliases = new Map([['device:mac-a:/repo/app', 'Local name']]);
+    const local = remoteSession('local', { workingDir: '/repo/app', deviceLinkDeviceId: 'mac-a' });
+    const ssh = remoteSession('ssh', { workingDir: '/repo/app', deviceLinkDeviceId: 'mac-a', remoteHostId: 'ssh-a' });
+    for (const rows of [[local, ssh], [ssh, local]]) {
+      expect(buildRecentWorkspaceOptions(rows, 'mac-a', 6, aliases)[0]).toMatchObject({ title: 'app', sessionCount: 2 });
+    }
+    expect(buildRecentWorkspaceOptions([ssh], 'mac-a', 6, aliases)[0].title).toBe('app');
+  });
+
   // Remote path strings deliberately model the host OS, not the test runner's filesystem.
   it.each([
     ['slash direction', 'D:\\projects\\cindy', 'D:/projects/cindy'],

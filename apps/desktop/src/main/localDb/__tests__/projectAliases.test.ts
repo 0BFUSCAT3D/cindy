@@ -24,6 +24,10 @@ vi.mock('electron', () => ({
     handle: vi.fn(),
   },
 }));
+vi.mock('../../security/trustedAppRenderer.js', () => ({
+  assertTrustedAppRendererEvent: vi.fn(),
+  isTrustedAppRendererWindow: () => true,
+}));
 
 describe('projectAliases localDb helpers', () => {
   let currentClient: DbClient | null = null;
@@ -66,8 +70,8 @@ describe('projectAliases localDb helpers', () => {
 
     expect(await listProjectAliases()).toEqual([]);
     expect(pushed).toEqual([
-      { channel: 'local-db:project-aliases:changed', payload: undefined },
-      { channel: 'local-db:project-aliases:changed', payload: undefined },
+      { channel: 'local-db:project-aliases:changed', payload: {} },
+      { channel: 'local-db:project-aliases:changed', payload: {} },
     ]);
   });
 

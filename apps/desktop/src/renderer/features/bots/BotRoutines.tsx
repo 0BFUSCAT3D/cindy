@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Clock3, Check, ChevronRight, CircleAlert, Moon, Pause, Plus } from 'lucide-react';
+import { Clock3, Check, ChevronRight, CircleAlert, Pause, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cronToHuman } from '@/features/scheduler/lib/cronToHuman';
 import { configToCron, cronToConfig } from '@/features/scheduler/lib/cronCodexPreset';
@@ -214,10 +214,10 @@ export function BotRoutines({
     if (trigger.kind === 'interval')
       return t('routines.everyMinutes', { count: trigger.intervalMs / 60_000 });
     if (trigger.kind === 'cron')
-      return `${trigger.expression === '0 * * * *' ? t('routines.hourly') : cronToHuman(trigger.expression, t, i18n.language)} · ${trigger.timezone}`;
+      return `${cronToHuman(trigger.expression, t, i18n.language)} · ${trigger.timezone}`;
     const source = sources.find((item) => item.id === trigger.sourceId);
     const event = source?.events.find((item) => item.type === trigger.eventType);
-    return `${source?.name ?? trigger.sourceId} · ${event?.name ?? trigger.eventType}`;
+    return t('routines.onEvent', { source: source?.name ?? trigger.sourceId, event: event?.name ?? trigger.eventType });
   };
   const running = history.some((run) => run.status === 'running' || run.status === 'queued');
   if (nightlyOpen && !draft) {
@@ -308,29 +308,34 @@ export function BotRoutines({
               }
             />
           ) : (
-            <button
-              key={routine.id}
-              type="button"
-              className="flex min-h-12 w-full items-start gap-3 rounded-lg px-3 py-3 text-left hover:bg-[var(--surface-hover)]"
-              onClick={() => {
-                setSelected(routine.id);
-                setDraft(structuredClone(routine));
-              }}
-            >
-              {routine.activity ? (
-                <Spinner size={16} className="mt-1 shrink-0" />
-              ) : routine.enabled ? (
-                <Clock3 size={16} className="mt-1 shrink-0" />
-              ) : (
-                <Pause size={16} className="mt-1 shrink-0" />
-              )}
-              <span className="min-w-0">
-                <span className="block truncate">{routine.name}</span>
-                <span className="block truncate text-12 text-[var(--text-secondary)]">
-                  {routine.triggers.map(triggerSummary).join(' · ')}
-                </span>
-              </span>
-            </button>
+            <div key={routine.id} className="border-b border-[var(--border-default)] py-4 last:border-b-0">
+              <div className="flex items-start gap-3">
+                <button
+                  type="button"
+                  className="min-h-6 min-w-0 flex-1 rounded-lg text-left outline-none hover:text-[var(--text-secondary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                  onClick={() => {
+                    setSelected(routine.id);
+                    setDraft(structuredClone(routine));
+                  }}
+                >
+                  <span className="flex items-start gap-2 text-13 font-medium leading-5">
+                    <span className="min-w-0 break-words">{routine.name}</span>
+                    <ChevronRight size={14} className="mt-1 shrink-0" aria-hidden="true" />
+                  </span>
+                </button>
+                <Switch
+                  aria-label={routine.name}
+                  className="mt-0.5 shrink-0"
+                  checked={routine.enabled}
+                  disabled={busy}
+                  onCheckedChange={(enabled) => void act(() =>
+                    window.electronAPI.routines.save(botId, routineInput({ ...routine, enabled }), routine.id),
+                  )}
+                />
+              </div>
+              <RoutineState routine={routine} />
+              <RoutineSchedule summaries={routine.triggers.map(triggerSummary)} />
+            </div>
           ))}
         </div>
       ) : null}
@@ -573,7 +578,7 @@ export function BotRoutines({
                   <time dateTime={new Date(run.createdAt).toISOString()}>
                     {new Date(run.createdAt).toLocaleString(i18n.language)}
                   </time>
-                  <span aria-label={t(`routines.status.${run.status}`)}>
+                  <span className={`inline-flex shrink-0 items-center gap-2 ${run.status === 'failed' || run.status === 'interrupted' ? 'text-[var(--text-danger)]' : 'text-[var(--text-secondary)]'}`}>
                     {run.status === 'running' || run.status === 'queued' ? (
                       <Spinner size={15} />
                     ) : run.status === 'success' || run.status === 'skipped' ? (
@@ -583,11 +588,9 @@ export function BotRoutines({
                     ) : (
                       <Pause size={15} />
                     )}
+                    {t(`routines.status.${run.status}`)}
                   </span>
                 </summary>
-                <p className="mt-2 text-[var(--text-secondary)]">
-                  {t(`routines.status.${run.status}`)}
-                </p>
                 {run.resultText && (
                   <p className="whitespace-pre-wrap break-words text-[var(--text-secondary)]">
                     {run.resultText}
@@ -972,22 +975,13 @@ function BuiltinRoutineRow({
   const copy = BUILTIN_COPY[routine.builtin ?? 'follow-up'];
   const name = t(`${copy}.name`);
   return (
-    <div className="flex min-h-12 w-full items-start gap-3 rounded-lg px-3 py-3">
-      {routine.activity ? (
-        <Spinner size={16} className="mt-1 shrink-0" />
-      ) : routine.enabled ? (
-        routine.builtin === 'nightly-learning'
-          ? <Moon size={16} className="mt-1 shrink-0" />
-          : <Clock3 size={16} className="mt-1 shrink-0" />
-      ) : (
-        <Pause size={16} className="mt-1 shrink-0" />
-      )}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate">{name}</span>
-        {/* 触发条件由宿主维护、条数多且来源重复，这里只写一句白话，不逐条列出。 */}
-        <span className="block text-12 text-[var(--text-secondary)]">{hint ?? t(`${copy}.hint`)}</span>
+    <div className="flex w-full items-start gap-3 border-b border-[var(--border-default)] py-4 last:border-b-0">
+      <div className="min-w-0 flex-1">
+        <p className="break-words text-13 font-medium leading-5">{name}</p>
+        <RoutineState routine={routine} />
+        <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">{hint ?? t(`${copy}.hint`)}</p>
         {extra}
-      </span>
+      </div>
       <Switch
         aria-label={name}
         className="mt-0.5 shrink-0"
@@ -996,5 +990,32 @@ function BuiltinRoutineRow({
         onCheckedChange={(enabled) => onEnabledChange(enabled === true)}
       />
     </div>
+  );
+}
+
+/** Enabling a rule and a run being active are separate facts. */
+function RoutineState({ routine }: { routine: Routine }) {
+  const { t } = useTranslation();
+  return (
+    <p className="mt-1 flex flex-wrap items-center gap-x-2 text-12 leading-5 text-[var(--text-secondary)]">
+      <span>{t(routine.enabled ? 'routines.enabled' : 'routines.paused')}</span>
+      {routine.activity ? <span className="inline-flex items-center gap-1.5"><Spinner size={12} />{t(`routines.status.${routine.activity}`)}</span> : null}
+    </p>
+  );
+}
+
+function RoutineSchedule({ summaries }: { summaries: string[] }) {
+  const { t } = useTranslation();
+  if (!summaries.length) return <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">{t('routines.noTriggers')}</p>;
+  if (summaries.length === 1 && summaries[0].length <= 90) {
+    return <p className="mt-1 break-words text-12 leading-5 text-[var(--text-secondary)]">{summaries[0]}</p>;
+  }
+  return (
+    <details className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">
+      <summary className="min-h-6 cursor-pointer rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">{t('routines.triggerDetails', { count: summaries.length })}</summary>
+      <ul className="mt-1 space-y-1">
+        {summaries.map((text, index) => <li key={index} className="break-words">{text}</li>)}
+      </ul>
+    </details>
   );
 }

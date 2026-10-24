@@ -9103,6 +9103,7 @@
       "descriptionOn": "{{name}}會在任務有變化時查看摘要並提醒你。",
       "movedFrom": "已從{{name}}移到這裡",
       "heldBy": "現在由{{name}}負責，打開就移到這裡。",
+      "routineScopeHint": "把你自己建立的任務也交給我跟進；下方內建跟進負責回應這些任務的變化。",
       "heldByNobody": "尚未開啟",
       "restoreDefault": "恢復預設（{{name}}）",
       "saveFailed": "沒能儲存，請重試",
@@ -14001,6 +14002,13 @@
     },
     "builtinTemplates": {
       "schedule": {
+        "everyMinute": "每分鐘",
+        "hourlyAt": "每小時第 {{minutes}} 分",
+        "atTimes": "{{times}}",
+        "atHoursMinutes": "{{hours}} 時的第 {{minutes}} 分",
+        "monthDays": "每月 {{days}} 日",
+        "daysOrWeekdays": "{{days}}或每週 {{weekdays}}",
+        "inMonths": "{{months}}",
         "daily": "每天 {{time}}",
         "weekdays": "工作日 {{time}}",
         "weekly": "{{weekday}} {{time}}",
@@ -16071,6 +16079,9 @@
     "compression": "用於精簡冗長內容。"
   },
   "routines": {
+    "onEvent": "事件：{{source}} · {{event}}",
+    "triggerDetails": "查看觸發條件（{{count}} 項，符合任一項即執行）",
+    "noTriggers": "尚未設定觸發條件",
     "unsavedTitle": "尚有未儲存的修改",
     "unsavedDescription": "離開後會捨棄這次對例行任務的修改。",
     "discard": "放棄修改",
@@ -16142,8 +16153,8 @@
     "timeoutMs": "檢查逾時（毫秒，留空不限時）",
     "advancedSettings": "進階設定",
     "builtinFollowUp": {
-      "name": "跟進（內建）",
-      "hint": "任務卡住、等你、出錯、撞上用量上限或做完時叫醒它；內建，只能暫停或恢復。"
+      "name": "跟進已接手的任務（內建）",
+      "hint": "任務卡住、等你、出錯、達到用量上限或完成時跟進。只處理已交給我的任務。"
     },
     "builtinTodoCheck": {
       "name": "每天查待辦（內建）",

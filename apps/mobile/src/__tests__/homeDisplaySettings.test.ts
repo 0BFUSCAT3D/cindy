@@ -225,6 +225,7 @@ describe('task info and retained Home behavior', () => {
   it('keeps real project candidates available despite nonmatching search and status', () => {
     const sessions = ['A', 'B'].map((name) => ({ ...item(name).session, title: name, workingDir: '/' + name,
       workspaceKind: 'project', status: 'active', deviceLinkDeviceId: 'd', deviceLinkDeviceName: 'Computer' }));
+    // Keep the existing production-expression fixture complete when aliases become an optional Home input.
     const result = surfaceValue('projectFilterUniverse', { useMemo, buildMobileHomePresentation,
       deviceModels: [], scheduleIndex: new Map(), selectedDeviceId: null, homeSessions: sessions,
       projectAliases: new Map([['device:d:/A', 'Customer Portal']]),
