@@ -71,6 +71,25 @@ function indexedPage(ids: string[]): ConversationSearchResponse {
   };
 }
 
+// #6916: message FTS does not index project display names. Exercise the real
+// fan-out/search entry plus project menu with two same-path devices (unit).
+it('finds a renamed project without mixing devices and honors project filters', async () => {
+  const sessions = [session({ id: 'a', title: 'Task A' }),
+    session({ id: 'b', title: 'Task B', deviceLinkDeviceId: 'dev-b' })];
+  const aliases = new Map([['device:dev-a:/repo', 'Customer Portal']]);
+  const deps = { invoke: vi.fn(async () => indexedPage([])) as ConversationSearchInvoke,
+    getCachedSessions: () => sessions, projectAliases: aliases };
+  const origins = [{ deviceId: 'dev-a', deviceName: 'A', reachable: true },
+    { deviceId: 'dev-b', deviceName: 'B', reachable: true }];
+  const result = await searchConversationsAcrossDevices(origins, { query: 'customer' }, deps);
+  expect(result.results.map((item) => item.session.id)).toEqual(['a']);
+  const filtered = await searchConversationsAcrossDevices(origins, {
+    query: 'customer', filters: { workingDirs: ['/another-project'] },
+  }, deps);
+  expect(filtered.results).toEqual([]);
+  expect(listConversationSearchProjects(sessions, undefined, aliases).map((p) => p.title)).toEqual(['Customer Portal', 'repo']);
+});
+
 const studio: ConversationSearchDeviceOrigin = {
   deviceId: 'dev-a',
   deviceName: 'Studio',

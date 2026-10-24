@@ -20,6 +20,7 @@ import {
 } from '@/session/conversationSearch';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
 import { useStableValue } from '@/utils/useStableValue';
+import type { RemoteProjectAliasIndex } from '@cindy/maker-shared/mobile-home';
 import type {
   ConversationSearchAgentFilter,
   ConversationSearchLastActivityFilter,
@@ -37,12 +38,14 @@ export function useConversationSearch({
   retainedState,
   lockedWorkingDirs,
   projects,
+  projectAliases,
 }: {
   origins: readonly ConversationSearchDeviceOrigin[];
   enabled: boolean;
   retainedState?: HomeViewSession;
   lockedWorkingDirs?: string[] | null;
   projects?: readonly ConversationSearchProjectOption[];
+  projectAliases?: RemoteProjectAliasIndex;
 }): {
   query: string;
   setQuery: (value: string) => void;
@@ -156,6 +159,7 @@ export function useConversationSearch({
         {
           invoke,
           getCachedSessions: () => remoteSessionStore.getSessions(),
+          projectAliases,
           isDeviceUnresponsive: (deviceId) => unresponsiveDevicesStore.has(deviceId),
         },
       ).then((page) => {
@@ -193,6 +197,7 @@ export function useConversationSearch({
     statusFilter,
     unnamedLabel,
     workingDirs,
+    projectAliases,
   ]);
 
   return {
