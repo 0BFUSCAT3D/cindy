@@ -125,8 +125,8 @@ export async function searchConversationsAcrossDevices(
     origins.map((origin) => searchOneDevice(origin, keywordRequest, deps)),
   );
   const present = pages.filter((page): page is ConversationSearchResponse => page != null);
-  // A project display name is not part of the host's message FTS index. Supplement
-  // only alias matches from the same visible device/project scope; keep content search intact.
+  // Updated hosts match aliases before limiting indexed results. Supplement the
+  // cache for older/offline hosts, retaining the same visible device/project scope.
   if (deps.projectAliases?.size) {
     const aliasMatches = deps.getCachedSessions().filter((session) =>
       session.workspaceKind === 'project' && remoteProjectAlias(deps.projectAliases,
