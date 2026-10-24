@@ -25,7 +25,8 @@ import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { Tip } from '@/components/ui/tooltip';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
-import { useSessionsAttentionKindMap, type AttentionKind } from '@/lib/sessionAttentionStore';
+import type { AttentionKind } from '@/lib/sessionAttentionStore';
+import { localOrcaWorkerSessionIds, useOrcaWorkerTaskAttentionKinds } from './lib/orcaWorkerTaskAttention';
 import { VendorIcon, agentKindToVendor } from '@/components/sidebar/VendorIcon';
 import type { WorkerInfo } from './hooks/useWorkers';
 import type { WorkerExecutionDevice } from './hooks/workerProjectionStore';
@@ -47,11 +48,7 @@ export function resolveWorkerListAttention(
 
 /** 只订阅本列表本机任务的子映射：底层以 primitive key 比较，其他任务的广播不会重渲染列表。 */
 function useWorkerTaskAttention(workers: readonly WorkerInfo[]) {
-  return useSessionsAttentionKindMap(
-    workers
-      .filter((worker) => !worker.executionDevice && !isRemoteSessionSticky(worker.sessionId))
-      .map((worker) => worker.sessionId),
-  );
+  return useOrcaWorkerTaskAttentionKinds(localOrcaWorkerSessionIds(workers));
 }
 
 // Strip provider prefix: 'deepseek/deepseek-v4-pro' → 'deepseek-v4-pro'.

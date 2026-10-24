@@ -4,6 +4,7 @@ import { Profiler } from 'react';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { SessionStatusInfo } from '@/lib/makerChatStore';
 import type { WorkerInfo } from '../hooks/useWorkers';
 import { WorkerListToolbar } from '../RolePillDropdown';
 import {
@@ -15,6 +16,31 @@ import {
   markWorkerAttention,
   __resetWorkerAttentionStoreForTest,
 } from '../lib/workerAttentionStore';
+
+const chat = vi.hoisted(() => ({
+  statuses: new Map<string, SessionStatusInfo>(),
+  listeners: new Set<() => void>(),
+}));
+vi.mock('@/lib/makerChatStore', () => ({
+  makerChatStore: {
+    getRunningSnapshot: () => chat.statuses,
+    subscribeAll: (listener: () => void) => {
+      chat.listeners.add(listener);
+      return () => chat.listeners.delete(listener);
+    },
+  },
+}));
+function setPendingAsk(sessionId: string, pending: boolean) {
+  chat.statuses = new Map(chat.statuses).set(sessionId, {
+    isRunning: true,
+    hasError: false,
+    hasPendingAskUser: pending,
+    hasPendingPermission: false,
+    hasPendingPlanReview: false,
+    hasPendingPluginSetup: false,
+  });
+  for (const listener of chat.listeners) listener();
+}
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -216,6 +242,7 @@ describe('Worker list task attention', () => {
     for (const id of getSessionAttentionKinds().keys())
       clearSessionAttention(id, { intent: 'explicit' });
     __resetWorkerAttentionStoreForTest();
+    chat.statuses = new Map();
   });
 
   it.each(['tabs', 'dropdown'] as const)(
@@ -325,6 +352,28 @@ describe('Worker list task attention', () => {
     expect(screen.queryByLabelText('orca.rolePill.unread')).toBeNull();
   });
 
+  it.each(['tabs', 'dropdown'] as const)(
+    '%s：切回后任务 awaiting 已清，未处理确认仍亮，处理后消失',
+    (layout) => {
+      localStorage.setItem('orca-worker-list-layout-v1', layout);
+      const current = worker();
+      renderToolbar();
+      act(() => {
+        setPendingAsk(current.sessionId, true);
+        addSessionAttention(current.sessionId, 'awaiting');
+      });
+      act(() => clearSessionAttention(current.sessionId));
+      expect(getSessionAttentionKinds().has(current.sessionId)).toBe(false);
+      expect(screen.getByLabelText('orca.rolePill.awaitingBadgeAria')).toBeTruthy();
+      fireEvent.click(
+        layout === 'tabs' ? menuButton() : screen.getByRole('button', { name: /developer/ }),
+      );
+      expect(screen.getAllByLabelText('orca.rolePill.awaitingBadgeAria').length).toBe(2);
+      act(() => setPendingAsk(current.sessionId, false));
+      expect(screen.queryByLabelText('orca.rolePill.awaitingBadgeAria')).toBeNull();
+    },
+  );
+
   it('其他任务的提醒变化不重新渲染 Worker 列表', () => {
     const onRender = vi.fn();
     const current = worker();
@@ -346,6 +395,11 @@ describe('Worker list task attention', () => {
     );
     onRender.mockClear();
     act(() => addSessionAttention('unrelated-session', 'error'));
+    expect(onRender).not.toHaveBeenCalled();
+    act(() => {
+      setPendingAsk('unrelated-session', true);
+      for (let i = 0; i < 100; i++) setPendingAsk(current.sessionId, false);
+    });
     expect(onRender).not.toHaveBeenCalled();
     act(() => addSessionAttention(current.sessionId, 'awaiting'));
     expect(onRender).toHaveBeenCalled();
