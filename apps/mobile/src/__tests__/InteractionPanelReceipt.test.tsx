@@ -64,11 +64,11 @@ vi.mock('react-native', async () => {
 vi.mock('@/components/AppText', async () => {
   const { createElement } = await import('react');
   return { Text: (await import('react-native')).Text,
-    TextInput: ({ value, onChangeText, testID, multiline }: {
-      value: string; onChangeText: (value: string) => void; testID: string; multiline?: boolean;
+    TextInput: ({ value, onChangeText, testID, multiline, editable }: {
+      value: string; onChangeText: (value: string) => void; testID: string; multiline?: boolean; editable?: boolean;
     }) => createElement(multiline ? 'textarea' : 'input', { value, 'data-testid': testID,
       onInput: (event: { currentTarget: HTMLInputElement }) => onChangeText(event.currentTarget.value),
-      readOnly: true }),
+      readOnly: editable === false }),
   };
 });
 vi.mock('lucide-react-native', () => ({ ShieldCheck: () => null, MessageCircle: () => null, ChevronDown: () => null, ChevronUp: () => null, Check: () => null, CornerDownLeft: () => null,
@@ -209,6 +209,55 @@ it.each(['free', 'custom', 'multi', 'failed', 'removed', 'connecting', 'connecti
     }
   },
 );
+
+// PR #7017 review: no PCM has arrived yet, so the old hook left editing and
+// navigation enabled while Send awaited startup. Exercise actual card actions,
+// then resolve startup and verify the original answer/question is submitted.
+it.each(['options', 'previous'])('protects the answer while submitting before the first audio chunk: %s', async (action) => {
+  let connect!: () => void;
+  const stop = vi.fn();
+  startDictation.mockImplementation(async (input: { setText: (text: string) => void }) => {
+    stop.mockImplementation(async () => input.setText('Final answer'));
+    await new Promise<void>((resolve) => { connect = resolve; });
+    return { stop, cancel: vi.fn(async () => undefined) };
+  });
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId, questions: [
+      ...(action === 'previous' ? [{ question: 'First?', multiSelect: true, options: [{ label: 'X' }, { label: 'Y' }] }] : []),
+      { question: 'Current?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] },
+    ],
+  } }]);
+  resolveInteraction.mockResolvedValue({ accepted: true });
+  await act(async () => root.render(
+    <AskCardAuthContext.Provider value={{ getAccessToken: async () => 'test', refreshAccessToken: async () => 'test', apiFetch: async () => ({}) }}>
+      <Harness />
+    </AskCardAuthContext.Provider>,
+  ));
+  if (action === 'previous') {
+    await click('interaction.ask.option.1');
+    await click('interaction.ask.submitButton');
+  }
+  await click('interaction.ask.option.1');
+  await click('interaction.ask.voice');
+  await click('interaction.ask.submitButton');
+  expect(resolveInteraction).not.toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
+  expect(host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]')!.readOnly).toBe(true);
+  for (const id of ['interaction.ask.option.2', 'interaction.ask.skipButton',
+    ...(action === 'previous' ? ['interaction.ask.previousButton'] : [])]) {
+    expect(host.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)!.disabled).toBe(true);
+    await click(id);
+  }
+  expect(host.querySelector('[data-testid="interaction.ask.question"]')!.textContent).toBe('Current?');
+  expect(readAskUserDraft(requestId)?.selectedLabels).toEqual(['A']);
+  await act(async () => connect());
+  expect(resolveInteraction).toHaveBeenCalledExactlyOnceWith(requestId, {
+    kind: 'ask_user_question', answers: {
+      ...(action === 'previous' ? { 'First?': '["X"]' } : {}),
+      'Current?': '["A","Final answer"]',
+    },
+  });
+});
 
 // Unit regression for PR #6306 review: a signed-out microphone tap used to
 // render hardcoded Chinese. Existing receipt tests never tapped this entry.

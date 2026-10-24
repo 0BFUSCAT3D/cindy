@@ -104,6 +104,9 @@ export function useAskCardVoice(input: {
       return;
     }
     startingRef.current = true;
+    // The answer belongs to this take from the initial tap, including startup
+    // before the first PCM chunk. Keep edits/navigation frozen until it settles.
+    setListening(true);
     setError(null);
     const abort = new AbortController();
     startAbortRef.current = abort;

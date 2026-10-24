@@ -1303,7 +1303,7 @@ function AskUserQuestionForm({
             <View style={[styles.customInputRow, { gap: touchLayout.actionGap }]}>
               <InteractionTouchButton
                 accessibilityLabel={t('interaction.panel.customAnswerPlaceholder')}
-                disabled={busy}
+                disabled={busy || voice.listening}
                 onPress={() => {
                   if (!isMulti) {
                     clearCurrentAnswer();
