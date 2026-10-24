@@ -27,6 +27,7 @@ import type { OrcaRemoteLead } from '@cindy/maker-shared/orca-remote-worker';
 import { isSameSessionExecution } from '@cindy/plugin-runtime/sessionExecutionOwnership';
 import type { TerminalPluginSessionPort, TerminalPluginSessionHooks } from '../plugins/session-contract.js';
 import type { TerminalPluginTask } from '../plugins/mcp.js';
+import { createPluginSessionPermissions } from '../plugins/session-permissions.js';
 import type { PluginTaskContext } from '../plugins/permissions.js';
 import type { TerminalPluginSetup } from '../plugins/setup.js';
 import { parseGhostSetupInlineSubmitRequest } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
@@ -1217,10 +1218,11 @@ export class TerminalTaskHost {
     };
   }
   configurePlugins(factory:(context:PluginTaskContext)=>Promise<TerminalPluginTask>,setup:TerminalPluginSetup){this.pluginFactory=factory;this.pluginSetup=setup;}
-  requestHostPermission:import('@cindy/plugin-runtime/ghostInstallConsentInteraction').HostPermissionRequester=async(id,instance,request,signal)=>{
-    const task=this.live.get(id);if(this.closed||!task||task.session.instanceId!==instance)return null;
-    const result=await requestHostInteraction(task.session,request,signal??new AbortController().signal);return this.live.get(id)===task?result:null;
-  };
+  private readonly pluginPermissions = createPluginSessionPermissions({
+    session: id => this.closed ? undefined : this.live.get(id)?.session,
+    workingDir: async id => (await this.storage.get(id))?.workDir ?? null,
+  });
+  requestHostPermission = this.pluginPermissions.request;
   async beginChannelInteraction(id:string,registration:Parameters<typeof beginInteractionRoute>[1]){
     const task=await this.ensureLive(id);
     return beginInteractionRoute(task.session,registration);
@@ -1605,20 +1607,8 @@ export class TerminalTaskHost {
   }
   configureKnowledge(knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>) { this.knowledge = knowledge; }
   configureChannelTools(factory: NonNullable<TerminalTaskHost['channelTools']>) { this.channelTools = factory; }
-  async pluginPermissionSnapshot(id:string,instanceId?:string):Promise<(import('@cindy/plugin-runtime/fsSlot').FsSessionSnapshot & {autoReviewOwner:'native'|'cindy'})|null>{
-    const task=this.live.get(id);if(this.closed||!task||instanceId&&task.session.instanceId!==instanceId)return null;
-    const session=task.session,permission=session.stablePermissionModeState,plan=session.stablePlanModeState;
-    if(!permission?.mode||!plan)return null;
-    const row=await this.storage.get(id);if(!row||this.live.get(id)!==task)return null;
-    const isCurrent=()=>!this.closed&&this.live.get(id)===task&&session.stablePermissionModeState?.generation===permission.generation&&session.stablePlanModeState?.generation===plan.generation;
-    if(!isCurrent())return null;
-    return {workingDir:row.workDir,permissionMode:permission.mode,planModeEnabled:plan.enabled,remoteHostId:null,autoReviewOwner:session.autoReviewOwner,isCurrent,reviewAction:action=>session.reviewHostPermissionAction(action)};
-  }
-  async requestPluginWrite(id:string,payload:import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmPayload,signal?:AbortSignal):Promise<import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmDecision>{
-    const task=this.live.get(id);if(!task||this.closed)return {confirmed:false,reason:'session_closed'};
-    const decision=await requestHostInteraction(task.session,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.write',input:payload as unknown as Record<string,unknown>},signal??new AbortController().signal);
-    return decision.kind==='permission'&&decision.behavior==='allow'&&this.live.get(id)===task?{confirmed:true}:{confirmed:false,reason:'cancelled'};
-  }
+  pluginPermissionSnapshot = (id: string, instance?: string) => this.pluginPermissions.snapshot(id, instance);
+  requestPluginWrite = (id: string, payload: import('@cindy/plugin-runtime/grantTypes').GhostGrantConfirmPayload, signal?: AbortSignal) => this.pluginPermissions.confirm(id, payload, signal);
   configureScheduler(deps?: import('../../../../packages/lizi-mcps/src/types.js').SchedulerMcpDeps) {this.schedulerDeps=deps;}
   helperDeps(input:{sessionId:string;workingDir:string;agentKind:AgentKind;setTitle?:(title:string)=>Promise<void>;title?:()=>string}):import('../../../../packages/lizi-mcps/src/lizi_xdtHelperMcpServer.js').XdtHelperMcpDeps {
     return {
@@ -1710,6 +1700,24 @@ export class TerminalTaskHost {
       this.hosted.add(handle);
       return handle;
     } catch (error) { active=false;reviewAbort.abort();await agent.dispose(); if (runtimeLease) await this.worktrees!.runtime.releaseWorktreeRuntimeLease(runtimeLease); throw error; }
+  }
+  async companionProviderViews(device?: string) {
+    this.guard({source:'local'});
+    if (!device) return this.models.views();
+    if (!this.options.remoteInvoke) throw new Error('REMOTE_AGENT_UNAVAILABLE');
+    return readDeviceProviderViews(this.options.remoteInvoke, device);
+  }
+  async resolveCompanionModel(choice: import('../remote/companions/models.js').CompanionModel, id: string, workingDir: string) {
+    const {input,resolved}=await this.admitTask({...choice,workingDir},id,()=>this.guard({source:'local'}));
+    return {...resolved,modelRevision:this.models.revision(),
+      ...(input.agentDeviceId?{agentDeviceId:string(input.agentDeviceId)}:{}),
+      ...(input.groupBinding?{groupBinding:input.groupBinding as import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding}:{})};
+  }
+  companionDeviceStarter(tools: Awaited<ReturnType<typeof createTaskTools>>, memory: import('@cindy/maker-core').MakerMemoryManager) {
+    if (!this.options.remoteInvoke) throw new Error('REMOTE_AGENT_UNAVAILABLE');
+    return createDeviceAgentStarter({remoteInvoke:this.options.remoteInvoke,rgPath:()=> 'rg',
+      codexPath:()=>this.binaries.get('codex')??undefined,mcpProviders:()=>tools.providers,
+      prepareMcpBridge:async(_providers,_logger,context)=>tools.pi(context),makerMemory:()=>memory,logger:this.options.logger});
   }
   private async selection(input: Record<string, unknown>) {
     if (input.agentDeviceId) {

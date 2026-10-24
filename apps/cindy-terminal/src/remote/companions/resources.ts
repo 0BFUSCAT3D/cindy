@@ -6,7 +6,12 @@ import type {
 import type { TerminalCompanionCloud } from "./cloud.js";
 import type { TerminalCompanionHost } from "./host.js";
 import { remoteText as text } from "../text.js";
-import { parseSelection } from "../../models/config.js";
+import { parseCompanionModel } from "./models.js";
+import {
+  registerCompanionModelResources,
+  companionModelsTitle,
+  companionModelsRef,
+} from "./model-resources.js";
 const string = (value: unknown) => {
   if (typeof value !== "string" || !value.trim())
     throw new Error("INVALID_ARGUMENT");
@@ -17,7 +22,9 @@ export function registerCompanionResources(
   host: TerminalCompanionHost,
   cloud?: TerminalCompanionCloud,
 ) {
+  registerCompanionModelResources(registry, host);
   const actions: RemoteActionDescriptor[] = [
+    { id: "model-settings", label: companionModelsTitle },
     {
       id: "create",
       label: text("Add teammate"),
@@ -69,6 +76,7 @@ export function registerCompanionResources(
       ],
       actions: [
         { id: "open", label: text("Open conversation") },
+        { id: "model-settings", label: text("Models") },
         {
           id: "edit",
           label: text("Edit profile"),
@@ -149,6 +157,15 @@ export function registerCompanionResources(
       context.assertCurrent?.();
       const input = request.input ?? {};
       const id = request.resourceRef?.id;
+      if (request.actionId === "model-settings")
+        return {
+          effects: [
+            {
+              kind: "navigate",
+              target: { kind: "resource", ref: companionModelsRef(id) },
+            },
+          ],
+        };
       if (request.actionId === "create") {
         const profile = await host.create({
           name: string(input.name),
@@ -231,7 +248,7 @@ export function registerCompanionResources(
         if (cloud) await cloud.retire(id);
         await host.remove(id);
       } else if (request.actionId === "model") {
-        await host.change(id, { models: [parseSelection(input)] });
+        await host.change(id, { models: [parseCompanionModel(input)] });
       } else if (request.actionId === "model-default")
         await host.change(id, { models: [] });
       else throw new Error("INVALID_ACTION");

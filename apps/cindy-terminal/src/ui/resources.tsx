@@ -11,6 +11,7 @@ import { Input, terminalText } from './input.js';
 import { useInputState } from './state.js';
 import { invokeResourceAction } from '../resource-commands.js';
 import { ChannelRegistration } from './channel-registration.js';
+import { ModelChainEditor } from './model-chain.js';
 
 /** Portable resource controller; business actions remain on the selected host. */
 export function Resources({ client, device, locale, initialCollection, initialRef, onTask }: { client: TerminalClient; device?: string; locale: Locale;initialCollection?:string;initialRef?:RemoteResourceRef; onTask(id: string,device?:string): void }) {
@@ -82,11 +83,13 @@ export function Resources({ client, device, locale, initialCollection, initialRe
   async function begin(chosen:RemoteActionDescriptor){
     let source=resource;
     if(source){
+      const operationBlock=source.blocks?.find(block=>(block.data as {actionId?:string}|undefined)?.actionId===chosen.id)?.id;
       const at=epoch.current;
       const fresh=await call<RemoteResource>('get',{ref:source.ref});
       if(epoch.current!==at)return;
       source=fresh;setResource(fresh);
-      const action=fresh.actions?.find(action=>action.id===chosen.id);
+      const refreshedId=operationBlock?(fresh.blocks?.find(block=>block.id===operationBlock)?.data as {actionId?:string}|undefined)?.actionId:chosen.id;
+      const action=fresh.actions?.find(action=>action.id===refreshedId);
       if(!action)throw new Error('ACTION_NOT_AVAILABLE_ON_TARGET');
       chosen=action;
     }
@@ -123,6 +126,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     return () => { closed = true; clearInterval(timer); };
   }, [collection?.id, resource?.ref.id, action, busy, client, device]);
   const fieldDescriptor=action?.fields?.[field];
+  const modelChainField=confirmed&&collection?.id==='teammates'&&fieldDescriptor?.kind==='multiline'&&['modelChain','taskModel'].includes(fieldDescriptor.id);
   const filteredOptions=fieldDescriptor?.kind==='select'?fieldDescriptor.options?.filter(option=>txt(option.label).toLocaleLowerCase().includes(choiceQuery.toLocaleLowerCase()))??[]:[];
   const choices=action&&!confirmed?[t.cancel,txt(action.confirmation?.confirmLabel)||t.yes]
     :fieldDescriptor?.kind==='toggle'?[t.no,t.yes]
@@ -174,7 +178,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
       else if(currentField){const option=currentField.options?.filter(option=>txt(option.label).toLocaleLowerCase().includes(choiceQueryNow.current.toLocaleLowerCase()))[selectedNow.current];if(currentField.kind==='toggle'||option)nextField(currentField.kind==='toggle'?selectedNow.current===1:option?.value);}
       else lines[selectedNow.current]?.run();
     }
-  },{isActive:!registration});
+  },{isActive:!registration&&!modelChainField});
   const bodyRows=Math.max(3,Math.floor(rows/3));
   const bodyLines=wrapAnsi((resource?.blocks??[]).filter(block=>block.primitive!=='form').map(block=>terminalText(block.fallbackMarkdown)).filter(Boolean).join('\n\n'),Math.max(10,columns-4),{hard:true,trim:false}).split('\n');
   const visibleBody=resource&&!action&&bodyLines.some(line=>line.trim())?Math.min(bodyRows,bodyLines.length)+(bodyLines.length>bodyRows?1:0)+1:0;
@@ -190,6 +194,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     usedRows+=height;
   }
   if(registration)return <ChannelRegistration client={client} device={device} service={registration} locale={locale} onDone={()=>{setRegistration(undefined);if(resource)void run(()=>open(resource.ref));}}/>;
+  if(modelChainField)return <ModelChainEditor key={`${action?.id}-${fieldDescriptor.id}`} client={client} device={device} locale={locale} value={values[fieldDescriptor.id]??'[]'} single={fieldDescriptor.id==='taskModel'} onDone={nextField} onCancel={()=>setAction(undefined)}/>;
   return <Box flexDirection="column" gap={1}>
     <Text bold>{resource?txt(resource.display.title):collection?txt(collection.title):t.resources}{resource?.display.status?` · ${txt(resource.display.status.label)}`:''}{busy?` · ${t.loading}`:''}</Text>
     {visibleBody>0&&<Box flexDirection="column"><Text>{bodyLines.slice(bodyOffset,bodyOffset+bodyRows).join('\n')}</Text>{bodyLines.length>bodyRows&&<Text dimColor>{bodyOffset+1}–{Math.min(bodyOffset+bodyRows,bodyLines.length)} / {bodyLines.length} · PgUp / PgDn</Text>}</Box>}

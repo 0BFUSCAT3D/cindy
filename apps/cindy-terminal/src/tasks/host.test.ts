@@ -1322,12 +1322,33 @@ describe('terminal task host', () => {
       expect(local.native.sent).toHaveLength(2);
       expect(JSON.stringify(local.native.sent.at(-1))).toContain('run on the other computer');
       expect((await local.host.storage.get(task.id))?.agentDeviceId).toBeUndefined();
+      // Same production controller/host path for a companion, with no local
+      // engine installed. Remote location and private workspace must survive.
+      const companion=new TerminalCompanionHost({root:path.join(local.root,'companions'),profileDir:local.root,models:local.host.models,logger,guard(){},emit(){},
+        binary:async()=>null,createAgent:local.native.create,
+        providerViews:device=>local.host.companionProviderViews(device),
+        resolveModel:(choice,id,dir)=>local.host.resolveCompanionModel(choice,id,dir),
+        deviceStarter:(tools,memory)=>local.host.companionDeviceStarter(tools,memory)});
+      try {
+        await companion.modelSettings.saveDefaults([{agentKind:'pi',providerId:'model-route:'+JSON.stringify(['execution-computer','remote-fixture']),model:'remote-model',fastMode:false}]);
+        const profile=await companion.create({name:'Remote companion'});
+        await (await companion.send(profile.id,'companion on execution computer','companion-remote')).completion;
+        expect(local.native.sent).toHaveLength(2);
+        expect(remote.native.sent).toHaveLength(2);
+        expect(remote.native.starts.at(-1)?.botProfilePrompt).toContain('Remote companion');
+        expect(remote.native.starts.at(-1)?.deviceHosted?.mcpServers).toContain('cindy_memory');
+        expect(await companion.storage.get(profile.sessionId)).toMatchObject({agentDeviceId:'execution-computer',providerId:'remote-fixture',workDir:path.join(companion.profiles.home(profile.id),'workspace')});
+        await companion.stop(profile.id);
+        await agents.setEnabled('remote-fixture',false,()=>{});
+        await expect(companion.send(profile.id,'must not run locally','revoked-remote').then(receipt=>receipt.completion)).rejects.toThrow();
+        expect(local.native.sent).toHaveLength(2);
+      } finally {await companion.close();}
       await local.host.close();
     } finally { await agents.stop(); }
     // Shutdown must drain removal of private hosted instructions before the
     // profile can be closed or removed, without racing a second filesystem pass.
-    expect(remote.native.starts).toHaveLength(1);
-    await expect(access(remote.native.starts[0].workingDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(remote.native.starts).toHaveLength(2);
+    for (const start of remote.native.starts) await expect(access(start.workingDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
   // The released SET_MODEL channel must preserve Codex's native compaction,
   // and rebuild Claude/Pi context before a smaller model receives the next turn.
@@ -1876,7 +1897,7 @@ describe('terminal task host', () => {
     let companions=createCompanion();
     const tasks=new TerminalPluginTasks({root,runtimeDirectory:root,host:plugins,account,market,tasks:host,companions:()=>companions,projectDirectories:async()=>[root],protectedInput:{configurePlugins:()=>{}},deposits:new DirDepositVault(),saves:new SaveDepositVault(),owner:()=>({mode:'local',dataOwnerId:'test',generation:1}),signedIn:()=>false,remoteAvailable:()=>false,locale:()=> 'en',assertCurrent:()=>{},emit:()=>{}});
     try{
-      await plugins.ready;await tasks.ready;
+      await plugins.ready;await tasks.ready;tasks.connectCompanions();await companions.modelSettings.saveDefaults([{...(await host.models.select()).selection,fastMode:false}]);
       // Integration tier: task ownership, durable replay, terminal input source
       // and cancellation were previously unavailable behind the plugin pipe.
       const installed = {dir:path.join(root,'_root__fixture-plugin'),enabled:true,approval:{state:'approved',revision:'00000000-0000-4000-8000-000000000001'},taskCapabilityApproved:true,
@@ -1923,6 +1944,32 @@ describe('terminal task host', () => {
       await expect.poll(async()=>(await companions.messages(profile.sessionId)).some(row=>row.role==='assistant'),{interval:5}).toBe(true);
       expect(await target('send',companionRequest)).toMatchObject({ok:true});expect(native.sentFor(profile.sessionId)).toHaveLength(1);
       expect((await companions.messages(profile.sessionId))[0].agentMeta).toMatchObject({sourcePlugin:{pluginId:'_root__fixture-plugin',name:'Task fixture'}});
+      // A real companion runtime mounts the shared plugin gateway. File
+      // consent must reach the same owner RPC, and abort must retire its card.
+      const companionRuntime=native.inputs.findLast(input=>input.taskId===profile.sessionId)!;
+      const gateway=companionRuntime.tools!.providers.find(provider=>provider.name==='cindy_ghosts');
+      expect(gateway).toBeDefined();
+      const pluginClient=new McpClient({name:'companion-plugins',version:'1'});
+      const pluginServer=await gateway!.toClaudeSdkConfig!({sessionId:profile.sessionId,workingDir:path.join(companions.profiles.home(profile.id),'workspace'),agentKind:'claude-code'}) as {instance:McpServer};
+      const [pluginLeft,pluginRight]=InMemoryTransport.createLinkedPair();await pluginServer.instance.connect(pluginLeft);await pluginClient.connect(pluginRight);
+      try {
+        expect((await pluginClient.listTools()).tools.some(tool=>tool.name==='ghost_info')).toBe(true);
+        const info=await pluginClient.callTool({name:'ghost_list',arguments:{}});
+        expect(info.isError).not.toBe(true);
+      } finally { await pluginClient.close(); }
+      const snapshot=await companions.pluginPermissionSnapshot(profile.sessionId);
+      expect(snapshot?.isCurrent?.()).toBe(true);
+      for (const behavior of ['deny','allow'] as const) {
+        const decision=companions.requestPluginWrite(profile.sessionId,{ghostId:'_root__fixture-plugin',ghostName:'Task fixture',lane:'save_dir',operation:'write',items:[{name:'outside',absPath:root,size:0,isDirectory:true}]});
+        const pending=await companions.invoke('maker:get-pending-interactions',[profile.sessionId],{source:'remote',deviceId:'owner-controller'}) as Array<{request:{requestId:string;toolName:string}}>;
+        expect(pending).toHaveLength(1);expect(pending[0].request.toolName).toBe('cindy.plugin.write');
+        companions.resolveInteraction(pending[0].request.requestId,{kind:'permission',behavior},{source:'remote',deviceId:'owner-controller'});
+        expect((await decision).confirmed).toBe(behavior==='allow');
+      }
+      const abort=new AbortController();
+      const cancelledPermission=companions.requestPluginWrite(profile.sessionId,{ghostId:'_root__fixture-plugin',ghostName:'Task fixture',lane:'save_dir',items:[{name:'outside',absPath:root,size:0,isDirectory:true}]},abort.signal);
+      abort.abort();expect((await cancelledPermission).confirmed).toBe(false);
+      expect(await companions.invoke('maker:get-pending-interactions',[profile.sessionId],{source:'local'})).toEqual([]);
       await companions.send(profile.id,'wait-for-steer','companion-held');await native.waitForHeld(profile.sessionId);
       expect(await target('send',{target:companionRequest.target,requestKey:'companion-steer',text:'Companion steer',delivery:'steer'})).toMatchObject({ok:true,data:{delivery:'steer'}});
       await target('send',{target:companionRequest.target,requestKey:'companion-cancel',text:'Cancelled companion'});
@@ -1937,7 +1984,7 @@ describe('terminal task host', () => {
       expect(await target('send',uncertainRequest)).toMatchObject({ok:false,error:{code:'DELIVERY_UNCERTAIN'}});
       expect(await companions.projection(profile.sessionId)).toMatchObject({queuePaused:true});
       expect(await target('send',uncertainRequest)).toMatchObject({ok:false,error:{code:'DELIVERY_UNCERTAIN'}});
-      await companions.close();companions=createCompanion();await companions.ready;tasks.targets.connectCompanions();
+      await companions.close();expect(snapshot?.isCurrent?.()).toBe(false);companions=createCompanion();await companions.ready;tasks.connectCompanions();
       native.steer.reply=async()=>{};
       await companions.resumePending();
       expect(await companions.projection(profile.sessionId)).toMatchObject({queuePaused:true,pendingQueue:[expect.objectContaining({text:'Uncertain companion'})]});
@@ -2660,6 +2707,7 @@ describe('terminal task host', () => {
       const peer = new McpClient({ name: 'companion-fixture', version: '1' });
       const helper = new McpClient({ name: 'companion-control', version: '1' });
       try {
+        await companion.modelSettings.saveDefaults([{...(await host.models.select()).selection,fastMode:false}]);
         const profile = await companion.create({ name: 'MCP companion' });
         await (await companion.send(profile.id, 'hello', 'first')).completion;
         const runtime = native.inputs.at(-1)!, start = native.starts.at(-1)!;

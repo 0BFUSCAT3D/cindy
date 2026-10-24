@@ -41,6 +41,7 @@ export interface CreateDbClientOptions {
   transport?: DbTransportKind;
   userId?: string;
   dbPath?: string;
+  appDataRoot?: string;
   drizzleDir?: string;
   sqliteVecExtPath?: string;
   nativeBinding?: string;
@@ -124,7 +125,7 @@ export async function createInprocDbClient(opts: CreateDbClientOptions = {}): Pr
 
   return {
     readLocalWorktreeReferences: async () =>
-      readLocalWorktreeReferences(getRawDb(), Database, opts.nativeBinding),
+      readLocalWorktreeReferences(getRawDb(), Database, opts.nativeBinding, opts.appDataRoot),
     query: async <T = unknown>(sql: string, params: unknown[] = []) =>
       getRawDb().prepare(sql).all(...params) as T[],
     queryOne: async <T = unknown>(sql: string, params: unknown[] = []) =>
@@ -161,6 +162,7 @@ function createTransport(kind: DbTransportKind, opts: CreateDbClientOptions): Db
   return new WorkerThreadTransport({
     userId: opts.userId,
     dbPath: opts.dbPath,
+    appDataRoot: opts.appDataRoot,
     drizzleDir: opts.drizzleDir,
     sqliteVecExtPath: opts.sqliteVecExtPath,
     nativeBinding: opts.nativeBinding,

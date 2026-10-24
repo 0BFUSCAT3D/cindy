@@ -8,16 +8,22 @@ import {
   privateDirectory,
   readPrivateFile,
 } from "../../platform.js";
-import { parseSelection, type ModelSelection } from "../../models/config.js";
-import { z } from 'zod';
+import { parseCompanionModel, type CompanionModel } from "./models.js";
+import { z } from "zod";
 
-const capabilityReferences = z.object({
-  skills: z.array(z.string().min(1).max(4096)).max(4096).default([]),
-  mcpMode: z.enum(['inherit', 'allowlist']).default('inherit'),
-  mcpServers: z.array(z.string().min(1).max(80)).max(4096).default([]),
-}).strict();
-export type CompanionCapabilityReferences = z.infer<typeof capabilityReferences>;
-export const companionCapabilities = (value?: unknown): CompanionCapabilityReferences => capabilityReferences.parse(value ?? {});
+const capabilityReferences = z
+  .object({
+    skills: z.array(z.string().min(1).max(4096)).max(4096).default([]),
+    mcpMode: z.enum(["inherit", "allowlist"]).default("inherit"),
+    mcpServers: z.array(z.string().min(1).max(80)).max(4096).default([]),
+  })
+  .strict();
+export type CompanionCapabilityReferences = z.infer<
+  typeof capabilityReferences
+>;
+export const companionCapabilities = (
+  value?: unknown,
+): CompanionCapabilityReferences => capabilityReferences.parse(value ?? {});
 
 export interface TerminalCompanionProfile {
   id: string;
@@ -28,7 +34,7 @@ export interface TerminalCompanionProfile {
   version: number;
   createdAt: number;
   updatedAt: number;
-  models: ModelSelection[];
+  models: CompanionModel[];
   sessionId: string;
   templateId?: "cindy";
   capabilities?: CompanionCapabilityReferences;
@@ -79,7 +85,11 @@ export class TerminalCompanionProfiles {
           row.models.length > 5
         )
           throw new Error("INVALID_COMPANION_PROFILE");
-        return { ...row, models: row.models.map(parseSelection), capabilities: companionCapabilities(row.capabilities) };
+        return {
+          ...row,
+          models: row.models.map(parseCompanionModel),
+          capabilities: companionCapabilities(row.capabilities),
+        };
       });
     })();
   }
@@ -170,11 +180,14 @@ export class TerminalCompanionProfiles {
       >
     >,
     expectedVersion?: number,
+    guard: () => void = () => {},
   ) {
     await this.update(async (next) => {
+      guard();
       const row = next.find((row) => row.id === id);
       if (!row) throw new Error("COMPANION_NOT_FOUND");
-      if (expectedVersion !== undefined && row.version !== expectedVersion) throw new Error('COMPANION_PROFILE_CHANGED');
+      if (expectedVersion !== undefined && row.version !== expectedVersion)
+        throw new Error("COMPANION_PROFILE_CHANGED");
       if (
         patch.name !== undefined &&
         (!patch.name.trim() || patch.name.length > 128)
@@ -194,8 +207,12 @@ export class TerminalCompanionProfiles {
         row,
         {
           ...patch,
-          ...(patch.models ? { models: patch.models.map(parseSelection) } : {}),
-          ...(patch.capabilities ? { capabilities: companionCapabilities(patch.capabilities) } : {}),
+          ...(patch.models
+            ? { models: patch.models.map(parseCompanionModel) }
+            : {}),
+          ...(patch.capabilities
+            ? { capabilities: companionCapabilities(patch.capabilities) }
+            : {}),
         },
         { updatedAt: Date.now(), version: row.version + 1 },
       );

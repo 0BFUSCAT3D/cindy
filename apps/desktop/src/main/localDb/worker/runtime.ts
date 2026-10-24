@@ -18,6 +18,7 @@ import {
 export interface DbWorkerRuntimeOptions {
   userId?: string;
   dbPath?: string;
+  appDataRoot?: string;
   drizzleDir?: string;
   sqliteVecExtPath?: string;
   nativeBinding?: string;

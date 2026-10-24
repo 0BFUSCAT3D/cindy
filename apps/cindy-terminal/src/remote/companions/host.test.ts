@@ -16,6 +16,7 @@ import { RemoteResourceRegistry } from "@cindy/device-link";
 import { registerCompanionResources } from "./resources.js";
 import { TerminalCompanionRoutines } from "./routines.js";
 import { TerminalSchedulerHost } from "../../tasks/scheduler.js";
+import { companionModelsRef } from "./model-resources.js";
 import type { TerminalTaskHost } from "../../tasks/host.js";
 const logger: Logger = {
   trace() {},
@@ -153,6 +154,14 @@ async function setup() {
     binary: async () => process.execPath,
     createAgent: create,
   });
+  await host.modelSettings.saveDefaults([
+    {
+      agentKind: "claude-code",
+      providerId: "fixture",
+      model: "test",
+      fastMode: false,
+    },
+  ]);
   hosts.push(host);
   return {
     root,
@@ -160,6 +169,7 @@ async function setup() {
     starts,
     sent,
     configs,
+    models,
     revoke: () => {
       active = false;
     },
@@ -236,6 +246,146 @@ it("rejects a linked private shelf and preserves deletion across restart", async
   ).rejects.toThrow("UNSAFE_PROFILE_DIRECTORY");
   await f.host.remove(profile.id);
   expect(await f.host.profiles.list()).toEqual([]);
+});
+
+/** Tier: integration. Task defaults previously leaked into companion routing,
+ * and the remote resource had no editable chain or persisted tuning. */
+it("edits companion defaults and individual chains through the published forms without inheriting task changes", async () => {
+  const f = await setup();
+  const provider = f.models
+    .snapshot()
+    .providers.find((provider) => provider.id === "fixture")!;
+  await f.models.saveProvider(
+    {
+      ...provider,
+      runtimes: {
+        "claude-code": {
+          ...provider.runtimes["claude-code"]!,
+          models: [
+            ...provider.runtimes["claude-code"]!.models,
+            {
+              id: "second",
+              name: "Second",
+              contextWindow: 200000,
+              efforts: ["medium", "high"],
+              supportsFastMode: true,
+            },
+          ],
+        },
+      },
+    },
+    {},
+  );
+  const profile = await f.host.create({ name: "Independent" });
+  const registry = new RemoteResourceRegistry();
+  registerCompanionResources(registry, f.host);
+  const client = {
+    protocolVersion: 1,
+    primitives: ["text", "form", "actions"],
+    locale: "zh-CN",
+  };
+  const context = { controllerDeviceId: "owner" };
+  const get = (id = "defaults") =>
+    registry.get(context, { client, ref: companionModelsRef(id) });
+  const invoke = (
+    id: string,
+    actionId: string,
+    input: Record<string, unknown>,
+  ) =>
+    registry.invoke(context, {
+      client,
+      collectionId: "teammate-models",
+      resourceRef: companionModelsRef(id),
+      actionId,
+      input,
+    });
+  await f.models.setDefault({
+    agentKind: "claude-code",
+    providerId: "fixture",
+    model: "second",
+  });
+  await (
+    await f.host.send(
+      profile.id,
+      "ordinary task defaults must not leak",
+      "before",
+    )
+  ).completion;
+  expect(f.starts.at(-1)?.model).toBe("test");
+  const defaults = await get();
+  const edit = defaults.actions!.find((action) =>
+    action.id.startsWith("edit:"),
+  )!;
+  const selected = edit.fields![0].options!.find((option) =>
+    String(option.label).includes("Second"),
+  )!;
+  const original = edit.fields![0].options!.find((option) =>
+    String(option.label).endsWith(" · Test"),
+  )!;
+  await invoke("defaults", edit.id, {
+    model1: selected.value,
+    model2: original.value,
+  });
+  await expect(
+    invoke("defaults", edit.id, { model1: original.value }),
+  ).rejects.toThrow("COMPANION_MODEL_SETTINGS_CHANGED");
+  const tuned = await get();
+  await invoke(
+    "defaults",
+    tuned.actions!.find((action) => action.id.startsWith("tune-0:"))!.id,
+    { effort: "high", speed: "fast" },
+  );
+  await (
+    await f.host.send(profile.id, "independent default changed", "after")
+  ).completion;
+  expect(f.starts.at(-1)).toMatchObject({
+    model: "second",
+    effort: "high",
+    fastMode: true,
+  });
+  expect(await f.host.storage.get(profile.sessionId)).toMatchObject({
+    model: "second",
+    effort: "high",
+    fastMode: true,
+    source: "bot",
+  });
+  const personal = await get(profile.id);
+  await invoke(
+    profile.id,
+    personal.actions!.find((action) => action.id.startsWith("edit:"))!.id,
+    { model1: original.value },
+  );
+  expect((await f.host.profiles.get(profile.id))?.models).toEqual([
+    {
+      agentKind: "claude-code",
+      providerId: "fixture",
+      model: "test",
+      fastMode: false,
+    },
+  ]);
+  await (
+    await f.host.send(profile.id, "own chain", "personal")
+  ).completion;
+  expect(f.starts.at(-1)).toMatchObject({ model: "test", fastMode: false });
+  const invalid = await get(profile.id);
+  await expect(
+    invoke(
+      profile.id,
+      invalid.actions!.find((action) => action.id.startsWith("tune-0:"))!.id,
+      { effort: "high", speed: "ultrafast" },
+    ),
+  ).rejects.toThrow();
+  expect((await f.host.profiles.get(profile.id))?.models[0].fastMode).toBe(
+    false,
+  );
+  f.revoke();
+  await expect(
+    invoke(
+      "defaults",
+      tuned.actions!.find((action) => action.id.startsWith("reset:"))!.id,
+      {},
+    ),
+  ).rejects.toThrow("OWNER_CHANGED");
 });
 
 /** Tier: integration. Cloud transfer previously refused todos/workbench/routines.

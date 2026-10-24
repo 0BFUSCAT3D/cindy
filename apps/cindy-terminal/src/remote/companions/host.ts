@@ -1,7 +1,7 @@
 import type { TerminalWorktrees } from "../../worktrees/host.js";
-import type { TerminalCapabilities } from '../../tasks/capabilities.js';
-import type { TerminalKnowledge } from '../../knowledge.js';
-import { companionCapabilityCallbacks } from './capabilities.js';
+import type { TerminalCapabilities } from "../../tasks/capabilities.js";
+import type { TerminalKnowledge } from "../../knowledge.js";
+import { companionCapabilityCallbacks } from "./capabilities.js";
 import type { WorktreeRuntimeLease } from "@cindy/worktree-core/runtimeLeases";
 import type { TerminalCompanionRoutines } from "./routines.js";
 import path from "node:path";
@@ -28,6 +28,12 @@ import {
   type Session,
   type UserMessage,
 } from "@cindy/maker-core";
+import { TerminalCompanionModels, type CompanionModel } from "./models.js";
+import { createPluginSessionPermissions } from "../../plugins/session-permissions.js";
+import type { PluginTaskContext } from "../../plugins/permissions.js";
+import type { TerminalPluginTask } from "../../plugins/mcp.js";
+import type { TerminalPluginSetup } from "../../plugins/setup.js";
+import { installDesktopInteractionHandler } from "@cindy/im-runtime/interactionRouter";
 import { buildBotSystemPrompt } from "@cindy/companion-core/prompt";
 import { buildTeammateGuide } from "@cindy/companion-core/guide";
 import {
@@ -73,10 +79,13 @@ type Live = {
   memory: MakerMemoryManager;
   revision: number;
   worktreeLease: WorktreeRuntimeLease | null;
-  capability?: Awaited<ReturnType<TerminalCapabilities['runtime']>>;
-  knowledge?: Awaited<ReturnType<TerminalKnowledge['createRuntime']>>;
+  plugin?: TerminalPluginTask;
+  revoke(): void;
+  capability?: Awaited<ReturnType<TerminalCapabilities["runtime"]>>;
+  knowledge?: Awaited<ReturnType<TerminalKnowledge["createRuntime"]>>;
   knowledgeRevision: string;
   modelRevision: number;
+  modelDefaultsRevision: number;
   off: () => void;
 };
 type CompanionSchedule = NonNullable<Submission["scheduler"]>;
@@ -87,6 +96,7 @@ type CompanionContext = InvocationContext & {
 };
 type Pending = {
   sessionId: string;
+  sourceRequestId: string;
   request: InteractionRequest;
   resolve: (value: InteractionDecision) => void;
 };
@@ -116,6 +126,7 @@ const textOf = (event: AgentEvent) => {
  * Orca orchestration, global skill shelf, or GUI singleton is inherited. */
 export class TerminalCompanionHost {
   readonly profiles: TerminalCompanionProfiles;
+  readonly modelSettings: TerminalCompanionModels;
   routines?: TerminalCompanionRoutines;
   readonly storage: TerminalTaskStorage;
   readonly workbench: ReturnType<typeof createBotWorkbenchStore>;
@@ -137,6 +148,32 @@ export class TerminalCompanionHost {
   private closed = false;
   private readonly generations = new Map<string, number>();
   private readonly deliveries = new Map<string, Promise<string>>();
+  private pluginFactory?: (
+    context: PluginTaskContext,
+  ) => Promise<TerminalPluginTask>;
+  private pluginSetup?: TerminalPluginSetup;
+  private readonly pluginPermissions = createPluginSessionPermissions({
+    session: (id) => (this.closed ? undefined : this.live.get(id)?.session),
+    workingDir: async (id) => (await this.storage.get(id))?.workDir ?? null,
+  });
+  requestHostPermission = this.pluginPermissions.request;
+  pluginPermissionSnapshot = (id: string, instance?: string) =>
+    this.pluginPermissions.snapshot(id, instance);
+  requestPluginWrite = (
+    id: string,
+    payload: import("@cindy/plugin-runtime/grantTypes").GhostGrantConfirmPayload,
+    signal?: AbortSignal,
+  ) => this.pluginPermissions.confirm(id, payload, signal);
+  hasLiveSession(id: string) {
+    return !this.closed && this.live.has(id);
+  }
+  configurePlugins(
+    factory: (context: PluginTaskContext) => Promise<TerminalPluginTask>,
+    setup: TerminalPluginSetup,
+  ) {
+    this.pluginFactory = factory;
+    this.pluginSetup = setup;
+  }
   private pluginTargetValidator?: (
     sessionId: string,
     clientId: string,
@@ -390,6 +427,24 @@ export class TerminalCompanionHost {
       root: string;
       profileDir: string;
       models: TerminalModelConfig;
+      resolveModel?: ConstructorParameters<
+        typeof TerminalCompanionModels
+      >[0]["resolve"];
+      providerViews?: ConstructorParameters<
+        typeof TerminalCompanionModels
+      >[0]["views"];
+      modelLocations?: ConstructorParameters<
+        typeof TerminalCompanionModels
+      >[0]["locations"];
+      isGroupedProvider?: ConstructorParameters<
+        typeof TerminalCompanionModels
+      >[0]["isGrouped"];
+      deviceStarter?(
+        tools: Awaited<ReturnType<typeof createTaskTools>>,
+        memory: MakerMemoryManager,
+      ): NonNullable<
+        ConstructorParameters<typeof Maker>[0]["startDeviceAgentSession"]
+      >;
       logger: Logger;
       guard(): void;
       emit(channel: string, args: unknown[]): void;
@@ -405,9 +460,19 @@ export class TerminalCompanionHost {
       protectedInput?: import("../../protected-input.js").TerminalProtectedInput;
       worktrees?: TerminalWorktrees;
       capabilities?: TerminalCapabilities;
-      knowledge?: Pick<TerminalKnowledge, 'createRuntime' | 'snapshot'>;
+      knowledge?: Pick<TerminalKnowledge, "createRuntime" | "snapshot">;
     },
   ) {
+    this.modelSettings = new TerminalCompanionModels({
+      root: options.root,
+      models: options.models,
+      binary: options.binary,
+      locations: options.modelLocations,
+      guard: () => this.guard(),
+      resolve: options.resolveModel,
+      views: options.providerViews,
+      isGrouped: options.isGroupedProvider,
+    });
     this.profiles = new TerminalCompanionProfiles(options.root, () =>
       this.guard(),
     );
@@ -421,7 +486,10 @@ export class TerminalCompanionHost {
       changed: (id) => this.changed(id),
     });
     this.storage = new TerminalTaskStorage(path.join(options.root, "history"));
-    this.ready = this.storage.open();
+    this.ready = Promise.all([
+      this.storage.open(),
+      this.modelSettings.ready,
+    ]).then(() => {});
   }
   hasRunningWork() {
     return this.active.size > 0 || this.starts.size > 0 || this.queues.size > 0;
@@ -479,13 +547,15 @@ export class TerminalCompanionHost {
     await this.ready;
     this.guard();
     if (!(await this.storage.get(profile.sessionId))) {
-      let selection: ModelSelection | undefined;
+      let selection: CompanionModel | undefined;
       let error: unknown;
-      for (const choice of profile.models.length
+      const chain = profile.models.length
         ? profile.models
-        : [undefined]) {
+        : await this.modelSettings.defaults();
+      for (const choice of chain) {
         try {
-          selection = (await this.options.models.select(choice)).selection;
+          await this.modelSettings.validate(choice);
+          selection = choice;
           break;
         } catch (value) {
           error = value;
@@ -500,6 +570,11 @@ export class TerminalCompanionHost {
         workDir: path.join(this.profiles.home(profile.id), "workspace"),
         title: profile.name,
         permissionMode: "default",
+        providerId: selection.providerId,
+        effort: selection.effort,
+        fastMode: selection.fastMode,
+        agentDeviceId: selection.agentDeviceId,
+        source: "bot",
       });
       await this.storage.setSelection(profile.sessionId, selection);
     }
@@ -513,8 +588,19 @@ export class TerminalCompanionHost {
   async change(
     id: string,
     patch: Parameters<TerminalCompanionProfiles["change"]>[1],
+    expectedVersion?: number,
+    guard: () => void = () => {},
   ) {
-    const profile = await this.profiles.change(id, patch);
+    if (patch.models)
+      for (const choice of this.modelSettings.parseChain(patch.models))
+        await this.modelSettings.validate(choice);
+    guard();
+    const profile = await this.profiles.change(
+      id,
+      patch,
+      expectedVersion,
+      guard,
+    );
     if (patch.status) {
       await this.routines?.lifecycle(
         id,
@@ -609,13 +695,21 @@ export class TerminalCompanionHost {
         skills: true,
         mcp: Boolean(this.options.capabilities),
         contacts: this.options.knowledge?.snapshot().contacts ?? false,
-        plugins: false,
+        plugins: Boolean(this.pluginFactory),
       }),
-      ...(this.options.capabilities ? { botCapabilities: companionCapabilityCallbacks({
-        botId: profile.id, sessionId: profile.sessionId, agentKind: selection.agentKind,
-        profiles: this.profiles, capabilities: this.options.capabilities,
-        current: () => this.assertMayRun(profile.id), changed: () => this.changed(profile.id),
-      }) } : {}),
+      ...(this.options.capabilities
+        ? {
+            botCapabilities: companionCapabilityCallbacks({
+              botId: profile.id,
+              sessionId: profile.sessionId,
+              agentKind: selection.agentKind,
+              profiles: this.profiles,
+              capabilities: this.options.capabilities,
+              current: () => this.assertMayRun(profile.id),
+              changed: () => this.changed(profile.id),
+            }),
+          }
+        : {}),
       ...(this.routines
         ? {
             botRoutines: {
@@ -646,13 +740,11 @@ export class TerminalCompanionHost {
             limit = Math.min(input.limit ?? 50, 200);
           return {
             ok: true,
-            skills: all
-              .slice(offset, offset + limit)
-              .map((skill) => ({
-                ...skill,
-                updatedAt: new Date(profile.updatedAt).toISOString(),
-                enabled: true,
-              })),
+            skills: all.slice(offset, offset + limit).map((skill) => ({
+              ...skill,
+              updatedAt: new Date(profile.updatedAt).toISOString(),
+              enabled: true,
+            })),
             total: all.length,
             ...(offset + limit < all.length
               ? { nextOffset: offset + limit }
@@ -701,11 +793,15 @@ export class TerminalCompanionHost {
   private ensureLive(profile: TerminalCompanionProfile): Promise<Live> {
     const current = this.live.get(profile.sessionId);
     if (
-      current?.session.getStatus() === "active" && (current.session.isTurnRunning() ||
-      current.revision === profile.version &&
-      current.capability?.revision === this.options.capabilities?.revision() &&
-      current.modelRevision === this.options.models.revision() &&
-      current.knowledgeRevision === JSON.stringify(this.options.knowledge?.snapshot()))
+      current?.session.getStatus() === "active" &&
+      (current.session.isTurnRunning() ||
+        (current.revision === profile.version &&
+          current.capability?.revision ===
+            this.options.capabilities?.revision() &&
+          current.modelRevision === this.options.models.revision() &&
+          current.modelDefaultsRevision === this.modelSettings.revision() &&
+          current.knowledgeRevision ===
+            JSON.stringify(this.options.knowledge?.snapshot())))
     )
       return Promise.resolve(current);
     const existing = this.starts.get(profile.sessionId);
@@ -724,24 +820,56 @@ export class TerminalCompanionHost {
     if (profile.status !== "active") throw new Error("COMPANION_PAUSED");
     await this.ensureCanonical(profile);
     let failure: unknown;
-    for (const choice of profile.models.length ? profile.models : [undefined]) {
+    const defaultsRevision = this.modelSettings.revision();
+    const chain = profile.models.length
+      ? profile.models
+      : await this.modelSettings.defaults();
+    for (const choice of chain) {
       let tools: Live["tools"] | undefined,
         memory: MakerMemoryManager | undefined,
         maker: Maker | undefined,
         agent: BaseAgent | undefined,
-        capability: Live['capability'], knowledge: Live['knowledge'],
+        capability: Live["capability"],
+        knowledge: Live["knowledge"],
+        plugin: TerminalPluginTask | undefined,
+        lease: Live | undefined,
         worktreeLease: WorktreeRuntimeLease | null = null;
+      let revoked = false;
+      const assertCurrent = () => {
+        this.guard();
+        if (revoked || (lease && this.live.get(profile.sessionId) !== lease))
+          throw new Error("COMPANION_RUNTIME_REPLACED");
+      };
+      const instanceId = () => {
+        assertCurrent();
+        if (!lease) throw new Error("COMPANION_NOT_READY");
+        return lease.session.instanceId;
+      };
+      const modelRevision = this.options.models.revision();
+      const knowledgeRevision = JSON.stringify(
+        this.options.knowledge?.snapshot(),
+      );
       try {
-        const { selection, route } = await this.options.models.select(choice);
+        const resolved = await this.modelSettings.resolve(
+          choice,
+          profile.sessionId,
+          path.join(this.profiles.home(profile.id), "workspace"),
+        );
+        const { selection, route, agentDeviceId } = resolved;
         const binary = await this.options.binary(selection.agentKind);
-        if (!binary) throw new Error("ENGINE_NOT_INSTALLED");
+        if (!binary && !agentDeviceId) throw new Error("ENGINE_NOT_INSTALLED");
         this.guard();
         const scope = buildBotMemoryScopeKey(profile.id),
           home = this.profiles.home(profile.id),
           workingDir = path.join(home, "workspace");
         const references = companionCapabilities(profile.capabilities);
-        capability = await this.options.capabilities?.runtime({ workingDir, agentKind: selection.agentKind,
-          ...(references.mcpMode === 'allowlist' ? { mcpIds: references.mcpServers } : {}) });
+        capability = await this.options.capabilities?.runtime({
+          workingDir,
+          agentKind: selection.agentKind,
+          ...(references.mcpMode === "allowlist"
+            ? { mcpIds: references.mcpServers }
+            : {}),
+        });
         memory = new MakerMemoryManager({
           basePath: path.join(this.options.root, "memory"),
           resolveStorageDir: (key) =>
@@ -758,12 +886,33 @@ export class TerminalCompanionHost {
           sqliteFactory: (file) => new Database(file),
           agents: {},
           initialEnabled: this.options.knowledge?.snapshot().memory ?? true,
-          reloadEnabled: () => this.options.knowledge?.snapshot().memory ?? true,
+          reloadEnabled: () =>
+            this.options.knowledge?.snapshot().memory ?? true,
           logger: this.options.logger,
         });
         const currentMemory = memory;
-        knowledge = await this.options.knowledge?.createRuntime({ sessionId: profile.sessionId, workingDir, agentKind: selection.agentKind },
-          { memory, scopeKey: scope, assertCurrent: () => this.assertMayRun(profile.id) });
+        knowledge = await this.options.knowledge?.createRuntime(
+          {
+            sessionId: profile.sessionId,
+            workingDir,
+            agentKind: selection.agentKind,
+          },
+          {
+            memory,
+            scopeKey: scope,
+            assertCurrent: () => this.assertMayRun(profile.id),
+          },
+        );
+        plugin = await this.pluginFactory?.({
+          sessionId: profile.sessionId,
+          workingDir,
+          instanceId,
+          assertCurrent,
+          snapshot: () =>
+            this.pluginPermissionSnapshot(profile.sessionId, instanceId()),
+          confirm: (payload, signal) =>
+            this.requestPluginWrite(profile.sessionId, payload, signal),
+        });
         tools = await createTaskTools({
           logger: this.options.logger,
           sessionId: profile.sessionId,
@@ -771,7 +920,7 @@ export class TerminalCompanionHost {
           agentKind: selection.agentKind,
           isCurrent: () => {
             try {
-              this.guard();
+              assertCurrent();
               return true;
             } catch {
               return false;
@@ -780,23 +929,26 @@ export class TerminalCompanionHost {
           helper: this.helper(profile, selection),
           extraFactories: {
             ...capability?.factories,
-            ...(knowledge?.factories ?? { cindy_memory: () =>
-              createCindyMemoryMcpServer({
-                getManager: () => currentMemory,
-                workdir: workingDir,
-                getSessionContext: () => ({
-                  sessionId: profile.sessionId,
-                  workingDir,
-                  agentKind: selection.agentKind,
-                  memoryScopeKey: scope,
+            ...plugin?.factories,
+            ...(knowledge?.factories ?? {
+              cindy_memory: () =>
+                createCindyMemoryMcpServer({
+                  getManager: () => currentMemory,
+                  workdir: workingDir,
+                  getSessionContext: () => ({
+                    sessionId: profile.sessionId,
+                    workingDir,
+                    agentKind: selection.agentKind,
+                    memoryScopeKey: scope,
+                  }),
+                  withAccountDataAccess: async (_session, operation) => {
+                    this.guard();
+                    const result = await operation(async () => this.guard());
+                    this.guard();
+                    return result;
+                  },
                 }),
-                withAccountDataAccess: async (_session, operation) => {
-                  this.guard();
-                  const result = await operation(async () => this.guard());
-                  this.guard();
-                  return result;
-                },
-              }) }),
+            }),
           },
         });
         agent = await (this.options.createAgent ?? createTerminalAgent)({
@@ -804,28 +956,49 @@ export class TerminalCompanionHost {
           taskId: profile.sessionId,
           selection,
           route,
-          binaryPath: binary,
+          binaryPath: binary ?? process.execPath,
+          remote: Boolean(agentDeviceId),
           models: this.options.models,
           logger: this.options.logger,
           tools,
           memory,
           capabilities: capability,
+          getGhostRosterPrompt: plugin?.getGhostRosterPrompt,
           contactsEnabled: knowledge?.contactsEnabled,
-          getContactsPromptState: () => this.options.knowledge?.snapshot().contacts ? 'enabled' : 'disabled',
+          getContactsPromptState: () =>
+            this.options.knowledge?.snapshot().contacts
+              ? "enabled"
+              : "disabled",
           taskShellEnv: () =>
             this.options.protectedInput?.envFor(profile.sessionId) ?? {},
         });
         const skills = await this.skillEntries(profile);
-        const snapshot = memory.isEnabled() ? await (await memory.getStore(scope)).getIndex() : '';
-        const sharedSkills = references.skills.length && this.options.capabilities
-          ? (await this.options.capabilities.listSkills([workingDir], selection.agentKind)).items : [];
+        const snapshot = memory.isEnabled()
+          ? await (await memory.getStore(scope)).getIndex()
+          : "";
+        const sharedSkills =
+          references.skills.length && this.options.capabilities
+            ? (
+                await this.options.capabilities.listSkills(
+                  [workingDir],
+                  selection.agentKind,
+                )
+              ).items
+            : [];
         const guide = buildTeammateGuide({
           helperAvailable: false,
-          cindyAvailable: false,
+          cindyAvailable: Boolean(plugin),
           ownSkillsEnabled: true,
-          pluginAuthorizationCardsEnabled: false,
+          pluginAuthorizationCardsEnabled: Boolean(plugin),
         });
         const row = await this.storage.get(profile.sessionId);
+        const resumeSessionId =
+          row?.sdkSessionId &&
+          row.agentKind === selection.agentKind &&
+          row.providerId === selection.providerId &&
+          row.agentDeviceId === agentDeviceId
+            ? row.sdkSessionId
+            : undefined;
         const prompt = buildBotSystemPrompt({
           displayName: profile.name,
           identity: (await this.profiles.read(profile.id, "SOUL.md")) ?? "",
@@ -834,7 +1007,7 @@ export class TerminalCompanionHost {
           skillIndex: skills,
           contextSections: [
             guide,
-            ...(!row?.sdkSessionId
+            ...(!resumeSessionId
               ? [
                   (await this.messages(profile.sessionId))
                     .slice(-30)
@@ -858,7 +1031,17 @@ export class TerminalCompanionHost {
           storage: this.storage,
           logger: this.options.logger,
           makerMemory: memory,
+          ...(agentDeviceId
+            ? {
+                startDeviceAgentSession: this.options.deviceStarter?.(
+                  tools,
+                  memory,
+                ),
+              }
+            : {}),
         });
+        if (agentDeviceId && !this.options.deviceStarter)
+          throw new Error("REMOTE_AGENT_UNAVAILABLE");
         worktreeLease =
           (await this.options.worktrees?.runtime.acquireWorktreeRuntimeLease(
             profile.sessionId,
@@ -875,6 +1058,8 @@ export class TerminalCompanionHost {
           providerId: selection.providerId,
           effort: selection.effort,
           permissionMode: "default",
+          fastMode: choice.fastMode,
+          ...(agentDeviceId ? { agentDeviceId } : {}),
           botProfilePrompt: prompt.stable,
           botProfileContextPrompt: [prompt.context, prompt.volatile]
             .filter(Boolean)
@@ -885,7 +1070,12 @@ export class TerminalCompanionHost {
             skillPolicy: {
               mode: "allowlist",
               configured: references.skills,
-              catalog: sharedSkills.map(skill => ({ name: skill.name, path: skill.mdPath ?? skill.absolutePath, enabled: skill.enabled, scope: skill.scope })),
+              catalog: sharedSkills.map((skill) => ({
+                name: skill.name,
+                path: skill.mdPath ?? skill.absolutePath,
+                enabled: skill.enabled,
+                scope: skill.scope,
+              })),
               ownSkills: skills,
             },
             mcpPolicy: {
@@ -893,15 +1083,15 @@ export class TerminalCompanionHost {
               configured: tools.providers.map((value) => value.name),
               catalog: tools.providers.map((value) => ({
                 name: value.name,
-                source: Object.hasOwn(capability?.factories ?? {}, value.name) ? 'custom' as const : 'builtin' as const,
+                source: Object.hasOwn(capability?.factories ?? {}, value.name)
+                  ? ("custom" as const)
+                  : ("builtin" as const),
                 available: true,
               })),
             },
             toolsetPolicy: { mode: "allowlist", configured: [], catalog: [] },
           },
-          ...(row?.sdkSessionId && row.agentKind === selection.agentKind
-            ? { resumeSessionId: row.sdkSessionId }
-            : {}),
+          ...(resumeSessionId ? { resumeSessionId } : {}),
         });
         const live: Live = {
           maker,
@@ -911,22 +1101,47 @@ export class TerminalCompanionHost {
           worktreeLease,
           capability,
           knowledge,
-          modelRevision: this.options.models.revision(),
-          knowledgeRevision: JSON.stringify(this.options.knowledge?.snapshot()),
+          modelRevision,
+          modelDefaultsRevision: defaultsRevision,
+          knowledgeRevision,
+          plugin,
+          revoke: () => {
+            revoked = true;
+          },
           revision: profile.version,
           off: () => {},
         };
         live.off = session.onEvent((event) => this.event(profile, event));
-        session.setInteractionListener((request, signal) =>
-          this.interaction(profile.sessionId, request, signal),
+        installDesktopInteractionHandler(
+          session,
+          (request) => this.interaction(profile.sessionId, request),
+          (sourceRequestId, decision) => {
+            for (const pending of this.pending.values())
+              if (
+                pending.sessionId === profile.sessionId &&
+                pending.sourceRequestId === sourceRequestId
+              )
+                pending.resolve(decision);
+          },
         );
         this.guard();
-        this.live.set(profile.sessionId, live);
+        lease = live;
         await this.storage.setSelection(profile.sessionId, selection);
+        await this.storage.update(profile.sessionId, {
+          agentDeviceId: agentDeviceId ?? undefined,
+          groupBinding: resolved.groupBinding,
+          fastMode: choice.fastMode,
+        });
+        this.guard();
+        this.live.set(profile.sessionId, live);
         return live;
       } catch (error) {
         failure = error;
-        if (maker) await maker.shutdown(); else await agent?.dispose();
+        revoked = true;
+        lease?.off();
+        plugin?.close();
+        if (maker) await maker.shutdown();
+        else await agent?.dispose();
         if (worktreeLease)
           await this.options.worktrees!.runtime.releaseWorktreeRuntimeLease(
             worktreeLease,
@@ -1023,6 +1238,7 @@ export class TerminalCompanionHost {
         );
       this.pending.set(requestId, {
         sessionId,
+        sourceRequestId: request.requestId,
         request: publicRequest,
         resolve: done,
       });
@@ -1336,8 +1552,11 @@ export class TerminalCompanionHost {
   }
   private async closeSession(sessionId: string) {
     this.options.protectedInput?.handoff.cleanupForSession(sessionId);
+    this.pluginSetup?.bridge.cleanupForSession(sessionId, "session_closed");
     const current = this.live.get(sessionId);
     if (!current) return;
+    current.revoke();
+    current.plugin?.close();
     this.live.delete(sessionId);
     for (const pending of [...this.pending.values()])
       if (pending.sessionId === sessionId)
@@ -1573,6 +1792,7 @@ export class TerminalCompanionHost {
       case "maker:get-pending-interactions":
         return [
           ...(this.options.protectedInput?.handoff.pendingSnapshots(id) ?? []),
+          ...(this.pluginSetup?.bridge.pendingSnapshots(id) ?? []),
           ...[...this.pending.values()]
             .filter((row) => row.sessionId === id)
             .map((row) => ({ request: row.request })),

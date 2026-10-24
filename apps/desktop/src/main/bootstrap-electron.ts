@@ -1633,7 +1633,7 @@ let rendererBootGuard: RendererBootGuard | null = null;
 const lifecycleDbClientManager = createLifecycleDbClientManager({
   getCurrentDbPath: localDbGetCurrentDbPath,
   createWorkerClient: createDbClient,
-  createInprocClient: () => createInprocDbClient(),
+  createInprocClient: () => createInprocDbClient({ appDataRoot: app.getPath('appData') }),
   setCurrentDbClient,
   clearCurrentDbClient,
   log: dbClientLog,
@@ -1642,6 +1642,7 @@ const lifecycleDbClientManager = createLifecycleDbClientManager({
 async function ensureLifecycleDbClient(userId: string) {
   return lifecycleDbClientManager.ensure(userId, {
     drizzleDir: getDrizzleDir(),
+    appDataRoot: app.getPath('appData'),
     sqliteVecExtPath: resolveSqliteVecExtPath(),
     nativeBinding: resolveBetterSqliteNativeBinding() ?? undefined,
     // file worker / inline 回滚口都使用主进程解析好的入口，避免 packaged 下

@@ -487,7 +487,7 @@ export class TerminalService {
       receive:async()=>({ok:false,errorCode:'UNSUPPORTED_CAPABILITY'}),
       archiveUserState:(from,to)=>this.tasks.media.relocatePlugin(from,to,guardPlugin),
       cards:{persist:row=>this.tasks.media.savePluginCard(row,guardPlugin),broadcast:payload=>{guardPlugin();this.transport.publish('ghosts:card-updated',[payload]);void this.remote.publish('ghosts:card-updated',payload).catch(()=>{});}},
-      fs:{getSessionSnapshot:(id,instance)=>this.tasks.pluginPermissionSnapshot(id,instance),requestWriteConfirm:(id,payload)=>this.tasks.requestPluginWrite(id,payload),writeSaveDeposit:(id,token,name,bytes)=>saves.write(id,token,name,bytes)},
+      fs:{getSessionSnapshot:async(id,instance)=>(await this.tasks.pluginPermissionSnapshot(id,instance))??(await this.companions?.pluginPermissionSnapshot(id,instance))??null,requestWriteConfirm:(id,payload)=>this.companions?.hasLiveSession(id)?this.companions.requestPluginWrite(id,payload):this.tasks.requestPluginWrite(id,payload),writeSaveDeposit:(id,token,name,bytes)=>saves.write(id,token,name,bytes)},
       network:{getLoginEmail:()=>this.auth.snapshot().session?.membership.email??null,
         fetchImpl:(url,init)=>fetch(url,{...init,body:init.body as BodyInit,signal:AbortSignal.any([init.signal,pluginAbort.signal])}),
         fetchPublicImpl:(url,init,beforeDispatch)=>fetchSingleHopWithSsrFGuard({url,init:{...init,body:init.body as BodyInit},signal:AbortSignal.any([init.signal,pluginAbort.signal]),requireHttps:true,beforeDispatch}),
@@ -525,12 +525,16 @@ export class TerminalService {
     // The new owner initializes while public RPC remains suspended. Generation
     // fences reject the old owner; the suspension gate is lifted only after setup.
     const guardCompanion=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
-    this.companions=new TerminalCompanionHost({worktrees,capabilities:this.tasks.capabilities,knowledge:this.knowledge,root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,protectedInput:this.protectedInput,attachments:this.tasks.attachmentHost(),
+    this.companions=new TerminalCompanionHost({
+      modelLocations:async()=>[
+        ...(await this.remote.listDevices()).filter(device=>device.deviceId!==this.settings.deviceId&&device.online).map(device=>({agentDeviceId:device.deviceId,name:device.name})),
+        ...this.membership.receivedShares().filter(share=>share.status==='active').map(share=>({agentDeviceId:`share:${share.shareId}`,name:`${share.deviceName} · ${share.providerLabel}`})),
+      ],isGroupedProvider:id=>Boolean(this.groups.read(id)),resolveModel:(choice,id,dir)=>this.tasks.resolveCompanionModel(choice,id,dir),providerViews:device=>this.tasks.companionProviderViews(device),deviceStarter:(tools,memory)=>this.tasks.companionDeviceStarter(tools,memory),worktrees,capabilities:this.tasks.capabilities,knowledge:this.knowledge,root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,protectedInput:this.protectedInput,attachments:this.tasks.attachmentHost(),
       binary:async kind=>(await this.engines.allStatus()).find(status=>status.kind===kind)?.binary??null,
       helper:input=>this.tasks.helperDeps(input),
       emit:(channel,args)=>{guardCompanion();if(this.ownerSuspended)return;this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
     await this.companions.ready;
-    this.pluginTasks.targets.connectCompanions();
+    this.pluginTasks.connectCompanions();
     this.routines=new TerminalCompanionRoutines(this.companions,this.scheduler);
     this.companions.routines=this.routines;
     if(this.auth.snapshot().session){

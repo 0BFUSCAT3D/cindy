@@ -29,6 +29,44 @@ actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 afterAll(() => { if (originalActEnvironment === undefined) delete actEnvironment.IS_REACT_ACT_ENVIRONMENT; else actEnvironment.IS_REACT_ACT_ENVIRONMENT = originalActEnvironment; });
 afterEach(async () => { for (const instance of instances.splice(0)) { const exited = instance.waitUntilExit(); await act(async()=>instance.unmount()); await exited; instance.cleanup(); } });
 
+// Unit: an older GUI issues new opaque grants on every read and exposes model
+// routes as serialized fields. The TUI must edit them with real keyboard
+// selectors, retaining the remote location and tuning without displaying JSON.
+it('edits a GUI companion model chain with refreshed grants and portable remote routes', async()=>{
+  let generation=0;
+  const submitted:Array<{actionId:string;input:{modelChain:string}}> = [];
+  const ref={collectionId:'teammates',kind:'bot',id:'fixture'};
+  const provider={id:'fixture-provider',name:'Fixture',connected:true,remoteInvocationEnabled:true,models:{pi:[{id:'model',name:'Remote model',efforts:['medium','high'],supportsFastMode:true}]}};
+  const client:TerminalClient={close(){},subscribe:()=>()=>{},invoke:vi.fn(async(channel,args=[],device)=>{
+    if(channel==='maker:remote-resources:manifest')return {collections:[{id:'teammates',resourceKind:'bot',title:'Teammates'}]};
+    if(channel==='maker:remote-resources:list')return {items:[{ref,revision:'1',display:{title:'Fixture'},links:[]}]};
+    if(channel==='maker:remote-resources:get'){
+      const actionId=`opaque-${++generation}`;
+      return {ref,revision:'1',display:{title:'Fixture'},links:[],actions:[{id:actionId,label:'Models',fields:[{id:'modelChain',kind:'multiline',label:'Models'}]}],blocks:[{id:'models',primitive:'form',fallbackMarkdown:'',data:{actionId,values:{modelChain:'[]'}}}]};
+    }
+    if(channel==='terminal:status')return {deviceId:'controller'};
+    if(channel==='terminal:devices:list')return [{deviceId:'execution',name:'Remote computer',online:true}];
+    if(channel==='maker:provider-share:received-catalogs')return {shares:[]};
+    if(channel==='maker:provider:list')return {providers:device==='execution'?[provider]:[]};
+    if(channel==='maker:remote-resources:invoke'){submitted.push(args[0] as typeof submitted[number]);return {effects:[]};}
+    throw new Error('UNEXPECTED_CHANNEL');
+  }) as TerminalClient['invoke']};
+  const screen=await mount(client,{node:<Resources client={client} locale="en" initialCollection="teammates" onTask={()=>{}}/>});
+  await screen.press('\r');await screen.press('\r');
+  expect(screen.latest()).toContain('Add model');
+  await screen.press('\r');
+  expect(screen.latest()).toContain('Remote computer');
+  await screen.press('\r');
+  await screen.burst(['\x1b[B','\x1b[B','\r']);
+  await screen.burst(['\x1b[B','\r']);
+  expect(screen.latest()).toContain('high');expect(screen.latest()).toContain('Fast');
+  await screen.burst(['\x1b[B','\x1b[B','\r']);
+  expect(submitted).toHaveLength(1);
+  expect(submitted[0].actionId).toBe('opaque-2');
+  expect(JSON.parse(submitted[0].input.modelChain)).toEqual([{harness:'pi',providerId:'model-route:'+JSON.stringify(['execution','fixture-provider']),model:'model',effort:'high',fastMode:true,agentDeviceId:'execution'}]);
+  expect(screen.all()).not.toContain('"harness":');
+});
+
 function fakeClient(flow: AuthFlowState | null = initialFlow, locked = false) {
   let snapshot: TerminalAuthSnapshot = { accounts:[], session:null, flow, error:null };
   const listeners = new Set<(channel:string,args:unknown[])=>void>();

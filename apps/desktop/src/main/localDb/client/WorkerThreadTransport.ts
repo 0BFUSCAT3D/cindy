@@ -398,6 +398,17 @@ function readLocalWorktreeReferences() {
   }
   const names = fs.readdirSync(root).filter((name) => /^(?:cindy|xdt)-.+\.db$/.test(name));
   if (!names.includes(path.basename(currentPath))) throw new Error('unknown task database layout');
+  // The emergency inline worker predates the terminal profile reader. An
+  // incomplete view must preserve worktrees; the regular file worker reads it.
+  const terminalCatalog = path.join((workerData && workerData.appDataRoot) || path.dirname(root), 'Cindy', 'shared-worktree-terminal-profiles');
+  try {
+    const stat = fs.lstatSync(terminalCatalog);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || fs.readdirSync(terminalCatalog).length) {
+      throw new Error('terminal task catalog requires the file worker');
+    }
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') throw error;
+  }
   const rows = [];
   for (const name of names) {
     const file = path.join(root, name);
@@ -2712,6 +2723,7 @@ type EventName = 'log' | 'vec-status';
 export interface WorkerThreadTransportOptions {
   userId?: string;
   dbPath?: string;
+  appDataRoot?: string;
   drizzleDir?: string;
   sqliteVecExtPath?: string;
   nativeBinding?: string;

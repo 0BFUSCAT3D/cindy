@@ -12,7 +12,9 @@ import { TerminalPluginPreferences } from './preferences.js';
 import { TerminalPluginSetup } from './setup.js';
 import { TerminalPluginPages } from './pages.js';
 import { TerminalPluginPublisher } from './publisher.js';
-import { createTerminalPluginTask } from './mcp.js';
+import { createTerminalPluginTask, type TerminalPluginTask } from './mcp.js';
+import type { PluginTaskContext } from './permissions.js';
+import type { HostPermissionRequester } from '@cindy/plugin-runtime/ghostInstallConsentInteraction';
 import { createTerminalPluginForge } from './forge.js';
 import type { TerminalPluginMarket } from './market.js';
 import translations from './translations.json';
@@ -28,6 +30,7 @@ export class TerminalPluginTasks {
   readonly publisher:TerminalPluginPublisher;
   readonly ready:Promise<void>;
   private closed=false;
+  private readonly createTask: (context: PluginTaskContext, requestPermission: HostPermissionRequester) => Promise<TerminalPluginTask>;
   constructor(private readonly options:{
     root:string;runtimeDirectory:string;host:TerminalPlugins;account:TerminalPluginAccount;market:TerminalPluginMarket;
     tasks:TerminalTaskHost;protectedInput:Pick<TerminalProtectedInput,'configurePlugins'>;deposits:DirDepositVault;saves:SaveDepositVault;
@@ -60,15 +63,22 @@ export class TerminalPluginTasks {
       onProgress:progress=>options.emit('ghosts:publish-progress',progress),
     });
     options.protectedInput.configurePlugins(this.setup.authorization);
-    options.tasks.configurePlugins(async context=>{
+    this.createTask=async(context,requestPermission)=>{
       guard();await this.ready;await this.preferences.refresh();guard();
       const scoped={...context,assertCurrent:()=>{guard();context.assertCurrent();}};
       return createTerminalPluginTask({host:options.host,setup:this.setup,preferences:this.preferences,visibility,context:scoped,media:options.tasks.media,deposits:options.deposits,saves:options.saves,
-        market:options.market.task(scoped,options.tasks.requestHostPermission,translate),
-        forge:createTerminalPluginForge({...options,context:scoped,media:options.tasks.media,publisher:this.publisher,requestPermission:options.tasks.requestHostPermission,translate}),
+        market:options.market.task(scoped,requestPermission,translate),
+        forge:createTerminalPluginForge({...options,context:scoped,media:options.tasks.media,publisher:this.publisher,requestPermission,translate}),
       });
-    },this.setup);
+    };
+    options.tasks.configurePlugins(context=>this.createTask(context,options.tasks.requestHostPermission),this.setup);
     this.ready=Promise.all([this.preferences.refresh(),this.sessions.ready,this.targets.ready]).then(()=>undefined);
+  }
+  connectCompanions(){
+    const host=this.options.companions?.();
+    if(!host)throw new Error('COMPANION_HOST_UNAVAILABLE');
+    host.configurePlugins(context=>this.createTask(context,host.requestHostPermission),this.setup);
+    this.targets.connectCompanions();
   }
   async close(){if(this.closed)return;this.closed=true;this.targets.close();this.pages.close();this.setup.close();this.publisher.close();await this.sessions.close();}
 }

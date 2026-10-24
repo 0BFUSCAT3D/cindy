@@ -80,7 +80,7 @@ function setDatabase(opts: DbWorkerStartupOptions): void {
 async function dispatchRequest(req: RpcRequest): Promise<unknown> {
   const readyDb = requireReadyDb();
   if (req.op === 'worktreeReferences') {
-    return readLocalWorktreeReferences(readyDb, DatabaseCtor, startupOptions.nativeBinding);
+    return readLocalWorktreeReferences(readyDb, DatabaseCtor, startupOptions.nativeBinding, startupOptions.appDataRoot);
   }
   if (req.op === 'echoTransfer') {
     const { buffer } = (req.args ?? {}) as { buffer?: { byteLength?: number } };

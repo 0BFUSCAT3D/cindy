@@ -25,6 +25,7 @@ export function readLocalWorktreeReferences(
   current: Database.Database,
   DatabaseCtor: DatabaseConstructor,
   nativeBinding?: string,
+  appDataRoot?: string,
 ): LocalWorktreeReference[] {
   const location = current.prepare('PRAGMA database_list').all() as Array<{ name: string; file: string }>;
   const databasePath = location.find((entry) => entry.name === 'main')?.file;
@@ -57,6 +58,6 @@ export function readLocalWorktreeReferences(
   if (after.length !== names.length || after.some((name) => !names.includes(name))) {
     throw new Error('task database catalog changed during scan');
   }
-  rows.push(...readTerminalWorktreeReferences(path.dirname(root)).rows.map(row => ({ id: row.id, status: row.status ?? null, source: row.source ?? null, workingDir: row.workingDir ?? null, worktreePath: row.worktreePath ?? null, currentDatabase: false })));
+  rows.push(...readTerminalWorktreeReferences(appDataRoot ?? path.dirname(root)).rows.map(row => ({ id: row.id, status: row.status ?? null, source: row.source ?? null, workingDir: row.workingDir ?? null, worktreePath: row.worktreePath ?? null, currentDatabase: false })));
   return rows;
 }
