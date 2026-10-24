@@ -36,6 +36,9 @@ import {
 import type { TerminalModelConfig } from "../models/config.js";
 import { localModelText as t } from "./text.js";
 import { extractLinuxOllama } from "./archive.js";
+import { TerminalLlamaCpp } from "./llamacpp.js";
+import { localModelErrorCode } from "./errors.js";
+import { MANAGED_LLAMACPP_PROVIDER_ID } from "@cindy/model-providers/llamaCpp";
 
 export interface LocalModelJob {
   id: string;
@@ -46,6 +49,7 @@ export interface LocalModelJob {
 export class TerminalLocalModels {
   readonly service;
   readonly managed;
+  readonly llamaCpp: TerminalLlamaCpp;
   private readonly sidecar: ReturnType<typeof createOllamaSidecar>;
   private readonly controller = new AbortController();
   private readonly work = new Set<Promise<void>>();
@@ -68,11 +72,14 @@ export class TerminalLocalModels {
       };
       /** Host I/O ports; production always uses the same loopback runtime contract. */
       deps?: LocalModelServiceDeps;
+      runtimeDiagnostic?(message: string): void;
+      llamaCppDeps?: ConstructorParameters<typeof TerminalLlamaCpp>[0]["deps"];
     },
   ) {
     const { models } = options;
     const modelsDir = () => path.join(options.root, "ollama-models");
     this.sidecar = createOllamaSidecar({
+      onDiagnostic: options.runtimeDiagnostic,
       env: () => ({
         ...Object.fromEntries(
           Object.entries(process.env).filter(
@@ -155,6 +162,8 @@ export class TerminalLocalModels {
         },
         getLocalCatalog: () => models.localCatalog(),
         ...options.deps,
+        beforeInstalledRuntimeStart: () =>
+          this.sidecar.stopManagedSidecarAndWait(),
         runtime: {
           ...options.deps?.runtime,
           headless: true,
@@ -183,8 +192,16 @@ export class TerminalLocalModels {
         log: options.log,
       },
     );
+    this.llamaCpp = new TerminalLlamaCpp({
+      ...options,
+      deps: options.llamaCppDeps,
+    });
     models.connectLocalRuntime({
       prepare: (id) => this.prepare(id),
+      remove: (id, remove) =>
+        id === MANAGED_LLAMACPP_PROVIDER_ID
+          ? this.llamaCpp.remove(remove)
+          : remove(),
       removed: (id) => {
         if (id === MANAGED_OLLAMA_PROVIDER_ID)
           this.managed.markManagedOllamaRemoved();
@@ -248,6 +265,8 @@ export class TerminalLocalModels {
     return this.reading;
   }
   async prepare(providerId: string): Promise<void> {
+    if (providerId === MANAGED_LLAMACPP_PROVIDER_ID)
+      return this.llamaCpp.prepare();
     if (providerId !== MANAGED_OLLAMA_PROVIDER_ID) return;
     this.current();
     const config = await this.managed.readManagedOllamaProvider();
@@ -289,6 +308,7 @@ export class TerminalLocalModels {
         ];
         let items = [
           this.resource("ollama", value),
+          ...(await this.llamaCpp.resources()),
           ...names.map((name) => this.resource(name, value)),
           ...value.catalog
             .filter((m) => !names.includes(m.libraryName))
@@ -317,6 +337,18 @@ export class TerminalLocalModels {
       get: async (context, request) => {
         this.current();
         context.assertCurrent?.();
+        if (
+          request.ref.id === "llamacpp" ||
+          request.ref.id.startsWith("llamacpp:")
+        ) {
+          const resource = (await this.llamaCpp.resources()).find(
+            (item) => item.ref.id === request.ref.id,
+          );
+          this.current();
+          context.assertCurrent?.();
+          if (!resource) throw new Error("RESOURCE_NOT_FOUND");
+          return resource;
+        }
         const value = await this.list();
         this.current();
         context.assertCurrent?.();
@@ -327,6 +359,17 @@ export class TerminalLocalModels {
         context.assertCurrent?.();
         const id = request.resourceRef?.id;
         if (!id) throw new Error("RESOURCE_ID_REQUIRED");
+        if (id === "llamacpp" || id.startsWith("llamacpp:")) {
+          const result = await this.llamaCpp.invoke(
+            id,
+            request.actionId,
+            request.input,
+            () => context.assertCurrent?.(),
+          );
+          this.current();
+          context.assertCurrent?.();
+          return result;
+        }
         const resource = this.resource(id, await this.list());
         this.current();
         context.assertCurrent?.();
@@ -359,7 +402,22 @@ export class TerminalLocalModels {
         const key =
           id === "ollama" && operation !== "download" ? "ollama" : name;
         const job = this.begin(key, operation, async () => {
-          if (operation === "install" || operation === "start") {
+          if (operation === "stop" || operation === "restart") {
+            await Promise.all(
+              this.service
+                .activePulls()
+                .filter((p) => !p.done)
+                .map((p) => this.service.abortPull("pause", p.name)),
+            );
+            this.current();
+            await this.sidecar.stopManagedSidecarAndWait();
+            this.current();
+            if (
+              operation === "restart" &&
+              (await this.service.start()).kind !== "ready"
+            )
+              throw new Error("LOCAL_OLLAMA_NOT_READY");
+          } else if (operation === "install" || operation === "start") {
             const status = await (operation === "install"
               ? this.service.installRuntime()
               : this.service.start());
@@ -444,10 +502,7 @@ export class TerminalLocalModels {
           job.state = error.reason === "pause" ? "paused" : "cancelled";
         else {
           job.state = "failed";
-          job.error =
-            error instanceof Error && /^[A-Z_]+$/.test(error.message)
-              ? error.message
-              : "LOCAL_MODEL_OPERATION_FAILED";
+          job.error = localModelErrorCode(error);
         }
       } finally {
         this.snapshot = undefined;
@@ -481,12 +536,26 @@ export class TerminalLocalModels {
       active = pull && !pull.done;
     const actions: RemoteActionDescriptor[] = runtime
       ? [
-          { id: "start", label: t.start, disabled: busy },
+          {
+            id: this.sidecar.managedSidecarRunning() ? "restart" : "start",
+            label: this.sidecar.managedSidecarRunning()
+              ? t.restartOllama
+              : t.start,
+            disabled: busy,
+          },
+          ...(this.sidecar.managedSidecarRunning()
+            ? [{ id: "stop", label: t.stopOllama, disabled: busy }]
+            : []),
           {
             id: "install",
-            label: t.install,
+            label: findInstalledSidecarBinary(this.options.root)
+              ? t.repairOllama
+              : t.install,
             disabled:
               busy ||
+              value.pulls.some((p) => !p.done) ||
+              (value.status.kind === "ready" &&
+                !this.sidecar.managedSidecarRunning()) ||
               !supportsManagedOllamaInstall(process.platform, process.arch),
           },
           {
@@ -598,6 +667,7 @@ export class TerminalLocalModels {
     this.controller.abort();
     clearTimeout(this.changedTimer);
     await Promise.allSettled([
+      this.llamaCpp.close(),
       this.service.abortInstall(),
       ...this.service
         .activePulls()

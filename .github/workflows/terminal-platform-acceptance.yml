@@ -47,6 +47,10 @@ jobs:
       - name: Install target-native dependencies
         shell: bash
         run: pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
+      - name: Official headless Ollama and llama.cpp lifecycle
+        env:
+          CINDY_GITHUB_API_TOKEN: ${{ github.token }}
+        run: pnpm --filter cindy-terminal exec tsx scripts/local-runtime-acceptance.ts
       - name: Prepare real headless plugin browser
         run: pnpm --filter cindy-terminal exec playwright-core install --with-deps chromium
       - name: Select the pinned headless browser for integration tests
@@ -93,6 +97,8 @@ jobs:
         run: pnpm --filter desktop exec vitest run src/main/local-model-runtime/__tests__/ollamaRuntime.test.ts src/main/local-model-runtime/__tests__/ollamaInstall.test.ts src/main/local-model-runtime/__tests__/ollamaDownload.test.ts src/main/local-model-runtime/__tests__/ollamaSidecar.test.ts src/main/local-model-runtime/__tests__/managedOllamaProvider.test.ts src/main/local-model-runtime/__tests__/managedOllamaMigrate.test.ts src/main/local-model-runtime/__tests__/service.list.test.ts src/main/local-model-runtime/__tests__/service.pull.test.ts src/main/local-model-runtime/__tests__/service.owner.test.ts src/main/local-model-runtime/__tests__/service.delete.test.ts src/main/local-model-runtime/__tests__/ollamaClient.test.ts src/main/local-model-runtime/__tests__/ollamaPurge.test.ts src/main/local-model-runtime/__tests__/ollamaRelease.test.ts src/main/local-model-runtime/__tests__/pausedPullStore.test.ts src/main/local-model-runtime/__tests__/pullProgress.test.ts src/main/local-model-runtime/__tests__/localConnectDetect.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal
         run: pnpm --filter cindy-terminal typecheck
+      - name: Existing llama.cpp model and process lifecycle
+        run: pnpm --filter desktop exec vitest run src/main/local-model-runtime/__tests__/llamaCppService.test.ts src/main/local-model-runtime/__tests__/llamaCppDownloads.test.ts src/main/local-model-runtime/__tests__/llamaCppProcess.test.ts src/main/local-model-runtime/__tests__/managedLlamaCppProvider.test.ts src/main/local-model-runtime/__tests__/llamaCppIpc.test.ts src/main/reviewer/__tests__/reviewOwnerLiveness.test.ts src/main/scheduler-host/__tests__/procUtilRetry.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing SuperGrok device login, discovery and recovery
         run: pnpm exec vitest run apps/desktop/src/main/maker-host/__tests__/grokDeviceLogin.test.ts apps/desktop/src/main/maker-host/__tests__/grokDeviceLoginOwnerSwitch.test.ts apps/desktop/src/main/maker-host/__tests__/grokAuthRejectionRecovery.test.ts apps/desktop/src/main/maker-host/__tests__/grokOauthCallbackListener.test.ts apps/desktop/src/main/maker-host/__tests__/xaiModelDiscovery.test.ts apps/desktop/src/main/maker-host/__tests__/xaiBridgeAuthInvalidation.test.ts apps/desktop/src/main/maker-host/__tests__/xaiSyncImport.test.ts --maxWorkers=1 --minWorkers=1
       - name: Real bundled engines preserve provider and subscription boundaries
@@ -105,10 +111,6 @@ jobs:
       - name: Package official Node and native dependencies
         shell: bash
         run: node apps/cindy-terminal/scripts/package-runtime.mjs --target '${{ matrix.target }}' --out "$CINDY_ACCEPTANCE_OUTPUT"
-      - name: Official headless Ollama install and lifecycle
-        env:
-          CINDY_GITHUB_API_TOKEN: ${{ github.token }}
-        run: pnpm --filter cindy-terminal exec tsx scripts/local-runtime-acceptance.ts
       - name: Check isolated native host and service registration
         if: runner.os == 'Windows'
         timeout-minutes: 3

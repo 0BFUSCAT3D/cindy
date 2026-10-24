@@ -1,4 +1,5 @@
 import { createServer, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { zstdCompressSync } from "node:zlib";
 import path from "node:path";
@@ -16,6 +17,194 @@ import type { TerminalClient, TerminalSecrets } from "../contracts.js";
 import { runResourceCommand } from "../resource-commands.js";
 import { TerminalLocalModels, type LocalModelJob } from "./service.js";
 import { extractLinuxOllama } from "./archive.js";
+import { MANAGED_LLAMACPP_PROVIDER_ID } from "@cindy/model-providers/llamaCpp";
+
+// Integration tier: terminal GGUF actions must preserve Desktop's verified
+// download and deletion fences, then persist one catalog for all three engines.
+it("manages GGUF discovery, paused transfers and provider deletion on the selected host", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cindy-gguf-host-"));
+  cleanup.push(() =>
+    rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }),
+  );
+  const bytes = Buffer.alloc(8192, 3),
+    sha256 = createHash("sha256").update(bytes).digest("hex");
+  let ranges: string[] = [],
+    requests = 0;
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith("/api/models/")) {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          sha: "a".repeat(40),
+          siblings: [
+            { rfilename: "fixture.gguf", lfs: { size: bytes.length, sha256 } },
+          ],
+        }),
+      );
+    } else {
+      requests++;
+      const offset = Number(
+        /^bytes=(\d+)-$/.exec(req.headers.range ?? "")?.[1] ?? 0,
+      );
+      if (req.headers.range) {
+        ranges.push(req.headers.range);
+        res.writeHead(206, {
+          "Content-Range": `bytes ${offset}-${bytes.length - 1}/${bytes.length}`,
+        });
+      }
+      if (requests === 1) res.write(bytes.subarray(0, 4096));
+      else res.end(bytes.subarray(offset));
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  cleanup.push(
+    () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  );
+  let active = true;
+  const guard = () => {
+    if (!active) throw new Error("OWNER_CHANGED");
+  };
+  const secrets: TerminalSecrets = {
+    get: async () => null,
+    set: async () => {},
+    delete: async () => {},
+  };
+  const open = async () => {
+    const models = new TerminalModelConfig(root, secrets, async () => ({
+      authenticated: false,
+    }));
+    await models.open();
+    const host = new TerminalLocalModels({
+      root,
+      models,
+      assertCurrent: guard,
+      changed() {},
+      log: { info() {}, warn() {} },
+      deps: {
+        fetchImpl: async (input) =>
+          new Response(
+            JSON.stringify(
+              String(input).endsWith("/api/version")
+                ? { version: "fixture" }
+                : { models: [] },
+            ),
+          ),
+      },
+      llamaCppDeps: {
+        fetch: (input, init) =>
+          fetch(
+            `http://127.0.0.1:${port}${new URL(String(input)).pathname}`,
+            init,
+          ),
+      },
+    });
+    cleanup.push(() => host.close());
+    const registry = new RemoteResourceRegistry();
+    host.register(registry);
+    const context = { controllerDeviceId: "controller", assertCurrent: guard };
+    const client = {
+      protocolVersion: 1 as const,
+      primitives: ["text", "actions"],
+    };
+    const ref = {
+      collectionId: "local-models",
+      kind: "local-model",
+      id: "llamacpp",
+    };
+    const command = (actionId: string, input?: unknown, id = "llamacpp") =>
+      registry.invoke(context, {
+        client,
+        collectionId: ref.collectionId,
+        resourceRef: { ...ref, id },
+        actionId,
+        input: input as never,
+      });
+    const state = async () =>
+      (await registry.get(context, { client, ref })).blocks![0].data as {
+        job?: LocalModelJob;
+        operation?: { paused?: boolean; completed: number };
+      };
+    return { host, models, command, state };
+  };
+  let f = await open();
+  const discovered = await f.command("files", { repo: "owner/fixture" });
+  expect(discovered.result).toEqual([
+    {
+      repo: "owner/fixture",
+      file: "fixture.gguf",
+      name: "fixture.gguf",
+      size: bytes.length,
+    },
+  ]);
+  await f.command("download", { repo: "owner/fixture", file: "fixture.gguf" });
+  await vi.waitFor(
+    async () => expect((await f.state()).operation?.completed).toBe(4096),
+    { interval: 1 },
+  );
+  await f.command("pause");
+  expect((await f.state()).operation?.paused).toBe(true);
+  await f.command("resume");
+  await vi.waitFor(
+    async () => expect((await f.state()).job?.state).toBe("completed"),
+    { interval: 1 },
+  );
+  expect(ranges).toEqual(["bytes=4096-"]);
+  const provider = f.models
+    .snapshot()
+    .providers.find((p) => p.id === MANAGED_LLAMACPP_PROVIDER_ID)!;
+  const model = provider.runtimes.pi!.models[0];
+  for (const kind of ["pi", "claude-code", "codex"] as const)
+    expect(provider.runtimes[kind]!.models[0].id).toBe(model.id);
+  expect(
+    await readFile(
+      path.join(root, "llamacpp-runtime/models", model.id, "fixture.gguf"),
+    ),
+  ).toEqual(bytes);
+  await f.command("disable", {}, `llamacpp:${model.id}`);
+  await vi.waitFor(
+    async () => expect((await f.state()).job?.state).toBe("completed"),
+    { interval: 1 },
+  );
+  await f.host.close();
+  f = await open();
+  expect(
+    (await f.models.views())
+      .find((p) => p.id === provider.id)
+      ?.models.pi?.find((m) => m.id === model.id)?.disabled,
+  ).toBe(true);
+  await f.command("delete", {}, `llamacpp:${model.id}`);
+  await vi.waitFor(
+    async () => expect((await f.state()).job?.state).toBe("completed"),
+    { interval: 1 },
+  );
+  expect((await f.host.llamaCpp.service.snapshot()).models).toHaveLength(0);
+  expect(
+    f.models.snapshot().providers.find((p) => p.id === provider.id)?.runtimes.pi
+      ?.models,
+  ).toEqual([]);
+  // Removing the managed connection must stop its pending operation and never
+  // resurrect it from either inventory polling or a late job completion.
+  requests = 0;
+  await f.command("download", { repo: "owner/second", file: "fixture.gguf" });
+  await vi.waitFor(
+    async () => expect((await f.state()).operation?.completed).toBe(4096),
+    { interval: 1 },
+  );
+  await f.models.deleteProvider(provider.id, guard);
+  await f.state();
+  expect(f.models.snapshot().providers.some((p) => p.id === provider.id)).toBe(
+    false,
+  );
+  expect((await f.host.llamaCpp.service.snapshot()).models).toHaveLength(0);
+  active = false;
+  await f.host.close();
+  await expect(f.models.prepareLocalModel(provider.id)).rejects.toThrow();
+});
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {

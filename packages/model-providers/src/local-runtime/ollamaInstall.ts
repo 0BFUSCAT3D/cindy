@@ -52,17 +52,17 @@ export interface OllamaInstallHost {
   cleanup(targetPath: string): Promise<unknown>;
 }
 
+export function windowsTarBin(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.SystemRoot || env.windir || "C:\\Windows";
+  return `${root}\\System32\\tar.exe`;
+}
+
 export function createOllamaInstall(host: OllamaInstallHost) {
   const { download: downloadFile, cleanup: cleanupDownload } = host;
 
   const TAR_BIN_DARWIN = "/usr/bin/tar";
   const EXTRACT_TIMEOUT_MS = 60_000;
   const WINDOWS_EXTRACT_TIMEOUT_MS = 15 * 60_000;
-
-  function windowsTarBin(env: NodeJS.ProcessEnv = process.env): string {
-    const root = env.SystemRoot || env.windir || "C:\\Windows";
-    return `${root}\\System32\\tar.exe`;
-  }
 
   async function readSidecarManifest(
     userDataDir: string,

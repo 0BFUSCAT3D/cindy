@@ -47,7 +47,7 @@ that account's pending installation. Reopening the engine page shows its result.
 
 ## Local models
 
-Models → Local models opens Ollama on the selected computer. Installation uses
+Models → Local models opens Ollama and llama.cpp on the selected computer. Installation uses
 verified official macOS, Windows or Linux archives. Linux zstd extraction uses
 the included Node runtime. Starting Ollama executes `ollama serve`; it never
 opens a desktop application. A managed server stores model weights inside its
@@ -65,13 +65,28 @@ cindy local-models list
 cindy local-models pause '<Ollama model name>'
 cindy local-models resume '<Ollama model name>'
 cindy local-models disable '<Ollama model name>'
+cindy local-models install llamacpp
+cindy local-models files llamacpp --stdin
+# stdin: {"repo":"<Hugging Face organization/repository>"}
+cindy local-models download llamacpp --stdin
+# stdin: {"repo":"<organization/repository>","file":"<model.gguf>"}
+cindy local-models start llamacpp
+cindy local-models stop llamacpp
 ```
 
 Long operations return a host-owned job. `get` reports its status and progress;
 disconnecting the controller does not cancel a download. Pause state survives
-host restart. Changing the Cindy account retires its active operations. Enable
+host restart for Ollama. llama.cpp supports pause/resume while the host stays
+running; stopping that host cancels its incomplete transfer. Changing the Cindy
+account retires its active operations. Enable
 and disable use the same saved model visibility settings as other providers.
 `delete` removes downloaded weights; `cancel` discards an incomplete download.
+
+llama.cpp verifies the official runtime archive and each GGUF shard before
+publishing them. Its selected-host model list includes the shared curated
+catalog and files discovered from a Hugging Face repository. Starting a task
+starts an installed router when needed. An explicit Start/Restart applies newly
+downloaded models and context settings; downloads never restart active tasks.
 
 ## Headless plugin browser
 

@@ -70,7 +70,10 @@ export function findInstalledSidecarBinary(userDataDir: string): string | null {
 }
 
 export function createOllamaSidecar(
-  options: { env?: () => NodeJS.ProcessEnv } = {},
+  options: {
+    env?: () => NodeJS.ProcessEnv;
+    onDiagnostic?(message: string): void;
+  } = {},
 ) {
   let sidecarChild: ChildProcess | null = null;
 
@@ -89,17 +92,22 @@ export function createOllamaSidecar(
   ): ChildProcess {
     stopManagedSidecar();
     const child = spawnImpl(binary, ["serve"], {
-      stdio: "ignore",
+      stdio: options.onDiagnostic ? ["ignore", "ignore", "pipe"] : "ignore",
       windowsHide: true,
       env: {
         ...(options.env?.() ?? process.env),
         OLLAMA_HOST: OLLAMA_LOOPBACK_ORIGIN.replace(/^https?:\/\//, ""),
       },
     });
-    child.on("error", () => {
+    child.stderr?.on("data", (chunk: Buffer) =>
+      options.onDiagnostic?.(chunk.toString("utf8")),
+    );
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      options.onDiagnostic?.(`spawn: ${error.code ?? "unknown"}`);
       if (sidecarChild === child) sidecarChild = null;
     });
-    child.on("exit", () => {
+    child.on("exit", (code, signal) => {
+      options.onDiagnostic?.(`exit: ${code ?? signal ?? "unknown"}`);
       if (sidecarChild === child) sidecarChild = null;
     });
     sidecarChild = child;

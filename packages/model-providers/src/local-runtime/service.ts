@@ -169,6 +169,8 @@ export interface LocalModelServiceDeps {
   userDataDir?: string;
   /** Host-owned release metadata transport; never exposed through model forms. */
   installFetch?: typeof fetch;
+  /** Explicit managed installation can restart its own process before activation. */
+  beforeInstalledRuntimeStart?(): Promise<void>;
   runtime?: Partial<
     Omit<OllamaRuntimeDeps, "platform" | "arch" | "fetchImpl" | "userDataDir">
   >;
@@ -331,6 +333,8 @@ export function createLocalModelService(
         });
         if (signal.aborted) throw new Error("aborted");
         deps.onInstallProgress?.({ phase: "starting", done: false });
+        await deps.beforeInstalledRuntimeStart?.();
+        if (signal.aborted) throw new Error("aborted");
         const next = await startOfficialOllamaApp({ ...runtimeDeps(), signal });
         if (signal.aborted) throw new Error("aborted");
         deps.onStatus?.(next);

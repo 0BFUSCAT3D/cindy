@@ -40,7 +40,8 @@
     "./auxiliaryModelSettings": "./src/auxiliaryModelSettings.ts",
     "./providerOrder": "./src/providerOrder.ts",
     "./provider-auth/*": "./src/provider-auth/*.ts",
-    "./local-runtime/*": "./src/local-runtime/*.ts"
+    "./local-runtime/*": "./src/local-runtime/*.ts",
+    "./llamaCppCatalog": "./src/llamaCppCatalog.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
