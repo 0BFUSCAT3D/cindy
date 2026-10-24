@@ -84,8 +84,10 @@ import {
   saveBotSkillForSession,
 } from '../maker-ipc/botSkillService.js';
 import {
+  canBotContinueWorkbenchTask,
   captureBotCreatedTaskResponsibility,
   runBotWorkbenchTool,
+  runBotProjectsTool,
   type BotWorkbenchHostDeps,
 } from '../maker-ipc/botWorkbenchTools.js';
 import { createTaskDigestReader } from './taskDigest.js';
@@ -306,6 +308,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     isScopeCurrent: (db) => !isAppSessionBoundaryPending() && db === tryGetDbClient(),
     authorizeAction: createDesktopTaskActionAuthorizer({
       input: getTaskActionInputState, getSession: getTaskActionSession, confirm: confirmTaskAction,
+      isEntrustedTask: canBotContinueWorkbenchTask,
     }),
   });
   // Companion history uses the same account scope as ordinary task history.
@@ -488,6 +491,10 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // (hook-script-generator)。lazy import:该链上有 electron app 依赖,且 maker
       // 仅 description 生成模式需要,tool-call 时才解引用。
       hookScript: {
+        isSessionAgentOnOtherDevice: async (sessionId) => {
+          const row = await getSessionRowSnapshot(sessionId);
+          return !!row?.agentDeviceId && !row.remoteHostId;
+        },
         // 绑定会话(heartbeat)任务安装 hook 时解析会话真实工作目录 —— schedule
         // 行上的 workingDir 为空/过期,落盘与自测必须用会话 meta.workDir。
         resolveSessionWorkDir: async (sessionId) => {
@@ -527,6 +534,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
           );
         },
       },
+      // 运行位置与模型:与协同 Worker 的 list_available_models 同一份 host 实现。
+      listModels: wrap((s, params) => s.listAvailableModels(params)),
       logger: createLogger('mcp/cindy_scheduler'),
     },
     // cindy_ssh: agent 直接在已配置 SSH 主机上执行命令(远端零安装)。
@@ -1114,6 +1123,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // 授权在 botWorkbenchAccess 里逐次确定性校验;投递复用 send_to_session 的同一条宿主路径。
       // 停止走通用的 stop_session_turn。
       botWorkbench: {
+        projects: runBotProjectsTool,
         todos: async (caller, operation, input) => {
           try {
             const access = await todoForCaller(caller, () => getTaskActionInputState(caller).ownerInput);
@@ -1192,7 +1202,22 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       createWorker: wrap((s, params) => s.createWorker(params)),
       listWorkers: wrap((s, params) => s.listWorkers(params)),
       switchFocus: wrap((s, params) => s.switchFocus(params)),
-      sendToWorker: wrap((s, params) => s.sendToWorker(params)),
+      sendToWorker: wrap(
+        (
+          s,
+          params: {
+            callerLeadSessionId: string;
+            targetSessionId: string;
+            message: string;
+            delivery?: 'queue' | 'steer';
+            /** MCP 工具层字段名; host service 内部叫 imagePaths。 */
+            images?: string[];
+          },
+        ) => {
+          const { images, ...rest } = params;
+          return s.sendToWorker({ ...rest, ...(images ? { imagePaths: images } : {}) });
+        },
+      ),
       interruptWorker: wrap((s, params) => s.interruptWorker(params)),
       listWorkerQueuedMessages: wrap((s, params) => s.listWorkerQueuedMessages(params)),
       updateWorkerQueuedMessage: wrap((s, params) => s.updateWorkerQueuedMessage(params)),
@@ -1203,6 +1228,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       idleWorker: wrap((s, params) => s.idleWorker(params)),
       endTeam: wrap((s, params) => s.endTeam(params)),
       archiveWorker: wrap((s, params) => s.archiveWorker(params)),
+      updateWorker: wrap((s, params) => s.updateWorker(params)),
       listAvailableModels: wrap((s, params) => s.listAvailableModels(params)),
       getWorkspaceInfo: wrap((s, params) => s.getWorkspaceInfo(params)),
       getWorkerStatus: wrap((s, params) => s.getWorkerStatus(params)),

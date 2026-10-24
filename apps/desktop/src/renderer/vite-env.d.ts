@@ -19,6 +19,7 @@ type ModelAccessStatusPayload = import('../shared/modelAccess').ModelAccessStatu
 type AnalyticsSettingsPayload = import('../shared/analyticsSettings').AnalyticsSettingsPayload;
 type LogUploadSettingsPayload = import('../shared/logUpload').LogUploadSettingsPayload;
 type LogUploadResult = import('../shared/logUpload').LogUploadResult;
+type StartupGateStallSnapshot = import('../shared/startupGateStall').StartupGateStallSnapshot;
 type CustomProviderUpdateOptions =
   import('../shared/customProviderUpdate').CustomProviderUpdateOptions;
 type CustomProviderUpdateResult =
@@ -1145,6 +1146,7 @@ type ElectronLocalDbSessionListUsageOptions = Omit<
 };
 
 interface ElectronAPI {
+  localAgent: import('../shared/localAgent').LocalAgentSettingsApi;
   botMarket: import('../shared/botMarket').BotMarketApi;
   companionImport: import('@cindy/maker-shared/companion-import').CompanionImportApi;
   modelFavoritesHost: import('../shared/modelFavoritesSync').ModelFavoritesHostApi;
@@ -1225,6 +1227,9 @@ interface ElectronAPI {
     msg: string,
   ) => void;
 
+  /** 开屏卡住时上报一次启动门快照;main 校验字段后写进可上传的诊断日志。仅主窗 preload 提供。 */
+  reportStartupGateStall?: (snapshot: StartupGateStallSnapshot) => void;
+
   localThemes: {
     listSync: () => LocalThemesResult;
     list: () => Promise<LocalThemesResult>;
@@ -1277,7 +1282,7 @@ interface ElectronAPI {
 
   /** 意识仓库 —— 数据模型与校验见 shared/ghost.ts,main 端见 main/cindy-brain/。 */
   ghosts: {
-    mailPreview: (sessionId: string, url: string, read: boolean, opened?: boolean) => Promise<{ supported: boolean; message?: import('@cindy/maker-shared/mail-message').MailMessage; error?: string }>;
+    mailPreview: (sessionId: string, url: string, read: boolean, opened?: boolean, providerId?: string) => Promise<import('@cindy/maker-shared/mail-message').MailPreviewResult>;
     openRemoteSettings: (target: import('../shared/remotePluginSettings').RemotePluginSettingsTarget) => Promise<import('../shared/remotePluginSettings').RemotePluginSettingsView>;
     closeRemoteSettings: (id: string) => Promise<void>;
     onRemoteSettingsDirectory: (callback: (value: import('../shared/remotePluginSettings').RemotePluginSettingsDirectory) => void) => () => void;
@@ -1580,6 +1585,10 @@ interface ElectronAPI {
     ) => () => void;
     /** confirm 槽回包:把用户的点击送回 main 结算挂起的管子请求。 */
     resolveConfirm: (requestId: string, confirmed: boolean) => Promise<{ handled: boolean }>;
+    /** taskView 槽:插件请求在指定任务的右侧栏打开 / 聚焦它的任务页页签(main 已资格审)。 */
+    onTaskViewOpen: (
+      callback: (payload: { instanceId: string; sessionId: string; focus?: true }) => void,
+    ) => () => void;
     /** preview 槽:插件请求在右侧栏内置浏览器开预览标签(main 已白名单守门+限速)。 */
     onPreviewOpen: (
       callback: (payload: {
@@ -2069,7 +2078,7 @@ interface ElectronAPI {
     open?: (
       request: import('../shared/sidebarTabWindow').SidebarTabWindowOpenRequest,
     ) => Promise<void>;
-    focus: (tabId: string) => Promise<void>;
+    focus: (tabId: string, options?: { userInitiated?: boolean }) => Promise<void>;
     closeForTab: (tabId: string) => Promise<void>;
     /** 主窗口:把弹在独立窗口里的全局页签交回侧栏(任务页签不支持)。 */
     returnTab?: (tabId: string) => Promise<boolean>;
@@ -2640,6 +2649,8 @@ interface ElectronAPI {
       relPath?: string;
       hideMetaFiles?: boolean;
       docMode?: boolean;
+      /** 「显示被忽略的目录」——列出依赖 / 构建产物 / 缓存目录。默认 false。 */
+      showIgnoredDirs?: boolean;
     }) => Promise<
       Array<{
         name: string;
@@ -2739,6 +2750,8 @@ interface ElectronAPI {
       remoteHostId?: string | null;
       workdir: string;
       hideMetaFiles?: boolean;
+      /** 与 listDir 同源:开关变了要带新 matcher 重建 watcher。 */
+      showIgnoredDirs?: boolean;
     }) => Promise<{ ok: boolean }>;
     stopWatch: (params: {
       remoteHostId?: string | null;
@@ -4016,6 +4029,11 @@ interface ElectronAPI {
    * `silent: true` 只抑制 busy 的「manual relaunch」INFO,供横幅延后轮询;判定不变。
    */
   anyActivityBlockingRelaunch: (opts?: { silent?: boolean }) => Promise<boolean>;
+  describeRelaunchBlockingActivity: () => Promise<{
+    busy: boolean;
+    categories: Array<'companion' | 'conversation' | 'background-command' | 'scheduled-task' | 'generation' | 'subtask'>;
+    companionNames: string[];
+  }>;
   /** Tell main process to apply the update and relaunch the app.
    *  `theme` is the renderer's *resolved* light/dark (after collapsing 'system'),
    *  forwarded to cindy-updater so its splash matches the app the user is seeing. */
@@ -4941,6 +4959,7 @@ interface ElectronAPI {
         body: import('../shared/botCreation').BotCreationRequest,
       ) => Promise<import('../shared/botCreation').BotCreationDraft>;
       generateAvatar: (token: string) => Promise<{ avatarImageBase64: string }>;
+      chooseAvatarSource: () => Promise<{ canceled: boolean; previewDataUrl?: string }>;
       chooseAvatar: (body: { botId: string; avatarImageBase64?: string }) => Promise<{
         canceled: boolean;
         profile?: unknown;
@@ -4972,6 +4991,12 @@ interface ElectronAPI {
         list: (botId:string) => Promise<{items:import('@cindy/maker-shared/teammate-todo').TeammateTodo[];version:1}>;
         update: (botId:string, patch:import('@cindy/maker-shared/teammate-todo').TodoPatch) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo>;
         act: (botId:string, input:{id:string;revision:number;requestId:string;locale?:string}) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo | null>;
+        /** 近况「每天帮我查一次」：不传 enabled 只读；返回当前是否开着。 */
+        dailyCheck: (botId:string, enabled?:boolean) => Promise<boolean>;
+      };
+      projects: {
+        list: (botId: string) => Promise<import('../shared/botWorkbench').BotProjectOption[]>;
+        set: (botId: string, projectId: string, linked: boolean) => Promise<import('../shared/botWorkbench').BotProjectOption[]>;
       };
       workbench: {
         get: (botId: string) => Promise<import('../shared/botWorkbench').BotWorkbench | null>;
@@ -5231,6 +5256,12 @@ interface ElectronAPI {
         expectedStatus?: 'done',
       ) => Promise<unknown>;
       archiveWorker: (leadSessionId: string, workerId: string) => Promise<unknown>;
+      updateWorker: (input: {
+        leadSessionId: string;
+        workerId: string;
+        role?: string;
+        label?: string;
+      }) => Promise<unknown>;
       endTeam: (leadSessionId: string) => Promise<unknown>;
       getCollaborationSettings: () => Promise<unknown>;
       /** 可放 Worker 的同账号其他电脑(`{ devices: OrcaExecutionDeviceView[] }`)。 */
@@ -5695,32 +5726,17 @@ interface ElectronAPI {
     }>;
     /** 供应商「测试连接」—— 与真实会话同路由口径的最小探测请求（结构化结果，code 走 providerError.* i18n）。 */
     testProviderConnection: (
-      input:
-        | { kind: 'saved'; providerId: string; agent: 'claude-code' | 'codex' | 'pi' }
-        | {
-            kind: 'adhoc';
-            spec: {
-              agent: 'claude-code' | 'codex' | 'pi';
-              baseUrl: string;
-              modelId: string;
-              authMethod: 'apiKey' | 'oauth' | 'none';
-              wireProtocol?: import('@cindy/model-providers').ProviderWireProtocol;
-              api?: import('@cindy/model-providers').PiModelApi;
-              catalogPresetId?: string;
-              requestPath?: string;
-              apiKey?: string | null;
-              headers?: Record<string, string>;
-            };
-          },
-    ) => Promise<{
-      ok: boolean;
-      code?: import('../shared/providerErrors').ProviderErrorCode;
-      status?: number;
-      latencyMs: number;
-      detail?: string;
-    }>;
+      input: import('../shared/providerConnectionTest').ProviderConnectionTestRequest,
+    ) => Promise<import('../shared/providerConnectionTest').ProviderConnectionTestResult>;
     /** 供应商「获取模型列表」—— 表单值透传，结构化结果（code 走 providerError.* i18n）。 */
+    detectProvider?: (input: ({ requestId: string; cancel: true } | {
+      requestId: string; agent: 'claude-code' | 'codex' | 'pi'; baseUrl: string;
+      authMethod: 'apiKey' | 'none'; apiKey?: string | null; headers?: Record<string, string>;
+      wireProtocol?: import('@cindy/model-providers').ProviderWireProtocol;
+    })) => Promise<import('../shared/providerDetection').DeploymentDetectionResult>;
     fetchProviderModels: (input: {
+      allowEmpty?: boolean;
+      redirect?: 'error';
       agent: 'claude-code' | 'codex' | 'pi';
       baseUrl: string;
       authMethod: 'apiKey' | 'oauth' | 'none';
@@ -6455,7 +6471,7 @@ interface ElectronAPI {
       model: string,
       providerId?: string | null,
       expectedAgentSwitchRevision?: number,
-      selection?: { effort: string | null; fastMode: boolean | 'ultrafast' },
+      selection?: { effort: string | null; fastMode: boolean | 'ultrafast'; thinking?: boolean },
     ) => Promise<{ deferred: boolean; superseded?: boolean } | undefined>;
     /**
      * session-agent-switch:同一会话切换 agent 引擎(claude-code ↔ codex)。
@@ -6473,6 +6489,7 @@ interface ElectronAPI {
       fastMode?: boolean | 'ultrafast',
       /** 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。 */
       options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
+      thinking?: boolean,
     ) => Promise<{
       switched: boolean;
       agentKind: 'claude-code' | 'codex' | 'pi';

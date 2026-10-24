@@ -371,7 +371,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
   const save = (target: ProfilePanel, blocked: boolean) => <MainWindowActionButton action={{ label: t('devices.companionProfile.save'), busy,
     disabled: blocked || !online || !dirty || conflict?.page === page, onPress: () => void submit(target) }} />;
   const formPanel = (target: ProfilePanel | undefined) => target?.action ? <>
-    {(target.id === 'capability' || target.id === 'follow-up') && target.text ? noteText(target.text) : null}
+    {(target.id === 'capability' || target.id === 'follow-up' || target.id === 'project') && target.text ? noteText(target.text) : null}
     <CompanionProfileForm panel={target} values={editing ? values : target.values} onChange={changeValues} disabled={busy || !online || !!target.action.disabled} />
     {save(target, !!target.action.disabled)}
   </> : target?.text ? <Text selectable style={styles.body}>{target.text}</Text> : !data && online ? spinner : note('hostUpgrade');
@@ -387,6 +387,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
     <View style={styles.group}>{row('profile', Info)}{row('memory', Brain)}{row('models', Sparkles)}{row('skills', Settings2)}</View>
     {/* Device preference for every teammate's chat, not part of this teammate's host profile. */}
     <View style={styles.field}>
+      <Text accessibilityRole="header" style={styles.groupLabel}>{t('devices.companionProfile.chat')}</Text>
       <View style={styles.group}><View style={styles.inline}>
         <Text style={styles.switchLabel}>{t('devices.companionProfile.showReplyTarget')}</Text>
         <NativeSwitch accessibilityLabel={t('devices.companionProfile.showReplyTarget')} value={showReplyTargets}
@@ -394,7 +395,7 @@ function CompanionProfileSheetContent(props: CompanionProfileSheetProps) {
       </View></View>
       {note('showReplyTargetHint')}
     </View>
-    {data?.panels.find(item => item.id === 'followUp')?.entries?.map(entry => <View style={styles.group} key={entry.id}><ContextSheetRow icon={null} trailing="chevron" label={label(entry.title)} onPress={() => void openEditor(entry.resourceId)} disabled={!online} /></View>)}
+    {data?.panels.filter(item => item.id === 'projects' || item.id === 'followUp').flatMap(item => item.entries ?? [])?.map(entry => <View style={styles.group} key={entry.id}><ContextSheetRow icon={null} trailing="chevron" label={label(entry.title)} onPress={() => void openEditor(entry.resourceId)} disabled={!online} /></View>)}
     <View style={styles.group}>{row('artifacts', FileText)}{onOpenSearch ? row('search', History, onOpenSearch) : null}{row('permissions', Hand)}</View>
     {onOpenHome ? <View style={styles.group}>{row('home', Monitor, onOpenHome)}</View> : null}
     {/* Host order, like iOS: restart / resume / delete are whatever the computer offers now. */}
@@ -626,6 +627,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   note: { fontSize: typeScale.footnote, lineHeight: lineHeight.caption, color: colors.textSecondary },
   body: { fontSize: typeScale.body, lineHeight: lineHeight.body, color: colors.textPrimary },
   heading: { fontSize: typeScale.body, lineHeight: lineHeight.body, color: colors.textPrimary, fontWeight: fontWeight.medium },
+  // Mobile design guide 「分组小标签」, aligned with the group's inner padding (iOS Section title).
+  groupLabel: { fontSize: typeScale.footnote, lineHeight: lineHeight.caption, fontWeight: fontWeight.semibold, color: colors.textTertiary, paddingHorizontal: spacing.lg },
   switchLabel: { flex: 1, fontSize: typeScale.body, lineHeight: lineHeight.body, color: colors.textPrimary },
   group: { backgroundColor: colors.surfaceElevated, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.container, overflow: 'hidden', paddingHorizontal: spacing.lg },
   groupText: { paddingVertical: spacing.md },

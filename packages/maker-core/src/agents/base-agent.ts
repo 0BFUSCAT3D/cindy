@@ -237,6 +237,12 @@ export interface PiNativeModelSpec {
  */
 export interface RemoteAgentFileOps {
   stat(file: string): Promise<{ isFile: boolean } | null>;
+  /**
+   * lstat without following symlinks, used to keep namespace traversal inside
+   * the discovery root. Absent on older hosts; callers must treat a missing
+   * implementation as "cannot verify" and stay conservative.
+   */
+  lstat?(file: string): Promise<{ isSymbolicLink: boolean } | null>;
   /** Missing/unreadable directories return an empty array. */
   listDir(dir: string): Promise<string[]>;
   /** Bounded UTF-8 read used for remote runtime metadata such as SKILL.md. */
@@ -442,6 +448,11 @@ export interface LocalAgentProcessRegistration {
   pid: number;
   kind: 'claude' | 'pi';
   role: 'task-host' | 'control-plane-service';
+  /**
+   * 承载本进程的宿主 session id,供资源监视器显示归属任务。远端 transport
+   * 不触发登记,宿主可忽略。
+   */
+  sessionId?: string | null;
 }
 
 export interface CodexLocalCredentialModeSwitchContext {
@@ -861,6 +872,7 @@ export interface AgentDeps {
       resumeSessionId?: string;
       /** Preview must not prepare global skills or start a local model service. */
       purpose?: 'startup' | 'preview' | 'live-refresh';
+      sessionId?: string;
     },
   ) => Promise<PiNativeProvidersResult | null>;
 
@@ -979,6 +991,9 @@ export interface AgentDeps {
     codexHome?: string,
   ) => Promise<CodexContextWindowInfo | null>;
 
+  /** Private native catalog with executable edit tools removed for a host-owned conversation. */
+  prepareCodexHostToolCatalog?: (modelId: string, contextWindow: number | null) => Promise<string>;
+
   /**
    * Resolve verified catalog capacity for a concrete (provider, model) route.
    * Return null for unknown, ambiguous, or derived fallback metadata. Do not use
@@ -1067,6 +1082,8 @@ export interface AgentDeps {
       customContextModel?: string;
       /** Requested context window for a one-session custom-context host. */
       customContextWindow?: number;
+      /** Budget route, distinct from the host's OAuth account identity. */
+      customContextProviderId?: string | null;
       /** Unique app-server Host-generation identity used to scope custom-context resources. */
       customContextHostKey?: string;
       /**
@@ -1553,6 +1570,7 @@ export interface AgentDeps {
    * 「远端恒用网关」行为。
    */
   resolveRemoteClaudeRoute?: (opts: {
+    sessionId?: string;
     providerId?: string | null;
     model: string;
   }) => Promise<RemoteClaudeRoute | null>;
@@ -1844,6 +1862,11 @@ export interface DeviceHostedLinkActivity {
   execRoundTripMaxMs?: number;
   /** 正在经隧道处理的 Cindy 工具(HTTP)请求数。 */
   httpInFlight: number;
+  /**
+   * 隧道上现在开着的 WebSocket 连接数(Codex 的执行环境连接走这里)。为 0 时执行环境可能已断开或从没连上；
+   * 旧接线不提供时缺省。
+   */
+  wsConnectionsOpen?: number;
 }
 
 /** 受邀者会话的供应商边界，见 DeviceHostedSession.guestProvider。 */
@@ -1856,7 +1879,21 @@ export interface DeviceHostedGuestProvider {
 /** 受邀者会话的 Claude Code 请求带上的路由令牌请求头(本机 proxy 据此只走分享的供应商)。 */
 export const DEVICE_HOSTED_GUEST_ROUTE_HEADER = 'x-cindy-guest-route';
 
+/** Main-process capability: symbols cannot cross the renderer/device IPC boundary. */
+export const LOCAL_AGENT_CLIENT = Symbol('local-agent-client');
+
+export interface LocalAgentClient {
+  url: string;
+  token: string;
+  hostToolsOnly: boolean;
+  /** Host-issued namespace; old stored grants may retain their historical name. */
+  mcpName?: string;
+  /** Owner/grant-scoped runtime storage supplied only by Desktop Main. */
+  storageDirectory?: string;
+}
+
 export interface StartSessionOptions {
+  [LOCAL_AGENT_CLIENT]?: LocalAgentClient;
   /**
    * Business 层 session id (host 调用 maker.createSession 时传的 opts.id, 由
    * maker.ts 透传到这里)。agent 把它放到 McpProviderContext.sessionId, 让 MCP
@@ -1910,6 +1947,8 @@ export interface StartSessionOptions {
    * Undefined means do not override the agent/server default.
    */
   fastMode?: boolean | 'ultrafast';
+  /** Trusted host restriction for this subscription run, including live policy changes. */
+  fastModePolicy?: import('./shared/fast-mode-policy.js').FastModePolicy;
   /**
    * Host-owned live pricing variant for request-level usage segments.
    * Pi reads this at each provider request boundary so a mid-turn Fast toggle
@@ -2478,8 +2517,8 @@ export interface AgentSessionHandle {
   /** Actual runtime reviewer, not subscription availability. Only applies to harness-dispatched tools. */
   getAutoReviewOwner?(): 'native' | 'cindy';
 
-  /** 运行时切换模型 —— 不支持时抛 NotSupportedError */
-  setModel?(model: string, opts?: { providerId?: string | null; effort?: Effort }): Promise<void>;
+  /** 运行时切换模型 —— 不支持时抛 NotSupportedError。thinkingEnabled = 目标模型的思考开关意图（Pi 用它收敛切模后的 thinking level）。 */
+  setModel?(model: string, opts?: { providerId?: string | null; effort?: Effort; thinkingEnabled?: boolean }): Promise<void>;
 
   /** Read-only Pi preflight before the host changes its persisted route or context. */
   previewModelSwitch?(

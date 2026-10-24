@@ -16,6 +16,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { makerChatStore, EMPTY_LIGHT_STATE } from '@/lib/makerChatStore';
+import { providerDisplayName } from '@/lib/providerDisplayName';
 import type {
   SpeechProtocol,
   VoiceConversationModel,
@@ -23,7 +24,6 @@ import type {
 } from '@/../shared/voiceConversation';
 import {
   normalizeVoiceConversationSelection,
-  resolveSpeechSpeed,
   voiceModelKey,
 } from '@/../shared/voiceConversation';
 import { referenceSpeechVoices } from '@/../shared/speechVoices';
@@ -67,6 +67,9 @@ export function CompanionVoiceSettings(props: Props) {
   const [catalogError, setCatalogError] = useState(false);
   const [preference, setPreference] = useState<VoiceConversationSelection | null>(null);
   const [voice, setVoice] = useState<string>();
+  // Only an explicit model switch may fill an empty voice from its catalog.
+  // Opening, refreshing or resetting settings must not save inferred defaults.
+  const [autoSelectVoice, setAutoSelectVoice] = useState(false);
   const [speed, setSpeed] = useState<number>();
   const [speedNotice, setSpeedNotice] = useState<number>();
   const [customized, setCustomized] = useState(false);
@@ -92,6 +95,9 @@ export function CompanionVoiceSettings(props: Props) {
   const speedLabel = (value: number) =>
     t('bots.voiceMode.speedValue', { speed: value.toFixed(2).replace(/0$/, '') });
   const validModel = !!selectedModel;
+  // Keep the saved current value readable, without offering other hidden routes
+  // or silently choosing one when there is no saved preference.
+  const pickerModels = models.filter((model) => model.pickerVisible !== false || model === selectedModel);
   const preview = useMemo(
     () =>
       new VoicePreviewController({
@@ -127,6 +133,7 @@ export function CompanionVoiceSettings(props: Props) {
     setPreferenceError(false);
     setPreference(null);
     setVoice(undefined);
+    setAutoSelectVoice(false);
     setSpeed(undefined);
     setSpeedNotice(undefined);
     setCustomized(false);
@@ -168,6 +175,7 @@ export function CompanionVoiceSettings(props: Props) {
         ++refreshVersion.current;
         ++preferenceVersion.current;
         setPreferenceOwner(undefined);
+        setAutoSelectVoice(false);
         void preview.stop();
       }
     });
@@ -190,6 +198,7 @@ export function CompanionVoiceSettings(props: Props) {
       playback?: boolean | null,
     ): Promise<boolean> => {
       if (pendingSave.current) return pendingSave.current;
+      if (next !== undefined) setAutoSelectVoice(false);
       const version = preferenceVersion.current;
       setSaving(true);
       setPreferenceError(false);
@@ -247,15 +256,14 @@ export function CompanionVoiceSettings(props: Props) {
   }, [props.beforeLeaveRef, persist, ready, selection, protocol, preview]);
   const carrySpeed = (next: VoiceConversationSelection): VoiceConversationSelection => {
     const previousSpeed = speed ?? preference?.speed;
-    const nextProtocol = resolveVoiceConfiguration(models, next).protocol;
-    const nextSpeed = resolveSpeechSpeed(next.modelId, nextProtocol, previousSpeed);
+    const nextSpeed = resolveVoiceConfiguration(models, next, undefined, previousSpeed).speed;
     setSpeed(undefined);
     setSpeedNotice(previousSpeed !== nextSpeed ? (nextSpeed ?? 1) : undefined);
     return { ...next, ...(nextSpeed !== undefined ? { speed: nextSpeed } : {}) };
   };
   const chooseModel = (key: string) => {
     const model = models.find((item) => voiceModelKey(item) === key);
-    if (!model) return;
+    if (!model || (preference && voiceModelKey(preference) === key && selectedVoice)) return;
     const next = carrySpeed({
       providerId: model.providerId,
       agent: model.agent,
@@ -268,6 +276,7 @@ export function CompanionVoiceSettings(props: Props) {
     setCustomized(true);
     setPreference(next);
     setVoice(next.voice);
+    setAutoSelectVoice(!next.voice);
     if (
       normalizeVoiceConversationSelection(next) &&
       resolveVoiceConfiguration(models, next).protocol
@@ -277,7 +286,7 @@ export function CompanionVoiceSettings(props: Props) {
 
   // Keep unavailable controls out of the empty state, including while its first
   // catalog request is pending. This only changes presentation, not saved preferences.
-  if (models.length === 0) {
+  if (pickerModels.length === 0) {
     return (
       <div className="space-y-4 pt-3">
         {loading ? (
@@ -335,12 +344,20 @@ export function CompanionVoiceSettings(props: Props) {
                 {...control}
                 label={t('bots.voiceMode.model')}
                 value={selectedModel ? voiceModelKey(selectedModel) : ''}
-                options={models.map((model) => ({
+                options={pickerModels.map((model) => ({
                   value: voiceModelKey(model),
-                  label: [model.name, model.providerName].filter(Boolean).join(' · '),
+                  label: [
+                    model.name,
+                    providerDisplayName(
+                      { id: model.providerId ?? 'xd', name: model.providerName ?? '' },
+                      t,
+                    ),
+                  ]
+                    .filter(Boolean)
+                    .join(' · '),
                 }))}
                 onValueChange={chooseModel}
-                disabled={loading || !ready || saving || models.length === 0}
+                disabled={loading || !ready || saving || pickerModels.length === 0}
                 className="flex-1"
               />
               <Button
@@ -383,6 +400,8 @@ export function CompanionVoiceSettings(props: Props) {
                   { value: 'openai', label: t('bots.voiceMode.protocolOpenai') },
                   { value: 'elevenlabs', label: 'ElevenLabs' },
                   { value: 'minimax', label: 'MiniMax' },
+                  { value: 'qwen-tts', label: 'Qwen3-TTS (HTTP)' },
+                  { value: 'dashscope-tts', label: 'Qwen-Audio / CosyVoice (HTTP)' },
                 ]}
                 disabled={!ready || saving}
                 onValueChange={(value) => {
@@ -423,11 +442,13 @@ export function CompanionVoiceSettings(props: Props) {
           }}
           protocol={protocol}
           voice={selectedVoice}
+          autoSelectFirstVoice={autoSelectVoice}
           speed={effectiveSpeed}
           disabled={!ready || saving || blocked}
           previewDisabled={!ready || saving || blocked || !props.sessionId}
           preview={preview}
           onChange={(value, save) => {
+            setAutoSelectVoice(false);
             dirty.current = true;
             setVoice(value);
             const next = normalizeVoiceConversationSelection({
@@ -436,7 +457,7 @@ export function CompanionVoiceSettings(props: Props) {
               modelId: selectedModel.id,
               protocol: protocolOverride,
               voice: value,
-              speed: resolveSpeechSpeed(selectedModel.id, protocol, speed ?? preference?.speed),
+              speed: effectiveSpeed,
             });
             if (save && next && validModel && protocol) void persist(next);
           }}
@@ -493,11 +514,6 @@ export function CompanionVoiceSettings(props: Props) {
             </FormField>
           ) : null}
         </SpeechVoicePicker>
-      ) : null}
-      {dirty.current && (!selection || !protocol) ? (
-        <p className="text-12 text-[var(--text-secondary)]">
-          {t('bots.voiceMode.incompleteSettings')}
-        </p>
       ) : null}
       {!props.sessionId ? (
         <p className="text-12 text-[var(--text-secondary)]">

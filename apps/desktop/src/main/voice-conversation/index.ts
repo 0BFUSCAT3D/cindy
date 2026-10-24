@@ -1,12 +1,15 @@
 import { CompanionCallDialogue } from './dialogue.js';
 import { ipcMain, webContents, type IpcMainInvokeEvent } from 'electron';
 import type { AsrProvider, AudioGate } from '@cindy/voice-input-core';
+import { storedCustomProviderId } from '@cindy/model-providers';
 import {
   normalizeVoiceConversationSelection,
   normalizeSpeechModelSelection,
   type VoiceConversationPreference,
 } from '../../shared/voiceConversation.js';
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
+import { readCachedGenericOAuthAccessToken } from '../maker-host/generic-oauth.js';
+import { getModelVisibilityOverride, waitForModelVisibilityMirror } from '../maker-host/model-visibility-mirror.js';
 import { getProviderSecretStore, readCustomProviderKey } from '../secrets/providerSecretStore.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
@@ -17,6 +20,7 @@ import { isProviderModelRouteDisabled } from '../utility-model/oneShotCandidates
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../utils/ipcValidate.js';
 import { VoiceConversationService } from './service.js';
+import { SpeechError } from './speechError.js';
 import { resolveSpeechConnection, speechModels, type SpeechCatalogDeps } from './models.js';
 import {
   companionVoicePreference,
@@ -50,7 +54,9 @@ export function registerVoiceConversationIpc(deps: {
       catalog: getActiveCatalog(),
       gatewayAllowed: getAppCapabilities().canUseCindyGateway,
       disabled: isProviderModelRouteDisabled,
+      visibilityOverride: getModelVisibilityOverride,
       readKey: readCustomProviderKey,
+      readOAuthToken: (providerId, oauth) => readCachedGenericOAuthAccessToken(storedCustomProviderId(providerId), oauth),
       gatewayConnection: () => ({
         baseUrl: effectiveXdGatewayBaseUrl(),
         apiKey: getProviderSecretStore().get('xd') ?? '',
@@ -95,14 +101,19 @@ export function registerVoiceConversationIpc(deps: {
       assertTrustedAppRendererEvent(event);
       try {
         return await action(event, ...args);
-      } catch {
+      } catch (error) {
         // Do not log args or upstream errors: either can include text or secrets.
         log.warn('IPC operation failed', { operation: name });
+        if (error instanceof SpeechError && error.code === 'timeout')
+          throwIpcError('VOICE_SPEECH_TIMEOUT', 'Speech response timed out.');
         throwIpcError('PRECONDITION_FAILED', 'Voice conversation is unavailable.');
       }
     });
   };
-  handle('models', () => service.models());
+  handle('models', async () => {
+    await waitForModelVisibilityMirror();
+    return service.models();
+  });
   handle('voices', (_event, raw) => {
     const selection = normalizeSpeechModelSelection(raw);
     if (!selection) throwIpcError('INVALID_PARAMS', 'Invalid speech model');
