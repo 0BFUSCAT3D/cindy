@@ -47,6 +47,17 @@ it('fences late native menu and create dismissal callbacks after account replace
   h.account++; await render();
   await act(async () => { oldMenu.onAction('pc'); oldSheet.onClosed(); }); expect(h.created).not.toHaveBeenCalled();
 });
+// Android and wide screens host the home list at the root, so an account switch reaches the same instance.
+it('serves the new account after a switch without remounting, and never closes its form for the old one', async () => {
+  await render(); await act(async () => h.menu.onAction('mac')); const oldSheet = h.sheet;
+  h.account++; h.sheet = null; await render();
+  expect(h.sheet).toBeNull();
+  await act(async () => h.menu.onAction('pc'));
+  expect(h.sheet.deviceId).toBe('pc'); expect(h.sheet.visible).toBe(true);
+  await act(async () => { oldSheet.onCreated(ref); oldSheet.onClosed(); }); expect(h.created).not.toHaveBeenCalled();
+  await act(async () => { h.sheet.onCreated(ref); h.sheet.onClose(); h.sheet.onClosed(); });
+  expect(h.created).toHaveBeenCalledExactlyOnceWith(hosts[1], ref);
+});
 
 it('offers group chats in the same menu and reports a new group only after its form closes', async () => {
   await render([], [hosts[1]]);

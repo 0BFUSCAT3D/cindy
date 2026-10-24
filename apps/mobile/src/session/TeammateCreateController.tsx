@@ -27,13 +27,14 @@ type CreateOptions = {
  * 新建伙伴 / 新建群聊的菜单与表单。支持群聊时是一个菜单（多台电脑时再选电脑）；旧版电脑不支持
  * 群聊时直接新建伙伴。表单关闭后才回报创建结果，避免两个 Modal 叠加。
  * The trigger is drawn by the caller: the task home's teammate section moves it between states, and
- * a moving trigger must not unmount an open form or drop its receipt. Callers remount it on account
- * changes (the home is keyed by account).
+ * a moving trigger must not unmount an open form or drop its receipt. It starts over on an account
+ * switch by itself: the root-hosted home list (Android, wide screens) keeps its state across the
+ * account-keyed route.
  */
 export function useTeammateCreateController({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated }: CreateOptions) {
   const { t } = useTranslation();
   const { accountGeneration } = useAuth();
-  const [account] = useState(accountGeneration);
+  const [account, setAccount] = useState(accountGeneration);
   const currentAccount = useRef(accountGeneration); currentAccount.current = accountGeneration;
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -43,6 +44,11 @@ export function useTeammateCreateController({ targets, groupTargets = [], prefer
   const pendingChoice = useRef<Choice | null>(null);
   const receipt = useRef<RemoteResourceRef | null>(null);
   const groupReceipt = useRef<string | null>(null);
+  // Callbacks already handed out keep the old account and stay fenced; new ones serve the new account.
+  if (account !== accountGeneration) {
+    setAccount(accountGeneration); setOpen(null); setVisible(false); setChoosing(false);
+  }
+  useEffect(() => { pendingChoice.current = null; receipt.current = null; groupReceipt.current = null; }, [accountGeneration]);
   const withGroups = groupTargets.length > 0 && !!onGroupCreated;
   const order = (hosts: readonly RemoteResourceHostTarget[]) => [...hosts]
     .sort((a, b) => Number(b.deviceId === preferredDeviceId) - Number(a.deviceId === preferredDeviceId));
