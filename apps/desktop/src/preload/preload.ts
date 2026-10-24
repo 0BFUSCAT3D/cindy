@@ -1076,9 +1076,14 @@ const clientEndpointsInfo = ipcRenderer.sendSync('client-endpoints:get-sync') as
   websiteUrl: string;
 };
 
-const appearanceSettingsInfo = ipcRenderer.sendSync(
+let appearanceSettingsInfo = ipcRenderer.sendSync(
   'appearance-settings:get-sync',
 ) as AppearanceSettings | null;
+// Keep the bootstrap snapshot current even before a terminal mounts. Register
+// before renderer subscriptions so getSync() sees the same update as onChanged.
+ipcRenderer.on('appearance-settings:changed', (_event, settings: AppearanceSettings) => {
+  appearanceSettingsInfo = settings;
+});
 
 contextBridge.exposeInMainWorld('electronAPI', {
   localAgent: {
@@ -1137,6 +1142,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     runNow: (botId: string, id: string) => ipcRenderer.invoke('routines:run-now', botId, id),
     history: (botId: string, id: string) => ipcRenderer.invoke('routines:history', botId, id),
     sources: () => ipcRenderer.invoke('routines:sources'),
+    nightlyLearning: {
+      get: (botId: string): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:get', botId),
+      setEnabled: (botId: string, enabled: boolean): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:set-enabled', botId, enabled),
+      setFrequency: (botId: string, frequency: import('../shared/botNightlyLearning').NightlyLearningFrequency): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:set-frequency', botId, frequency),
+      runNow: (botId: string): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:run-now', botId),
+      revert: (botId: string, runId: string, itemId: string, redo: boolean): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:revert', botId, runId, itemId, redo),
+      candidate: (botId: string, candidateId: string, action: 'promote' | 'decline'): Promise<import('../shared/botNightlyLearning').NightlyLearningView> =>
+        ipcRenderer.invoke('routines:nightly-learning:candidate', botId, candidateId, action),
+    },
     onChanged: (listener: () => void) => {
       const wrapped = () => listener();
       ipcRenderer.on('routines:changed', wrapped);
@@ -2903,6 +2922,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       relPath?: string;
       hideMetaFiles?: boolean;
       docMode?: boolean;
+      /** 「显示被忽略的目录」——列出依赖 / 构建产物 / 缓存目录。默认 false。 */
+      showIgnoredDirs?: boolean;
     }): Promise<
       Array<{
         name: string;
@@ -3008,6 +3029,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       remoteHostId?: string | null;
       workdir: string;
       hideMetaFiles?: boolean;
+      /** 与 listDir 同源:开关变了要带新 matcher 重建 watcher。 */
+      showIgnoredDirs?: boolean;
     }): Promise<{ ok: boolean }> => ipcRenderer.invoke('maker:file-browser:start-watch', params),
     stopWatch: (params: {
       remoteHostId?: string | null;
@@ -5999,6 +6022,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       },
       archiveWorker: (leadSessionId: string, workerId: string): Promise<unknown> =>
         ipcRenderer.invoke('maker:worker:archive', { leadSessionId, workerId }),
+      updateWorker: (input: {
+        leadSessionId: string;
+        workerId: string;
+        role?: string;
+        label?: string;
+      }): Promise<unknown> => ipcRenderer.invoke('maker:worker:update', input),
       endTeam: (leadSessionId: string): Promise<unknown> =>
         ipcRenderer.invoke('maker:team:end', leadSessionId),
       getCollaborationSettings: (): Promise<unknown> =>
@@ -6427,35 +6456,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * saved: 已保存供应商（key main 侧从 safeStorage 读）；adhoc: 表单未保存值（key 仅内存透传）。
      */
     testProviderConnection: (
-      input:
-        | { kind: 'saved'; providerId: string; agent: 'claude-code' | 'codex' | 'pi' }
-        | {
-            kind: 'adhoc';
-            spec: {
-              agent: 'claude-code' | 'codex' | 'pi';
-              baseUrl: string;
-              modelId: string;
-              authMethod: 'apiKey' | 'oauth' | 'none';
-              wireProtocol?: import('@cindy/model-providers').ProviderWireProtocol;
-              api?: import('@cindy/model-providers').PiModelApi;
-              catalogPresetId?: string;
-              requestPath?: string;
-              apiKey?: string | null;
-              headers?: Record<string, string>;
-            };
-          },
-    ): Promise<{
-      ok: boolean;
-      code?: import('../shared/providerErrors').ProviderErrorCode;
-      status?: number;
-      latencyMs: number;
-      detail?: string;
-    }> => ipcRenderer.invoke('maker:provider:test-connection', input),
+      input: import('../shared/providerConnectionTest').ProviderConnectionTestRequest,
+    ): Promise<import('../shared/providerConnectionTest').ProviderConnectionTestResult> =>
+      ipcRenderer.invoke('maker:provider:test-connection', input),
     /**
      * 供应商「获取模型列表」—— 用表单值 GET 该供应商的列模型端点（key 仅内存透传）。
      * 结构化结果：ok=true 带 models；失败 code 走 providerError.* i18n。
      */
+    detectProvider: (input: ({ requestId: string; cancel: true } | {
+      requestId: string; agent: 'claude-code' | 'codex' | 'pi'; baseUrl: string;
+      authMethod: 'apiKey' | 'none'; apiKey?: string | null; headers?: Record<string, string>;
+      wireProtocol?: import('@cindy/model-providers').ProviderWireProtocol;
+    })): Promise<import('../shared/providerDetection').DeploymentDetectionResult> =>
+      ipcRenderer.invoke('maker:provider:detect', input),
     fetchProviderModels: (input: {
+      allowEmpty?: boolean;
+      redirect?: 'error';
       agent: 'claude-code' | 'codex' | 'pi';
       baseUrl: string;
       authMethod: 'apiKey' | 'oauth' | 'none';
