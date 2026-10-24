@@ -1,9 +1,9 @@
 import { normalizeProjectOrderPath } from './projectOrderSync.js';
+import { resolveProjectAliasForSessions, type ProjectAliasDisplayIndex } from './projectAliasSync.js';
+export { PROJECT_ALIASES_CHANGED_CHANNEL } from './projectAliasSync.js';
 
 /** Host-owned display metadata. Never changes filesystem paths or task grouping. */
 export const PROJECT_ALIASES_LIST_CHANNEL = 'local-db:project-aliases:list';
-export const PROJECT_ALIASES_CHANGED_CHANNEL =
-  'local-db:project-aliases:changed';
 export type RemoteProjectAliasIndex = ReadonlyMap<string, string>;
 
 export function remoteProjectAliasKey(
@@ -40,11 +40,11 @@ export function parseHostProjectAliases(
 }
 
 export function remoteProjectAlias(
-  aliases: RemoteProjectAliasIndex | undefined,
+  aliases: ProjectAliasDisplayIndex | undefined,
   deviceId: string | null | undefined,
   workingDir: string | null | undefined,
 ): string | undefined {
   return deviceId && workingDir
-    ? aliases?.get(remoteProjectAliasKey(deviceId, workingDir))
+    ? resolveProjectAliasForSessions([{ deviceLinkDeviceId: deviceId, workingDir }], aliases) ?? undefined
     : undefined;
 }

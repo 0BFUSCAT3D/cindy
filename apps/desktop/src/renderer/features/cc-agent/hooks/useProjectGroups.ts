@@ -6,7 +6,7 @@
  * Row-only patches reuse membership and ordering, keeping unrelated nodes stable.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import { createProjectGroupsSelector } from '../lib/projectGroupsSelector';
 import { useProvisionalDraftProjectTaskId } from './useProvisionalDraftProjectTaskId';
 
@@ -14,6 +14,7 @@ import type { Session } from '@/lib/ccAgent.types';
 import { useRemoteSshHosts } from '@/hooks/useRemoteSshHosts';
 import { buildBotSessionOwners } from '@/features/bots/botSessionOwners';
 import { useBotProfiles } from '@/features/bots/botStore';
+import { remoteProjectAliases } from '@/features/device-link/remoteProjectAliases';
 import {
   type PersistentLocalProject,
   type ProjectGroupsResult,
@@ -32,8 +33,10 @@ export function useProjectGroups(
   localPlatform: string = '',
   /** Reuse an earlier call when the activity filter did not change its inputs. */
   equivalentResult?: ProjectGroupsResult,
+  projectAliasMembers?: readonly Session[],
 ): ProjectGroupsResult {
   const sshHosts = useRemoteSshHosts();
+  const hostProjectAliases = useSyncExternalStore(remoteProjectAliases.subscribe, remoteProjectAliases.getSnapshot);
   const selectGroups = useMemo(() => createProjectGroupsSelector(), []);
   const provisionalDraftTaskId = useProvisionalDraftProjectTaskId();
   /*
@@ -47,6 +50,8 @@ export function useProjectGroups(
     if (equivalentResult) return equivalentResult;
     return selectGroups(sessions, {
       projectAliases,
+      remoteProjectAliases: hostProjectAliases,
+      projectAliasMembers,
       includePinnedInProjects,
       botOwnerBySessionId,
       persistentLocalProjects,
@@ -58,6 +63,8 @@ export function useProjectGroups(
     selectGroups,
     sessions,
     projectAliases,
+    hostProjectAliases,
+    projectAliasMembers,
     includePinnedInProjects,
     persistentLocalProjects,
     localPlatform,

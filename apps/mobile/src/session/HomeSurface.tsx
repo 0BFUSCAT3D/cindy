@@ -178,6 +178,7 @@ import {
   shouldReplaceListWithSearchResults,
 } from '@/session/conversationSearch';
 import { useConversationSearch } from '@/session/useConversationSearch';
+import { useRemoteProjectAliases } from '@/session/remoteProjectAliases';
 import {
   buildMobileHomePresentation,
   excludeOrcaWorkerSessions,
@@ -213,7 +214,6 @@ import {
   rememberRemoteProjectOrderStamp,
   subscribeRemoteProjectOrderChanged,
 } from '@/session/remoteProjectOrder';
-import { useRemoteProjectAliases } from '@/session/useRemoteProjectAliases';
 import {
   createProjectOrderFetchFence,
   isHostProjectOrderReachable,
@@ -540,6 +540,7 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
   } = useDeviceLink();
   const revokedDevices = useRevokedDevices();
   const sessions = useRemoteHomeSessions();
+  const projectAliases = useRemoteProjectAliases();
   const syncInFlightRef = useRef<Promise<void> | null>(null);
   const syncQueuedRef = useRef<{ visible?: boolean } | null>(null);
   const loadHomeRef = useRef<(options?: { visible?: boolean }) => Promise<void>>(async () => undefined);
@@ -1859,7 +1860,6 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
       unresponsiveDeviceIds: unresponsiveDevices,
     },
   ), [deviceModels, selectedDeviceId, unresponsiveDevices]);
-  const projectAliases = useRemoteProjectAliases(searchOrigins.map((origin) => origin.deviceId));
   const searchProjects = useMemo(
     () => listConversationSearchProjects(
       excludeOrcaWorkerSessions(sessions),

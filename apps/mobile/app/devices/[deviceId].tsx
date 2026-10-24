@@ -45,6 +45,8 @@ import { formatRemoteError } from '@/device-link/remoteStatus';
 import { isExplicitRemoteNotFoundError } from '@/session/newSessionWorktree';
 import { withTransientRemoteRetry } from '@/device-link/remoteRetry';
 import { useRemoteSyncTask } from '@/device-link/remoteSyncTask';
+import { useRemoteProjectAliases } from '@/session/remoteProjectAliases';
+import { resolveMobileProjectRouteTitle } from '@/session/projectAliasPresentation';
 import {
   automationGroupKey,
   buildRemoteSessionListContext,
@@ -79,7 +81,6 @@ import {
   shouldReplaceListWithSearchResults,
 } from '@/session/conversationSearch';
 import { useConversationSearch } from '@/session/useConversationSearch';
-import { useRemoteProjectAliases } from '@/session/useRemoteProjectAliases';
 import { selectVisibleDeviceSessions, sessionMatchesProjectDir } from '@/session/mobileHome';
 import { HomeListViewportContext, HomeSessionRow } from '@/session/HomeSurface';
 import { createDisclosureListCell, ListDisclosureScope, useListDisclosureTransition } from '@/session/listDisclosureTransition';
@@ -172,7 +173,7 @@ function DeviceDetailScreenContent() {
   const deviceName = readRouteString(params.name) ?? readRouteString(params.deviceName) ?? deviceId;
   // 从首页「查看全部 N 条对话」进来时带 workingDir + 项目名 → 仅显示该项目的会话(项目作用域)。
   const projectWorkingDir = readRouteString(params.workingDir);
-  const projectName = readRouteString(params.projectName);
+  const routeProjectName = readRouteString(params.projectName);
   // 从自动化组「查看全部 N 次运行」进来时带组键 + 任务名 → 仅显示该任务的运行(自动化任务作用域)。
   const automationScopeKey = readRouteString(params.automationGroupKey);
   const automationScopeName = readRouteString(params.automationName);
@@ -193,6 +194,7 @@ function DeviceDetailScreenContent() {
   const scheduleEventSnapshot = useRemoteScheduleEventSnapshot(deviceId);
   const scheduleMirrorInvalidations = useRemoteScheduleMirrorInvalidations();
   const allSessions = useRemoteSessions();
+  const projectAliases = useRemoteProjectAliases();
   // filter 必须 memo:裸 filter 每次渲染都产新数组,会让下游全部 [sessions, ...] 依赖的
   // useMemo 逐 emit 失效,派生链(索引 → sections → 全列表行)整体重建(2026-07-18
   // 重渲染风暴)。store 层已保证 allSessions 引用在内容未变时稳定,这里不能亲手打破。
@@ -203,6 +205,13 @@ function DeviceDetailScreenContent() {
     () => selectVisibleDeviceSessions(allSessions, deviceId, projectWorkingDir),
     [allSessions, deviceId, projectWorkingDir],
   );
+  const projectName = useMemo(() => resolveMobileProjectRouteTitle({
+    deviceId,
+    workingDir: projectWorkingDir,
+    routeTitle: routeProjectName,
+    sessions,
+    projectAliases,
+  }), [deviceId, projectAliases, projectWorkingDir, routeProjectName, sessions]);
   const messageVersion = useRemoteMessageVersion();
   const storeVersion = useRemoteSessionStoreVersion();
   const [statusFilter, setStatusFilter] = useState<RemoteSessionStatusFilter>(
@@ -230,7 +239,6 @@ function DeviceDetailScreenContent() {
     deviceName,
     reachable: !deviceUnresponsive,
   }] : []), [deviceId, deviceName, deviceUnresponsive]);
-  const projectAliases = useRemoteProjectAliases(deviceId ? [deviceId] : []);
   const searchProjects = useMemo(
     () => listConversationSearchProjects(sessions, deviceId ? new Set([deviceId]) : undefined, projectAliases),
     [deviceId, sessions, projectAliases],
@@ -434,6 +442,8 @@ function DeviceDetailScreenContent() {
 
   const sections = useMemo(
     () => buildRemoteSessionSections(sessions, Date.now(), {
+      projectAliases,
+      projectAliasDeviceId: deviceId,
       messagePreviewIndex,
       pendingInteractionIndex,
       scheduleIndex,
@@ -449,6 +459,8 @@ function DeviceDetailScreenContent() {
     }),
     [
       automationScopeKey,
+      deviceId,
+      projectAliases,
       i18nInstance.language,
       messagePreviewIndex,
       pendingInteractionIndex,
