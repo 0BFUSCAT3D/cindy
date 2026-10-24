@@ -45,6 +45,34 @@ Installations continue on that host if the controller disconnects; a failed
 installation preserves the previous executable. Switching Cindy accounts aborts
 that account's pending installation. Reopening the engine page shows its result.
 
+## Local models
+
+Models → Local models opens Ollama on the selected computer. Installation uses
+verified official macOS, Windows or Linux archives. Linux zstd extraction uses
+the included Node runtime. Starting Ollama executes `ollama serve`; it never
+opens a desktop application. A managed server stores model weights inside its
+owner profile. An already running external Ollama can also be used; filesystem
+cleanup never touches that external server's model directory.
+
+`cindy local-models` opens the same TUI. CLI operations accept `--device <id>`:
+
+```sh
+cindy local-models install ollama
+cindy local-models get ollama
+cindy local-models download ollama --stdin
+# stdin: {"name":"<Ollama model name>"}
+cindy local-models list
+cindy local-models pause '<Ollama model name>'
+cindy local-models resume '<Ollama model name>'
+cindy local-models disable '<Ollama model name>'
+```
+
+Long operations return a host-owned job. `get` reports its status and progress;
+disconnecting the controller does not cancel a download. Pause state survives
+host restart. Changing the Cindy account retires its active operations. Enable
+and disable use the same saved model visibility settings as other providers.
+`delete` removes downloaded weights; `cancel` discards an incomplete download.
+
 ## Headless plugin browser
 
 The host, login and model configuration do not need a browser on the server.

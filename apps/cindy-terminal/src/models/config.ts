@@ -1,3 +1,4 @@
+import { matchesManagedOllamaFingerprint } from '@cindy/model-providers/localModelRuntime';
 import path from 'node:path';
 import { BUNDLED_CATALOG, buildRegistry, buildUserProvider, resolveRoute, type AgentKind, type Catalog, type CustomProviderConfig, type Effort, type ProviderView, type ResolvedRoute, type CatalogModel, type ProviderRuntimeModelConfig, type ModelDisableOverrides, modelDisableKey, MODEL_METADATA_FIELDS, validModelMetadata, isProviderRequestPath, PI_MODEL_APIS } from '@cindy/model-providers';
 import type { TerminalSecrets } from '../contracts.js';
@@ -51,6 +52,10 @@ export class TerminalModelConfig {
   nativeGrok?: TerminalGrokLogin;
   private readonly nativeModels = new Map<string, CatalogModel[]>();
   private subscriptions?: TerminalSubscriptions;
+  private localRuntime?: { prepare(id: string): Promise<void>; removed(id: string): void };
+  connectLocalRuntime(runtime: NonNullable<TerminalModelConfig['localRuntime']>) { this.localRuntime = runtime; }
+  async prepareLocalModel(id: string) { await this.localRuntime?.prepare(id); }
+  localCatalog() { return this.catalogRuntime.getActiveLocalModelCatalog(); }
   connectSubscriptions(accounts: TerminalSubscriptions) { this.subscriptions = accounts; this.generation++; }
   openAiAccount(id = 'openai') { return this.subscriptions?.openAiAccount(id) ?? (id === 'openai' ? this.nativeAccounts : undefined); }
   grokAccount(id = 'xai') { return this.subscriptions?.grokAccount(id) ?? (id === 'xai' ? this.nativeGrok : undefined); }
@@ -97,7 +102,7 @@ export class TerminalModelConfig {
       if (typeof runtime.baseUrl !== 'string') throw new Error('INVALID_PROVIDER_URL');
       const url = new URL(runtime.baseUrl);
       if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('INVALID_PROVIDER_URL');
-      if (!Array.isArray(runtime.models) || !auth.native && runtime.models.length === 0) throw new Error('PROVIDER_MODELS_REQUIRED');
+      if (!Array.isArray(runtime.models) || !auth.native && runtime.models.length === 0 && !matchesManagedOllamaFingerprint({id: input.id, authMethod: auth.method as string, runtimes: input.runtimes as CustomProviderConfig["runtimes"]})) throw new Error('PROVIDER_MODELS_REQUIRED');
       // Only explicitly supported metadata crosses the persistence boundary; keys and
       // custom headers are held by TerminalSecrets, never smuggled into this JSON.
       const models = runtime.models.map(value => {
@@ -299,6 +304,7 @@ export class TerminalModelConfig {
       if (state.defaultSelection?.providerId === id) delete state.defaultSelection;
       const restoreOAuth = oauth ? this.oauth?.removeReversibly(id) : undefined;
       try { await this.persist(state); } catch (error) { restoreOAuth?.(); throw error; }
+      this.localRuntime?.removed(id);
       for (const kind of ENGINES) { await this.secrets.delete(this.key(id, kind)); await this.secrets.delete(`${this.key(id, kind)}:headers`); }
     });
   }

@@ -9,6 +9,22 @@ const WIN_LOCAL = 'C:\\Users\\dash\\AppData\\Local';
 const WIN_OFFICIAL = path.join(WIN_LOCAL, 'Programs', 'Ollama', 'ollama.exe');
 
 describe('ollamaRuntime', () => {
+  // Behavior: terminal hosts must never launch a desktop app, including macOS
+  // where an official application is installed. All supported OSes use serve.
+  it.each(['darwin', 'linux', 'win32'] as const)('starts only the server binary on a headless %s host', async platform => {
+    const openApp = vi.fn(); let ready = false;
+    const spawnSidecar = vi.fn(() => { ready = true; });
+    const status = await startOfficialOllamaApp({ platform, arch: 'arm64', headless: true,
+      installedBinary: () => '/fixture/ollama', appExists: () => true, openApp, spawnSidecar,
+      sleep: async () => {}, fetchImpl: async () => {
+        if (!ready) throw new OllamaHttpError('refused', 'down');
+        return new Response(JSON.stringify({version: '0.40.10'}));
+      },
+    });
+    expect(status.kind).toBe('ready'); expect(spawnSidecar).toHaveBeenCalledWith('/fixture/ollama');
+    expect(openApp).not.toHaveBeenCalled();
+  });
+
   it('maps connection refused + missing app to absent', async () => {
     const status = await probeOllamaStatus({
       platform: 'darwin',

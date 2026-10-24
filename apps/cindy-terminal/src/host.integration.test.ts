@@ -12,7 +12,7 @@ import os from 'node:os';
 import net from 'node:net';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type SpawnOptions } from 'node:child_process';
 import { promisify } from 'node:util';
 import { buildLegacyAttachmentOssRef, RemoteResourceRegistry } from '@cindy/device-link';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -83,6 +83,32 @@ describe('terminal private host', () => {
     // This case opens the full private profile, including native Windows ACL
     // commands. Keep the local 5s budget while allowing the Windows CI host IO.
   },process.platform==='win32'?30_000:5_000);
+
+  // Integration: stopping the daemon must join its managed work and children,
+  // not only do so on account changes. A live Node child catches orphan leaks.
+  it('stops managed downloads and local runtime children on daemon shutdown', async () => {
+    const root = path.join(directory, 'owned-runtime-close'), service = new TerminalService(root);
+    await service.start();
+    const internals = service as unknown as {
+      engines: {install(kind: string, options?: {signal?: AbortSignal}): Promise<unknown>};
+      localModels: {sidecar: {spawnManagedSidecar(binary: string, spawnImpl: typeof spawn): import('node:child_process').ChildProcess}};
+    };
+    let aborted = false;
+    const install = internals.engines.install;
+    internals.engines.install = async (_kind, options) => new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener('abort', () => {aborted = true; reject(new Error('cancelled'));}, {once: true});
+    });
+    const child = internals.localModels.sidecar.spawnManagedSidecar(process.execPath, ((_binary: string, _args: string[], options: SpawnOptions) => spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], options)) as unknown as typeof spawn);
+    const closed = once(child, 'close');
+    const client = await connectTerminal(root);
+    try {
+      const result = await client.invoke<{result: {state: string}}>('maker:remote-resources:invoke', [{client: {protocolVersion: 1, primitives: ['actions']}, collectionId: 'engines', resourceRef: {collectionId: 'engines', kind: 'engine', id: 'pi'}, actionId: 'install'}]);
+      expect(result.result.state).toBe('running');
+      await service.close(); await closed;
+      expect(aborted).toBe(true);
+      expect(() => process.kill(child.pid!, 0)).toThrow();
+    } finally {client.close(); internals.engines.install = install; await service.close(); if (child.exitCode === null && child.signalCode === null) child.kill();}
+  }, process.platform === 'win32' ? 30_000 : 5_000);
 
   // Failed initialization happens after the private askpass listener starts.
   // The old catch closed only IPC, leaving a detached daemon alive forever.

@@ -39,7 +39,8 @@
     "./modelAccess": "./src/modelAccess.ts",
     "./auxiliaryModelSettings": "./src/auxiliaryModelSettings.ts",
     "./providerOrder": "./src/providerOrder.ts",
-    "./provider-auth/*": "./src/provider-auth/*.ts"
+    "./provider-auth/*": "./src/provider-auth/*.ts",
+    "./local-runtime/*": "./src/local-runtime/*.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

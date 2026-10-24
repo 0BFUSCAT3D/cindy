@@ -62,6 +62,7 @@ export interface RuntimeInput {
  * changing another task's provider cannot redirect an in-flight request. */
 export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgent> {
   const { selection, route, binaryPath, models, profileDir, taskId, logger } = input;
+  if (!input.remote) await models.prepareLocalModel(selection.providerId);
   let currentModel = selection.model;
   let currentEffort = selection.effort ?? route.model.defaultEffort ?? undefined;
   let currentFast: boolean | 'ultrafast' = false;

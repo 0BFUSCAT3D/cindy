@@ -454,3 +454,28 @@ it('hands the selected remote native login to the terminal without cancelling it
   expect(handoff).toHaveBeenCalledExactlyOnceWith('native-remote-lease');
   expect(calls).toEqual([{ command: 'begin', providerId: 'anthropic', deviceId: 'selected-server' }]);
 });
+
+// UI regression: a transient progress refresh error must clear after a later
+// successful read without restarting the download or switching the target.
+it('recovers the selected host progress view after a transient refresh failure', async () => {
+  vi.useFakeTimers({toFake: ['setInterval', 'clearInterval']});
+  try {
+    const host = fakeClient(); let failing = false, complete = false;
+    const ref = {collectionId: 'local-models', kind: 'local-model', id: 'ollama'};
+    const resource = () => ({ref, revision: '1', display: {title: 'Ollama'}, links: [], actions: [], blocks: [{id: 'progress', primitive: 'text', fallbackMarkdown: complete ? 'Installed 100%' : 'Downloading 42%'}]});
+    host.handle(channel => {
+      if (channel === 'maker:remote-resources:manifest') return {collections: [{id: 'local-models', resourceKind: 'local-model', title: 'Local models'}]};
+      if (channel === 'maker:remote-resources:list') return {items: [resource()]};
+      if (channel === 'maker:remote-resources:get') { if (failing) throw new Error('BACKPRESSURE'); return resource(); }
+    });
+    const client: TerminalClient = {...host.client, invoke: (channel, args, device) => {expect(device).toBe('selected-server'); return host.client.invoke(channel,args);} };
+    const screen = await mount(client, {node: <Resources client={client} device="selected-server" locale="en" initialRef={ref} onTask={()=>{}}/>});
+    expect(screen.latest()).toContain('Downloading 42%');
+    failing = true; await act(async()=>{ await vi.advanceTimersByTimeAsync(2000); });
+    await screen.update(()=>{}); expect(screen.latest()).toContain('RESOURCE_REQUEST_FAILED');
+    failing = false; complete = true; await act(async()=>{ await vi.advanceTimersByTimeAsync(2000); });
+    await screen.update(()=>{}); expect(screen.latest()).toContain('Installed 100%');
+    expect(screen.latest()).not.toContain('RESOURCE_REQUEST_FAILED');
+    expect(vi.mocked(host.client.invoke).mock.calls.some(([channel])=>channel.endsWith(':invoke'))).toBe(false);
+  } finally { vi.useRealTimers(); }
+});

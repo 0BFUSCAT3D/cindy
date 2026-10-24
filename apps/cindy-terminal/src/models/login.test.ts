@@ -674,7 +674,9 @@ it('keeps independent ChatGPT accounts isolated through login, rollback, removal
       const result = await runNative(process.execPath, [f.runner], opts);
       const file = path.join(opts!.env!.CODEX_HOME!, 'auth.json');
       const auth = JSON.parse(await readFile(file, 'utf8'));
-      auth.tokens.account_id = opts!.cwd!.includes('openai-a') ? 'workspace-a' : 'workspace-b';
+      const providerId = path.basename(path.dirname(path.dirname(opts!.cwd!)));
+      expect(['openai-a', 'openai-b']).toContain(providerId);
+      auth.tokens.account_id = providerId === 'openai-a' ? 'workspace-a' : 'workspace-b';
       await writeFile(file, JSON.stringify(auth), { mode: 0o600 });
       return result;
     },

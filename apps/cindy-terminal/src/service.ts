@@ -1,3 +1,4 @@
+import { TerminalLocalModels } from './local-models/service.js';
 import { TerminalClaudeAuthorization } from './models/claude-terminal.js';
 import { TerminalClaudeLogin } from './models/claude-login.js';
 import { TerminalSubscriptions } from './models/subscriptions.js';
@@ -96,6 +97,7 @@ export class TerminalService {
   private media!: TerminalMediaTransfer;
   private resources!: TerminalResources;
   private engineResources?: TerminalEngineResources;
+  private localModels?: TerminalLocalModels;
   private knowledge?: TerminalKnowledge;
   private plugins?:TerminalPlugins;
   private pluginTasks?:TerminalPluginTasks;
@@ -272,6 +274,7 @@ export class TerminalService {
     const errors: unknown[] = [];
     const close = async (operation: () => unknown) => { try { await operation(); } catch (error) { errors.push(error); } };
     await close(() => this.engineResources?.close());
+    await close(() => this.localModels?.close());
     await close(() => this.im?.close());
     await close(() => this.gateway?.close());
     await close(() => this.providerLogin?.close());
@@ -432,7 +435,12 @@ export class TerminalService {
       assertCurrent: guardIm, log: logger,
       changed: () => { guardIm(); this.tasks.models.gatewayChanged(); this.transport.publish('maker:provider:changed', [{}]); void this.remote?.publish('maker:provider:changed', {}).catch(() => {}); },
     });
+    this.localModels = new TerminalLocalModels({ root: ownerDir, models: this.tasks.models, assertCurrent: guardIm, log: logger,
+      changed: modelsChanged => { guardIm(); if (modelsChanged) { this.transport.publish('maker:provider:changed', [{}]); void this.remote.publish('maker:provider:changed', {}).catch(() => {}); } const payload = {collectionId: 'local-models'}; this.transport.publish('maker:remote-resources:changed', [payload]); void this.remote.publish('maker:remote-resources:changed', payload).catch(() => {}); },
+    });
+    const localModels = this.localModels;
     this.tasks.utility.configureConnections({
+      ensureManagedOllamaReadyForSession: input => localModels.prepare(input.providerId ?? ''),
       readCachedGenericOAuthAccessToken: id => this.providerLogin!.cachedCredential(id),
       ...subscriptions.utilityConnections(),
     });
@@ -447,6 +455,7 @@ export class TerminalService {
     this.protectedInput.configureSettings(this.configuration);
     this.tasks.registerCapabilityResources(this.resources.registry,this.configuration);
     registerModelConfigurationResources(this.resources.registry,this.tasks.models,this.configuration,(channel,args,context)=>this.tasks.invoke(channel,args,context));
+    this.localModels.register(this.resources.registry);
     const engineTasks = this.tasks;
     this.engineResources = new TerminalEngineResources(this.resources.registry, {
       engines: this.engines, assertCurrent: guardIm,
@@ -730,6 +739,8 @@ export class TerminalService {
       const errors:unknown[]=[];
       const cleanup=async(action:()=>unknown)=>{try{await action();}catch(error){errors.push(error);}};
       clearInterval(this.refreshTimer);
+      await cleanup(()=>this.engineResources?.close());
+      await cleanup(()=>this.localModels?.close());
       await cleanup(()=>this.im?.close());
       await cleanup(()=>this.gateway?.close());
       await cleanup(()=>this.providerLogin?.close());

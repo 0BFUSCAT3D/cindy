@@ -1,3 +1,4 @@
+import { localModelText } from '../local-models/text.js';
 import { providerPresetOAuth, providerPresetOAuthRuntimes, type OAuthProviderDescriptor, type ProviderPreset } from '@cindy/model-providers';
 import { ChannelRegistration } from './channel-registration.js';
 import { readModelConfiguration, saveModelProvider, invokeModelConfiguration } from '../models/client.js';
@@ -342,17 +343,20 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
         let canConfigureModels=!at.device;
         let canConfigureUtility=!at.device;
         let canConfigureEngines=!at.device;
+        let canConfigureLocal=!at.device;
         if(at.device){
           try{
             const manifest=record(await call('maker:remote-resources:manifest',[{client:{protocolVersion:1,primitives:['text','actions']}}]));
             canConfigureModels=array(manifest.collections).some(item=>item.id==='providers');
             canConfigureUtility=array(manifest.collections).some(item=>item.id==='auxiliary-models');
             canConfigureEngines=array(manifest.collections).some(item=>item.id==='engines');
+            canConfigureLocal=array(manifest.collections).some(item=>item.id==='local-models');
           }catch(error){if(!(error instanceof Error)||!['CHANNEL_NOT_ALLOWED','UNSUPPORTED_CHANNEL'].includes(error.message))throw error;}
         }
         if(canConfigureModels)nextItems.push({id:'add',title:`+ ${t.addProvider}`,run:addProvider},{id:'manage',title:modelText.manage,run:()=>navigate('providers')});
         if(canConfigureUtility)nextItems.push({ id: 'auxiliary', title: resolveRemoteText(auxiliaryModelsTitle, locale), run: () => { setResourceTarget({ collectionId: 'auxiliary-models', kind: 'auxiliary-models', id: 'chain' }); setPage('resources'); } });
         if(canConfigureEngines)nextItems.push({id:'engines',title:t.engines,run:()=>navigate('engines')});
+        if(canConfigureLocal)nextItems.push({id:'local-models',title:resolveRemoteText(localModelText.title,locale),run:()=>{setResourceTarget({collectionId:'local-models',kind:'local-model',id:'ollama'});setPage('resources');}});
         const controlsCount=nextItems.length;
         for (const provider of array(record(raw).providers ?? raw)) {
           if (!provider.connected||provider.suspended) continue;

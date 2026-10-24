@@ -1,3 +1,4 @@
+import { publishEngineDirectory } from './publish.js';
 import { createReadStream, createWriteStream, constants } from 'node:fs';
 import { access, chmod, lstat, mkdir, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -109,7 +110,7 @@ export class EngineManager {
       if (reported.code !== 0 || !reported.stdout.includes(release.version)) throw new EngineError('engine_version_mismatch');
       signal?.throwIfAborted();
       stage = 'publish';
-      await rename(root, path.join(home, id));
+      await publishEngineDirectory(root, path.join(home, id), signal);
       signal?.throwIfAborted();
       stage = 'receipt';
       await atomicPrivateWrite(path.join(home, 'current.json'), JSON.stringify({ version: release.version, directory: id, entrypoint: asset.entrypoint, sha256: asset.sha256, asset } satisfies Receipt));

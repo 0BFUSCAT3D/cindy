@@ -92,6 +92,26 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     void run(async()=>{const result=await call<{collections:RemoteCollectionDescriptor[]}>('manifest',{});if(epoch.current!==at)return;setCollections(result.collections);const collectionId=initialRef?.collectionId??initialCollection;if(collectionId){const target=result.collections.find(item=>item.id===collectionId);if(!target)throw new Error('CAPABILITY_NOT_AVAILABLE_ON_TARGET');await list(target);if(initialRef)await open(initialRef);}});
     return()=>{epoch.current++;};
   },[device,client,initialCollection,initialRef]);
+  useEffect(() => {
+    if (collection?.id !== 'local-models' || action || busy) return;
+    let closed = false, pending = false;
+    const at = epoch.current;
+    const refresh = async () => {
+      if (pending) return; pending = true;
+      try {
+        if (resource) {
+          const next = await call<RemoteResource>('get', {ref: resource.ref});
+          if (!closed && epoch.current === at) { setResource(next); setError(''); }
+        } else {
+          const next = await call<{items: RemoteCollectionItem[]; nextCursor?: string}>('list', {collectionId: collection.id, limit: 100});
+          if (!closed && epoch.current === at) { setItems(next.items); setCursor(next.nextCursor); setError(''); }
+        }
+      } catch { if (!closed && epoch.current === at) setError(`${t.error} · RESOURCE_REQUEST_FAILED`); }
+      finally { pending = false; }
+    };
+    const timer = setInterval(() => void refresh(), 2000);
+    return () => { closed = true; clearInterval(timer); };
+  }, [collection?.id, resource?.ref.id, action, busy, client, device]);
   const fieldDescriptor=action?.fields?.[field];
   const filteredOptions=fieldDescriptor?.kind==='select'?fieldDescriptor.options?.filter(option=>txt(option.label).toLocaleLowerCase().includes(choiceQuery.toLocaleLowerCase()))??[]:[];
   const choices=action&&!confirmed?[t.cancel,txt(action.confirmation?.confirmLabel)||t.yes]
@@ -107,6 +127,7 @@ export function Resources({ client, device, locale, initialCollection, initialRe
     ...actions.map(item=>({id:item.id,title:`+ ${txt(item.label)}`,run:()=>begin(item)})),
     ...(cursor?[{id:'more',title:t.next,run:()=>void run(()=>list(collection,cursor))}]:[]),
   ]:collections.map(item=>({id:item.id,title:txt(item.title),run:()=>void run(()=>list(item))}));
+  useEffect(() => { if (!action) setSelected(value => Math.min(value, Math.max(0, lines.length - 1))); }, [lines.length, action]);
   function prepareField(next:RemoteActionField|undefined,defaults:Record<string,unknown>){
     setChoiceQuery('');
     const value=next?defaults[next.id]:undefined;

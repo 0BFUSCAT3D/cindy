@@ -1,3 +1,5 @@
+import { publishEngineDirectory } from './publish.js';
+import { rename as renameDirectory } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -28,6 +30,28 @@ function release(data: Buffer, version = '1.2.3'): EngineRelease {
 const posix = process.platform !== 'win32';
 
 describe('engine installation', () => {
+  // Regression: Windows CI returned EPERM after Pi --version had exited.
+  // Verify the real directory publication with transient, permanent and abort
+  // faults; no receipt or existing installation is overwritten by this step.
+  it('publishes after a transient Windows executable lock and preserves failures', async () => {
+    const root = await temporary(), from = path.join(root, 'staged'), to = path.join(root, 'version');
+    await mkdir(from); await writeFile(path.join(from, 'engine'), 'verified');
+    let attempts = 0;
+    const wait = vi.fn(async () => {});
+    await publishEngineDirectory(from, to, undefined, { platform: 'win32', wait, rename: async (a,b) => {
+      if (++attempts < 3) throw Object.assign(new Error('locked'), {code: 'EPERM'});
+      return renameDirectory(a,b);
+    }});
+    expect(await readFile(path.join(to, 'engine'), 'utf8')).toBe('verified');
+    expect(wait).toHaveBeenCalledTimes(2);
+    const fail = vi.fn(async () => { throw Object.assign(new Error('denied'), {code: 'EACCES'}); });
+    await expect(publishEngineDirectory(to, from, undefined, {platform: 'win32', wait, rename: fail})).rejects.toThrow('denied');
+    expect(fail).toHaveBeenCalledTimes(6); expect(await readFile(path.join(to, 'engine'),'utf8')).toBe('verified');
+    const abort = new AbortController(); fail.mockClear();
+    await expect(publishEngineDirectory(to, from, abort.signal, {platform: 'win32', rename: fail, wait: async () => abort.abort()})).rejects.toThrow();
+    expect(fail).toHaveBeenCalledTimes(1);
+  });
+
   // Protocol boundary: a rate-limited official release must be recoverable,
   // and a CI metadata token must never reach another source or native process.
   it('reports release HTTP failures and confines lookup credentials to the GitHub API', async () => {

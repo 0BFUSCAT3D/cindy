@@ -20,6 +20,7 @@ export async function invokeResourceAction(client:TerminalClient,raw:Omit<import
 }
 
 export const resourceCollections:Record<string,string>={
+  "local-models": "local-models",
   'auxiliary-models': 'auxiliary-models',
   teammates:'teammates',routines:'routines',schedules:'schedules',projects:'projects',plugins:'plugins','plugin-market':'plugin-market',libraries:'plugin-libraries',skills:'skills',
   mcp:'mcp',channels:'channels',memory:'memory',contacts:'contacts',shares:'provider-shares','provider-groups':'provider-groups',
