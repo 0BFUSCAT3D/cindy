@@ -3,7 +3,7 @@ import { act, createContext, createElement as el } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({ cloudRefresh: vi.fn(async () => {}), push: vi.fn(),
-  cloudActor: null as null | { id: string }, createOptions: null as any }));
+  cloudActor: null as null | { id: string }, createOptions: null as any, collapsed: false, unread: false }));
 vi.mock('react-native', () => ({
   View: ({ children, testID }: any) => el('div', { 'data-testid': testID }, children),
   ScrollView: ({ children, testID }: any) => el('div', { 'data-testid': testID }, children),
@@ -25,7 +25,7 @@ vi.mock('@/chat/cloudCompanion', () => ({ CLOUD_ROW_REVISION: 'cloud', cloudActo
 vi.mock('@/session/teammateNavigation', () => ({ cloudCompanionRoute: () => '/cloud-chat' }));
 vi.mock('@/session/botGroupNavigation', () => ({ botGroupRoute: () => '/group-chat' }));
 vi.mock('@/chat/useCloudCompanion', () => ({ useCloudCompanionHome: () => ({ supported: true, actors: [], deviceNames: {}, refresh: h.cloudRefresh }) }));
-vi.mock('@/device-link/remoteResourceCache', () => ({ isRemoteResourceUnread: () => false, remoteResourceCacheRevision: () => 0, subscribeRemoteResourceCache: () => () => {} }));
+vi.mock('@/device-link/remoteResourceCache', () => ({ isRemoteResourceUnread: () => h.unread, remoteResourceCacheRevision: () => 0, subscribeRemoteResourceCache: () => () => {} }));
 vi.mock('@/utils/useGuardedPush', () => ({ useGuardedPush: () => h.push }));
 vi.mock('@/theme', async () => {
   const tokens = await import('@/theme/tokens');
@@ -49,7 +49,7 @@ vi.mock('@/session/TeammateList', () => ({
     'data-testid': `row.${entry.kind}`, onClick: () => entry.kind === 'bot' ? options.onSelect(entry.row) : options.groups.onSelect(entry.row) }, entry.row.item.display.title),
 }));
 vi.mock('@/session/useTeammateNavigation', () => ({ useTeammateNavigation: () => ({
-  owner: 'owner', teammatesCollapsed: false, lastTeammate: null,
+  owner: 'owner', teammatesCollapsed: h.collapsed, lastTeammate: null,
   setTeammatesCollapsed: async () => {}, openTeammate: async () => {}, openCreatedTeammate: async () => {} }) }));
 import { HomeTeammatesSection } from '../session/HomeTeammatesSection';
 import { CONNECTION_NOTICE_DELAY_MS } from '../components/connectionNoticeDelay';
@@ -58,9 +58,9 @@ const item = { key: 'host:bot', host: { deviceId: 'host', deviceName: 'Mac' }, i
   ref: { collectionId: 'teammates', kind: 'bot', id: 'bot' }, revision: '1', links: [], display: { title: 'Mimi' } } };
 const roster = { items: [item], createTargets: [], groupTargets: [], loading: false, refreshing: false, error: 'LIST_FAILED' as string | null,
   isOnline: () => true, connectionState: undefined, refresh: vi.fn(async () => {}) };
-const groups = { items: [], supported: true, refreshing: false, error: null, isOnline: () => true, refresh: vi.fn(async () => {}) };
+const groups = { items: [] as any[], supported: true, refreshing: false, error: null, isOnline: () => true, refresh: vi.fn(async () => {}) };
 let root: Root; let node: HTMLDivElement;
-beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); node = document.createElement('div'); root = createRoot(node); vi.clearAllMocks(); h.cloudActor = null; vi.useFakeTimers(); roster.error = 'LIST_FAILED'; });
+beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); node = document.createElement('div'); root = createRoot(node); vi.clearAllMocks(); h.cloudActor = null; vi.useFakeTimers(); roster.error = 'LIST_FAILED'; h.collapsed = false; h.unread = false; groups.items = []; });
 afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(); });
 const render = (refreshKey: number, overrides: Partial<Parameters<typeof HomeTeammatesSection>[0]> = {}) => act(async () => root.render(el(HomeTeammatesSection, {
   context: { navigation: null, route: null, shared: { roster, groups } } as any, active: true, refreshKey,
@@ -106,6 +106,25 @@ it('re-reads cloud companions on each manual home refresh', async () => {
   h.cloudRefresh.mockClear();
   await render(1);
   expect(h.cloudRefresh).toHaveBeenCalledTimes(1);
+});
+
+// The new collapsed home must retain the chat receipt semantics of expanded rows:
+// a thread can be unread after main is read, while a server-read room stays quiet.
+it('uses server read receipts and thread unread state in the collapsed group strip', async () => {
+  h.collapsed = true;
+  const group = { ...item, key: 'host:group', chatUnread: { count: 1, threadCount: 1 },
+    item: { ...item.item, ref: { collectionId: 'bot-groups', kind: 'bot-group', id: 'group' }, display: { title: 'Team' } } };
+  groups.items = [group];
+  await render(0);
+  const cell = () => byId('home.teammatesStrip.group.host.group');
+  expect(cell()?.querySelector('[data-testid="home.teammatesStrip.unread"]')).not.toBeNull();
+  h.unread = true;
+  group.chatUnread = { count: 0, threadCount: 0 };
+  await render(0);
+  expect(cell()?.querySelector('[data-testid="home.teammatesStrip.unread"]')).toBeNull();
+  group.chatUnread = { count: 2, threadCount: 0 };
+  await render(0);
+  expect(cell()?.querySelector('[data-testid="home.teammatesStrip.unread"]')).not.toBeNull();
 });
 
 // PR #7079: unit-tier component coverage of the cloud/group routes that bypass the teammate hook.
