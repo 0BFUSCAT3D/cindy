@@ -281,7 +281,8 @@ pnpm ui:check:selftest
    再执行 `window.undoScreenshotMask = __cindyScreenshotMask({ "原文": "示例" })`（保存返回的还原函数）。
    昵称、邮箱、电脑名、分享者、分享链接、本机路径和私密内容按当前页面补齐；真实对照表
    不进提交、命令参数或日志。短昵称用完整显示文本作键，避免误改其他文字。
-4. 等悬停提示／页面刷新完成后，用 `Page.captureScreenshot`，参数 `{ "format": "png" }`；
+4. 等悬停提示／React 重绘完成并确认替换仍在；整页刷新或跨文档导航会清除替换，须重做第 3 步。
+   用 `Page.captureScreenshot`，参数 `{ "format": "png" }`；
    只需局部时加 `clip: { x, y, width, height, scale: 1 }`（页面 CSS 坐标）。将返回的
    `data` 按 base64 解码，只保存到 Git 忽略的 `tmp/desktop-screenshots/` 等本地目录。
 5. 在 `finally` 中再次 `Runtime.evaluate` 执行 `window.undoScreenshotMask?.()`；异常断连
