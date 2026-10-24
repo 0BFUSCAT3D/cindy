@@ -919,9 +919,13 @@ export async function persistSessionFields(
   // 人工修），若先写就会让同一个 patch 里的其它字段（改名、归档…）整包失败。
   // 纯预算请求不能降级：那是用户唯一的意图，吞掉错误等于「看着成功、实际还是旧窗口」。
   const budgetOnlyPatch = Object.keys(rowPatch).length === 0;
+  // 账号边界：偏好文件按「当下」账号的 userData 解析，而上面 db.update /
+  // 下面 apply 都是 await 出来的 —— 期间切账号时这条远程镜像更新必须整条作废
+  // （与 updateSessionInDb 同口径）。Greptile P1，2026-10-24。
+  const budgetScopeCurrent = isOwnerScopeCurrent(ownerScope);
   let budgetWritten = false;
   let nextContextWindowBudget: number | null = null;
-  if (hasBudgetChange) {
+  if (hasBudgetChange && budgetScopeCurrent) {
     try {
       nextContextWindowBudget = writeSessionContextWindowBudget(
         sessionId, (clean.contextWindowBudget as number | null) ?? null,
@@ -951,7 +955,8 @@ export async function persistSessionFields(
   }
   if (isOwnerScopeCurrent(ownerScope)) broadcastSessionPatched(sessionId, { ...clean, ...runtimeProjection }, ownerScope);
   // 远程 set-* 落库后同样要把新预算应用到被控端活实例（语义与 updateSessionInDb 一致）。
-  if (budgetWritten && registeredSessionIpcOpts.applyContextWindowBudget) {
+  if (budgetWritten && budgetScopeCurrent && isOwnerScopeCurrent(ownerScope)
+    && registeredSessionIpcOpts.applyContextWindowBudget) {
     try {
       await registeredSessionIpcOpts.applyContextWindowBudget(sessionId, {
         previous: previousContextWindowBudget,

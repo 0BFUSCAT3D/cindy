@@ -947,6 +947,15 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(readSessionContextWindowBudget('cc-local')).toBeNull();
   });
 
+  it('does not mirror a remote budget into the next account after an owner change', async () => {
+    // 远程镜像落库（persistSessionFields）同样是 await 之后才写偏好文件：保存期间切账号，
+    // 这条过期更新不得把预算写进新账号的文件（Greptile P1，2026-10-24）。
+    h.captureOwnerScope = true;
+    h.ownerCurrent = false;
+    await persistSessionFields('pi-local', { contextWindowBudget: 300_000 });
+    expect(readSessionContextWindowBudget('pi-local')).toBeNull();
+  });
+
   it('does not write the context window budget into the next account after an owner change', async () => {
     // 偏好文件按「当前」账号的 userData 解析，而 DB 更新是 await 出来的：保存期间切账号
     // 时，过期请求不得把原任务的预算写进新账号的文件（Greptile P1，2026-10-24）。
