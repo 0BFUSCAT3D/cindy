@@ -286,6 +286,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm install:ripgrep
 
+      # A real PowerShell/CLR cold start must not compete with the unit worker pool.
+      # Keep the original mutex/lease assertions and startup budgets; run once per CI.
+      - name: Run Windows packaged-instance barrier integration
+        run: pnpm --filter desktop exec vitest run src/main/__tests__/windowsPackagedInstanceBarrier.integration.test.ts --maxWorkers=1 --minWorkers=1
+
       # 保留 Windows 路径、进程与锁的自测覆盖。
       - name: Run Windows test runner self-tests
         run: pnpm test:runner
