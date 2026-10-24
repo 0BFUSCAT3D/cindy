@@ -14,7 +14,7 @@ import { QuestionReferenceText } from '@/session/QuestionReferenceText';
 import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
 import { i18n } from '@/i18n';
 import { AskCardAuthContext } from '@/session/askCardAuth';
-import { darkColors, lightColors, radius } from '@/theme/tokens';
+import { darkColors, lightColors } from '@/theme/tokens';
 
 const voiceStarter = vi.hoisted(() => ({ start: vi.fn() }));
 const theme = vi.hoisted(() => ({ mode: 'light' as 'light' | 'dark' }));
@@ -133,13 +133,15 @@ async function type(id: string, value: string) {
 
 // #6778, unit: render the real card/hook and start/stop dictation. Earlier tests
 // only checked labels and clicks, missing the invisible inverse-colour mic.
+// Preserve the existing unfilled control; only startup replaces the mic.
 // Minimal input: one question in each answer layout, in either theme.
 it.each(['light', 'dark'] as const)('keeps the recording mic visible in %s answer layouts', async (mode) => {
   theme.mode = mode;
   const colors = mode === 'dark' ? darkColors : lightColors;
   const stop = vi.fn(async () => undefined);
+  let onListening!: () => void;
   voiceStarter.start.mockImplementation(async (input) => {
-    input.onListening();
+    onListening = input.onListening;
     return { stop, cancel: vi.fn(async () => undefined) };
   });
   const button = () => host.querySelector<HTMLButtonElement>('[data-testid="interaction.ask.voice"]')!;
@@ -154,16 +156,21 @@ it.each(['light', 'dark'] as const)('keeps the recording mic visible in %s answe
       getAccessToken: async () => null, refreshAccessToken: async () => null, apiFetch: async () => null,
     }}><Harness /></AskCardAuthContext.Provider>));
     if (layout === 'custom-open') await click('interaction.ask.showCustomButton');
+    const idleStyle = style();
     expect(micColor()).toBe(colors.textSecondary);
-    expect(style().backgroundColor).not.toBe(colors.cta);
+    expect(idleStyle.backgroundColor).toBeUndefined();
     await click('interaction.ask.voice');
+    expect(button().getAttribute('aria-busy')).toBe('true');
+    expect(button().querySelector('[data-mic-color]')).toBeNull();
+    expect(style()).toEqual(idleStyle);
+    await act(async () => onListening());
     expect(button().getAttribute('aria-label')).toBe('session.common.voiceStopRecording');
-    expect(style().backgroundColor).toBe(colors.cta);
-    expect(style().borderRadius).toBe(radius.pill);
-    expect(micColor()).toBe(colors.ctaText);
+    expect(button().getAttribute('aria-busy')).toBe('false');
+    expect(style()).toEqual(idleStyle);
+    expect(micColor()).toBe(colors.textSecondary);
     await click('interaction.ask.voice');
     expect(button().getAttribute('aria-label')).toBe('session.screen.voiceStartInput');
-    expect(style().backgroundColor).not.toBe(colors.cta);
+    expect(style()).toEqual(idleStyle);
     expect(micColor()).toBe(colors.textSecondary);
   }
   expect(stop).toHaveBeenCalledTimes(3);
