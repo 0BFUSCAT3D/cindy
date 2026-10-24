@@ -256,11 +256,42 @@ pnpm ui:check:selftest
 普通界面改动的 PR 截图直接用单页验证：检查通过后运行 `pnpm ui:check:publish`，它把最近一次
 运行的总览截图推到作者 fork 的 `pr-assets/<当前分支>`（不进上游仓库，也不动工作区），并输出
 一段带图片链接的「UI 变化」：命令、平台、版本、场景、通过情况、未覆盖的行为和 `--focus` 实测的
-改前／改后数值，原样写进 PR 正文。登录、发送、跨设备等单页验证覆盖不到的变化，仍按原方式附
-完整 Cindy 截图，能用 `--mock`（[UI 模拟数据](ui-mock-data.md)）的尽量用。分享、跨设备等必须
-用真实账号的场景，截图和 PR 正文、评论都不要带隐私或敏感信息：账号邮箱、他人昵称与头像、设备名、
-分享 ID、额度与用量数值、任务与文件内容、本机路径等，必要时裁剪或打码。截图发到 fork 后按提交
-SHA 仍能公开访问，删分支不等于撤回。
+改前／改后数值，原样写进 PR 正文。登录、发送、跨设备等单页验证覆盖不到的变化，附完整
+Desktop 截图。
+
+### 公开截图与完整 Desktop 截图命令
+
+公开截图（PR 正文、评论、发到 fork 的图）的原则：能证明改动就够，不公开能认出真实的人、
+电脑、账号的信息，以及别人的私密内容；数值和界面状态照常展示。
+
+- 优先用 `ui:check` 或 `--mock`；`--mock` 只在没登录过账号的模拟沙箱里生效，登录过就换
+  一个新的 `--isolated=<名字>`，见 [UI 模拟数据](ui-mock-data.md)。
+- 必须用真实账号时，完整 Desktop 截图用 `pnpm desktop:screenshot`（默认替换身份信息），
+  界面照常完整截取，发出前再看一眼。自动替换不是私密内容审查，额外内容用 `--mask` 补充。
+- 发到 fork 的图按提交 SHA 仍能公开访问，删分支撤不回。
+
+```bash
+pnpm desktop:screenshot                              # 当前 checkout 的唯一开发主窗口
+pnpm desktop:screenshot --list                       # worktree、沙箱、区域、PID、CDP、页面
+pnpm desktop:screenshot --port 19247                  # 也可 --worktree <路径> / --sandbox <名字>
+pnpm desktop:screenshot --selector 'main' --padding 8
+pnpm desktop:screenshot --mask '额外原文=示例文字' --keep '豁免原文'
+pnpm desktop:screenshot --mask-file /本机私有目录/masks.json
+```
+
+只连接经进程和端口归属核验的开发版，不连接安装版；多实例有歧义或目标没有 CDP 时拒绝截图，
+用 `XDT_CDP_PORT=<独立端口>` 启动目标实例后重试。页面按主窗口识别，必要时 `--target <页面 ID>`。
+默认按窗口原始像素密度输出 PNG 到 Git 忽略的 `tmp/desktop-screenshots/`；`--output` 可另选
+Git 忽略的位置，不覆盖已有文件。身份收集失败或自查发现残留时不写图片，结束与失败均还原。
+异常断连有 60 秒自动还原兜底，仍异常就刷新该窗口。不要在截图期间编辑界面。
+
+`--mask`、`--keep` 可重复；映射文件是 JSON 对象（原文: 替换）或“原文=替换”字符串数组，
+真实映射不要提交；含真实原文的命令用 `pnpm --silent` 避免 pnpm 回显参数，或使用映射文件。
+`--no-mask` 显式关闭替换并给出提示；`--hover <选择器> --delay <毫秒>`
+可截悬停提示。收集入口集中在 `scripts/desktop-screenshot/masking.mjs`，只读既有账号、设备、
+分享与成员接口，并读取已显示的 React 身份属性补充远程管理页；文字、输入值、可访问性属性、
+头像在截图期间替换，应用数据与设置不变。身份数据变化时拒绝输出，可在界面稳定后重试。
+开发回归使用 `pnpm desktop:screenshot:selftest`，只启动合成数据的临时 Electron，不连接真实账号。
 
 `ui:check` 通过只说明列出的场景在真实组件上渲染正确；报告里 `not covered` 列出的行为仍须按
 对应流程验收，正式 PR 前的真实运行验收要求不变。

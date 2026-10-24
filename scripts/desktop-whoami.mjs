@@ -174,6 +174,12 @@ export function identifyDesktopProcesses(processes, worktrees) {
         .map((child) => extractArgumentPath(child.command, 'user-data-dir'))
         .find(Boolean) ?? null;
       const commands = [proc.command, ...ancestorCommands(proc.pid, byPid)];
+      // appendSwitch in Electron main is visible on renderer argv, not necessarily
+      // main argv. These are requested ports; consumers must still verify ownership.
+      const cdpPorts = [...new Set([proc, ...children].flatMap(item =>
+        [...item.command.matchAll(/--remote-debugging-port(?:=|\s+)(\d+)(?=\s|$)/g)]
+          .map(match => Number(match[1]))
+          .filter(port => port > 0 && port <= 65535)))];
       result.push({
         pid: proc.pid,
         rootDir: worktree.rootDir,
@@ -187,6 +193,7 @@ export function identifyDesktopProcesses(processes, worktrees) {
         commit: null,
         commitVerified: false,
         source: 'process-scan',
+        ...(cdpPorts.length ? { cdpPorts } : {}),
       });
     }
   }
