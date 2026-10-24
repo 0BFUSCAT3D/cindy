@@ -29,6 +29,9 @@ import {
 } from '@cindy/model-providers/localModelRuntime';
 import type { UtilityTextRequestOptions } from '@cindy/model-providers/utilityTextRequest';
 import type { UtilityTextResult } from '@cindy/model-providers/utilityTextResult';
+import type { AutoReviewRequest } from '@cindy/maker-core';
+import { createAutoPermissionReviewer } from '@cindy/maker-core/auto-permission-reviewer';
+import { createAutoReviewModelRouter, AUTO_REVIEW_ROUTER_GUARD_TIMEOUT_MS } from '@cindy/maker-core/auto-review-model-router';
 import { atomicPrivateWrite, readPrivateFile } from '../platform.js';
 import type { TerminalModelConfig } from './config.js';
 
@@ -254,6 +257,47 @@ export class TerminalUtilityModels {
           (!opts.beforeDispatch || (await opts.beforeDispatch(route))) &&
           current(),
       });
+    })();
+    this.work.add(operation);
+    void operation.finally(() => this.work.delete(operation)).catch(() => {});
+    return operation;
+  }
+  /** Same dedicated/fallback policy as Desktop, captured under this account.
+   * No native Claude credential is read or reused for auxiliary dispatch. */
+  reviewPermission(request: AutoReviewRequest, guard: () => void = () => {}, parentSignal?: AbortSignal) {
+    const operation = (async () => {
+      const { runtime, snapshot } = await this.runtime();
+      const revision = this.revision, cancel = new AbortController();
+      const signal = AbortSignal.any([this.abort.signal, cancel.signal, ...(parentSignal ? [parentSignal] : [])]);
+      const current = () => {
+        try {
+          this.current(); guard();
+          if (revision !== this.revision || snapshot.revision !== this.options.models.revision() || this.options.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
+          if (signal.aborted) throw new Error('AUTO_REVIEW_CANCELLED');
+        } catch (error) { cancel.abort(); throw error; }
+      };
+      current();
+      const fallback = runtime.createCustomAutoReviewFallback();
+      const route = createAutoReviewModelRouter({
+        logger: this.options.log,
+        requestCandidate: async (prompt, candidate, opts) => {
+          current();
+          const result = await runtime.requestDedicatedAutoReviewCandidateText(prompt, candidate, { ...opts, signal: AbortSignal.any([signal, ...(opts.signal ? [opts.signal] : [])]) });
+          current(); return result;
+        },
+        createAuxiliaryFallback: () => fallback ? async (prompt, opts) => {
+          current();
+          const result = await fallback(prompt, { ...opts, signal: AbortSignal.any([signal, ...(opts.signal ? [opts.signal] : [])]) });
+          current(); return result;
+        } : undefined,
+      });
+      const reviewer = createAutoPermissionReviewer({
+        logger: this.options.log, managesRetries: true,
+        resolveRequestTimeoutMs: () => AUTO_REVIEW_ROUTER_GUARD_TIMEOUT_MS,
+        requestText: (_request, prompt, context) => route(prompt, AbortSignal.any([signal, context.signal])),
+      });
+      const result = await reviewer(request);
+      current(); return result;
     })();
     this.work.add(operation);
     void operation.finally(() => this.work.delete(operation)).catch(() => {});

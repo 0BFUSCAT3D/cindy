@@ -56,6 +56,7 @@ export interface RuntimeInput {
   getGhostRosterPrompt?: () => string;
   getContactsPromptState?: () => 'enabled' | 'disabled';
   turnChangeCapture?: ConstructorParameters<typeof ClaudeCodeAgent>[0]['turnChangeCapture'];
+  reviewAutoPermissionAction?: ConstructorParameters<typeof ClaudeCodeAgent>[0]['reviewAutoPermissionAction'];
 }
 
 /** Construct the real maker-core adapters. A task owns a route snapshot so
@@ -131,6 +132,7 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
   const deps = {
     auth, binaryPath, logger,
     turnChangeCapture: input.turnChangeCapture,
+    reviewAutoPermissionAction: input.reviewAutoPermissionAction,
     makerMemory: input.memory,
     getGhostRosterPrompt: input.getGhostRosterPrompt,
     getManagedSkills: input.capabilities?.getManagedSkills,

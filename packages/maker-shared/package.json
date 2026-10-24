@@ -116,7 +116,8 @@
     "./working-dir": "./src/workingDir.ts",
     "./session-source": "./src/sessionSource.ts",
     "./chatHistorySearch.pure": "./src/chatHistorySearch.pure.ts",
-    "./cjkSeg": "./src/cjkSeg.ts"
+    "./cjkSeg": "./src/cjkSeg.ts",
+    "./untrusted-prompt": "./src/untrustedPrompt.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

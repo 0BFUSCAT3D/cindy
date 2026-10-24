@@ -111,6 +111,7 @@ export {
   DEFAULT_AUTO_REVIEW_TIMEOUT_POLICY,
   extractAutoReviewUserIntent,
   resolveAutoReviewDecision,
+  withAutoReviewContext,
   annotatePermissionRequestForUnavailableReview,
   appendAutoReviewUserIntent,
   normalizeAutoReviewUserIntent,

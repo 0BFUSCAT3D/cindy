@@ -1,7 +1,7 @@
 import { rename } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
-/** Windows can retain executable handles after a successful version probe.
+/** Windows scanners can briefly retain downloaded executable handles.
  * Retry only publication into a new unique directory; never delete/replace the
  * currently active version to work around a lock or a permanent ACL failure. */
 export async function publishEngineDirectory(

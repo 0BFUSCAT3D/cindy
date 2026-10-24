@@ -2,7 +2,7 @@ import { publishEngineDirectory } from './publish.js';
 import { rename as renameDirectory } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
@@ -124,9 +124,11 @@ describe('engine installation', () => {
     } finally { await host.close(); }
   });
 
-  it.runIf(posix)('publishes a verified binary atomically and resolves it without PATH changes', async () => {
+  // Regression: probing inside staging then moving a mapped executable failed
+  // on Windows. Exercise the real installer/process at its final unique path.
+  it.runIf(posix)('validates the final binary before activating it without PATH changes', async () => {
     const root = await temporary();
-    const data = Buffer.from('#!/bin/sh\nprintf "1.2.3\\n"\n');
+    const data = Buffer.from('#!/bin/sh\ncase "$0" in */.install-*) exit 71 ;; esac\nprintf "1.2.3\\n"\n');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(data)));
     const manager = new EngineManager({ profileDir: root });
     const result = await manager.installRelease('claude-code', release(data));
@@ -160,11 +162,16 @@ describe('engine installation', () => {
   });
 
   it.runIf(posix)('does not activate an executable reporting a different version', async () => {
-    const manager = new EngineManager({ profileDir: await temporary() });
+    const root = await temporary();
+    const manager = new EngineManager({ profileDir: root });
+    const good = Buffer.from('#!/bin/sh\nprintf "1.2.3\\n"\n');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(good)));
+    const first = await manager.installRelease('claude-code', release(good));
     const data = Buffer.from('#!/bin/sh\nprintf "9.9.9\\n"\n');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(data)));
     await expect(manager.installRelease('claude-code', release(data))).rejects.toThrow('engine_version_mismatch');
-    expect((await manager.resolve('claude-code'))?.source).not.toBe('managed');
+    expect((await manager.resolve('claude-code'))?.binary).toBe(first.binary);
+    expect((await readdir(path.join(manager.root, 'claude-code'))).sort()).toEqual([path.basename(path.dirname(first.binary!)), 'current.json'].sort());
   });
 
   it('rejects unavailable platform assets before downloading', async () => {

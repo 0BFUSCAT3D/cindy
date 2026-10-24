@@ -16,6 +16,7 @@ import { TerminalTaskMedia } from './media.js';
 import { persistedUserContentToWireMessage, isContextOverflowErrorData, isOversizedHistoryErrorData, isUnsupportedRequestOptionErrorData, type ContextOverflowRolloverDeps } from '@cindy/im-runtime/contextOverflowRollover';
 import { createAutoReviewIntentProjection } from '@cindy/maker-shared/auto-review-intent';
 import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, INHERITED_CAPABILITY_SELECTION, PI_CACHE_RECOVERY_EXPECTATION } from '@cindy/maker-core';
+import type { AutoReviewDelegate, AutoReviewRequest } from '@cindy/maker-core';
 import { normalizeTaskInput, appendInputText, inputPlainText, persistedInput, type InputHost, type AttachmentLifecycle } from './input.js';
 import { createRemoteHistory } from './remote-history.js';
 import { atomicPrivateWrite, readPrivateFile, privateDirectory } from '../platform.js';
@@ -730,6 +731,13 @@ export class TerminalTaskHost {
       await rm(path.join(this.options.profileDir, 'engines', 'codex', id), { recursive: true, force: true });
     }
   }
+  private permissionReviewer(guard:()=>void,prepare:(request:AutoReviewRequest)=>Promise<AutoReviewRequest>,signal?:AbortSignal):AutoReviewDelegate {
+    const review:AutoReviewDelegate=request=>this.utility.reviewPermission(request,guard,signal);
+    review.prepareRequest=async request=>{
+      guard();const prepared=await prepare(request);guard();return prepared;
+    };
+    return review;
+  }
   requestChannelUtilityText(_channel: import('@cindy/im-runtime/imDefaultSettings').ImDefaultSettingsChannel, prompt: string, opts: import('@cindy/model-providers/utilityTextRequest').UtilityTextRequestOptions) {
     return this.utility.request(prompt, opts);
   }
@@ -847,15 +855,24 @@ export class TerminalTaskHost {
     if (authorizeRequest && !await authorizeRequest(chosen.selection.model)) throw new Error('GUEST_PROVIDER_UNAUTHORIZED');
     const binary = this.binaries.get(input.kind);
     if (!binary) throw new Error('ENGINE_NOT_INSTALLED');
-    const agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: input.hostSessionId, selection: chosen.selection, route: chosen.route, binaryPath: binary, models: this.models, logger: this.options.logger, authorizeRequest, ...(input.guest ? {guestHome:input.guestHome} : {}) });
+    let active=true;
+    const reviewAbort=new AbortController();
+    const guardReview=()=>{this.guard({source:'local'});if(!active)throw new Error('HOSTED_TASK_CLOSED');};
+    const reviewAutoPermissionAction=this.permissionReviewer(guardReview,async request=>{
+      if(request.sessionId&&request.sessionId!==input.hostSessionId)throw new Error('TASK_AUTHORITY_CHANGED');
+      if(authorizeRequest&&!await authorizeRequest(chosen.selection.model))throw new Error('GUEST_PROVIDER_UNAUTHORIZED');
+      const {delegatedTask:_delegation,authorizationError:_error,...ordinary}=request;
+      return ordinary;
+    },reviewAbort.signal);
+    const agent = await (this.options.createAgent ?? createTerminalAgent)({ reviewAutoPermissionAction, profileDir: this.options.profileDir, taskId: input.hostSessionId, selection: chosen.selection, route: chosen.route, binaryPath: binary, models: this.models, logger: this.options.logger, authorizeRequest, ...(input.guest ? {guestHome:input.guestHome} : {}) });
     try {
       const handle = await agent.startSession(hostedStartOptions(input));
       const close = handle.close.bind(handle);
-      handle.close = async () => { this.hosted.delete(handle); try { await close(); } finally { await agent.dispose(); } };
+      handle.close = async () => { active=false;reviewAbort.abort();this.hosted.delete(handle); try { await close(); } finally { await agent.dispose(); } };
       if (this.closed) { await handle.close(); throw new Error('TASK_HOST_CLOSED'); }
       this.hosted.add(handle);
       return handle;
-    } catch (error) { await agent.dispose(); throw error; }
+    } catch (error) { active=false;reviewAbort.abort();await agent.dispose(); throw error; }
   }
   private async selection(input: Record<string, unknown>) {
     if (input.agentDeviceId) {
@@ -958,6 +975,7 @@ export class TerminalTaskHost {
     const capability = await this.capabilities.runtime({workingDir:row.workDir,agentKind:chosen.selection.agentKind});
     const knowledge = await this.knowledge?.createRuntime({ sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind });
     let lease:LiveTask|undefined,revoked=false;
+    const reviewAbort=new AbortController();
     const isCurrent=()=>!this.closed&&!revoked&&(!lease||this.live.get(id)===lease);
     const assertCurrent=()=>{if(!isCurrent())throw new Error('TASK_PLUGIN_SCOPE_REVOKED');};
     const instanceId=()=>{assertCurrent();if(!lease)throw new Error('TASK_NOT_READY');return lease.session.instanceId;};
@@ -975,9 +993,18 @@ export class TerminalTaskHost {
       isCurrent,
       scheduler: this.schedulerDeps,
       helper: this.helperDeps({sessionId:id,workingDir:row.workDir,agentKind:chosen.selection.agentKind,title:()=>row.title}),
-    }); } catch(error) { revoked=true;plugin?.close();await knowledge?.close(); await capability.close(); throw error; }
+    }); } catch(error) { revoked=true;reviewAbort.abort();plugin?.close();await knowledge?.close(); await capability.close(); throw error; }
+    const reviewAutoPermissionAction=this.permissionReviewer(assertCurrent,async request=>{
+      const current=await this.storage.get(id);
+      if(!current||current.deleted||current.archived||current.workDir!==row.workDir||request.sessionId&&request.sessionId!==id)throw new Error('TASK_AUTHORITY_CHANGED');
+      const {delegatedTask:_delegation,authorizationError:_error,...ordinary}=request;
+      // Plugin-created tasks require their own live receipt; never reinterpret
+      // a lost delegation as authority from the owner of an ordinary task.
+      if(current.source==='plugin')return {...ordinary,authorizationError:'The plugin task authorization receipt is unavailable.'};
+      return ordinary;
+    },reviewAbort.signal);
     let agent;
-    try { agent = await (this.options.createAgent ?? createTerminalAgent)({ profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, turnChangeCapture: this.changes.capture, taskShellEnv:()=>this.options.protectedInput?.envFor(id)??{}, remote: Boolean(row.agentDeviceId), capabilities:capability,getGhostRosterPrompt:plugin?.getGhostRosterPrompt, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { revoked=true;plugin?.close();await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
+    try { agent = await (this.options.createAgent ?? createTerminalAgent)({ reviewAutoPermissionAction, profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, turnChangeCapture: this.changes.capture, taskShellEnv:()=>this.options.protectedInput?.envFor(id)??{}, remote: Boolean(row.agentDeviceId), capabilities:capability,getGhostRosterPrompt:plugin?.getGhostRosterPrompt, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { revoked=true;reviewAbort.abort();plugin?.close();await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
     const startDeviceAgentSession = row.agentDeviceId && this.options.remoteInvoke ? createDeviceAgentStarter({ captureKnownFileBefore: this.changes.capture.beforeKnownFileWrite, noteOpaqueTurnChange: this.changes.capture.noteOpaqueWrite, remoteInvoke: this.options.remoteInvoke, rgPath: () => 'rg', codexPath: () => this.binaries.get('codex') ?? undefined, mcpProviders: () => tools.providers, prepareMcpBridge: async () => tools.pi(), makerMemory: () => knowledge?.memory, logger: this.options.logger }) : undefined;
     const maker = new Maker({ agents: { [chosen.selection.agentKind]: agent }, storage: this.storage, logger: this.options.logger, ...(knowledge ? {makerMemory:knowledge.memory} : {}), ...(startDeviceAgentSession ? { startDeviceAgentSession } : {}) });
     const stopObservingMaker = maker.on(event => {
@@ -989,7 +1016,7 @@ export class TerminalTaskHost {
       if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
       const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, thinkingEnabled: row.thinkingEnabled, vendorOptions: this.channelBindings.store.findByTarget(id) ? undefined : this.channelOrchestrators.vendorOptionsForSession(id) ?? this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
       if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
-      const task: LiveTask = { revoke:()=>{revoked=true;plugin?.close();},plugin,capabilityRevision:capability.revision,modelRevision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
+      const task: LiveTask = { revoke:()=>{revoked=true;reviewAbort.abort();plugin?.close();},plugin,capabilityRevision:capability.revision,modelRevision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;reviewAbort.abort();plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
       installDesktopInteractionHandler(session,(request,shared)=>this.interaction(id,request,undefined,shared),(sourceRequestId,decision)=>{
         for(const pending of this.pending.values())if(pending.sessionId===id&&pending.sourceRequestId===sourceRequestId){pending.settle(decision);return true;}
         return false;
@@ -1001,7 +1028,7 @@ export class TerminalTaskHost {
       lease=task;this.live.set(id, task);
       if (this.closed) { await this.closeTask(id); throw new Error('TASK_HOST_CLOSED'); }
       return task;
-    } catch (error) { revoked=true;plugin?.close();try { await maker.shutdown(); } finally { stopObservingMaker(); } await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
+    } catch (error) { revoked=true;reviewAbort.abort();plugin?.close();try { await maker.shutdown(); } finally { stopObservingMaker(); } await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
   }
   private onEvent(id: string, event: AgentEvent) {
     const runtime = this.live.get(id)?.session;
@@ -1373,17 +1400,25 @@ export class TerminalTaskHost {
           this.guard(context);
           if(context.deliveryProof){await validateTaskDelivery(this.options.remoteInvoke,context.deliveryProof);this.guard(context);}
           const agentMeta = context.deliveryProof ? {origin:{kind:'session' as const,senderSessionId:`${context.deliveryProof.controllerDeviceId}::${context.deliveryProof.sessionId}`,senderSessionTitle:context.deliveryProof.senderTitle,displayText:context.deliveryProof.message}} : context.sender ? {origin:{kind:'session' as const,senderSessionId:context.sender.sessionId,senderSessionTitle:context.sender.title,displayText:inputPlainText(message)}} : context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.sourceDevice ? { sourceDevice: context.sourceDevice } : undefined;
+          const projection=createAutoReviewIntentProjection();
+          const authoredText=projection.readText(persistedInput(message))??'';
+          const authorityMeta={...agentMeta,delivery:'turn',autoReviewUserText:context.scheduler?{kind:'scheduled-continuation'}:context.sender||context.deliveryProof||context.sharedTask?{kind:'delegated-continuation'}:authoredText};
           this.changes.assertCanDispatch(task.session.workDir);
-          const stored=await this.storage.append(id, { kind: 'user', message, clientId: this.activeSubmissions.get(id) ?? randomUUID(), origin: context.source, ...(agentMeta ? { agentMeta } : {}) });
-          this.emit('local-db:messages:created',{sessionId:id,message:{id:`${id}:${stored.sequence}`,clientId:stored.clientId??`${id}:${stored.sequence}`,sessionId:id,role:'user',content:persistedInput(message),createdAt:new Date(stored.timestamp).toISOString(),agentKind:task.selection.agentKind==='claude-code'?'cc':task.selection.agentKind,agentMeta:agentMeta??null}});
+          const stored=await this.storage.append(id, { kind: 'user', message, clientId: this.activeSubmissions.get(id) ?? randomUUID(), origin: context.source, agentMeta:authorityMeta });
+          this.emit('local-db:messages:created',{sessionId:id,message:{id:`${id}:${stored.sequence}`,clientId:stored.clientId??`${id}:${stored.sequence}`,sessionId:id,role:'user',content:persistedInput(message),createdAt:new Date(stored.timestamp).toISOString(),agentKind:task.selection.agentKind==='claude-code'?'cc':task.selection.agentKind,agentMeta:authorityMeta}});
           this.guard(context);
           const payload = context.scheduler ? appendInputText(message, `[Scheduled run context]\nschedule: ${JSON.stringify(context.scheduler.scheduleName)} (schedule_id: ${context.scheduler.scheduleId})\nrun_id: ${context.scheduler.runId}\nfiredAtUtc: ${new Date(context.scheduler.firedAt??Date.now()).toISOString()}`) : agentMeta ? appendInputText(message, 'sourceDevice' in agentMeta && agentMeta.sourceDevice ? buildClientDeviceNote(agentMeta.sourceDevice) : buildMessageSourceNote(messageSourceSenderFromMeta(agentMeta)) ?? '') : message;
           let changeSetStarted = false;
           try {
             const outgoing = await this.taskContext.prepareHandoff(id, payload);
+            const history=await this.contextMessages(id,Infinity);
+            const intent=projection.restore(history.map(message=>({...message,agentMeta:message.agentMeta??null})),context.scheduler||context.sender||context.deliveryProof?undefined:{clientId:stored.clientId!,content:persistedInput(message),authoredText});
             this.guard(context);
             const result = await this.channelSignals.withChannelTurnSource(id, this.channelSignals.channelTurnSourceFor(agentMeta?.origin, false), () => task.session.send(outgoing.message, {
               ...(context.scheduler ? { origin: context.scheduler } : {}),
+              [AUTO_REVIEW_SOURCE_CONTENT]:message.content,
+              [AUTO_REVIEW_USER_INTENT]:intent,
+              ...(context.sharedTask?{turnPermissionPolicy:{origin:{kind:'desktop' as const},confirmationSurface:'desktop' as const,autoReviewContext:{requesterAuthority:'guest' as const,source:'group' as const},forceConfirmToolCall:()=>false}}:{}),
               onAccepted: async () => { this.guard(context); this.turnLifecycle.noteUserSend(id); await this.changes.begin(task.session, stored.clientId!); changeSetStarted = true; },
             }));
             if (result.accepted) outgoing.accepted();

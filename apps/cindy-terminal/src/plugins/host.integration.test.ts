@@ -33,6 +33,7 @@ import {TerminalSecretStore} from '../secrets.js';
 import {TerminalTaskMedia} from '../tasks/media.js';
 import {scaffoldGhostDir,packGhostDir} from '@cindy/plugin-runtime/forge';
 import {createNativeScaffoldWriter} from '@cindy/plugin-runtime/nativeScaffold';
+import {createUtilityFixture} from '../models/utility.fixture.js';
 
 let directory:string,runtime:string;
 beforeAll(async()=>{
@@ -55,22 +56,27 @@ it('creates and packs a real plugin using the cwd-bound Node scaffold worker wit
 });
 
 it('requires confirmation of exact bytes and keeps native credentials private across restart',async()=>{
+  const modelCleanup:Array<()=>Promise<unknown>>=[],modelFixture=await createUtilityFixture(modelCleanup),utility=modelFixture.create();
+  await utility.update({models:[modelFixture.pin('first'),modelFixture.pin('second')]});
   const artifact='terminal-verified-download',artifactHash=createHash('sha256').update(artifact).digest('hex');
   const archive=new JSZip();
   archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'terminal-fixture',name:'Terminal fixture',version:'1.0.0',kind:'chip',entry:'main.js',settingsHtml:'settings.html',slots:['tool','node','card'],fs:true,tools:[{name:'check',description:'Verify fixture'}],node:{entry:'worker.cjs',protocol:'json-rpc-stdio',secretBindings:[{key:'key',label:'Fixture key',methods:['check']}]}}));
   const withNetwork=JSON.parse(await archive.file('ghost.json')!.async('string'));
   withNetwork.slots.push('network','library');
+  withNetwork.slots.push('cindy');withNetwork.cindy={text:['oneshot']};
   withNetwork.setup={requires:[{anyOf:['secret:key']}]};
   withNetwork.network={hosts:['accounts.example.com','api.example.com'],secrets:[{key:'oauth',label:'Fixture account',source:'oauth',inject:{header:'Authorization',format:'Bearer {value}',hosts:['api.example.com']},oauth:{authorizeUrl:'https://accounts.example.com/authorize',tokenUrl:'https://accounts.example.com/token',clientId:'fixture-client',scopes:['read']}}],connections:[{key:'instances',label:'Fixture instance',inject:{header:'Authorization',format:'Bearer {value}'}}]};
   archive.file('ghost.json',JSON.stringify(withNetwork));
   archive.file('main.js',`cindy.onHostMessage(async request=>{
+    if(request.type!=='tool-call')return;
+    const answer=await cindy.send({type:'cindy-request',kind:'oneshot_text',prompt:'A plugin quick answer'});
     const downloaded=await cindy.send({type:'download-request',kind:'start',id:'browser-artifact',url:'https://api.example.com/artifact',sha256:'${artifactHash}',bytes:${artifact.length}});
     const reply=await cindy.node.request({method:'check',downloadTokens:{artifact:downloaded.token},callId:request.callId,cancelWithCall:true});
     const saved=await cindy.send({type:'fs-request',op:'write',root:'workdir',path:'plugin-result.txt',content:'terminal-plugin-files',callId:request.callId});
     const library=await cindy.send({type:'library-request',op:'write',path:'works/browser.txt',content:'terminal-plugin-library',encoding:'utf8'});
     await cindy.send({type:'card-update',callId:request.callId,html:'<p>Plugin result</p><script>bad()</script>'});
     await fetch('/kv',{method:'PUT',body:JSON.stringify({visited:true})});
-    await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:{reply,saved,library,callId:request.callId}});
+    await cindy.send({type:'tool-result',callId:request.callId,ok:true,result:{reply,saved,library,answer,callId:request.callId}});
   });`);
   archive.file('settings.html','<!doctype html><html><body>Fixture</body></html>');
   archive.file('worker.cjs',String.raw`require('node:readline').createInterface({input:process.stdin}).on('line',raw=>{const r=JSON.parse(raw);process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{configured:r.cindy?.secrets?.key==='synthetic-acceptance-key',...(r.params?.downloads?{downloaded:require('node:fs').readFileSync(r.params.downloads.artifact,'utf8')}:{})}})+'\n');});`);
@@ -86,7 +92,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     openExternal:async(url:string)=>{const authorization=new URL(url);const callback=new URL(authorization.searchParams.get('redirect_uri')!);callback.searchParams.set('state',authorization.searchParams.get('state')!);callback.searchParams.set('code','synthetic-code');await fetch(callback);},
     fetchImpl:async(input:Parameters<typeof fetch>[0],init?:RequestInit)=>{expect(String(input)).toBe('https://accounts.example.com/token');expect(new URLSearchParams(String(init?.body)).get('client_id')).toBe('fixture-client');return Response.json({access_token:'synthetic-oauth-access',refresh_token:'synthetic-oauth-refresh',expires_in:3600,scope:'read'});},
   },root:path.join(directory,'owner'),runtimeDirectory:runtime,secrets,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},cards:{persist:(row:import('@cindy/plugin-runtime/cardService').GhostCardRow)=>media.savePluginCard(row,()=>{}),broadcast:(payload:unknown)=>{cardPushes.push(payload);}},fs:{getSessionSnapshot:async()=>({workingDir:directory,permissionMode:'bypassPermissions',planModeEnabled:false,remoteHostId:null,isCurrent:()=>active}),requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null},executablePath:process.env.CINDY_TEST_CHROMIUM??'unused',receive:async()=>{throw new Error('Fixture does not use other slots');}};
-  const host=new TerminalPlugins(options);
+  const host=new TerminalPlugins({...options,models:{models:modelFixture.models,utility}});
   const pages=new TerminalPluginPages(host,{assertCurrent:options.assertCurrent,translate:key=>key});
   const wire:unknown[]=[];
   const registry=new RemoteResourceRegistry();registerPluginResources(registry,host,pages);
@@ -106,6 +112,10 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
     await writeFile(file,bytes);
     const valid=await host.prepareInstall(file,'controller-a');const ghost=await host.confirmInstall(valid.id,'controller-a');const instance=installedGhostStoragePart(ghost);
     const resource=await registry.get(context,{client,ref:{collectionId:'plugins',kind:'plugin',id:instance}});
+    // Public remote settings must control the model used by the browser pipe.
+    expect(resource.actions?.find(action=>action.id==='model')).toBeDefined();
+    await registry.invoke(context,{client,collectionId:'plugins',resourceRef:resource.ref,actionId:'model',input:{model:modelFixture.pin('second')}});
+    expect((await registry.get(context,{client,ref:resource.ref})).blocks?.find(block=>block.id==='model')?.data).toMatchObject({values:{model:modelFixture.pin('second')}});
     const binding=resource.actions?.find(action=>action.id==='credentials')?.fields?.find(field=>field.id==='key')?.options?.[0].value;
     expect(binding).toBeTruthy();
     const saveRequest={client,collectionId:'plugins',resourceRef:resource.ref,actionId:'credentials',input:{key:binding,value:'synthetic-acceptance-key'}};
@@ -201,7 +211,8 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
           expect(JSON.stringify(failure)).not.toContain('synthetic-private-details');
         }finally{failedWorker.mockRestore();}
         called=payload(await client.callTool({name:'ghost_call',arguments:{ghost_id:'terminal-fixture',tool:'check',args:{}}}));
-        expect(called, runtimeDiagnostics.join('\n')).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true,downloaded:artifact}},saved:{ok:true},library:{ok:true}}});
+        expect(called, runtimeDiagnostics.join('\n')).toMatchObject({ok:true,result:{reply:{ok:true,result:{configured:true,downloaded:artifact}},saved:{ok:true},library:{ok:true},answer:{ok:true,text:'UTILITY_OK'}}});
+        expect(modelFixture.requests).toEqual(['second']);
       }finally{await client.close();await server.close();pluginTask.close();setup.close();publisher.close();account.close();}
 
       expect(await readFile(path.join(directory,'plugin-result.txt'),'utf8')).toBe('terminal-plugin-files');
@@ -250,7 +261,7 @@ it('requires confirmation of exact bytes and keeps native credentials private ac
       expect(recovered.kv.read(instance)).toEqual({});
       active=false;await expect(recovered.list()).rejects.toThrow('OWNER_CHANGED');
     }finally{await recovered.close();}
-  }finally{pages.close();await controllerAuthorization.close();await hostAuthorization.close();await host.close();vault.lock();await media.close();}
+  }finally{pages.close();await controllerAuthorization.close();await hostAuthorization.close();await host.close();vault.lock();await media.close();for(const close of modelCleanup.reverse())await close();}
   // Native Windows vault ACL commands run for each durable mutation. Preserve
   // the local 5s budget while allowing that real OS work on the CI runner.
 },30_000);

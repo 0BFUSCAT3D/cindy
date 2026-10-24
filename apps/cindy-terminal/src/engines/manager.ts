@@ -87,12 +87,14 @@ export class EngineManager {
     const home = path.join(this.root, kind);
     await privateDirectory(this.root); await privateDirectory(home);
     const id = `${release.version}-${randomUUID()}`;
+    const destination = path.join(home, id);
     const staging = path.join(home, `.install-${randomUUID()}`);
     await privateDirectory(staging);
     const archive = path.join(staging, 'download');
     const files = path.join(staging, 'files');
     await mkdir(files, { mode: 0o700 });
     let stage = 'download';
+    let published = false, activated = false;
     try {
       await this.download(kind, asset, archive, signal);
       stage = 'extract';
@@ -104,16 +106,21 @@ export class EngineManager {
       const root = await this.layout(kind, files, asset, release.version);
       const binary = path.join(root, asset.entrypoint);
       if (process.platform !== 'win32') await chmod(binary, 0o700);
-      // Validate the actual executable before making it active. Never inspect auth.
-      stage = 'version';
-      const reported = await runNative(binary, ['--version'], { signal, timeout: 30_000 });
-      if (reported.code !== 0 || !reported.stdout.includes(release.version)) throw new EngineError('engine_version_mismatch');
-      signal?.throwIfAborted();
+      // Move before executing: Windows may keep the executable mapped after
+      // --version closes. Only current.json activates this unique directory.
       stage = 'publish';
-      await publishEngineDirectory(root, path.join(home, id), signal);
+      await publishEngineDirectory(root, destination, signal);
+      published = true;
+      signal?.throwIfAborted();
+      // Validate at the final path, including any relative runtime resources.
+      // Never inspect auth, and leave the old receipt active until this passes.
+      stage = 'version';
+      const reported = await runNative(path.join(destination, asset.entrypoint), ['--version'], { signal, timeout: 30_000 });
+      if (reported.code !== 0 || !reported.stdout.includes(release.version)) throw new EngineError('engine_version_mismatch');
       signal?.throwIfAborted();
       stage = 'receipt';
       await atomicPrivateWrite(path.join(home, 'current.json'), JSON.stringify({ version: release.version, directory: id, entrypoint: asset.entrypoint, sha256: asset.sha256, asset } satisfies Receipt));
+      activated = true;
       this.options.onProgress?.({ kind, stage: 'ready' });
       return this.status(kind);
     } catch (error) {
@@ -121,6 +128,10 @@ export class EngineManager {
       if (code && /^E[A-Z]+$/.test(code)) throw new EngineError(`engine_${stage}_${code.toLowerCase()}`);
       throw error;
     } finally {
+      // Keep candidates once receipt publication starts: an fsync error can
+      // follow a successful rename. Removing that directory would break the
+      // now-active receipt. Earlier failures are never selectable.
+      if (published && !activated && stage !== 'receipt') await rm(destination, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => {});
       // Defender can briefly retain handles even after our own streams close.
       // Node's bounded retry applies only to its documented transient rm errors.
       await rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(error => {

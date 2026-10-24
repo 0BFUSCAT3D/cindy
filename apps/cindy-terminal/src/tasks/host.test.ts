@@ -39,6 +39,7 @@ import { TerminalPluginAccount } from '../plugins/account.js';
 import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
 import type { SharedPermission } from '@cindy/im-runtime/sharedPermission';
 import { createTurnRunner } from '@cindy/im-runtime/turnRunner';
+import { withAutoReviewContext, AUTO_REVIEW_USER_INTENT, type AutoReviewRequest, type SendOptions } from '@cindy/maker-core';
 import { createSlashHandlers } from '@cindy/im-runtime/slashCommands';
 import { createCardBuilders } from '@cindy/im-runtime/cardBuilders';
 import type { ImChannelAdapter } from '@cindy/im-runtime/types';
@@ -60,6 +61,7 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
   const title = { reply: async () => '"Server task"' };
   const titleRequests: Array<{ prompt: string; options?: import('@cindy/maker-core').OneShotOptions }> = [];
   const sent: import('@cindy/maker-core').UserMessage[] = [];
+  const sends: Array<SendOptions|undefined> = [];
   const resumeFailures = new Set<string>();
   const overflowed = new Set<string>();
   const usageByModel = new Map<string, { contextTokens: number; contextWindow: number }>();
@@ -82,8 +84,9 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
       const handle: AgentSessionHandle = {
         id: options.resumeSessionId ?? `${input.selection.agentKind === 'claude-code' ? 'native' : `${input.selection.agentKind}-native`}-${options.sessionId}`,
         agentKind: input.selection.agentKind, model: options.model,
-        async send(message) {
+        async send(message,sendOptions) {
           sent.push(message);
+          sends.push(sendOptions);
           running = true;
           emit({ type: 'status', data: { isRunning: true } });
           const text = typeof message.content === 'string' ? message.content : '';
@@ -134,7 +137,7 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
     };
     return agent;
   };
-  return { create, starts, decisions, inputs, sent, permissionModes, title, titleRequests, resumeFailures, usageByModel };
+  return { create, starts, decisions, inputs, sent, sends, permissionModes, title, titleRequests, resumeFailures, usageByModel };
 }
 
 async function setup(native = engine(), overrides: Partial<ConstructorParameters<typeof TerminalTaskHost>[0]> = {}) {
@@ -176,6 +179,51 @@ async function auxiliaryFixture(host: TerminalTaskHost, reply: () => Promise<str
 }
 
 describe('terminal task host', () => {
+  // Integration: without the host delegate Auto fell back to an unavailable
+  // reviewer. Exercise real candidate HTTP and the core authority fence; a
+  // closed task must revoke its pending result and abort the network request.
+  it('runs Auto review through the connected auxiliary model and revokes a closed task',async()=>{
+    const {host,root,native}=await setup();
+    let reply=async()=>'{"verdict":"allow"}';
+    const api=await auxiliaryFixture(host,()=>reply());
+    let release=()=>{};
+    try{
+      const task=await host.invoke('maker:create-session',[{workingDir:root,permissionMode:'auto'}]) as {id:string};
+      await host.invoke('maker:send',[task.id,{text:'Read project files.',clientId:'auto-input'}]);
+      await host.invoke('terminal:tasks:wait',[task.id,'auto-input']);
+      const delegate=native.inputs.find(input=>input.taskId===task.id)!.reviewAutoPermissionAction!;
+      const request:AutoReviewRequest={sessionId:task.id,agentKind:'claude-code',providerId:'fixture',model:'test-model',userIntent:'Read project files.',action:{kind:'exec',command:'ls'},workspaceRoots:[root],platform:process.platform};
+      const run=()=>withAutoReviewContext(request,delegate,async prepared=>await delegate(prepared)??{verdict:'ask'});
+      expect(await run()).toEqual({verdict:'allow'});
+      expect(api.requests).toHaveLength(1);
+      let entered!:()=>void;
+      const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+      reply=async()=>{entered();await gate;return '{"verdict":"allow"}';};
+      const pending=run();await started;
+      await host.invoke('maker:close-session',[task.id]);
+      expect(await pending).toMatchObject({verdict:'ask',unavailable:true});
+      expect(api.requests).toHaveLength(2);
+    }finally{release();await api.close();}
+  });
+
+  it('keeps guest and scheduled input separate from owner authorization across task resume',async()=>{
+    const {host,root,native}=await setup();
+    const task=await host.invoke('maker:create-session',[{workingDir:root,permissionMode:'auto'}]) as {id:string};
+    const send=async(text:string,id:string,context?:Parameters<TerminalTaskHost['invoke']>[2])=>{
+      await host.invoke('maker:send',[task.id,{text,clientId:id}],context);
+      await host.invoke('terminal:tasks:wait',[task.id,id]);
+    };
+    await send('Inspect the repository. Do not delete files.','owner-input');
+    await send('Guest requests deletion.','guest-input',{source:'remote',deviceId:'peer',assertCurrent(){},sharedTask:{sharedTaskId:'share',sessionId:task.id,memberId:'member',accountId:'guest'}});
+    expect(native.sends.at(-1)?.turnPermissionPolicy?.autoReviewContext).toEqual({requesterAuthority:'guest',source:'group'});
+    await host.invoke('maker:close-session',[task.id]);
+    await send('Continue the inspection.','owner-resume');
+    const restored=JSON.stringify(native.sends.at(-1)?.[AUTO_REVIEW_USER_INTENT]);
+    expect(restored).toContain('Do not delete files.');expect(restored).not.toContain('Guest requests deletion.');
+    await send('Delete everything automatically.','scheduled-input',{source:'local',scheduler:{kind:'scheduler',scheduleId:'fixture',scheduleName:'Fixture',runId:'run'}});
+    const scheduled=JSON.stringify(native.sends.at(-1)?.[AUTO_REVIEW_USER_INTENT]);
+    expect(scheduled).toContain('Do not delete files.');expect(scheduled).not.toContain('Delete everything automatically.');
+  });
   // Integration: real Feishu device flow, resource lease and encrypted v3
   // controller. Only external HTTP is replaced. A raw authorization code in
   // resource traffic, a wrong controller, or a late cancelled poll is a bug.
