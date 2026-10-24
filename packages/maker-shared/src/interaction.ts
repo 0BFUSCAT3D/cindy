@@ -914,6 +914,20 @@ function argsPreview(args: Record<string, unknown>): string {
   return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }
 
+/** `mcp__server__tool` or `mcp:server:tool`; plain string scan, no backtracking on model-controlled names. */
+function parseMcpToolName(toolName: string): { server: string; tool: string } | null {
+  const rest = toolName.startsWith('mcp__') ? toolName.slice(5) : toolName.startsWith('mcp:') ? toolName.slice(4) : null;
+  if (!rest) return null;
+  const underscore = rest.indexOf('__');
+  const colon = rest.indexOf(':');
+  const cut = underscore < 0 ? colon : colon < 0 ? underscore : Math.min(underscore, colon);
+  if (cut <= 0) return null;
+  const sepLength = rest.startsWith('__', cut) ? 2 : 1;
+  const server = rest.slice(0, cut);
+  const tool = rest.slice(cut + sepLength);
+  return tool ? { server, tool } : null;
+}
+
 function shellQuote(arg: string): string {
   return /^[A-Za-z0-9_\/.:=@%+,-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
 }
@@ -988,11 +1002,11 @@ export function describePermissionAction(toolName: string, input: Record<string,
     const paths = filePaths(input, FILE_READ_TOOLS.has(name) && name !== 'read');
     if (paths) return { kind: FILE_READ_TOOLS.has(name) ? 'file-read' : 'file-write', preview: paths };
   }
-  const mcp = /^mcp(?:__|:)([^_:]+(?:[_-][^_:]+)*?)(?:__|:)(.+)$/.exec(toolName);
+  const mcp = parseMcpToolName(toolName);
   if (mcp) {
-    const dispatched = mcp[2] === 'call_tool' && innerName;
+    const dispatched = mcp.tool === 'call_tool' && innerName;
     const args = dispatched ? innerArgs : input;
-    return { kind: 'plugin', subject: mcp[1]!, preview: [dispatched || mcp[2], argsPreview(args)].filter(Boolean).join(' ') };
+    return { kind: 'plugin', subject: mcp.server, preview: [dispatched || mcp.tool, argsPreview(args)].filter(Boolean).join(' ') };
   }
   return { kind: 'tool', preview: previewOf(input) };
 }

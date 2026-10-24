@@ -308,6 +308,14 @@ describe('interaction shared model', () => {
     expect(describePermissionAction('mcp:cindy_browser:call_tool', {
       name: 'browser', args: { action: 'recipe', recipeId: 'post-reply', site: 'x.com', text: 'hello' },
     }).preview).toBe('recipe {"recipeId":"post-reply","site":"x.com","text":"hello"}');
+    // MCP names parse by plain string scan: both separators work and hostile names stay linear (CodeQL ReDoS).
+    expect(describePermissionAction('mcp__cindy_orca__create_workers', { n: 1 })).toMatchObject({ kind: 'plugin', subject: 'cindy_orca', preview: 'create_workers {"n":1}' });
+    expect(describePermissionAction('mcp:my-server:do_it', {})).toMatchObject({ kind: 'plugin', subject: 'my-server', preview: 'do_it' });
+    expect(describePermissionAction('mcp__', {}).kind).toBe('tool');
+    const hostile = `mcp:9${'-9'.repeat(50_000)}`;
+    const started = Date.now();
+    expect(describePermissionAction(hostile, {}).kind).toBe('tool');
+    expect(Date.now() - started).toBeLessThan(500);
     // argv arrays keep argument boundaries.
     expect(describePermissionAction('shell', { command: ['printf', '%s', 'a b', "it's", ''] }).preview)
       .toBe("printf %s 'a b' 'it'\\''s' ''");
