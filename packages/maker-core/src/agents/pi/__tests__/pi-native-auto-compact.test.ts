@@ -755,6 +755,26 @@ describe("PiAgent native auto-compaction ownership", () => {
     }
   });
 
+  it("keeps a second same-budget switch hot after the post-switch settings write", async () => {
+    const handle = await startWithBudget(50_000);
+    try {
+      // 第一次热切（m → n）：Pi 切模成功后的 settings 写盘不带预算的话，会把
+      // 其它模型的按预算保留量冲回各自上限；下一次同预算再切就预演成重建。
+      await handle.setModel!("n");
+      expect(readLatestPiSettings().compaction?.modelOverrides).toMatchObject({
+        "cindy/m": { reserveTokens: budgetReserve(200_000, 50_000) },
+        "cindy/n": { reserveTokens: budgetReserve(100_000, 50_000) },
+      });
+      // 同预算连切第二次（n → m）：必须仍是热切，不得走重建。
+      const second = await handle.previewModelSwitch?.("m");
+      expect(["hot", "refresh"]).toContain(second?.action);
+      await handle.setModel!("m");
+      expect(handle.getUsageSnapshot().contextWindow).toBe(50_000);
+    } finally {
+      await handle.close();
+    }
+  });
+
   it("previews a rebuild when the live reserve does not match the required one", async () => {
     const handle = await startWithBudget(50_000);
     try {

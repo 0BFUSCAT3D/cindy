@@ -136,7 +136,6 @@ UI、usage 与 digest 投影，不再向 Pi 注入 host 自动 compact RPC。
 新任务继续跟随模型默认而不是快照一个当时的默认值）。远程任务同样由**被控端**读自己的偏好文件并在
 `maker:get-context-window-bounds` 响应里回带（`budget` / `budgetCustomized`）。
 
-本机占用 ≥ 100%，或 host／bridge 自动 compact 已确定性失败（空摘要、compact 路径上的
 Claude Code／Pi 本机占用 ≥ 100%，或 host／bridge 自动 compact 已确定性失败（空摘要、compact 路径上的
 invalid-request 400）时，走
 `host-controlled rollover + model-controlled bounded retrieval`：host 关闭旧原生窗口、写交接并

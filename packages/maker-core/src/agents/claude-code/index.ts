@@ -1484,7 +1484,6 @@ export class ClaudeCodeAgent extends BaseAgent {
     const resolveRemoteClaudeRoute = this.deps.resolveRemoteClaudeRoute?.bind(this.deps);
     const getAuthEnv = this.deps.auth.getAuthEnv.bind(this.deps.auth);
     const sdkModel = sdkModelFor(opts.model);
-// 上游：sdkEffortForModel 多带 providerId（同名模型在不同来源可声明不同 effort）。
     const initialSdkEffort = this.sdkEffortForModel(opts.model, opts.effort ?? 'high', opts.providerId);
     // 任务级工作上下文预算（tokens）：host 已按目录上限与模型级上限收敛。
     // 本任务热切模型时 host 会随 setModel 下新值；缺席保持当前值。

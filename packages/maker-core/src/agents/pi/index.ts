@@ -2164,6 +2164,8 @@ export class PiAgent extends BaseAgent {
       fileOps?: PiRemoteFileOps;
       contextWindow?: number;
       workingContextWindow?: number;
+      /** 任务预算：workingContextWindow 缺席时兜底进顶层保留量，不得依赖调用方预折叠。 */
+      sessionContextWindowBudget?: number | null;
       piCompactionPct?: number;
       packages?: readonly PiNativePackageEntry[];
       disabledSkills?: DisabledSkillLaunchSnapshot;
@@ -2174,7 +2176,7 @@ export class PiAgent extends BaseAgent {
       opts.contextWindow,
       opts.piCompactionPct,
       opts.packages,
-      opts.workingContextWindow,
+      opts.workingContextWindow ?? opts.sessionContextWindowBudget ?? undefined,
     );
     if (opts.compactionModelOverrides) {
       const settings = JSON.parse(built);
@@ -2229,6 +2231,7 @@ export class PiAgent extends BaseAgent {
       fileOps?: PiRemoteFileOps;
       contextWindow?: number;
       workingContextWindow?: number;
+      sessionContextWindowBudget?: number | null;
       piCompactionPct?: number;
       packages?: readonly PiNativePackageEntry[];
       disabledSkills?: DisabledSkillLaunchSnapshot;
@@ -7333,6 +7336,10 @@ export class PiAgent extends BaseAgent {
         await this.writePiRuntimeSettings(configHome, {
           fileOps, contextWindow: verifiedWindow,
           workingContextWindow: effectiveWorkingContextWindow(effectiveProviderId, model),
+          // 任务预算随切后写盘显式下发（zqchris review）：顶层保留量的预算来源
+          // 不再依赖调用方把它预折叠进 workingContextWindow；其它模型的按预算
+          // modelOverrides 由下方保留分支原样保住（「连切两次仍热切」用例守着）。
+          sessionContextWindowBudget,
           piCompactionPct: sessionPiAutoCompactPct, packages: nativePackagePaths,
           disabledSkills: disabledSkillLaunch,
         });
