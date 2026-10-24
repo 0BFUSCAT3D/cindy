@@ -369,6 +369,8 @@ describe('ColdStartAuthFallbackRegistry', () => {
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
+      loginCommitPending: false,
+      loginCommittedSinceInitialize: false,
       isStartupFallbackEpoch: (epoch) => registry.containsOnlyFallbacks(flowEpoch, epoch),
       timeoutStartEpoch: flowEpoch,
       currentEpoch,
@@ -379,6 +381,8 @@ describe('ColdStartAuthFallbackRegistry', () => {
     await expect(resolveColdStartTimeoutRecovery({
       ownerTransitionPending: false,
       authChangedSinceInitialize: false,
+      loginCommitPending: false,
+      loginCommittedSinceInitialize: false,
       isStartupFallbackEpoch: (epoch) => registry.containsOnlyFallbacks(flowEpoch, epoch),
       timeoutStartEpoch: flowEpoch,
       currentEpoch,
