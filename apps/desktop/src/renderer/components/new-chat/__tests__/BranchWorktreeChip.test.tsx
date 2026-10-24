@@ -23,10 +23,11 @@ const render = (element: React.ReactElement) =>
   });
 const mocks = vi.hoisted(() => ({
   toast: vi.fn(),
+  warning: vi.fn(),
   t: (key: string, args?: object) => key + (args ? JSON.stringify(args) : ''),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: mocks.t }) }));
-vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toast } }));
+vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toast, warning: mocks.warning } }));
 vi.mock('../FolderPickerPopover', () => ({
   FolderPickerPopover: () => null,
   addRecentFolder: vi.fn(),
@@ -149,11 +150,13 @@ it('explains a disabled conflict, then rechecks locally on hover', async () => {
   const button = await screen.findByRole('button', { name: /newChat.branchSync.conflict/ });
   expect(button.getAttribute('aria-disabled')).toBe('true');
   expect(button.parentElement?.tabIndex).toBe(0);
+  expect(mocks.warning).not.toHaveBeenCalled();
   vi.useFakeTimers();
   fireEvent.mouseEnter(button.parentElement!);
   await act(async () => vi.advanceTimersByTime(250));
   expect(status).toHaveBeenCalledTimes(2);
   expect(refreshButton().hasAttribute('disabled')).toBe(false);
+  expect(mocks.warning).not.toHaveBeenCalled();
 });
 it('reports failed fetches in a toast and permits retry without selecting anything', async () => {
   sync.mockRejectedValueOnce(new Error('[INTERNAL] Authentication failed'));
@@ -199,11 +202,14 @@ it('keeps a fetched missing-remote result disabled across local rechecks, but cl
   const view = render(<BranchWorktreeChip {...props} />);
   await waitFor(() => expect(refreshButton().hasAttribute('disabled')).toBe(false));
   fireEvent.click(refreshButton());
-  await screen.findByRole('button', { name: /newChat.branchSync.missing-remote/ });
+  const blocked = await screen.findByRole('button', { name: /newChat.branchSync.missing-remote/ });
+  expect(mocks.warning).toHaveBeenCalledExactlyOnceWith(blocked.getAttribute('aria-label'));
+  expect(mocks.toast).not.toHaveBeenCalled();
   await act(async () => {
     fireEvent.click(branchButton());
   });
   await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+  expect(mocks.warning).toHaveBeenCalledOnce();
   expect(
     screen
       .getByRole('button', { name: /newChat.branchSync.missing-remote/ })
@@ -211,4 +217,22 @@ it('keeps a fetched missing-remote result disabled across local rechecks, but cl
   ).toBe(true);
   view.rerender(<BranchWorktreeChip {...props} branchLabel="other" />);
   await waitFor(() => expect(refreshButton().hasAttribute('disabled')).toBe(false));
+});
+
+// F01: a rejected user action should notify only its current target. Existing
+// stale-read coverage cannot catch a delayed mutation response causing a toast.
+it('does not warn for a blocked click result after changing branch or project', async () => {
+  let resolve!: (value: unknown) => void;
+  sync.mockReturnValue(
+    new Promise((done) => {
+      resolve = done;
+    }),
+  );
+  const view = render(<BranchWorktreeChip {...props} />);
+  await waitFor(() => expect(refreshButton().hasAttribute('disabled')).toBe(false));
+  fireEvent.click(refreshButton());
+  view.rerender(<BranchWorktreeChip {...props} baseRepo="/other" branchLabel="other" />);
+  await act(async () => resolve({ status: { ...baseStatus, blocked: 'conflict' }, updated: 0 }));
+  expect(mocks.warning).not.toHaveBeenCalled();
+  expect(mocks.toast).not.toHaveBeenCalled();
 });

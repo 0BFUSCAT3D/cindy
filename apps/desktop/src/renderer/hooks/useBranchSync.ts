@@ -93,6 +93,12 @@ export function useBranchSync(
       clearTimeout(doneTimer.current);
     };
   }, [key, refresh]);
+  const blockedHint = (status: BranchSyncStatus) =>
+    t(`newChat.branchSync.${status.blocked}`, {
+      branch,
+      remote: status.remote ?? 'origin',
+      remoteBranch: status.remoteBranch ?? branch,
+    });
   const sync = async () => {
     if (!baseRepo || busy.current) return;
     busy.current = true;
@@ -101,6 +107,7 @@ export function useBranchSync(
     try {
       const result = (await invoke(true)) as BranchSyncResult;
       if (currentKey.current !== key || id !== request.current) return;
+      if (result.status.blocked) toast.warning(blockedHint(result.status));
       setSnapshot({
         key,
         status: result.status,
@@ -141,7 +148,7 @@ export function useBranchSync(
   if (status?.remoteOnly) hint = t('newChat.branchSync.remoteAction', vars);
   if (status?.checkoutPath)
     hint += `\n${t('newChat.branchSync.checkedOut', { ...vars, directory: status.checkoutPath.split(/[\\/]/).filter(Boolean).at(-1) })}`;
-  if (status?.blocked) hint = t(`newChat.branchSync.${status.blocked}`, vars);
+  if (status?.blocked) hint = blockedHint(status);
   if (state.result && !status?.blocked)
     hint = state.result.updated
       ? t('newChat.branchSync.updated', { count: state.result.updated })
