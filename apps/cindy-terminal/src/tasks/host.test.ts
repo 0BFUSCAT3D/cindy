@@ -1412,11 +1412,22 @@ describe('terminal task host', () => {
       expect((await plugins.models!.config('_root__fixture-plugin')).permissionMode).toBe('ask');
       await expect(call('send',{taskId:rollback.taskId,expectedRevision:rollback.revision,requestKey:'after-owner-revocation',text:'must not dispatch'})).rejects.toThrow('PERMISSION_DENIED');
       await expect(plugins.setTaskPermission('_root__fixture-plugin','bypassPermissions')).rejects.toThrow('INVALID_PERMISSION_MODE');
+      // Integration: the native plugin pipe must persist an immutable plan only
+      // before work starts, and a plan cannot grant a new directory.
+      const planned=await call('create',{title:'Registered team plan',requestKey:'team-plan'});
+      const plan={concurrency:1,items:[{label:'review',workingDir:planned.workingDir,route:planned.resolvedConfig,task:'Inspect the selected directory'}]};
+      await expect(call('setTeamPlan',{taskId:planned.taskId,plan:{...plan,items:[{...plan.items[0],workingDir:path.dirname(planned.workingDir)}]}})).rejects.toThrow('PERMISSION_DENIED');
+      expect(await call('setTeamPlan',{taskId:planned.taskId,plan})).toEqual({ok:true});
+      expect(await call('setTeamPlan',{taskId:planned.taskId,plan})).toEqual({ok:true});
+      await expect(call('setTeamPlan',{taskId:planned.taskId,plan:{...plan,concurrency:2}})).rejects.toThrow('IDEMPOTENCY_CONFLICT');
+      await expect(call('setTeamPlan',{taskId:created.taskId,plan:{...plan,items:[{...plan.items[0],workingDir:created.workingDir}]}})).rejects.toThrow('TASK_BUSY');
       await tasks.sessions.close();
       const reopened=new TerminalPluginSessions({root,host:plugins,tasks:host,guard:()=>{}});plugins.configureTaskSessions(reopened);
       try{
         await reopened.ready;
         expect(await call('getRun',{runId:run.runId})).toMatchObject({status:'completed'});
+        expect(await call('setTeamPlan',{taskId:planned.taskId,plan})).toEqual({ok:true});
+        await expect(call('setTeamPlan',{taskId:planned.taskId,plan:{...plan,concurrency:2}})).rejects.toThrow('IDEMPOTENCY_CONFLICT');
         await reopened.withUninstall('_root__fixture-plugin',async()=>{});
         expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(true);
         await expect(call('get',{taskId:created.taskId})).rejects.toThrow('TASK_NOT_FOUND');

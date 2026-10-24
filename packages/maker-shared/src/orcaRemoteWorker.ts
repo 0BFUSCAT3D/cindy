@@ -61,3 +61,14 @@ export function parseOrcaRemoteLead(raw: unknown): OrcaRemoteLead | null {
 export function serializeOrcaRemoteLead(lead: OrcaRemoteLead): string {
   return JSON.stringify(lead);
 }
+
+export interface OrcaRemoteWorkerProxySessionSeed {
+  title: string;
+  agentKind: string;
+  model: string;
+  effort: string | null;
+  permissionMode: string;
+  fastMode: boolean | 'ultrafast';
+  agentDeviceId?: string | null;
+}
+

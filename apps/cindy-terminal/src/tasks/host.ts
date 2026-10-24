@@ -6,7 +6,7 @@ import type { TerminalPluginSetup } from '../plugins/setup.js';
 import { parseGhostSetupInlineSubmitRequest } from '@cindy/plugin-runtime/ghostSetupInteractionBridge';
 import { createGhostSetupInteractionSurface } from '@cindy/plugin-runtime/ghostSetupInteractionSurface';
 import { createHash, randomUUID } from 'node:crypto';
-import { stat, rm } from 'node:fs/promises';
+import { stat, rm, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { ClaudeCodeAgent, CodexAgent, PiAgent, Maker, type AgentEvent, type AgentKind, type BaseAgent, type InteractionDecision, type InteractionRequest, type Logger, type PermissionMode, type Session, type UserMessage } from '@cindy/maker-core';
 import { buildClientDeviceNote, buildMessageSourceNote, messageSourceSenderFromMeta } from '@cindy/maker-shared/message-source';
@@ -1037,7 +1037,10 @@ export class TerminalTaskHost {
   private async create(input: Record<string, unknown>, guard: () => void, plugin?: {id:string;hidden?:boolean;onPersistenceStarted():void}) {
     const id = plugin?.id ?? randomUUID();
     const admitted = await this.admitTask(input, id, guard);
-    const { resolved, cwd } = admitted;
+    const { resolved } = admitted;
+    // Plugin task roots become authorization facts for later worker plans.
+    // Persist their admitted identity, including macOS /var → /private/var.
+    const cwd = plugin ? await realpath(admitted.cwd) : admitted.cwd;
     input = admitted.input;
     if (input.fastMode !== undefined && typeof input.fastMode !== 'boolean' && input.fastMode !== 'ultrafast') throw new Error('INVALID_ARGUMENT');
     if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== 'boolean') throw new Error('INVALID_ARGUMENT');

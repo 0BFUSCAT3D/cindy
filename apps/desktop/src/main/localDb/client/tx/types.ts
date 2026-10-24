@@ -268,15 +268,8 @@ export interface EmbeddingEnqueueArgs {
  * orcaTeamStore.addOrUpdateWorker 原同步事务逻辑。可选字段值为 undefined 表示
  * "保留 existing 行的当前值",与原 drizzle 写法语义一致。
  */
-export interface OrcaRemoteWorkerProxySessionSeed {
-  title: string;
-  agentKind: string;
-  model: string;
-  effort: string | null;
-  permissionMode: string;
-  fastMode: boolean | 'ultrafast';
-  agentDeviceId?: string | null;
-}
+export type { OrcaRemoteWorkerProxySessionSeed } from '@cindy/maker-shared/orca-remote-worker';
+import type { OrcaRemoteWorkerProxySessionSeed } from '@cindy/maker-shared/orca-remote-worker';
 
 export interface OrcaUpsertWorkerArgs {
   id: string;

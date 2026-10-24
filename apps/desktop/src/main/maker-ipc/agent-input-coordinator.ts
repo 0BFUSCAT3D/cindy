@@ -1036,7 +1036,8 @@ type PersistAcceptedUserMessageResult = 'persisted' | 'stale' | 'failed';
  * pause, or the queued row stayed in place); not-attempted = not delivered and nothing is
  * retained, so ordinary delivery is still safe; rejected = input screening discarded it.
  */
-export type ControlSteerOutcome = 'steered' | 'queued' | 'not-attempted' | 'rejected';
+export type { ControlSteerOutcome } from '@cindy/im-runtime/sessionQueueControl';
+import type { ControlSteerOutcome } from '@cindy/im-runtime/sessionQueueControl';
 
 /** What a steer attempt actually did, beyond the boolean UI contract. */
 interface SteerObservation {

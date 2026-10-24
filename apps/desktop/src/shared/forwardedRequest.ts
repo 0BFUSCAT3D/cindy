@@ -14,18 +14,8 @@ const FORWARDED_REQUEST_COPY = {
   ko: ko.forwardedRequest,
 } satisfies Record<SupportedLocale, typeof en.forwardedRequest>;
 
-/** Host-owned source evidence. It describes authorship, never execution permission. */
-export interface ForwardedRequestSource {
-  userText: string | null;
-  sessionId?: string;
-  clientId?: string;
-}
-
-/** Kept under the existing protected, non-human input receipt. */
-export interface AgentRequestReceipt {
-  kind: 'agent-request' | 'delegated-continuation';
-  request?: ForwardedRequestSource;
-}
+import type { ForwardedRequestSource, AgentRequestReceipt } from '@cindy/maker-shared/forwarded-request-types';
+export type { ForwardedRequestSource, AgentRequestReceipt } from '@cindy/maker-shared/forwarded-request-types';
 
 export function readForwardedRequestSource(value: unknown): ForwardedRequestSource | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;

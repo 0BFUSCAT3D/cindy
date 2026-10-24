@@ -1,3 +1,5 @@
+import { createPluginTargetStore } from '@cindy/plugin-runtime/pluginTargetStore';
+import type { PluginTargetStore } from '@cindy/plugin-runtime/pluginTargetSlot';
 import path from "node:path";
 import { chmod, lstat } from "node:fs/promises";
 import Database from "better-sqlite3";
@@ -17,6 +19,7 @@ export class TerminalPluginTaskStore {
   readonly ready: Promise<void>;
   private database?: Database.Database;
   private store?: PluginTaskStore;
+  private targetStore?: PluginTargetStore;
   private closed = false;
   private mutationVersion = 0;
   revision() {
@@ -77,6 +80,7 @@ export class TerminalPluginTaskStore {
       if (process.platform !== "win32") await chmod(file, 0o600);
       this.guard();
       const db: PluginTaskDb = drizzle(database, { schema });
+      this.targetStore = createPluginTargetStore({ drizzle: db }, () => this.guard());
       this.store = createPluginTaskStore({ drizzle: db }, async (row) => {
         // The service calls this only before Session persistence ever started.
         // Still retain changed/revoked receipts and any existing Session row.
@@ -124,6 +128,7 @@ export class TerminalPluginTaskStore {
     this.guard();
     return this.store!;
   }
+  async targets(): Promise<PluginTargetStore> { await this.ready; this.guard(); return this.targetStore!; }
   /** The owning service must drain accepted receipt writes before closing. */
   async close() {
     this.closed = true;

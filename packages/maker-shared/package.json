@@ -117,7 +117,12 @@
     "./session-source": "./src/sessionSource.ts",
     "./chatHistorySearch.pure": "./src/chatHistorySearch.pure.ts",
     "./cjkSeg": "./src/cjkSeg.ts",
-    "./untrusted-prompt": "./src/untrustedPrompt.ts"
+    "./untrusted-prompt": "./src/untrustedPrompt.ts",
+    "./forwarded-request-types": "./src/forwardedRequestTypes.ts",
+    "./bot-task-coordination": "./src/botTaskCoordination.ts",
+    "./agent-input-queue": "./src/agentInputQueue.ts",
+    "./orca-worker-project": "./src/orca-worker-project.ts",
+    "./orca-worker-permission-mode": "./src/orca-worker-permission-mode.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

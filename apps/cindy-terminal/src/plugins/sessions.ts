@@ -1,4 +1,5 @@
 import { availableAppDefaultModels } from "@cindy/model-providers/availableTaskModels";
+import { resolvePluginWorkerDirectory } from '@cindy/plugin-runtime/pluginWorkerDirectory';
 import { ENGINES } from "../models/config.js";
 import { createHash } from "node:crypto";
 import {
@@ -51,6 +52,7 @@ const operations: readonly (typeof PLUGIN_TASK_OPERATIONS)[number][] = [
   "cancel",
   "setHidden",
   "requestWriteAccess",
+  "setTeamPlan",
 ];
 const policy = (value: unknown) =>
   ["ask", "plan", "acceptEdits", "auto"].includes(String(value))
@@ -423,9 +425,16 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
         );
       },
       inspect: (id) => this.port.inspect(id),
+      assertTeamPlanUnstarted: taskId => this.port.assertIdle(taskId, true, () => this.guard()),
       cancel: async (id, taskId, clientIds, execution) =>
         this.port.cancel(taskId, clientIds, execution, this.capture(id)),
     });
+  }
+  async targetStore() { await this.ready; this.guard(); return this.store.targets(); }
+  async createTarget(pluginId: string, taskId: string, project: string, title: string, route: PluginTaskRoute | undefined, guard: () => void) {
+    await this.ready; await this.refresh(pluginId); guard();
+    await this.service!.create(pluginId, { requestKey: `target-project:${taskId}`, title, route }, { taskId, workingDir: project, assertCurrent: guard });
+    guard();
   }
   async receive(id: string, value: unknown) {
     await this.ready;
@@ -515,6 +524,24 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
   ): Promise<unknown> {
     const service = this.service!;
     switch (request.kind) {
+      case 'setTeamPlan': return this.port.withTaskLock(request.taskId, async () => {
+        const task = await service.get(id, request.taskId);
+        const config = this.config(id), current = this.capture(id);
+        const items = [];
+        for (const item of request.plan.items) {
+          const workingDir = await resolvePluginWorkerDirectory({
+            requested: item.workingDir, leadDirectory: task.workingDir,
+            configuredDirectory: config.workingDir,
+            // Directory handover tickets are scoped to one call, not persistent picker grants.
+            isPickedDirectory: () => false, assertCurrent: current,
+          });
+          items.push({ ...item, workingDir });
+        }
+        const fresh = await service.get(id, request.taskId);
+        current();
+        if (fresh.revision !== task.revision) fail('STALE_REVISION', 'Task changed during directory validation');
+        return service.setTeamPlan(id, request.taskId, { ...request.plan, items });
+      });
       case "requestWriteAccess":
         return this.requestWriteAccess(
           id,
