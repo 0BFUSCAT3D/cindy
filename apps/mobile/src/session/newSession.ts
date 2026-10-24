@@ -2,6 +2,7 @@ import { modelNeedsReselection } from './modelReselection';
 import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
 import { collapseWorktreeDirForGrouping } from '@cindy/maker-shared/worktree-paths';
 import { normalizeProjectOrderPath } from '@cindy/maker-shared/project-order-sync';
+import { remoteProjectAlias, type RemoteProjectAliasIndex } from '@cindy/maker-shared/mobile-home';
 import {
   DEFAULT_DRAFT_SESSION_TITLE,
   deriveOptimisticSessionTitle,
@@ -366,6 +367,7 @@ export function buildRecentWorkspaceOptions(
   sessions: readonly RemoteSession[],
   deviceId?: string,
   limit = 6,
+  projectAliases?: RemoteProjectAliasIndex,
 ): RecentWorkspaceOption[] {
   const byPath = new Map<string, RecentWorkspaceOption>();
   for (const session of sessions) {
@@ -383,7 +385,7 @@ export function buildRecentWorkspaceOptions(
     if (!current) {
       byPath.set(pathKey, {
         workingDir,
-        title: projectTitle(workingDir),
+        title: remoteProjectAlias(projectAliases, deviceId ?? session.deviceLinkDeviceId, workingDir) ?? projectTitle(workingDir),
         sessionCount: 1,
         lastActivityAt,
       });

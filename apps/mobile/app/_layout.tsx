@@ -184,11 +184,9 @@ function NavigationGate() {
             ...(Platform.OS === 'ios'
               ? { statusBarStyle: statusBarTheme === 'dark' ? 'light' : 'dark' }
               : null),
-            // iOS 26 起 react-native-screens 的返回手势默认全屏识别(fullScreenSwipe 默认 true),
-            // 判定范围过大:会与消息内表格/代码块的横向 ScrollView 抢手势,拖动内容时还会误触返回。
-            // 限定手势起始点在屏幕前缘 44pt 内(end = 距前缘最大 x),恢复经典边缘返回的判定范围;
-            // iOS < 26 默认就是边缘返回,本配置不改变其行为;Android 返回手势不走这条路径,不受影响。
-            gestureResponseDistance: { end: 44 },
+            // iOS 26 起返回手势与系统一致,内容区任意位置右滑即可返回;不要设 gestureResponseDistance,
+            // 否则会退回只认屏幕前缘起手。内容宽于视口的横向 ScrollView(表格/代码块)由
+            // react-native-screens 让滚动优先识别,不会被返回手势抢走。
           }}
         >
           <Stack.Screen name="sessions/[sessionId]" getId={({ params }) => recentTaskKey(params ?? {})} options={{

@@ -7,6 +7,12 @@ import type { DbClient } from '../client/DbClient.js';
 import { getDbClient } from '../client/current';
 import { projectAliases } from '../schema';
 import { requireObject, requireString, throwIpcError } from '../../utils/ipcValidate';
+import {
+  captureDataOwnerBroadcastScope,
+  isDataOwnerBroadcastScopeCurrent,
+  tapWindowBroadcast,
+  type DataOwnerBroadcastScope,
+} from '../../device-link/broadcast-tap.js';
 
 const MAX_ALIAS_LENGTH = 80;
 
@@ -39,18 +45,22 @@ function requireProjectKey(raw: unknown): string {
   return normalized;
 }
 
-function broadcastProjectAliasesChanged(): void {
+function broadcastProjectAliasesChanged(scope: DataOwnerBroadcastScope): void {
+  if (!isDataOwnerBroadcastScopeCurrent(scope)) return;
+  tapWindowBroadcast('local-db:project-aliases:changed', undefined, scope.ownerStamp);
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed()) w.webContents.send('local-db:project-aliases:changed');
   }
 }
 
 export async function listProjectAliases(client: DbClient = getDbClient()): Promise<ProjectAlias[]> {
+  const scope = captureDataOwnerBroadcastScope();
   const db = client.drizzle;
   const rows = await db
     .select()
     .from(projectAliases)
     .orderBy(desc(projectAliases.updatedAt));
+  if (!isDataOwnerBroadcastScopeCurrent(scope)) throwIpcError('NOT_FOUND', 'Owner changed');
   return rows.map(aliasToCamel);
 }
 
@@ -60,6 +70,7 @@ export async function upsertProjectAlias(
   localPlatform: NodeJS.Platform = process.platform,
   scope?: { client: DbClient; assertCurrent: () => void },
 ): Promise<ProjectAlias | null> {
+  const broadcastScope = captureDataOwnerBroadcastScope();
   const projectKey = requireProjectKey(projectKeyRaw);
   const alias = sanitizeAlias(aliasRaw);
   const now = Date.now();
@@ -78,7 +89,7 @@ export async function upsertProjectAlias(
     updatedAt: now,
   });
   scope?.assertCurrent();
-  broadcastProjectAliasesChanged();
+  broadcastProjectAliasesChanged(broadcastScope);
   return saved == null
     ? null
     : {
