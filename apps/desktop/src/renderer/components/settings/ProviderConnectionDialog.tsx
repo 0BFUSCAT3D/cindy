@@ -2530,7 +2530,12 @@ export function ProviderConnectionDialog({
               })}
             />
             <span className="text-12 leading-snug text-[var(--text-tertiary)]">
-              {templateBound ? (boundPreset ? presetDisplayName(boundPreset, i18n.language) : name) : t(!editing && onDetected ? 'settings.providers.detection.hint' : TAB_META[activeTab].helpKey)}
+              {templateBound ? (boundPreset ? presetDisplayName(boundPreset, i18n.language) : name) : !editing && onDetected ? t('settings.providers.detection.hint') : activeTab === 'codex' ? (
+                <>
+                  <span>{t('settings.providers.custom.protocol.codexUpstream')}</span>
+                  <span>{t(customProviderCodexWireProtocolOption(f.wireProtocol).labelKey)}</span>
+                </>
+              ) : t(TAB_META[activeTab].helpKey)}
             </span>
           </div>}
 
