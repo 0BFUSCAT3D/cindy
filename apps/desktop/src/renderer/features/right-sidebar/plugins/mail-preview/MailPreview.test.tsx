@@ -65,7 +65,8 @@ it.each(['body', 'summary'])('bounds avatar lookups across all headers and dupli
   expect(screen.getByText('BCC <bcc@company.example.com>')).toBeTruthy();
   await act(async () => { view.container.querySelectorAll('img').forEach(image => fireEvent.error(image)); });
   expect(view.container.querySelectorAll('img')).toHaveLength(12);
-  expect([...view.container.querySelectorAll('img')].every(image => image.src.includes('icons.duckduckgo.com'))).toBe(true);
+  expect([...view.container.querySelectorAll('img')].map(image => image.src))
+    .toEqual(Array(12).fill('https://icons.duckduckgo.com/ip3/company.example.com.ico'));
   await act(async () => { view.container.querySelectorAll('img').forEach(image => fireEvent.error(image)); });
   expect(view.container.querySelectorAll('img')).toHaveLength(0);
   expect(digest).toHaveBeenCalledTimes(12);
