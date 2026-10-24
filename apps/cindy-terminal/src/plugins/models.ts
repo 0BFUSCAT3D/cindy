@@ -1,4 +1,5 @@
 import path from "node:path";
+import { MobileTaskSettings } from "@cindy/plugin-runtime/mobileTaskSettings";
 import type { TerminalPluginSessions } from "./sessions.js";
 import { createOneshotTextHandler } from "@cindy/plugin-runtime/oneshotText";
 import {
@@ -131,6 +132,9 @@ export class TerminalPluginModels {
         id: selection(option.route)!,
         label: option.label,
         route: option.route,
+        efforts: option.efforts,
+        supportsFastMode: option.supportsFastMode,
+        supportsUltrafastMode: option.supportsUltrafastMode,
       }));
     }
     const state = await this.options.utility.state();
@@ -161,6 +165,55 @@ export class TerminalPluginModels {
       selected: selection(config),
       options: await this.choices(id),
     };
+  }
+  /** Released GUI/Mobile preference contract, with the same route validation
+   * and revision checks as Desktop. All writes share the local preference queue. */
+  async taskSettings(
+    id: string,
+    revision: string,
+    input?: Record<string, unknown>,
+    current: () => void = () => {},
+  ) {
+    return this.queue(async () => {
+      const { prefs, file } = await this.read();
+      const service = new MobileTaskSettings({
+        read: (key) => structuredClone(prefs.errand[key] ?? {}),
+        write: (key, value) => {
+          this.guard();
+          current();
+          const previous = JSON.stringify(prefs);
+          prefs.errand[key] = normalizeConfig(value);
+          try {
+            atomicPrivateWriteSync(file, JSON.stringify(prefs));
+          } catch (error) {
+            atomicPrivateWriteSync(file, previous);
+            throw error;
+          }
+          this.configs = structuredClone(prefs.errand);
+          this.options.changed();
+          return prefs.errand[key]!;
+        },
+        validate: async () => {
+          this.guard();
+          current();
+        },
+        providers: () => this.options.models.views(),
+        agents: async () => [
+          ...new Set(
+            ((await this.options.taskModels?.()) ?? []).map((option) =>
+              option.route.agentKind === "cc"
+                ? "claude-code"
+                : option.route.agentKind,
+            ),
+          ),
+        ],
+      });
+      this.guard();
+      current();
+      return input === undefined
+        ? service.read(id, revision)
+        : service.update(id, revision, input, current);
+    });
   }
   async setPermission(
     id: string,

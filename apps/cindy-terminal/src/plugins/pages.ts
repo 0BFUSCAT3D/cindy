@@ -48,6 +48,10 @@ export class TerminalPluginPages {
       disconnect:async(id,pageId)=>{const ghost=host.installed(id);if(ghost)await relay(ghost,{op:'disconnect',pageId});},
       fetch:(ghost,pathname,method,body)=>request(ghost,pathname,method,body,current),
       fetchPreview:readMobilePreview,settingsFetch:request,
+      taskSettings:{
+        read:(id,revision)=>host.taskSettings(id,revision),
+        update:(id,revision,input,current)=>host.taskSettings(id,revision,input,current),
+      },
     });
     const provider=this.pages.provider();
     this.provider={...provider,invoke:(context,request)=>this.context.run(context,()=>provider.invoke!(context,request))};

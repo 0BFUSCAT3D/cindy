@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 const script = `
 $ErrorActionPreference = 'Stop'
 $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+[Console]::Out.WriteLine('ready')
+[Console]::Out.Flush()
 while ($null -ne ($line = [Console]::In.ReadLine())) {
   $parts = $line.Split(':', 2)
   if ($parts.Length -ne 2) { exit 1 }
@@ -30,11 +32,15 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
 type Pending = {
   resolve(): void;
   reject(error: Error): void;
-  timer: NodeJS.Timeout;
+  request: string;
+  timer?: NodeJS.Timeout;
 };
 type Worker = {
   child: ChildProcessWithoutNullStreams;
   pending: Map<string, Pending>;
+  ready: boolean;
+  closed: boolean;
+  startup?: NodeJS.Timeout;
   idle?: NodeJS.Timeout;
 };
 let worker: Worker | undefined;
@@ -50,8 +56,11 @@ function keepAlive(current: Worker, needed: boolean) {
 }
 
 function stop(current: Worker, error?: Error) {
+  if (current.closed) return;
+  current.closed = true;
   if (worker === current) worker = undefined;
   clearTimeout(current.idle);
+  clearTimeout(current.startup);
   for (const pending of current.pending.values()) {
     clearTimeout(pending.timer);
     pending.reject(error ?? new Error("PRIVATE_DIRECTORY_PERMISSIONS_FAILED"));
@@ -60,6 +69,16 @@ function stop(current: Worker, error?: Error) {
   if (error) current.child.kill();
   else current.child.stdin.end();
   keepAlive(current, false);
+}
+
+function dispatch(current: Worker, pending: Pending) {
+  // Startup includes Windows loading/scanning the interpreter and its CLR.
+  // Only a ready interpreter can start the directory-operation deadline.
+  pending.timer = setTimeout(
+    () => stop(current, new Error("PRIVATE_DIRECTORY_PERMISSIONS_TIMEOUT")),
+    15_000,
+  );
+  current.child.stdin.write(pending.request);
 }
 
 /** Paths are UTF-8 data on a private child pipe, never PowerShell source. The
@@ -81,8 +100,12 @@ export function restrictWindowsDirectory(
       ],
       { windowsHide: true, env, stdio: "pipe" },
     );
-    const current: Worker = { child, pending: new Map() };
+    const current: Worker = { child, pending: new Map(), ready: false, closed: false };
     worker = current;
+    current.startup = setTimeout(
+      () => stop(current, new Error("PRIVATE_DIRECTORY_PERMISSIONS_STARTUP_TIMEOUT")),
+      60_000,
+    );
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     child.stderr.resume();
     child.on("error", () =>
@@ -96,9 +119,17 @@ export function restrictWindowsDirectory(
       stop(current, new Error("PRIVATE_DIRECTORY_PERMISSIONS_FAILED"));
     });
     lines.on("line", (line) => {
+      if (current.closed) return;
+      if (!current.ready && line === 'ready') {
+        clearTimeout(current.startup);
+        current.ready = true;
+        for (const pending of current.pending.values()) dispatch(current, pending);
+        return;
+      }
       const [id, status, extra] = line.split(":"),
         pending = current.pending.get(id);
       if (
+        !current.ready ||
         !pending ||
         extra !== undefined ||
         !["ok", "error"].includes(status)
@@ -122,13 +153,8 @@ export function restrictWindowsDirectory(
   keepAlive(current, true);
   return new Promise<void>((resolve, reject) => {
     const id = randomUUID();
-    const timer = setTimeout(
-      () => stop(current, new Error("PRIVATE_DIRECTORY_PERMISSIONS_TIMEOUT")),
-      15_000,
-    );
-    current.pending.set(id, { resolve, reject, timer });
-    current.child.stdin.write(
-      `${id}:${Buffer.from(directory, "utf8").toString("base64")}\n`,
-    );
+    const pending: Pending = { resolve, reject, request: `${id}:${Buffer.from(directory, "utf8").toString("base64")}\n` };
+    current.pending.set(id, pending);
+    if (current.ready) dispatch(current, pending);
   });
 }

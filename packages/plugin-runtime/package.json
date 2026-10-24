@@ -28,7 +28,8 @@
     "cindy-tools": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "undici": "^8.3.0",
-    "@cindy/auth-client": "workspace:*"
+    "@cindy/auth-client": "workspace:*",
+    "@cindy/model-providers": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

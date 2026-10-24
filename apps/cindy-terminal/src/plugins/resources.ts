@@ -2,6 +2,7 @@ import type {
   RemoteResourceRegistry,
   RemoteResource,
   RemoteLocalizedText,
+  RemoteActionField,
 } from "@cindy/device-link";
 import { installedGhostStoragePart } from "@cindy/plugin-runtime/shared/pluginIdentity";
 import {
@@ -47,6 +48,8 @@ const copy = {
     "설치 확인",
   ],
   cancel: ["Cancel", "取消", "取消", "キャンセル", "취소"],
+  enabled: ["Enabled", "已启用", "已啟用", "有効", "활성화됨"],
+  disabled: ["Disabled", "已停用", "已停用", "無効", "비활성화됨"],
   enable: ["Enable", "启用", "啟用", "有効にする", "활성화"],
   disable: ["Disable", "停用", "停用", "無効にする", "비활성화"],
   remove: ["Uninstall", "卸载", "解除安裝", "アンインストール", "제거"],
@@ -61,6 +64,23 @@ const copy = {
   key: ["Credential", "凭证", "憑證", "認証情報", "인증 정보"],
   value: ["New value", "新值", "新值", "新しい値", "새 값"],
   model: ["Model", "模型", "模型", "モデル", "모델"],
+  tuning: [
+    "Model options",
+    "模型选项",
+    "模型選項",
+    "モデルのオプション",
+    "모델 옵션",
+  ],
+  effort: [
+    "Reasoning effort",
+    "思考强度",
+    "思考強度",
+    "推論の強度",
+    "추론 강도",
+  ],
+  fast: ["Fast mode", "快速模式", "快速模式", "高速モード", "빠른 모드"],
+  on: ["On", "开启", "開啟", "オン", "켜기"],
+  off: ["Off", "关闭", "關閉", "オフ", "끄기"],
   automatic: ["Automatic", "自动", "自動", "自動", "자동"],
   next: ["Next", "下一页", "下一頁", "次へ", "다음"],
   back: ["Back", "返回", "返回", "戻る", "뒤로"],
@@ -433,9 +453,70 @@ export function registerPluginResources(
           data: { actionId: "task-permission", values: { permissionMode } },
         });
       }
-      if (host.models && (ghost.manifest.agent?.tasks || ghost.manifest.cindy?.text?.includes("oneshot"))) {
+      if (
+        host.models &&
+        (ghost.manifest.agent?.tasks ||
+          ghost.manifest.cindy?.text?.includes("oneshot"))
+      ) {
         const state = await host.models.state(request.ref.id);
         context.assertCurrent?.();
+        const selected = state.options.find(
+          (option) => option.id === state.selected,
+        );
+        if (
+          ghost.manifest.agent?.tasks &&
+          selected &&
+          "efforts" in selected &&
+          (selected.efforts.length || selected.supportsFastMode)
+        ) {
+          const settings = await host.taskSettings(
+            request.ref.id,
+            ghostInstallApprovalToken(ghost.approval),
+          );
+          context.assertCurrent?.();
+          const fields: RemoteActionField[] = [];
+          if (selected.efforts.length)
+            fields.push({
+              id: "effort",
+              kind: "select",
+              label: label("effort"),
+              options: [
+                { value: "", label: label("automatic") },
+                ...selected.efforts.map((value) => ({ value, label: value })),
+              ],
+            });
+          if (selected.supportsFastMode)
+            fields.push({
+              id: "fastMode",
+              kind: "select",
+              label: label("fast"),
+              options: [
+                { value: "false", label: label("off") },
+                { value: "true", label: label("on") },
+                ...(selected.supportsUltrafastMode
+                  ? [{ value: "ultrafast", label: "Ultra Fast" }]
+                  : []),
+              ],
+            });
+          resource.actions?.push({
+            id: "task-tuning",
+            label: label("tuning"),
+            fields,
+          });
+          resource.blocks?.push({
+            id: "task-tuning",
+            primitive: "form",
+            fallbackMarkdown: "",
+            data: {
+              actionId: "task-tuning",
+              values: {
+                expectedRevision: settings.revision,
+                effort: settings.config.effort ?? "",
+                fastMode: String(settings.config.fastMode ?? false),
+              },
+            },
+          });
+        }
         const options = state.options.map((option) => ({
           value: option.id,
           label: option.label,
@@ -484,6 +565,13 @@ export function registerPluginResources(
       const shared = await pages.provider.get!(context, request);
       return {
         ...shared,
+        display: {
+          ...shared.display,
+          status: {
+            label: label(ghost.enabled ? "enabled" : "disabled"),
+            tone: "neutral",
+          },
+        },
         links: [...resource.links, ...shared.links],
         actions: [
           ...(resource.actions ?? []),
@@ -542,7 +630,36 @@ export function registerPluginResources(
       } else if (["enable", "disable"].includes(request.actionId))
         await host.setEnabled(id, request.actionId === "enable");
       else if (request.actionId === "remove") await host.uninstall(id);
-      else if (request.actionId === "task-permission")
+      else if (request.actionId === "task-tuning") {
+        const ghost = await host.get(id),
+          revision = ghostInstallApprovalToken(ghost.approval);
+        const settings = await host.taskSettings(id, revision);
+        if (settings.revision !== request.input?.expectedRevision)
+          throw new Error("PLUGIN_SETTINGS_CHANGED");
+        const { agentKind, providerId, model } = settings.config;
+        const effort = request.input?.effort,
+          fast = request.input?.fastMode;
+        if (
+          typeof effort !== "string" ||
+          !["false", "true", "ultrafast"].includes(String(fast))
+        )
+          throw new Error("PLUGIN_SETTINGS_INVALID");
+        await host.taskSettings(
+          id,
+          revision,
+          {
+            expectedRevision: settings.revision,
+            model: {
+              agentKind,
+              providerId,
+              model,
+              ...(effort ? { effort } : {}),
+              fastMode: fast === "ultrafast" ? "ultrafast" : fast === "true",
+            },
+          },
+          context.assertCurrent,
+        );
+      } else if (request.actionId === "task-permission")
         await host.setTaskPermission(
           id,
           request.input?.permissionMode,
@@ -559,7 +676,18 @@ export function registerPluginResources(
       } else if (pages) return pages.provider.invoke!(context, request);
       else throw new Error("INVALID_ACTION");
       return {
-        effects: [{ kind: "refresh-collection", collectionId: "plugins" }],
+        effects: [
+          { kind: "refresh-collection", collectionId: "plugins" },
+          ...([
+            "model",
+            "task-permission",
+            "task-tuning",
+            "enable",
+            "disable",
+          ].includes(request.actionId)
+            ? [{ kind: "refresh-resource" as const, ref: ref(id) }]
+            : []),
+        ],
       };
     },
   });

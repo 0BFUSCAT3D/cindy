@@ -448,6 +448,7 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
       route: PluginTaskRoute;
       efforts: readonly string[];
       supportsFastMode: boolean;
+      supportsUltrafastMode: boolean;
     }>
   > {
     this.guard();
@@ -483,8 +484,17 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
       label: [
         views.find((p) => p.id === option.route.providerId)?.name ??
           option.route.providerId,
-        option.route.harness,
-        option.route.model,
+        { claude: "Claude Code", codex: "Codex", pi: "Pi" }[
+          option.route.harness
+        ],
+        views
+          .find((p) => p.id === option.route.providerId)
+          ?.models[
+            option.route.harness === "claude"
+              ? "claude-code"
+              : option.route.harness
+          ]?.find((model) => model.id === option.route.model)?.name ??
+          option.route.model,
       ].join(" / "),
       route: {
         agentKind:
@@ -496,6 +506,7 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
       },
       efforts: option.efforts,
       supportsFastMode: option.supportsFastMode,
+      supportsUltrafastMode: option.supportsUltrafastMode,
     }));
   }
   private async handle(

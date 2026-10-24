@@ -106,7 +106,7 @@ export interface MobilePluginPageDependencies {
   ): Promise<{ path: string; mediaKind: 'image' | 'video' } | null>;
   validateDirectory?(path: string): Promise<string>;
   taskSettings?: {
-    read(id: string, revision: string): import('@cindy/device-link').PluginTaskPreferences;
+    read(id: string, revision: string): import('@cindy/device-link').PluginTaskPreferences | Promise<import('@cindy/device-link').PluginTaskPreferences>;
     update(
       id: string,
       revision: string,
@@ -844,7 +844,7 @@ export class MobilePluginPages {
           assertCurrent();
           const result =
             request.actionId === 'task-settings:get'
-              ? settings.read(id, revision)
+              ? await settings.read(id, revision)
               : await settings.update(id, revision, input, assertCurrent);
           assertCurrent();
           return { effects: [], result };

@@ -1264,7 +1264,7 @@ describe('terminal task host', () => {
       expect(await call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true})).toMatchObject({taskId:created.taskId,hidden:true});
       expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(false);
       // Owner-facing resource entry remains usable after disabling the plugin.
-      const registry=new RemoteResourceRegistry();registerPluginResources(registry,plugins,undefined,tasks.sessions);
+      const registry=new RemoteResourceRegistry();registerPluginResources(registry,plugins,tasks.pages,tasks.sessions);
       const owner={controllerDeviceId:'terminal-owner'},client={protocolVersion:1,primitives:['text','actions'],locale:'en'};
       const get=vi.spyOn(plugins,'get').mockResolvedValue(installed);
       try{
@@ -1288,19 +1288,23 @@ describe('terminal task host', () => {
       await call('setHidden',{taskId:created.taskId,hidden:true});
       expect((await call('models')).models).toEqual(expect.arrayContaining([expect.objectContaining({route:expect.objectContaining({model:'test-model'})})]));
       const provider=host.models.snapshot().providers.find(p=>p.id==='fixture')!;
-      await host.models.saveProvider({...provider,runtimes:{'claude-code':{...provider.runtimes['claude-code']!,models:[...provider.runtimes['claude-code']!.models,{id:'test-second',name:'Second',contextWindow:200000}]},pi:{baseUrl:'http://127.0.0.1:1',wireProtocol:'openai-chat',models:[{id:'test-pi',name:'Pi fixture',contextWindow:200000}]}}},{pi:'invalid-test-key-only'});
+      await host.models.saveProvider({...provider,runtimes:{'claude-code':{...provider.runtimes['claude-code']!,models:[...provider.runtimes['claude-code']!.models,{id:'test-second',name:'Second',contextWindow:200000,efforts:['medium','high'],supportsFastMode:true}]},pi:{baseUrl:'http://127.0.0.1:1',wireProtocol:'openai-chat',models:[{id:'test-pi',name:'Pi fixture',contextWindow:200000}]}}},{pi:'invalid-test-key-only'});
       // Owner settings must expose task routes even for a task-only plugin,
       // and persist the chosen engine/model without changing existing tasks.
       const preferences=await registry.get(owner,{client,ref:{collectionId:'plugins',kind:'plugin',id:'_root__fixture-plugin'}});
       const modelField=preferences.actions?.find(action=>action.id==='model')?.fields?.find(field=>field.id==='model');
       if(modelField?.kind!=='select')throw new Error('TASK_MODEL_PICKER_MISSING');
-      const second=modelField.options?.find(option=>String(option.label).includes('test-second'));
+      const second=modelField.options?.find(option=>String(option.label).includes('Second'));
       expect(second).toBeDefined();
       await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:preferences.ref,actionId:'model',input:{model:second!.value}});
+      const tuning=await registry.get(owner,{client,ref:preferences.ref});
+      const tuningValues=(tuning.blocks?.find(block=>block.id==='task-tuning')?.data as {values:Record<string,unknown>}|undefined)?.values;
+      expect(tuningValues).toBeDefined();
+      await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:preferences.ref,actionId:'task-tuning',input:{...tuningValues,effort:'high',fastMode:'true'}});
       const usingPreference=await call('create',{title:'Plugin default model',requestKey:'configured-model'});
-      expect(usingPreference.resolvedConfig).toMatchObject({agentKind:'cc',providerId:'fixture',model:'test-second'});
+      expect(usingPreference.resolvedConfig).toMatchObject({agentKind:'cc',providerId:'fixture',model:'test-second',effort:'high',fastMode:true});
       expect((await call('get',{taskId:created.taskId})).resolvedConfig.model).toBe('test-model');
-      const pi=modelField.options?.find(option=>String(option.label).includes('test-pi'));
+      const pi=modelField.options?.find(option=>String(option.label).includes('Pi fixture'));
       expect(pi).toBeDefined();
       await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:preferences.ref,actionId:'model',input:{model:pi!.value}});
       const piTask=await call('create',{title:'Plugin Pi model',requestKey:'configured-pi-model'});
@@ -1309,6 +1313,15 @@ describe('terminal task host', () => {
       await vi.waitFor(async()=>expect(await call('getRun',{runId:piRun.runId})).toMatchObject({status:'completed'}));
       expect(native.inputs.at(-1)?.selection.agentKind).toBe('pi');
       await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:preferences.ref,actionId:'model',input:{model:''}});
+      // Released GUI/Mobile actions must reach the same preferences as TUI.
+      const request={client,collectionId:'plugins',resourceRef:preferences.ref};
+      const remotePrefs=await registry.invoke(owner,{...request,actionId:'task-settings:get'});
+      const before=remotePrefs.result as import('@cindy/device-link').PluginTaskPreferences;
+      const saved=await registry.invoke(owner,{...request,actionId:'task-settings:set',input:{expectedRevision:before.revision,model:{agentKind:'cc',providerId:'fixture',model:'test-second',fastMode:false}}});
+      expect((saved.result as typeof before).config.model).toBe('test-second');
+      await expect(registry.invoke(owner,{...request,actionId:'task-settings:set',input:{expectedRevision:before.revision,permissionMode:'auto'}})).rejects.toThrow('PLUGIN_SETTINGS_CHANGED');
+      const updated=saved.result as typeof before;
+      await registry.invoke(owner,{...request,actionId:'task-settings:set',input:{expectedRevision:updated.revision,model:null}});
       const previous=created;
       created=(await call('setModel',{taskId:created.taskId,expectedRevision:created.revision,route:{...created.resolvedConfig,model:'test-second'}})).task;
       expect(created.resolvedConfig.model).toBe('test-second');

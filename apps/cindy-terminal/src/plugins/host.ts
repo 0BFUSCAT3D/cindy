@@ -201,6 +201,18 @@ export class TerminalPlugins {
       await this.models.setModel(id,pin,current);
     });
   }
+  taskSettings(id:string,revision:string,input?:Record<string,unknown>,current:()=>void=()=>{}){
+    const run=()=>{
+      this.guard();current();const ghost=this.installed(id);
+      if(!ghost||this.removing.has(id)||!this.models)throw new Error('PLUGIN_CHANGED');
+      const identity=JSON.stringify([ghost.dir,ghostInstallApprovalToken(ghost.approval)]);
+      return this.models.taskSettings(id,revision,input,()=>{
+        this.guard();current();const next=this.installed(id);
+        if(!next||this.removing.has(id)||JSON.stringify([next.dir,ghostInstallApprovalToken(next.approval)])!==identity)throw new Error('PLUGIN_CHANGED');
+      });
+    };
+    return input===undefined?run():this.mutate(run);
+  }
   setTaskPermission(id:string,mode:unknown,current:()=>void=()=>{}){
     return this.mutate(async()=>{
       const ghost=this.installed(id);
