@@ -22,6 +22,7 @@ import {
   canStartInteractionResolve,
   encodeMultiSelectAnswer,
   extractPlanOutline,
+  describePermissionAction,
   formatPermissionInput,
   interactionBlocksRemoteComposer,
   isFreeTextAskOptionLabel,
@@ -301,7 +302,16 @@ describe('interaction shared model', () => {
       requestId: 'p-browser',
       toolName: 'mcp:cindy_browser:call_tool',
       input: { name: 'browser', args: { action: 'navigate', url: 'https://x.com/compose/post' } },
-    })).toMatchObject({ title: '允许浏览器执行这一步？', code: 'navigate https://x.com/compose/post' });
+    })).toMatchObject({ title: '允许浏览器执行这一步？', code: expect.stringContaining('navigate {"url":"https://x.com/compose/post"}') });
+
+    // The summary must not hide what the user is approving (review 2026-10-24: recipe/typed text, move/diff).
+    expect(describePermissionAction('mcp:cindy_browser:call_tool', {
+      name: 'browser', args: { action: 'recipe', recipeId: 'post-reply', site: 'x.com', text: 'hello' },
+    }).preview).toBe('recipe {"recipeId":"post-reply","site":"x.com","text":"hello"}');
+    expect(describePermissionAction('file_change', { changes: [
+      { path: '/repo/a.ts', kind: { type: 'update', move_path: '/repo/b.ts' }, diff: '@@ -1 +1 @@' },
+      { path: '/repo/old.ts', kind: { type: 'delete' } },
+    ] }).preview).toBe('update /repo/a.ts \u2192 /repo/b.ts\n@@ -1 +1 @@\ndelete /repo/old.ts');
 
     // A failed review shows its own fixed copy, never a stale model reason.
     expect(buildPermissionReviewPresentation({

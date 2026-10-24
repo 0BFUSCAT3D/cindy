@@ -918,15 +918,27 @@ function filePaths(input: Record<string, unknown>, search: boolean): string | nu
   const direct = search ? readString(input.pattern) ?? readString(input.query) ?? path : path;
   if (direct) return direct;
   const changes = Array.isArray(input.changes) ? input.changes : isRecord(input.changes) ? Object.keys(input.changes) : [];
-  const paths = changes.map((change) => typeof change === 'string' ? change : isRecord(change) ? readString(change.path) : null)
-    .filter((path): path is string => !!path);
-  return paths.length ? paths.join('\n') : null;
+  const lines = changes.map((change) => {
+    if (typeof change === 'string') return change;
+    if (!isRecord(change) || !readString(change.path)) return null;
+    // Keep what distinguishes delete / update / move and the patch itself.
+    const kind = isRecord(change.kind) ? readString(change.kind.type) : readString(change.kind);
+    const move = isRecord(change.kind) ? readString(change.kind.move_path) : null;
+    const head = `${kind ? `${kind} ` : ''}${change.path}${move ? ` \u2192 ${move}` : ''}`;
+    const diff = readString(change.diff);
+    return diff ? `${head}\n${diff}` : head;
+  }).filter((line): line is string => !!line);
+  if (!lines.length) return null;
+  const text = lines.join('\n');
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }
 
+/** Browser step: the action plus every other argument, so recipes, typed text and sites stay visible. */
 function browserStep(args: Record<string, unknown>): string {
   const action = readString(args.action);
-  const target = readString(args.url) ?? readString(args.selector) ?? readString(args.text) ?? readString(args.targetId);
-  return action ? [action, target].filter(Boolean).join(' ') : previewOf(args);
+  if (!action) return previewOf(args);
+  const { action: _action, ...rest } = args;
+  return [action, argsPreview(rest)].filter(Boolean).join(' ');
 }
 
 /**
