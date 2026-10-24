@@ -326,6 +326,8 @@ export function evaluateOrcaDeliveryScope(input: {
   live: OrcaDeliveryLiveSnapshot | null;
 }): OrcaDeliveryVerdict {
   const { row, live } = input;
+  // Archived is reversible sidebar storage (it does not end the team), so only deletion and a
+  // new clear boundary revoke a queued dispatch. Pinned by the unit case for `archived`.
   if (!row || row.status === 'deleted' || row.clearedAt !== input.clearedAtAtCapture) return 'task-gone';
   if (live) {
     const permission = live.stablePermissionModeState;

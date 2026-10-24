@@ -3868,6 +3868,11 @@ describe('Orca delivery scope', () => {
     expect(evaluate({ live: null, persistedAtCapture: null })).toBe('permissions-changed');
   });
 
+  it('keeps delivering for an archived task', () => {
+    // Archived is reversible sidebar storage: it neither ends the team nor revokes the dispatch.
+    expect(evaluate({ row: row({ status: 'archived' }) })).toBe('ok');
+  });
+
   it('rejects a task that was cleared, deleted or removed', () => {
     expect(evaluate({ row: row({ clearedAt: 200 }) })).toBe('task-gone');
     expect(evaluate({ row: row({ status: 'deleted' }) })).toBe('task-gone');
