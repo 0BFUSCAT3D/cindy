@@ -1,5 +1,11 @@
 const authoredStyleAttribute = 'data-cindy-mail-authored-style';
 
+function rememberMailPreviewPaint(el: Element, style = el.getAttribute('style')) {
+  if (el.hasAttribute(authoredStyleAttribute)) return;
+  el.setAttribute(authoredStyleAttribute, JSON.stringify(el.tagName === 'A'
+    ? { style, href: el.getAttribute('href'), role: el.getAttribute('role') } : style));
+}
+
 /** Mail readers share the chat browser policy only for ordinary web links. */
 export function mailPreviewLinkUrl(value: string | null): string | undefined {
   try {
@@ -16,10 +22,15 @@ export function restoreMailPreviewPaint(root: Element): void {
     if (encoded === null) continue;
     el.removeAttribute(authoredStyleAttribute);
     try {
-      const style: unknown = JSON.parse(encoded);
-      if (style === null) el.removeAttribute('style');
-      else if (typeof style === 'string') el.setAttribute('style', style);
-    } catch { /* Invalid transient metadata is never interpreted as a style. */ }
+      const original: unknown = JSON.parse(encoded);
+      // Accept the original style-only format as well as link metadata.
+      const attributes = original && typeof original === 'object' ? original : { style: original };
+      for (const name of ['style', 'href', 'role']) {
+        const value = (attributes as Record<string, unknown>)[name];
+        if (value === null) el.removeAttribute(name);
+        else if (typeof value === 'string') el.setAttribute(name, value);
+      }
+    } catch { /* Invalid transient metadata is never applied. */ }
   }
 }
 
@@ -30,10 +41,14 @@ export function followMailPreviewTheme(doc: Document, host: Document, reading = 
     if (!reading) return;
     for (const link of doc.querySelectorAll<HTMLElement>('a')) {
       for (const el of [link, ...link.querySelectorAll<HTMLElement>('*')]) {
-        if (!el.hasAttribute(authoredStyleAttribute)) el.setAttribute(authoredStyleAttribute, JSON.stringify(el.getAttribute('style')));
+        rememberMailPreviewPaint(el);
         el.style.setProperty('color', 'inherit', 'important');
       }
       const clickable = Boolean(mailPreviewLinkUrl(link.getAttribute('href')));
+      if (!clickable) {
+        link.removeAttribute('href');
+        if (link.getAttribute('role')?.toLowerCase().split(/\s+/).includes('link')) link.removeAttribute('role');
+      }
       link.style.setProperty('text-decoration', clickable ? 'underline' : 'none', 'important');
       link.style.setProperty('cursor', clickable ? 'pointer' : 'text', 'important');
     }
@@ -75,7 +90,7 @@ export function followMailPreviewTheme(doc: Document, host: Document, reading = 
       const { el } = entry;
       // Native Enter/split/undo can clone these nodes. Carry the authored
       // style with the clone so neither saving nor cleanup relies on identity.
-      el.setAttribute(authoredStyleAttribute, JSON.stringify(entry.style));
+      rememberMailPreviewPaint(el, entry.style);
       const set = (name: string, value: string) => el.style.setProperty(name, value, 'important');
       const background = colorInfo(entry.background), foreground = colorInfo(entry.color);
       if (background && background.brightness > 0.25) {

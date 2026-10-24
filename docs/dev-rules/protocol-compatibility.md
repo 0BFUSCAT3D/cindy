@@ -3195,8 +3195,9 @@ continue displaying addresses alone. Provider contact enrichment must remain opt
 when new contact scopes are missing; Gmail bounds its lookup budget and account cache.
 Desktop activates only HTTP(S) body links through the chat opening policy and keeps
 their underline visible despite sender CSS. Unsupported targets, including mailto,
-stay inert; this does not widen the system shell protocol allowlist. Reader paint
-is transient and restored before editing or serializing a draft.
+stay inert without an href or explicit link role in the reader, so they are not
+keyboard/screen-reader links. Reader paint and authored link attributes are restored
+before editing or serializing a draft; the system shell protocol allowlist is unchanged.
 Credentials and MIME parsing remain with the provider. Cindy validates the data
 and reuses its inert HTML/CID/recipient renderers for delivered mail. Multiple
 matching providers/accounts cannot silently select the first. Host setup metadata

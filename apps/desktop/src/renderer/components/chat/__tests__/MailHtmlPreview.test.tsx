@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MailHtmlPreview, safeMailHtml } from '../MailHtmlPreview';
 import { GhostCardForm } from '../GhostCardForm';
@@ -7,6 +7,7 @@ import { ChatSessionFileProvider } from '../ChatSessionFileContext';
 import { openUrlInSidebarBrowser } from '@/features/right-sidebar/lib/openInSidebarBrowser';
 import { _resetLinkOpenPreferenceForTests } from '@/hooks/useLinkOpenPreference';
 import { mailInlineBindingScript, mailInlineRefreshScript } from '@cindy/maker-shared/mail-text-edit';
+import { mailBodySerializer } from '../mailBodyEditing';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../ImageLightbox', () => ({ ImageLightbox: ({ src }: { src: string }) => <img alt="attachment-preview" src={src} /> }));
 vi.mock('@/features/right-sidebar/lib/openInSidebarBrowser', () => ({ openUrlInSidebarBrowser: vi.fn(async () => undefined) }));
@@ -92,9 +93,11 @@ it('opens reader links with chat preferences and modifiers but never navigates t
 
 // Reader links must remain visibly clickable despite sender CSS; preview paint
 // must also leave authored styles intact when this frame becomes an editor.
+// Unit regression for #7062: inert mailto/credential targets must not expose
+// keyboard/AT links; prior tests checked only paint and swallowed clicks.
 it('keeps link affordances in both themes and restores source styles for editing', async () => {
   const root = document.documentElement, originalClass = root.className, originalStyle = root.getAttribute('style');
-  const value = '<style>a{text-decoration:none!important}</style><p><a style="text-decoration:none!important;color:red" href="https://example.test/page">Web</a><a style="text-decoration:underline!important" href="mailto:person@example.test">Email</a></p>';
+  const value = '<style>a{text-decoration:none!important}</style><p><a style="text-decoration:none!important;color:red" href="https://example.test/page">Web</a><a style="text-decoration:underline!important" href="mailto:person@example.test">Email</a><a role="link" href="https://user:pass@example.test">Credentials</a></p>';
   const change = vi.fn();
   try {
     root.classList.remove('dark');
@@ -113,8 +116,17 @@ it('keeps link affordances in both themes and restores source styles for editing
       expect(web.style.cursor).toBe('pointer');
       expect(email.style.textDecoration).toBe('none');
       expect(email.style.cursor).toBe('text');
+      expect(email.hasAttribute('href')).toBe(false);
+      expect(within(doc.body).getAllByRole('link')).toEqual([web]);
     }
+    const targets = (html: string) => [...new DOMParser().parseFromString(html, 'text/html').querySelectorAll('a')]
+      .map(link => [link.getAttribute('href'), link.getAttribute('role')]);
+    const originalTargets = targets(value);
+    // Serialization restores a clone without reactivating the live reader.
+    expect(targets(mailBodySerializer(doc, value)()!.html)).toEqual(originalTargets);
+    expect(within(doc.body).getAllByRole('link')).toHaveLength(1);
     view.rerender(<MailHtmlPreview value={value} reading onChange={change} />);
+    expect([...doc.querySelectorAll('a')].map(link => [link.getAttribute('href'), link.getAttribute('role')])).toEqual(originalTargets);
     expect(doc.querySelector('a')!.style.textDecoration).toBe('none');
     expect(doc.querySelector('a')!.style.color).toBe('red');
     fireEvent.input(doc.querySelector('p')!);
@@ -123,6 +135,10 @@ it('keeps link affordances in both themes and restores source styles for editing
     expect(link.style.textDecoration).toBe('none');
     expect(link.style.color).toBe('red');
     expect(saved).not.toContain('cursor: pointer');
+    expect(targets(saved)).toEqual(originalTargets);
+    expect(saved).not.toContain('data-cindy-mail-authored-style');
+    view.rerender(<MailHtmlPreview value={value} reading />);
+    expect(within(doc.body).getAllByRole('link')).toHaveLength(1);
   } finally {
     cleanup(); root.className = originalClass;
     if (originalStyle === null) root.removeAttribute('style'); else root.setAttribute('style', originalStyle);
