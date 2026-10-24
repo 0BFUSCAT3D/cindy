@@ -3059,6 +3059,12 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   // already includes that area; safeArea.top + 44 would count the toolbar twice.
   const topChromeHeight = Math.max(topOverlayHeight,
     horizontalSystemHeader ? nativeHeaderHeight : insets.top + navigationChrome.target);
+  // The drawer hides that toolbar; put the drawer's own header in the same row instead of
+  // below the whole status area. Duo (iOS 27.1) centers toolbar items spacing.md above the
+  // area's bottom; the drawer header adds spacing.lg itself. Ordinary bars keep safeArea.top.
+  const sessionListDrawerTopInset = horizontalSystemHeader && nativeHeaderHeight > 0
+    && nativeHeaderHeight < insets.top + navigationChrome.target
+    ? Math.max(0, nativeHeaderHeight - navigationChrome.target - spacing.md - spacing.lg) : undefined;
   // 退出宽屏后 layout.drawerWidth 会变 0;退场期间继续用最后一个有效宽度,避免面板几何跳变。
   const sessionListDrawerWidthRef = useRef(wideSessionNav.drawerWidth);
   if (wideSessionNav.enabled) sessionListDrawerWidthRef.current = wideSessionNav.drawerWidth;
@@ -11110,6 +11116,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           runNavigation={queueDrawerNavigation}
           onSelectSession={handleDrawerSelectSession}
           open={sessionListDrawerOpen}
+          topInset={sessionListDrawerTopInset}
           width={sessionListDrawerWidthRef.current}
         />
         ) : null}
