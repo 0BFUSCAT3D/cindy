@@ -721,6 +721,7 @@ test("desktop guard selects source-contract tests only", () => {
 	}
 	assert.deepEqual(
 		selectFilesForTier(workspace, tier, [
+			"apps/desktop/src/main/plugin-oauth/__tests__/runtimePrompt.test.ts",
 			"apps/desktop/src/main/__tests__/directSessionSendGuard.test.ts",
 			"apps/desktop/src/main/__tests__/makerSendToSessionOrdering.test.ts",
 			"apps/desktop/src/main/__tests__/authCaptchaIpcSecurity.test.ts",
@@ -729,6 +730,7 @@ test("desktop guard selects source-contract tests only", () => {
 			"apps/desktop/src/main/localDb/ipc/messages.test.ts",
 		]),
 		[
+			"apps/desktop/src/main/plugin-oauth/__tests__/runtimePrompt.test.ts",
 			"apps/desktop/src/main/__tests__/directSessionSendGuard.test.ts",
 			"apps/desktop/src/main/__tests__/makerSendToSessionOrdering.test.ts",
 			"apps/desktop/src/main/__tests__/authCaptchaIpcSecurity.test.ts",
