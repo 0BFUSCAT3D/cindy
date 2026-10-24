@@ -3965,6 +3965,9 @@ function ProjectRow({
     const start = onDragStart;
     const move = onDragMove;
     const finish = onDragEnd;
+    // Worklets serialize captured objects recursively. Capture the two scalar
+    // fields here so registering a drag never copies all project task data.
+    const { key: projectKey, sessionCount } = project;
     return Gesture.Pan()
       .activateAfterLongPress(380)
       .activeOffsetY([-8, 8])
@@ -3972,8 +3975,8 @@ function ProjectRow({
       .onStart((event) => {
         runOnJS(start)({
           absoluteY: event.absoluteY,
-          count: project.sessionCount,
-          key: project.key,
+          count: sessionCount,
+          key: projectKey,
           title: displayTitle,
         });
       })
