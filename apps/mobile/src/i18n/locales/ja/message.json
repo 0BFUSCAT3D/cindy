@@ -234,6 +234,7 @@
     "cancel": "キャンセル",
     "edit": "編集",
     "steer": "割り込み",
+    "steerQueued": "まだ届いていません。メッセージはキューに残っています。",
     "moveUp": "1つ前へ",
     "moveDown": "1つ後ろへ",
     "cancelSend": "送信をキャンセル",

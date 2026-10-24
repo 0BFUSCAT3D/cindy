@@ -815,6 +815,7 @@ export interface PendingPermission {
   description?: string;
   suggestions?: unknown[];
   autoReviewUnavailable?: boolean;
+  autoReviewReason?: string;
   /** Renderer-only delivery state; never part of the permission decision. */
   submitting?: boolean;
   submissionFailed?: boolean;
@@ -1938,6 +1939,9 @@ function isRemoteAroundClientIdMiss(error: unknown): boolean {
  * settling outbox record.
  */
 function isTerminalRemoteInputError(error: unknown): boolean {
+  // Local attachment preparation failed before dispatch. A disconnected target cannot
+  // make that delivery ambiguous; restore the draft without a remote reconciliation probe.
+  if (extractIpcError(error)?.code === 'DEVICE_LINK_MEDIA_ACCESS_DENIED') return true;
   const formatted = formatRemoteError(error);
   return formatted.includes('NOT_FOUND') || formatted.includes('REMOTE_OPTIMISTIC_SESSION_PURGED');
 }
@@ -6704,6 +6708,7 @@ export function handleStreamEvent(
         description?: string;
         suggestions?: unknown[];
         autoReviewUnavailable?: boolean;
+        autoReviewReason?: string;
       };
       return {
         ...state,
@@ -6717,6 +6722,7 @@ export function handleStreamEvent(
           sourceDescription: data.sourceDescription,
           suggestions: data.suggestions,
           autoReviewUnavailable: data.autoReviewUnavailable === true,
+          autoReviewReason: data.autoReviewReason,
           ...(state.pendingPermission?.requestId === data.requestId
             ? {
                 submitting: state.pendingPermission.submitting,
@@ -8665,6 +8671,8 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
         description: typeof request.description === 'string' ? request.description : undefined,
         suggestions: Array.isArray(request.suggestions) ? request.suggestions : undefined,
         autoReviewUnavailable: metadata?.autoReviewUnavailable === true,
+        autoReviewReason: typeof metadata?.autoReviewReason === 'string' && metadata.autoReviewReason.trim()
+          ? metadata.autoReviewReason.trim() : undefined,
         sourceDescription: typeof metadata?.imSourceDescription === 'string' ? metadata.imSourceDescription : undefined,
       };
       setState(sessionId, (s) =>
@@ -11414,7 +11422,8 @@ function settleRemoteOptimisticFailure(sessionId: string, clientId: string, erro
     ),
     ...(error !== undefined
       ? {
-          error: decodeRemoteErrorMessage(error instanceof Error ? error.message : String(error)),
+          // Keep the code so the banner can expose recovery guidance in its active locale.
+          error: remoteErrorMessageForBanner(error instanceof Error ? error.message : String(error)),
           usageLimitRecovery: null,
           errorReason: null,
           toolLoop: null,

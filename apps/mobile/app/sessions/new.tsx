@@ -29,6 +29,7 @@ import {
   useNewSessionWorkspaceActions,
   useNewSessionInitialWorkspace,
 } from '@/session/useNewSessionWorkspace';
+import { useRemoteProjectAliases } from '@/session/useRemoteProjectAliases';
 import { useIncomingShareComposer } from '@/session/useIncomingShareComposer';
 import { ModelSpeedIcon } from '@/session/ModelSpeedIcon';
 import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
@@ -570,12 +571,15 @@ export default function NewRemoteSessionScreen() {
   const selectedDeviceLabel = selectedDeviceOption?.name || selectedDeviceName || selectedDeviceId || t('session.new.selectDevice');
   const maker = useMobileMakerTransport(selectedDeviceId);
   const sessions = useRemoteSessions();
+  const projectAliases = useRemoteProjectAliases([selectedDeviceId]);
   const recentWorkspaces = useMemo(
     () => buildRecentWorkspaceOptions(
       sessions.filter((session) => session.deviceLinkDeviceId === selectedDeviceId),
       selectedDeviceId,
+      6,
+      projectAliases,
     ),
-    [selectedDeviceId, sessions],
+    [selectedDeviceId, sessions, projectAliases],
   );
   const [draft, setDraft] = useState<NewSessionDraft>(() => createInitialNewSessionDraft({
     initialWorkingDir, visualInitialDraft, routeDraft: params.draft, suggestion: params.suggestion, t,

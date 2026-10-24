@@ -17130,6 +17130,9 @@ describe('CodexAgent MCP thread context hooks', () => {
     expect(request?.kind).toBe('permission');
     if (request?.kind !== 'permission') throw new Error('expected permission request');
     expect(request.suggestions).toBeUndefined();
+    // The card must tell the user why Auto asked (2026-10-24: the reason was dropped).
+    expect(request.metadata).toMatchObject({ autoReviewReason: 'This action crosses a high-impact boundary.' });
+    expect(request.description).not.toBe(AUTO_REVIEW_UNAVAILABLE_PROMPT_TEXT);
     await handle.close();
   });
 
@@ -19098,6 +19101,80 @@ describe('CodexAgent MCP thread context hooks', () => {
       await handle.send({ type: 'user', content: 'next turn' });
       expect(handle.getUsageSnapshot().outputTokens).toBe(0);
       expect(handle.getUsageSnapshot()).not.toHaveProperty('generationDurationMs');
+    } finally {
+      await handle.close();
+      nowSpy.mockRestore();
+    }
+  });
+
+  // Regression: native turn activation reset time while the ledger could still
+  // contain prior output; tool-paused usage could inflate its numerator alone.
+  // Unit through CodexAgent: public status and billing totals must stay distinct.
+  it('pairs native continuation output and recovers frozen-clock samples without changing billing', async () => {
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const agent = new CodexAgent(createDeps());
+    let turnSeq = 0;
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: `turn-${++turnSeq}` } };
+      if (method === Method.TurnInterrupt) return {};
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-speed-continuation', model: 'gpt-5.4', workingDir: '/repo',
+    });
+    try {
+      const handlers = host.getThreadHandlers()!;
+      const events: AgentEvent[] = [];
+      void (async () => { for await (const event of handle.events()) events.push(event); })();
+      await handle.send({ type: 'user', content: 'work' });
+      const usage = (turnId: string, output: number, total: number) => handlers.tokenUsageUpdated!({
+        threadId: 'start-thread-id', turnId, tokenUsage: {
+          last: { inputTokens: 10, cachedInputTokens: 0, outputTokens: output },
+          total: { totalTokens: total, inputTokens: 10, cachedInputTokens: 0, outputTokens: total - 10 },
+        },
+      });
+      handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'turn-1' } });
+      now = 11_000;
+      usage('turn-1', 1_000, 1_010);
+      expect(handle.getUsageSnapshot().tokenSpeed).toMatchObject({ tokens: 1_000, elapsedMs: 10_000 });
+      const yielded = { id: 'yielded-tool', type: 'commandExecution', command: 'test', status: 'inProgress' };
+      handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'turn-1', item: yielded });
+      handlers.itemCompleted!({ threadId: 'start-thread-id', turnId: 'turn-1', item: {
+        ...yielded, status: 'completed', aggregatedOutput: 'Script running with cell ID 226\nWall time 1.0 seconds\nOutput:\n',
+      } });
+      handlers.turnCompleted!({ threadId: 'start-thread-id', turn: { id: 'turn-1', status: 'completed' } });
+      await waitForExpectation(() => expect(events.some(event => event.type === 'done')).toBe(true));
+      expect(handle.beginTurnContinuationWait?.(events.find(event => event.type === 'done')?.turnContinuationId)).toBe('active');
+      await waitForExpectation(() => expect(turnSeq).toBe(2));
+      handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'turn-2' } });
+      expect(handle.getUsageSnapshot().generationReliable).toBe(false);
+      now = 13_000;
+      usage('turn-2', 200, 1_220);
+      expect(handle.getUsageSnapshot()).toMatchObject({
+        outputTokens: 1_200, generationDurationMs: 12_000,
+        tokenSpeed: { tokens: 1_200, elapsedMs: 12_000, average: 100 },
+      });
+      const tool = { id: 'background-tool', type: 'mcpToolCall', server: 'test', tool: 'wait', arguments: {} };
+      handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'turn-2', item: tool });
+      now = 15_000;
+      usage('turn-2', 2_000_000, 2_001_230);
+      expect(handle.getUsageSnapshot().tokenSpeed).toBeUndefined();
+      expect(handle.getUsageSnapshot().generationReliable).toBe(false);
+      handlers.itemCompleted!({ threadId: 'start-thread-id', turnId: 'turn-2', item: tool });
+      now = 25_000;
+      usage('turn-2', 377, 2_001_617);
+      expect(handle.getUsageSnapshot()).toMatchObject({
+        outputTokens: 1_577, generationDurationMs: 22_000, generationReliable: true,
+        tokenSpeed: { tokens: 1_577, elapsedMs: 22_000, rate: 37.7, peak: 100 },
+      });
+      expect(handle.getUsageSnapshot().tokenUsage).toBe(2_000_607);
+      handlers.turnCompleted!({ threadId: 'start-thread-id', turn: { id: 'turn-2', status: 'completed' } });
+      await handle.send({ type: 'user', content: 'new user turn' });
+      handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'turn-3' } });
+      now = 35_000;
+      usage('turn-3', 377, 2_002_004);
+      expect(handle.getUsageSnapshot().tokenSpeed).toMatchObject({ tokens: 377, elapsedMs: 10_000, average: 37.7, peak: 37.7 });
     } finally {
       await handle.close();
       nowSpy.mockRestore();

@@ -739,6 +739,11 @@ import {
 } from './orcaIdleReleaseWatcher.js';
 import { createOrcaWorkerResumeScheduler } from './orcaWorkerResumeScheduler.js';
 import {
+  createPiIdleReleaseWatcher,
+  DEFAULT_PI_IDLE_RELEASE_MINUTES,
+  type PiIdleReleaseWatcher,
+} from './piIdleReleaseWatcher.js';
+import {
   ackSessionTurnEndedDurable,
   hasAssistantProgressAfterMessage,
   getRecoveryContextSnapshot,
@@ -1164,6 +1169,7 @@ import {
 import {
   deviceAvailableModels,
   deviceWorkerRoutingContext,
+  localAvailableModels,
   readOrcaWorkerProviderRoutingContext,
   sshCodexWorkerRoutingContext,
 } from './orcaProviderRoutingContext.js';
@@ -1189,6 +1195,7 @@ import { refreshOpenAiMediaModels } from '../maker-host/model-discovery/openai-m
 import { refreshXaiMediaModels } from '../maker-host/model-discovery/xai-media.js';
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
 import { fetchProviderModels, fetchSavedOAuthProviderModels } from '../maker-host/provider-model-fetch.js';
+import { detectProviderDeployment } from '../maker-host/provider-detection.js';
 import {
   beginProviderRouteMutation,
   setPendingCredentialSwitchReader,
@@ -3111,6 +3118,9 @@ export async function dispatchInterAgentMessage(
 /** 模块级 idle watcher；停止后不再持有可能已经失效的 maker 引用。 */
 let idleReleaseWatcher: OrcaIdleReleaseWatcher | null = null;
 
+/** 模块级 pi 普通会话 idle watcher；与 Orca watcher 同一生命周期。 */
+let piIdleReleaseWatcher: PiIdleReleaseWatcher | null = null;
+
 /**
  * 取 Orca collab service, ready 前返 null。registerMakerIpc 执行完成后 holder
  * 被赋值, 之前调本函数会拿到 null —— 调用方 (典型: mcp-providers.ts 的 control
@@ -3152,6 +3162,12 @@ function createBridgeWorkerLabel(task: string): string {
 export function stopOrcaIdleWatcher(): void {
   idleReleaseWatcher?.stop();
   idleReleaseWatcher = null;
+}
+
+/** 停止 pi 普通会话 idle watcher (app quit 时调, maker 可能已 shutdown)。 */
+export function stopPiIdleReleaseWatcher(): void {
+  piIdleReleaseWatcher?.stop();
+  piIdleReleaseWatcher = null;
 }
 
 function requireAgentKind(value: unknown): AgentKind {
@@ -7453,7 +7469,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getProviderOrder: () => readProviderOrder(),
     listPresets: () => getActiveCatalog().presets ?? [],
     getModelCatalog: () => getActiveCatalog(),
-    testConnection: (input) => testProviderConnection(input),
+    testConnection: (input, signal) => testProviderConnection(input, undefined, signal),
+    detectProvider: detectProviderDeployment,
     fetchModels: async (spec) => {
       if (spec.savedProviderId && subscriptionAccountKind(spec.savedProviderId)) {
         return { ok: await refreshSubscriptionAccountModels(spec.savedProviderId), models: [] };
@@ -16076,6 +16093,62 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
   idleReleaseWatcher.start();
 
+  // ─── pi 普通会话 idle watcher ────────────────────────────────────────────
+  // 只回收本机桌面来源的普通 pi 会话：Orca 角色/远程/插件隐藏任务/bot 与 IM
+  // 来源都有各自的生命周期。归档会话也纳入(归档不关运行时)，其余安全闸门见
+  // piIdleReleaseWatcher；释放后下一次发送走 lazy create-session 透明重建。
+  const PI_IDLE_RELEASE_SESSION_STATUSES = ['active', 'archived'] as const;
+  const piIdleReleaseIdleSince = () =>
+    sql<number>`max(${sessions.updatedAt}, coalesce(${sessions.lastTurnEndedAt}, 0), coalesce(${sessions.userSendAt}, 0))`;
+  const piIdleReleaseCandidateWhere = () =>
+    and(
+      eq(sessions.agentKind, 'pi'),
+      inArray(sessions.status, PI_IDLE_RELEASE_SESSION_STATUSES),
+      eq(sessions.source, 'desktop'),
+      isNull(sessions.orcaRole),
+      isNull(sessions.hiddenAt),
+      isNull(sessions.remoteHostId),
+      isNull(sessions.agentDeviceId),
+    );
+  piIdleReleaseWatcher?.stop();
+  piIdleReleaseWatcher = createPiIdleReleaseWatcher({
+    readIdleReleaseMinutes: () => DEFAULT_PI_IDLE_RELEASE_MINUTES,
+    listCandidates: async (idleBeforeMs) => {
+      const idleSince = piIdleReleaseIdleSince();
+      const rows = await getDbClient()
+        .drizzle
+        .select({ id: sessions.id, idleSinceMs: idleSince })
+        .from(sessions)
+        .where(and(piIdleReleaseCandidateWhere(), sql`${idleSince} < ${idleBeforeMs}`));
+      return rows.map((row) => ({ id: row.id, idleSinceMs: Number(row.idleSinceMs) }));
+    },
+    readIdleSinceMs: async (sessionId) => {
+      const [row] = await getDbClient()
+        .drizzle
+        .select({ idleSinceMs: piIdleReleaseIdleSince() })
+        .from(sessions)
+        .where(and(eq(sessions.id, sessionId), piIdleReleaseCandidateWhere()))
+        .limit(1);
+      return row ? Number(row.idleSinceMs) : null;
+    },
+    getSession: (sessionId) => maker.getSession(sessionId) ?? null,
+    withSessionLock: withSendToSessionLock,
+    hasPendingInput: hasPendingIdleReleaseInput,
+    hasScheduledAutoResume: (sessionId) => {
+      const coordinator = agentInputCoordinatorHolder;
+      if (!coordinator) return false;
+      return (
+        coordinator.isAutoResumePending(sessionId) ||
+        coordinator.getAutoResumeAttemptToken(sessionId) !== null ||
+        coordinator.hasQueuedAutoResume(sessionId)
+      );
+    },
+    now: Date.now,
+    timer: { setInterval, clearInterval },
+    log,
+  });
+  piIdleReleaseWatcher.start();
+
   type InternalRuntimeSelectionOptions = {
     source: 'user' | SessionRuntimeMutationSource;
     runtimeSource?: 'agent';
@@ -17513,15 +17586,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           const caps = maker.getCapabilities(a);
           // key 必须区分 pi,否则 pi 模型会被塞进 claude_code 键与 CC 模型混淆。
           const key = a === 'codex' ? 'codex' : a === 'pi' ? 'pi' : 'claude_code';
-          const providers = providerRouting.availability[a] ?? [];
-          result[key] = caps.availableModels.map((m) => ({
-            id: m.id,
-            label: m.displayName,
-            providers: providers
-              .filter((provider) => provider.models.includes(m.id))
-              .map((provider) => ({ id: provider.id, name: provider.name })),
-            defaultProviderId: providerRouting.resolveDefaultProviderIdForModel(a, m.id),
-          }));
+          result[key] = localAvailableModels(
+            caps.availableModels,
+            providerRouting.availability[a] ?? [],
+            providerRouting.resolveDefaultProviderIdForModel,
+            a,
+          );
         }
         return { ok: true, agentDeviceId: null, ...(locations ? { locations } : {}), ...result };
       } catch (err) {

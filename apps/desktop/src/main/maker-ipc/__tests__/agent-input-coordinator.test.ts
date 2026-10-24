@@ -9948,6 +9948,30 @@ describe('AgentInputCoordinator steer transaction', () => {
     }
   });
 
+  // 2026-10-24 unit regression: an adapter steer rejection is not proof that
+  // the product ended. Existing zombie coverage only tests a confirmed idle probe.
+  it('preserves an active product when rejected steer still has a live continuation', async () => {
+    const h = createHarness();
+    const sid = 'steer-awaiting-background';
+    const first = makeItem('q-1', 'background work');
+    const second = makeItem('q-2', 'correction');
+    h.coordinator.enqueue(sid, first);
+    await flush();
+    h.coordinator.enqueue(sid, second);
+    h.steerToAgent.mockRejectedValueOnce(new Error('No active Claude turn to steer'));
+    h.reconcileTurnIdle.mockReturnValueOnce(false);
+    await expect(h.coordinator.steer(sid, second, { removeFromQueue: true })).resolves.toBe(false);
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+    expect(latestProjection(h.projections).pendingQueue.map((item) => item.clientId)).toEqual(['q-2']);
+    // A genuine terminal, rather than the rejected steer, releases the next input.
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'done');
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(latestProjection(h.projections).pendingQueue).toEqual([]);
+  });
+
   it('recovers from a zombie turn: NO_ACTIVE_TURN reconciles stale busy state and dispatches the fallback', async () => {
     // 场景: q-1 已派发但 turn 异常死亡 (done 事件丢失) —— coordinator 的
     // activeTurn 和 host busy tracker 双双 stale。修复前: 插话 → fallback →

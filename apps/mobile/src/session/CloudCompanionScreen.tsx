@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
+import { useHeaderHeight } from 'expo-router/react-navigation';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/auth/AuthContext';
@@ -55,7 +56,9 @@ export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, tit
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { width } = useAdaptiveWindow();
+  const { width, barEdge } = useAdaptiveWindow();
+  const nativeHeader = Platform.OS === 'ios' && barEdge === 'none';
+  const nativeHeaderHeight = useHeaderHeight();
   const answerLayout = useMemo(() => buildMessageContentLayout({ screenWidth: width }), [width]);
   const styles = useThemedStyles(makeStyles);
   const router = useRouter();
@@ -225,9 +228,10 @@ export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, tit
   }
 
   const busy = loadingDevices || switching.phase === 'requesting';
-  return <SafeAreaView style={styles.screen} edges={['top', 'left', 'right', 'bottom']} testID="cloudCompanion.screen">
-    <Stack.Screen options={{ headerShown: false }} />
-    <ChatIdentityHeader testIDPrefix="cloudCompanion"
+  return <SafeAreaView style={[styles.screen, nativeHeader && { paddingTop: nativeHeaderHeight }]}
+    edges={nativeHeader ? ['left', 'right', 'bottom'] : ['top', 'left', 'right', 'bottom']} testID="cloudCompanion.screen">
+    {nativeHeader ? null : <Stack.Screen options={{ headerShown: false }} />}
+    <ChatIdentityHeader testIDPrefix="cloudCompanion" nativeHeader={nativeHeader}
       mark={avatar(CHAT_HEADER_MARK_SIZE)}
       title={name}
       subtitle={<View style={styles.subtitleRow}>

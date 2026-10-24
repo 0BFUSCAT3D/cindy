@@ -32,6 +32,8 @@
   `cindy-media://` 协议、引用生命周期与历史兼容边界。
 - [`database-and-migrations.md`](database-and-migrations.md)：Desktop SQLite schema、
   append-only migration、companion script、隔离运行与异步数据库访问规则。
+- [`ui-mock-data.md`](ui-mock-data.md)：Desktop 与 Mobile 共用的免登录 UI 模拟数据，`--mock`
+  启动方式、数据正本与写入边界。
 - [`mobile-development.md`](mobile-development.md)：Mobile 的模拟器开发、分层验证与
   专项文档入口。
 - [`orca-team-architecture.md`](orca-team-architecture.md)：Orca 多 Agent 协同架构与运行时约束。

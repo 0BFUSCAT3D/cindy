@@ -1,3 +1,4 @@
+import { configureSessionModelInterfaceStorage, sessionModelInterface } from './session-model-interface.js';
 import { readGeneratedImageEpoch } from '../cindy-media/generatedImageStorage';
 import { readAgentCapabilityCatalog, RUNTIME_MCP_NAMES_KEY, type AgentCapabilityQuery } from './agentCapabilityCatalog.js';
 import { listCindyManagedSkills, prepareCindyCodexSkills } from './managed-skills.js';
@@ -668,6 +669,15 @@ export async function refreshCodexGatewayHost(
 // clears owner-scoped bookkeeping by epoch. Keep it across resetMaker; IPC is not
 // registered again after an account switch. MCP factories bind before it is ready.
 let _resolveBotCapabilityAgentKind: BotCapabilityServiceDeps['resolveBotAgentKind'] | null = null;
+// Bootstrap owns IM/hook modules that depend back on this host. Bind their reader
+// once, but read the current owner's stores on each call (including after resetMaker).
+let _readBotConversationConnections: BotCapabilityServiceDeps['readConversationConnections'];
+export function setBotConversationConnectionsReader(
+  reader: NonNullable<BotCapabilityServiceDeps['readConversationConnections']>,
+): void {
+  _readBotConversationConnections = reader;
+}
+
 export function setBotCapabilityAgentKindResolver(
   resolver: BotCapabilityServiceDeps['resolveBotAgentKind'] | null,
 ): void {
@@ -896,6 +906,10 @@ function createDesktopBotCapabilityService() {
   return createBotCapabilityService({
     getMaker, getPluginRegistry, isBotToolsetAvailable,
     listMcpServers: listBotRuntimeMcpServers,
+    readConversationConnections: async (botId) => {
+      if (!_readBotConversationConnections) throw new Error('Bot conversation connections reader is not initialized');
+      return _readBotConversationConnections(botId);
+    },
     resolveBotAgentKind: async (sessionId, chain) => _resolveBotCapabilityAgentKind?.(sessionId, chain) ?? null,
   });
 }
@@ -2953,6 +2967,12 @@ export function getMaker(): Maker {
           }
           // 所有创建路径共用的派发边界,opts.providerId 此刻已是本次启动的终值。
           freezeSessionProviderAtStart(sessionId, opts.providerId);
+          const interfaceProvider = getActiveCatalog().providers.find(p => p.id === opts.providerId);
+          const interfaceModel = interfaceProvider?.models[opts.agentKind]?.find(m => m.id === opts.model);
+          if (interfaceProvider && interfaceModel) sessionModelInterface(sessionId, interfaceProvider.id, opts.agentKind,
+            interfaceModel, getActiveCatalog().modelRegistry,
+            opts.resumeSessionId ? interfaceProvider.routing[opts.agentKind]?.wireProtocol : undefined);
+
           if (!opts.remoteHostId && !opts.agentDeviceId) {
             opts.fastModePolicy = createSubscriptionFastPolicy(sessionId, () => getSessionProvider(sessionId)
               ?? resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), opts.agentKind, null, opts.model));
@@ -3684,3 +3704,6 @@ export async function shutdownLspServerPool(): Promise<void> {
 
 // re-exports for IPC layer
 export { desktopClaudeAuthAdapter, desktopCodexAuthAdapter };
+
+// Lazy path lookup follows owner changes; installing the reader performs no IO.
+configureSessionModelInterfaceStorage(() => ownerScopedUserDataPath('model-interface-snapshots'));

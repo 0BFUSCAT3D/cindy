@@ -1984,7 +1984,7 @@ function ExpandedView({
         waitingSessionIds: waiting,
       },
       [
-        ...visibleProjects.flatMap((project) => project.sessions),
+        ...allProjectGroups.projects.flatMap((project) => project.sessions),
         ...groups.bots.flatMap((bot) => bot.sessions),
         ...visibleDialogues,
         ...visibleUnclassified,
@@ -2019,10 +2019,27 @@ function ExpandedView({
     urgentSet,
     viewedSessionId,
     visibleDialogues,
-    visibleProjects,
+    allProjectGroups.projects,
     visibleUnclassified,
   ]);
   const projectPriorityContext = projectPriorityProjection.context;
+  // 只重排置顶项目的子任务；置顶项自身仍按用户的拖拽顺序排列。
+  const pinnedSortContext = filter.sortBy === 'priority' ? projectPriorityContext : undefined;
+  const sortedPinnedEntries = useMemo(
+    () => visiblePinnedEntries.map((entry) =>
+      entry.kind === 'project'
+        ? {
+            ...entry,
+            displaySessions: sortSessionsForMainList(
+              entry.displaySessions ?? entry.project.sessions,
+              filter.sortBy,
+              pinnedSortContext,
+            ),
+          }
+        : entry,
+    ),
+    [visiblePinnedEntries, filter.sortBy, pinnedSortContext],
+  );
 
   const visibleProjectsWithVendor = useMemo(() => {
     const unpinnedProjects = visibleProjects.filter(
@@ -3811,7 +3828,7 @@ function ExpandedView({
                  * 同样不展示，继续使用本地与已缓存内容即可。
                  */}
                 <PinnedSection
-                  entries={visiblePinnedEntries}
+                  entries={sortedPinnedEntries}
                   allKnownProjects={visibleProjectUniverse}
                   renderProject={(
                     project,

@@ -79,6 +79,7 @@ import {
   shouldReplaceListWithSearchResults,
 } from '@/session/conversationSearch';
 import { useConversationSearch } from '@/session/useConversationSearch';
+import { useRemoteProjectAliases } from '@/session/useRemoteProjectAliases';
 import { selectVisibleDeviceSessions, sessionMatchesProjectDir } from '@/session/mobileHome';
 import { HomeListViewportContext, HomeSessionRow } from '@/session/HomeSurface';
 import { createDisclosureListCell, ListDisclosureScope, useListDisclosureTransition } from '@/session/listDisclosureTransition';
@@ -229,15 +230,17 @@ function DeviceDetailScreenContent() {
     deviceName,
     reachable: !deviceUnresponsive,
   }] : []), [deviceId, deviceName, deviceUnresponsive]);
+  const projectAliases = useRemoteProjectAliases(deviceId ? [deviceId] : []);
   const searchProjects = useMemo(
-    () => listConversationSearchProjects(sessions, deviceId ? new Set([deviceId]) : undefined),
-    [deviceId, sessions],
+    () => listConversationSearchProjects(sessions, deviceId ? new Set([deviceId]) : undefined, projectAliases),
+    [deviceId, sessions, projectAliases],
   );
   const indexedSearch = useConversationSearch({
     enabled: !automationScopeKey && !!deviceId,
     lockedWorkingDirs: projectWorkingDir ? [projectWorkingDir] : null,
     origins: searchOrigins,
     projects: searchProjects,
+    projectAliases,
   });
   const searchQuery = indexedSearch.query;
   const setSearchQuery = indexedSearch.setQuery;
