@@ -37,13 +37,13 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; vi.useRealTimers(); });
 describe('header/home shared navigation', () => {
-  it('restores an explicit mode and teammate, and mode changes preserve that identity', async () => {
+  it('restores the remembered teammate and section fold, and returning home keeps them', async () => {
     const owner = homeNavigationOwner(h.user);
-    await saveHomeNavigationPreferences(owner, { mode: 'teammates', lastTeammate: teammateIdentity(teammate) });
-    await render(); expect(result.mode).toBe('teammates'); expect(result.lastTeammate?.resourceId).toBe('writer');
-    await act(async () => result.chooseMode('tasks'));
+    await saveHomeNavigationPreferences(owner, { teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate) });
+    await render(); expect(result.teammatesCollapsed).toBe(true); expect(result.lastTeammate?.resourceId).toBe('writer');
+    await act(async () => result.returnHome());
     expect(h.dismissTo).toHaveBeenCalledWith('/devices');
-    expect(await readHomeNavigationPreferences(owner)).toEqual({ mode: 'tasks', lastTeammate: teammateIdentity(teammate) });
+    expect(await readHomeNavigationPreferences(owner)).toEqual({ teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate) });
   });
   it('only pushes a resource resolver and records identity; never replaces or resets the current composer', async () => {
     await render(); await act(async () => result.openTeammate(teammate));
@@ -51,29 +51,21 @@ describe('header/home shared navigation', () => {
       collectionId: 'teammates', resourceId: 'writer', resourceKind: 'bot', deviceId: 'mac', deviceName: 'My Mac', title: 'Writer',
     } });
     expect(result.lastTeammate).toEqual(teammateIdentity(teammate));
-    expect(result.mode).toBe('teammates'); // An explicit picker selection owns the active mode.
-    expect(await readHomeNavigationPreferences(result.owner)).toEqual({
-      mode: 'teammates', lastTeammate: teammateIdentity(teammate),
-    });
+    expect(await readHomeNavigationPreferences(result.owner)).toEqual({ lastTeammate: teammateIdentity(teammate) });
     expect(h.set).toHaveBeenCalledTimes(1);
   });
-  it('opening from the task home keeps the task mode, and the section layout survives later selections', async () => {
+  it('keeps the section fold when a teammate is opened from it', async () => {
     await render(); await act(async () => result.setTeammatesCollapsed(true));
-    await act(async () => result.openTeammate(teammate, { keepMode: true }));
-    expect(h.push).toHaveBeenCalledTimes(1);
-    expect(result.mode).toBe('tasks'); // Back from the chat must land on the tasks, not the teammate home.
-    expect(await readHomeNavigationPreferences(result.owner)).toEqual({ teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate) });
     await act(async () => result.openTeammate(teammate));
-    expect(await readHomeNavigationPreferences(result.owner)).toEqual({
-      mode: 'teammates', teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate),
-    });
+    expect(h.push).toHaveBeenCalledTimes(1);
+    expect(await readHomeNavigationPreferences(result.owner)).toEqual({ teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate) });
   });
   it('opens a creation receipt through the canonical resolver with one atomic preference update', async () => {
     await render(); await act(async () => result.openCreatedTeammate(teammate.host, teammate.item.ref));
     expect(h.push).toHaveBeenCalledExactlyOnceWith({ pathname: '/resources/[collectionId]/[resourceId]', params: {
       collectionId: 'teammates', resourceId: 'writer', resourceKind: 'bot', deviceId: 'mac', deviceName: 'My Mac',
     } });
-    expect(result.mode).toBe('teammates'); expect(result.lastTeammate).toEqual(teammateIdentity(teammate));
+    expect(result.lastTeammate).toEqual(teammateIdentity(teammate));
     expect(h.set).toHaveBeenCalledTimes(1);
   });
   it('ignores a stale creation callback after switching accounts', async () => {
@@ -95,7 +87,7 @@ describe('header/home shared navigation', () => {
     expect(h.push).toHaveBeenCalledTimes(1);
     h.accountGeneration += 1; h.user = { ...h.user, membershipKind: 'org', orgId: 'different-org' };
     await render();
-    expect(result.owner).not.toBe(previousOwner); expect(result.lastTeammate).toBeNull(); expect(result.mode).toBe('tasks');
+    expect(result.owner).not.toBe(previousOwner); expect(result.lastTeammate).toBeNull();
     await act(async () => { finish(); await selection; });
     expect(h.push).toHaveBeenCalledTimes(1);
     expect(result.lastTeammate).toBeNull();
@@ -111,25 +103,25 @@ describe('header/home shared navigation', () => {
     await act(async () => { finish(null); await selection; });
     expect(h.push).not.toHaveBeenCalled(); expect(result.lastTeammate).toBeNull();
   });
-  it('hydrates a prior identity before applying an explicit mode chosen during the read', async () => {
+  it('hydrates a prior identity before applying a fold chosen during the read', async () => {
     let finish!: (raw: string) => void;
     h.get.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve; }));
     await render();
     let change!: Promise<void>;
-    await act(async () => { change = result.setMode('teammates'); });
+    await act(async () => { change = result.setTeammatesCollapsed(true); });
     expect(result.hydrated).toBe(false);
-    await act(async () => { finish(JSON.stringify({ mode: 'tasks', lastTeammate: teammateIdentity(teammate) })); await change; });
-    expect(result.mode).toBe('teammates'); expect(result.lastTeammate).toEqual(teammateIdentity(teammate));
+    await act(async () => { finish(JSON.stringify({ teammatesCollapsed: false, lastTeammate: teammateIdentity(teammate) })); await change; });
+    expect(result.teammatesCollapsed).toBe(true); expect(result.lastTeammate).toEqual(teammateIdentity(teammate));
   });
-  it('does not let a hung preference read blank home forever or a late mode hijack the fallback task list', async () => {
+  it('does not let a hung preference read blank home forever, then fills in the late values', async () => {
     vi.useFakeTimers();
     let finish!: (raw: string) => void;
     h.get.mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve; }));
     await render(); expect(result.hydrated).toBe(false);
     await act(async () => vi.advanceTimersByTimeAsync(2000));
-    expect(result.hydrated).toBe(true); expect(result.mode).toBe('tasks');
-    await act(async () => finish(JSON.stringify({ mode: 'teammates', lastTeammate: teammateIdentity(teammate) })));
-    expect(result.mode).toBe('tasks'); expect(result.lastTeammate).toEqual(teammateIdentity(teammate));
+    expect(result.hydrated).toBe(true); expect(result.teammatesCollapsed).toBe(false);
+    await act(async () => finish(JSON.stringify({ teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate) })));
+    expect(result.teammatesCollapsed).toBe(true); expect(result.lastTeammate).toEqual(teammateIdentity(teammate));
     expect(h.set).not.toHaveBeenCalled(); expect(h.push).not.toHaveBeenCalled();
   });
   it('fences rapid selections before asynchronous storage so the remembered identity matches the opened route', async () => {
@@ -138,10 +130,10 @@ describe('header/home shared navigation', () => {
     await act(async () => Promise.all([result.openTeammate(teammate), result.openTeammate(second)]));
     expect(h.push).toHaveBeenCalledTimes(1); expect(result.lastTeammate?.resourceId).toBe('writer');
   });
-  it('surfaces persistence failure without clearing the current chat or claiming the choice was saved', async () => {
+  it('keeps the chosen fold for this run when it cannot be saved', async () => {
     await render(); h.set.mockRejectedValueOnce(new Error('storage full'));
-    await act(async () => result.setMode('teammates'));
-    expect(result.saveFailed).toBe(true); expect(h.push).not.toHaveBeenCalled();
+    await act(async () => result.setTeammatesCollapsed(true));
+    expect(result.teammatesCollapsed).toBe(true); expect(h.push).not.toHaveBeenCalled();
   });
 });
 
@@ -151,12 +143,12 @@ it.each([
 ])('returns to the mounted list at $href instead of replacing the chat with a new home', async ({ routes, href }) => {
   h.routes = routes;
   await render();
-  await act(async () => result.chooseMode('teammates'));
+  await act(async () => result.returnHome());
   expect(h.dismiss).toHaveBeenCalledExactlyOnceWith(1);
   expect(h.dismissTo).not.toHaveBeenCalled();
   expect(h.reset).not.toHaveBeenCalled();
 });
-it.each(['tasks', 'teammates'] as const)('removes the retired stack before returning to %s', async mode => {
+it('removes the retired teammate list from the stack before returning home', async () => {
   const router = StackRouter({ initialRouteName: 'resources/[collectionId]' });
   const options = { routeNames: ['resources/[collectionId]', 'sessions/[sessionId]', 'devices/index'],
     routeParamList: { 'resources/[collectionId]': { collectionId: 'teammates' } }, routeGetIdList: {}, routeKeyChanges: [] };
@@ -165,7 +157,7 @@ it.each(['tasks', 'teammates'] as const)('removes the retired stack before retur
   h.routes = state.routes;
   h.reset.mockImplementationOnce(next => { state = router.getRehydratedState({ ...next, stale: true }, options) as typeof state; });
   await render();
-  await act(async () => result.chooseMode(mode));
+  await act(async () => result.returnHome());
   expect(h.dismiss).not.toHaveBeenCalled();
   expect(h.dismissTo).not.toHaveBeenCalled();
   expect(state.routes.map(route => route.name)).toEqual(['devices/index']);
@@ -180,7 +172,7 @@ it('preserves earlier unrelated routes when removing multiple retired entries', 
     { name: 'sessions/[sessionId]' },
   ];
   await render();
-  await act(async () => result.chooseMode('tasks'));
+  await act(async () => result.returnHome());
   expect(h.reset).toHaveBeenCalledExactlyOnceWith({ index: 1, routes: [prior, { name: 'devices/index' }] });
   expect(h.dismissTo).not.toHaveBeenCalled();
 });

@@ -50,10 +50,8 @@ type Notice = 'noTargets' | 'devicesFailed' | null;
  * 1:1 房间里的对话层，横幅「主力电脑「名字」离线」+「换一台电脑继续」。选中电脑后服务器改主力电脑，
  * 那台电脑自动接手；手机等它在伙伴列表里出现后，像普通点按一样打开那台电脑上的伙伴。
  */
-export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, title, keepMode = false }: {
+export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, title }: {
   actorId: string; botId: string; deviceId: string; deviceName: string; title: string;
-  /** Opened from the task home's teammate section: the conversation that takes over keeps the task mode. */
-  keepMode?: boolean;
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -134,9 +132,9 @@ export function CloudCompanionScreen({ actorId, botId, deviceId, deviceName, tit
     if (arrived) {
       switchingRef.current = { phase: 'idle' };
       setSwitching(switchingRef.current);
-      void openTeammate.current(arrived, { replace: true, keepMode });
+      void openTeammate.current(arrived, { replace: true });
     } else if (state !== switchingRef.current) setSwitching(state);
-  }, [botId, keepMode]);
+  }, [botId]);
   // Every roster change may be the arrival; the interval re-reads the roster and enforces the timeout.
   useEffect(() => { if (waiting) tick(); });
   useEffect(() => {

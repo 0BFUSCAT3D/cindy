@@ -9,7 +9,7 @@ import { useHostManagedSession } from '@/session/hostManagedSession';
 import type { RemoteResource } from '@cindy/device-link';
 
 const h = vi.hoisted(() => ({
-  glance: {} as any, profile: {} as any, glanceTodos: { enabled: false } as any, unseen: false, markSeen: vi.fn(), push: vi.fn(), dismiss: vi.fn(), chooseMode: vi.fn(), screenOptions: [] as Array<Record<string, unknown>>,
+  glance: {} as any, profile: {} as any, glanceTodos: { enabled: false } as any, unseen: false, markSeen: vi.fn(), push: vi.fn(), dismiss: vi.fn(), returnHome: vi.fn(), screenOptions: [] as Array<Record<string, unknown>>,
   auth: { accountGeneration: 1, user: null },
   cloud: { supported: false, actors: [] as Array<{ kind: string; externalId: string; homeDeviceId: string | null }> },
   homeSheet: {} as any,
@@ -41,7 +41,7 @@ vi.mock('@/session/useCompanionGlanceTodos', () => ({
 }));
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: h.push }) }));
 vi.mock('@/session/CompanionProfileSheet', () => ({ CompanionProfileSheet: (props: unknown) => { h.profile = props; return null; } }));
-vi.mock('@/session/useTeammateNavigation', () => ({ useTeammateNavigation: () => ({ chooseMode: h.chooseMode }) }));
+vi.mock('@/session/useTeammateNavigation', () => ({ useTeammateNavigation: () => ({ returnHome: h.returnHome }) }));
 vi.mock('@/chat/useCloudCompanion', () => ({ useCloudCompanionHome: () => h.cloud }));
 vi.mock('@/session/CloudHomeSwitchSheet', () => ({ CloudHomeSwitchSheet: (props: unknown) => { h.homeSheet = props; return null; } }));
 import { CompanionHeader } from '@/session/CompanionHeader';
@@ -221,7 +221,7 @@ it('names the main computer of a cloud companion and lets the profile change it'
   expect(h.homeSheet.visible).toBe(true);
   expect(h.homeSheet).toMatchObject({ botId: 'bot', homeDeviceId: 'pc', homeName: 'Office iMac' });
   await act(async () => h.homeSheet.onMoved({ deviceId: 'mac', name: 'Mac', online: true }));
-  expect(h.chooseMode).toHaveBeenCalledWith('teammates');
+  expect(h.returnHome).toHaveBeenCalledOnce();
   // 近况 offers the same switch (its row closes the sheet first).
   expect(h.glance.cloudHome).toBe(true);
   await act(async () => h.glance.onSwitchHome());

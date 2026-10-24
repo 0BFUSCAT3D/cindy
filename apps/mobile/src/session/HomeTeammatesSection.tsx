@@ -1,9 +1,10 @@
 /**
  * 任务首页顶部的「伙伴」段（对照桌面 TeammatesSection.tsx 与 2026-10-24 手机「A+B 合一」定稿）：
- * 展开 = 伙伴行（与伙伴页同一个 CompanionListRow，默认 3 位，多了「显示全部」）；
+ * 展开 = 伙伴行（CompanionListRow，默认 3 位，多了「显示全部」）；
  * 收起 = 段头 + 56pt 头像条（名字 12/18，可横滑，最后一格新建）。收起状态按账号记住。
- * 伙伴与群聊按最近活动混排；不跟随顶栏的电脑范围筛选（与桌面一致）。点开伙伴不切换首页模式，
- * 返回仍回到任务。只在首页（有共享伙伴名册）出现；没有伙伴也没有能新建的电脑时整段不显示。
+ * 伙伴与群聊按最近活动混排；不跟随顶栏的电脑范围筛选（与桌面一致）。手机没有单独的伙伴首页，
+ * 搜索时本段只列出名字匹配的伙伴与群聊。只在首页（有共享伙伴名册）出现；没有伙伴也没有能新建的
+ * 电脑时整段不显示。
  * Android 把首页列表挂到根节点渲染（ResidentHomeList），所以名册与路由的导航上下文要在路由里取，
  * 再由本段重新提供。
  */
@@ -32,16 +33,16 @@ import { botGroupRoute } from './botGroupNavigation';
 import { COMPANION_ROW_AVATAR_SIZE, COMPANION_ROW_DOT_SIZE } from './CompanionListRow';
 import { CompanionPresenceRing } from './CompanionPresenceRing';
 import { homeListStyles } from './HomeListVisuals';
-import { useHomeRoster } from './HomeUnreadContext';
+import { useHomeRoster } from './HomeRosterContext';
 import { DisclosureItem } from './listDisclosureTransition';
-import { useTeammateCreateController } from './TeammateCreateButton';
+import { useTeammateCreateController } from './TeammateCreateController';
 import { useTeammateEntries, useTeammateRowRenderer, type TeammateListEntry } from './TeammateList';
 import { cloudCompanionRoute } from './teammateNavigation';
 import { useTeammateNavigation } from './useTeammateNavigation';
 
 /** Desktop previews five in a 260px sidebar; three keeps the first screen of tasks on a phone. */
 export const HOME_TEAMMATE_PREVIEW_LIMIT = 3;
-/** Strip avatar: the row's 44 grows to the teammate-home empty presets' 56 when the section folds. */
+/** Strip avatar: the row's 44 grows to 56 when the section folds. */
 const STRIP_AVATAR_SIZE = 56;
 /** One strip cell: the avatar plus 4pt on each side, so a 12/18 name fits under it. */
 const STRIP_CELL_WIDTH = STRIP_AVATAR_SIZE + spacing.sm;
@@ -56,12 +57,14 @@ export function useHomeTeammatesSectionContext() {
   return useMemo(() => ({ navigation, route, shared }), [navigation, route, shared]);
 }
 
-export function HomeTeammatesSection({ context, active, visible, showFooter, runDisclosure, prepareDisclosure }: {
+export function HomeTeammatesSection({ context, active, visible, query, showFooter, runDisclosure, prepareDisclosure }: {
   context: ReturnType<typeof useHomeTeammatesSectionContext>;
-  /** The tasks pane is the visible home pane. */
+  /** The home is the screen in front. */
   active: boolean;
-  /** Hidden while searching or browsing archived tasks; the hooks stay mounted. */
+  /** Hidden while filtering or browsing archived tasks; the hooks stay mounted. */
   visible: boolean;
+  /** The home search text: lists every matching teammate, expanded, without create entries. */
+  query: string;
   /** Full-width hairline under the section, unless the next block draws its own top line. */
   showFooter: boolean;
   runDisclosure(apply: () => void): void;
@@ -70,14 +73,14 @@ export function HomeTeammatesSection({ context, active, visible, showFooter, run
   const { navigation, route, shared } = context;
   if (!shared) return null;
   return <NavigationContext.Provider value={navigation}><NavigationRouteContext.Provider value={route}>
-    <SectionContent shared={shared} active={active} visible={visible} showFooter={showFooter}
+    <SectionContent shared={shared} active={active} visible={visible} query={query} showFooter={showFooter}
       runDisclosure={runDisclosure} prepareDisclosure={prepareDisclosure} />
   </NavigationRouteContext.Provider></NavigationContext.Provider>;
 }
 
-function SectionContent({ shared, active, visible, showFooter, runDisclosure, prepareDisclosure }: {
+function SectionContent({ shared, active, visible, query, showFooter, runDisclosure, prepareDisclosure }: {
   shared: NonNullable<ReturnType<typeof useHomeRoster>>;
-  active: boolean; visible: boolean; showFooter: boolean;
+  active: boolean; visible: boolean; query: string; showFooter: boolean;
   runDisclosure(apply: () => void): void; prepareDisclosure(): void;
 }) {
   const { t, i18n } = useTranslation();
@@ -89,7 +92,7 @@ function SectionContent({ shared, active, visible, showFooter, runDisclosure, pr
   const focused = useIsFocused() && active;
   const { roster, groups } = shared;
   const cloud = useCloudCompanionHome(focused && visible);
-  // Same row identity as the teammate home (cloud-companions.md): one row per companion.
+  // One row per companion (cloud-companions.md).
   const items = useMemo(() => cloud.supported ? cloudCompanionRows(roster.items, cloud.actors, cloud.deviceNames) : roster.items,
     [cloud.actors, cloud.deviceNames, cloud.supported, roster.items]);
   const listedCompanions = roster.items.map(row => `${row.key}\t${row.item.revision}`).sort().join('\n');
@@ -98,11 +101,12 @@ function SectionContent({ shared, active, visible, showFooter, runDisclosure, pr
   const cloudActor = (row: HostedRemoteCollectionItem) => cloud.supported && row.item.revision === CLOUD_ROW_REVISION ? cloudActorForRow(cloud.actors, row) : null;
   const quietPresence = (row: HostedRemoteCollectionItem) => cloud.supported && !!cloudActorForRow(cloud.actors, row);
   const showGroups = groups.supported || groups.items.length > 0;
-  const entries = useTeammateEntries(items, showGroups ? groups.items : undefined);
+  const search = query.trim();
+  const entries = useTeammateEntries(items, showGroups ? groups.items : undefined, search);
   const openTeammate = (row: HostedRemoteCollectionItem) => {
     const actor = cloudActor(row);
-    if (actor) { Keyboard.dismiss(); push(cloudCompanionRoute(row, actor.id, i18n.language, { keepMode: true })); }
-    else void navigation.openTeammate(row, { keepMode: true });
+    if (actor) { Keyboard.dismiss(); push(cloudCompanionRoute(row, actor.id, i18n.language)); }
+    else void navigation.openTeammate(row);
   };
   const openGroup = (row: HostedRemoteCollectionItem) => { Keyboard.dismiss(); push(botGroupRoute(row.host, row.item.ref.id)); };
   const renderRow = useTeammateRowRenderer({
@@ -113,34 +117,37 @@ function SectionContent({ shared, active, visible, showFooter, runDisclosure, pr
   // and never carries over to another account.
   const [local, setLocal] = useState<{ owner: string; collapsed: boolean } | null>(null);
   const owner = navigation.owner;
-  const collapsed = local?.owner === owner ? local.collapsed : navigation.teammatesCollapsed;
+  const stored = local?.owner === owner ? local.collapsed : navigation.teammatesCollapsed;
+  // Search results are always rows; the stored fold returns with the search cleared.
+  const collapsed = stored && !search;
   const [showAll, setShowAll] = useState(false);
   const setTeammatesCollapsed = navigation.setTeammatesCollapsed;
   const toggleCollapsed = useCallback(() => {
-    const next = !collapsed;
+    const next = !stored;
     runDisclosure(() => { setLocal({ owner, collapsed: next }); if (next) setShowAll(false); });
     void setTeammatesCollapsed(next);
-  }, [collapsed, owner, runDisclosure, setTeammatesCollapsed]);
+  }, [stored, owner, runDisclosure, setTeammatesCollapsed]);
   const createTargets = useStableValue(roster.createTargets, sameHosts);
   const groupCreateTargets = useStableValue(roster.groupTargets.filter(groups.isOnline), sameHosts);
   const canCreate = createTargets.length > 0 || groupCreateTargets.length > 0;
+  const showCreate = canCreate && !search;
   // One controller for every trigger placement: the first teammate arriving while its form closes
   // swaps the empty row for the rows, and must not take the form or its receipt with it.
   const creator = useTeammateCreateController({ targets: createTargets, groupTargets: groupCreateTargets,
     preferredDeviceId: navigation.lastTeammate?.deviceId,
-    onCreated: (host, ref) => { void navigation.openCreatedTeammate(host, ref, { keepMode: true }); },
+    onCreated: (host, ref) => { void navigation.openCreatedTeammate(host, ref); },
     onGroupCreated: (host, groupId) => push(botGroupRoute(host, groupId)) });
   // A first read with nothing cached stays out of the way instead of flashing an empty section.
-  const shown = visible && !(!entries.length && (!canCreate || roster.loading));
+  const shown = visible && (search ? entries.length > 0 : !(!entries.length && (!canCreate || roster.loading)));
   const title = t('devices.companions.title');
-  const create = (trigger: (press: () => void, label: string) => ReactElement) => canCreate
+  const create = (trigger: (press: () => void, label: string) => ReactElement) => showCreate
     ? creator.renderTrigger(trigger(creator.press, creator.label)) : null;
-  const preview = entries.slice(0, HOME_TEAMMATE_PREVIEW_LIMIT);
-  const extra = entries.slice(HOME_TEAMMATE_PREVIEW_LIMIT);
+  const preview = search ? entries : entries.slice(0, HOME_TEAMMATE_PREVIEW_LIMIT);
+  const extra = search ? [] : entries.slice(HOME_TEAMMATE_PREVIEW_LIMIT);
   const hasMore = extra.length > 0;
   const body = shown ? <DisclosureItem clip testID="home.teammates">
     <View style={styles.header}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: !collapsed }}
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: !collapsed, disabled: !!search }} disabled={!!search}
         accessibilityLabel={t(collapsed ? 'devices.list.a11y.expand' : 'devices.list.a11y.collapse', { title })}
         onPress={toggleCollapsed} onPressIn={prepareDisclosure}
         style={({ pressed }) => [list.projectRow, styles.headerToggle, pressed && mobileInteractionStyles.pressed]} testID="home.teammatesHeader">

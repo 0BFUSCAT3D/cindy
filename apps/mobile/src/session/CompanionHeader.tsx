@@ -97,12 +97,12 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
       onSwitchHome={() => setHomeSheet(true)} />
     <CompanionProfileSheet initialPage={initialPage} visible={profile} onClose={() => setProfile(false)} onClosed={() => { const action = pending.current; pending.current = null; action?.(); }}
       resource={resource} collectionId={resource.ref.collectionId} deviceId={deviceId} deviceName={deviceName} online={online}
-      onDeleted={() => void navigation.chooseMode('teammates')}
+      onDeleted={() => navigation.returnHome()}
       onOpenSearch={() => afterProfile(onSearch)}
       {...(homed && online ? { onOpenHome: () => afterProfile(() => setHomeSheet(true)) } : {})} />
     {homed ? <CloudHomeSwitchSheet visible={homeSheet} onClose={() => setHomeSheet(false)} botId={resource.ref.id} name={name}
       homeDeviceId={deviceId} homeName={deviceName}
-      onMoved={() => { setHomeSheet(false); void navigation.chooseMode('teammates'); }} /> : null}
+      onMoved={() => { setHomeSheet(false); navigation.returnHome(); }} /> : null}
   </>;
 }
 

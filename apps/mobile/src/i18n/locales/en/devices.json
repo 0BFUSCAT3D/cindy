@@ -594,8 +594,6 @@
       "showLess": "Show less"
     },
     "noCreateHosts": "No compatible computer is available. Open Cindy on a computer and sign in with the same account to create a teammate.",
-    "taskAttentionCount": "Tasks needing attention: {{count}}",
-    "unreadChatCount": "Unread chats: {{count}}",
     "messageSent": "Message sent to background task",
     "sentTo": "Sent a message to {{name}}",
     "receivedFrom": "Message from {{name}}",
@@ -634,19 +632,13 @@
       "unknown": "Unknown status"
     },
     "title": "Teammates",
-    "tasks": "Sessions",
     "search": "Search Teammates",
-    "emptyTitle": "No Teammates Yet",
-    "emptyCopy": "Create a teammate in Cindy on your computer.",
-    "noResults": "No Matching Teammates",
     "startChat": "Start the conversation",
-    "preferenceSaveFailed": "Couldn’t save your view preference. Try switching views again.",
     "automation": {
       "unsavedTitle": "Discard Changes?",
       "unsavedBody": "Your changes haven’t been saved.",
       "discard": "Discard Changes"
     },
-    "openNavigation": "Open navigation",
     "openProfile": "View {{name}}'s profile",
     "switchCompanion": "Switch teammate",
     "activity": {
@@ -693,9 +685,7 @@
     "errorDetails": "Error details",
     "createTeammate": "New teammate",
     "createMenu": "New",
-    "searchWithGroups": "Search teammates and groups",
     "awaiting": "Needs your OK",
-    "emptyCopyCreate": "Teammates remember what you talked about and can get things done on your computer.",
     "taskResult": "Task result",
     "collapseResult": "Hide result"
   },

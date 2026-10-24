@@ -7,7 +7,6 @@ import type { RemoteResourceRef } from '@cindy/device-link';
 import type { HostedRemoteCollectionItem, RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { useGuardedPush } from '@/utils/useGuardedPush';
 import { useHomeMode } from './useHomeMode';
-import type { HomeMode } from './homeViewPreferenceStore';
 import { homeDismissCount, teammateIdentity, teammateResourceRoute, teammateSessionPreview } from './teammateNavigation';
 import { remoteSessionStore } from './remoteSessionStore';
 import { readRemoteCollectionCache, writeRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
@@ -24,43 +23,35 @@ export function useTeammateNavigation() {
   const pendingAccount = useRef<number | null>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const chooseMode = useCallback(async (mode: HomeMode) => {
+  /** Back to the home, whose teammate section replaced the separate teammate list. */
+  const returnHome = useCallback(() => {
     if (pendingAccount.current === accountGeneration) return;
-    pendingAccount.current = accountGeneration;
     Keyboard.dismiss();
-    try {
-      await preferences.setMode(mode);
-      if (mounted.current && current.current === accountGeneration) {
-        const state = navigation.getState();
-        const routes = state?.routes.slice(0, state.index + 1) ?? [];
-        const count = homeDismissCount(routes);
-        // Pop by position to preserve the mounted home's state.
-        if (count === null) {
-          const legacyIndex = routes.findIndex(route => route.name === 'resources/[collectionId]'
-            && (route.params as { collectionId?: string } | undefined)?.collectionId === 'teammates');
-          // POP_TO only replaces the top when home is absent, leaving the retired route underneath.
-          if (legacyIndex >= 0) navigation.reset({
-            index: legacyIndex,
-            routes: [...routes.slice(0, legacyIndex), { name: 'devices/index' }],
-          } as never);
-          else router.dismissTo('/devices');
-        }
-        else if (count > 0) router.dismiss(count);
-      }
-    } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
-  }, [accountGeneration, navigation, preferences.setMode, router]);
-  /**
-   * `replace` swaps the current screen (the cloud view handing over to the new main computer).
-   * `keepMode`: opened from the task home's teammate section, so back returns to the tasks.
-   */
-  const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem, options?: { replace?: boolean; keepMode?: boolean }) => {
+    const state = navigation.getState();
+    const routes = state?.routes.slice(0, state.index + 1) ?? [];
+    const count = homeDismissCount(routes);
+    // Pop by position to preserve the mounted home's state.
+    if (count === null) {
+      const legacyIndex = routes.findIndex(route => route.name === 'resources/[collectionId]'
+        && (route.params as { collectionId?: string } | undefined)?.collectionId === 'teammates');
+      // POP_TO only replaces the top when home is absent, leaving the retired route underneath.
+      if (legacyIndex >= 0) navigation.reset({
+        index: legacyIndex,
+        routes: [...routes.slice(0, legacyIndex), { name: 'devices/index' }],
+      } as never);
+      else router.dismissTo('/devices');
+    }
+    else if (count > 0) router.dismiss(count);
+  }, [accountGeneration, navigation, router]);
+  /** `replace` swaps the current screen (the cloud view handing over to the new main computer). */
+  const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem, options?: { replace?: boolean }) => {
     const identity = teammateIdentity(hosted);
     if (!identity || pendingAccount.current === accountGeneration) return;
     // Fence rapid taps before the async preference write, not only at router.push.
     pendingAccount.current = accountGeneration;
     Keyboard.dismiss();
     try {
-      await preferences.selectTeammate(identity, { keepMode: options?.keepMode });
+      await preferences.selectTeammate(identity);
       if (mounted.current && current.current === accountGeneration) {
         const owner = `${user?.id ?? ''}:${accountGeneration}`;
         const cached = readRemoteCollectionCache(owner, identity.collectionId);
@@ -79,19 +70,18 @@ export function useTeammateNavigation() {
       }
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
   }, [accountGeneration, i18n.language, preferences.selectTeammate, push, router, user?.id]);
-  const openCreatedTeammate = useCallback(async (host: RemoteResourceHostTarget, ref: RemoteResourceRef, options?: { keepMode?: boolean }) => {
+  const openCreatedTeammate = useCallback(async (host: RemoteResourceHostTarget, ref: RemoteResourceRef) => {
     if (!mounted.current || current.current !== accountGeneration || !host.deviceId || !ref.id || !ref.collectionId
       || ref.kind !== 'bot' || pendingAccount.current === accountGeneration) return;
     pendingAccount.current = accountGeneration;
     Keyboard.dismiss();
     try {
-      await preferences.selectTeammate({ deviceId: host.deviceId, collectionId: ref.collectionId, resourceKind: 'bot', resourceId: ref.id },
-        { keepMode: options?.keepMode });
+      await preferences.selectTeammate({ deviceId: host.deviceId, collectionId: ref.collectionId, resourceKind: 'bot', resourceId: ref.id });
       if (mounted.current && current.current === accountGeneration) push({
         pathname: '/resources/[collectionId]/[resourceId]',
         params: { deviceId: host.deviceId, deviceName: host.deviceName, collectionId: ref.collectionId, resourceKind: ref.kind, resourceId: ref.id },
       });
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
   }, [accountGeneration, preferences.selectTeammate, push]);
-  return { ...preferences, chooseMode, openTeammate, openCreatedTeammate };
+  return { ...preferences, returnHome, openTeammate, openCreatedTeammate };
 }

@@ -375,9 +375,6 @@ describe('mobile home desktop-first surface', () => {
       expect(source).not.toContain(`pendingMenuActionRef.current = () => guardedPush('${route}')`);
       expect(source).toContain(`setChromeMenuOpen(false);\n          guardedPush('${route}');`);
     }
-    const teammateHome = readSource('src/session/TeammateHomeScreen.tsx');
-    expect(teammateHome).toContain("onOpenSettings={() => openDrawerPage('/settings')}");
-    expect(teammateHome).toContain("onOpenAccounts={() => afterDrawer(() => setAccounts(true))}");
     const rootLayout = readSource('app/_layout.tsx');
     expect(rootLayout).not.toContain("animation: 'slide_from_left'");
     expect(source).toContain("label={t('devices.list.allConversations')}");
