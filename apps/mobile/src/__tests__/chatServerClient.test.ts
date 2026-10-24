@@ -251,6 +251,45 @@ describe('direct Chat Server client', () => {
     });
     expect(request.mock.calls[0]).toEqual(request.mock.calls[1]);
   });
+  // Product rule: quoting a present companion addresses that companion; a deleted
+  // original must not send a stale quote or silently lose the user's reply.
+  it('sends a fresh quote with the companion recipient and rejects a deleted original', async () => {
+    const original = { ...message(20), authorId: id(12), author: { kind: 'bot', name: 'Before rename' } };
+    const member = { ...snapshot().members[0], id: id(12), kind: 'bot', state: 'joined', name: 'Current name' };
+    const request = vi.fn().mockImplementation(async (path: string, method?: string) => {
+      if (method === 'POST') return { id: id(21) };
+      return path.endsWith('/members') ? [member] : original;
+    });
+    const client = createChatServerClient(request);
+    const input = { clientId: 'quote-reply-operation', text: 'Agreed', mentions: { all: false, botIds: [] }, quote: { messageId: id(20) } };
+    await client.send(id(1), input);
+    expect(request).toHaveBeenLastCalledWith(`/conversations/${id(1)}/messages`, 'POST', expect.objectContaining({
+      mentions: [id(12)], content: [expect.objectContaining({ type: 'card' }), { type: 'text', text: 'Agreed' }],
+    }));
+    original.deleted = true;
+    request.mockClear();
+    await expect(client.send(id(1), input)).rejects.toThrow('QUOTE_UNAVAILABLE');
+    expect(request.mock.calls.some(([, method]) => method === 'POST')).toBe(false);
+  });
+  it('retries a lost quoted-send response with the identical posted content', async () => {
+    const original = message(20);
+    let lost = true;
+    const request = vi.fn().mockImplementation(async (path: string, method?: string) => {
+      if (method === 'POST') {
+        if (lost) { lost = false; throw new Error('NETWORK_ERROR'); }
+        return { id: id(21) };
+      }
+      return path.endsWith('/members') ? snapshot().members : original;
+    });
+    const client = createChatServerClient(request);
+    const input = { clientId: 'lost-quote-operation', text: 'Agreed', mentions: { all: false, botIds: [] }, quote: { messageId: id(20) } };
+    await expect(client.send(id(1), input)).rejects.toThrow('NETWORK_ERROR');
+    const posted = request.mock.calls.at(-1);
+    original.deleted = true;
+    await client.send(id(1), input);
+    expect(request.mock.calls.at(-1)).toEqual(posted);
+    expect(request.mock.calls.filter(([, method]) => method !== 'POST')).toHaveLength(2);
+  });
   it('reauthorizes and replaces loaded older history on refresh instead of retaining deleted text', async () => {
     const recent = Array.from({ length: 100 }, (_, n) => message(200 - n));
     const request = vi.fn().mockResolvedValueOnce(snapshot()).mockResolvedValueOnce(recent)

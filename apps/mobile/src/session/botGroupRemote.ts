@@ -224,6 +224,7 @@ function parseMessage(value: unknown): BotGroupMessageView | null {
   return {
     id: messageId,
     sequence,
+    ...(typeof record.serverSequence === 'string' && /^\d{1,30}$/.test(record.serverSequence) ? { serverSequence: record.serverSequence } : {}),
     kind,
     authorKind,
     authorBotId: optionalId(record.authorBotId),
@@ -473,6 +474,7 @@ export interface BotGroupSendAttempt {
   attachmentIds: readonly string[];
   /** Explicit target identity, independent of the displayed names. */
   mentionSignature?: string;
+  quoteMessageId?: string;
   clientId: string;
 }
 
@@ -487,13 +489,16 @@ export function nextBotGroupSendAttempt(
   newClientId: () => string,
   attachmentIds: readonly string[] = [],
   mentions?: BotGroupMention,
+  quoteMessageId?: string,
 ): BotGroupSendAttempt {
   const mentionSignature = mentions === undefined ? undefined : JSON.stringify([mentions.all, mentions.botIds]);
   return previous && previous.text === text && previous.division === division
+    && previous.quoteMessageId === quoteMessageId
     && previous.mentionSignature === mentionSignature
     && previous.attachmentIds.length === attachmentIds.length
     && previous.attachmentIds.every((attachmentId, index) => attachmentId === attachmentIds[index])
     ? previous
     : { text, division, attachmentIds: [...attachmentIds], clientId: newClientId(),
-      ...(mentionSignature === undefined ? {} : { mentionSignature }) };
+      ...(mentionSignature === undefined ? {} : { mentionSignature }),
+      ...(quoteMessageId ? { quoteMessageId } : {}) };
 }

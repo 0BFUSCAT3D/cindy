@@ -28,8 +28,8 @@ const PUSH_COALESCE_MS = 150;
  * re-reads the whole projection on it, never patches the timeline locally. Actions go
  * through the same resource and are followed by a read.
  */
-export function useBotGroupChat(host: RemoteResourceHostTarget, groupId: string) {
-  const server = useChatServerGroup(groupId, !host.deviceId);
+export function useBotGroupChat(host: RemoteResourceHostTarget, groupId: string, threadRootId?: string) {
+  const server = useChatServerGroup(groupId, !host.deviceId, threadRootId);
   const { invoke, openLink, status, connectionEpoch, presenceVersion, getPresenceAvailability, onRemoteResourceChanged, subscribe, unsubscribe } = useDeviceLink();
   const { accountGeneration } = useAuth();
   const { i18n } = useTranslation();

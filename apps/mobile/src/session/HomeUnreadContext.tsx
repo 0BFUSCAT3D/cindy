@@ -48,7 +48,8 @@ function HomeUnreadContent({ children }: { children: ReactNode }) {
     return count;
   }, [sessions, homeStatusVersion, scheduleUnread]);
   const teammates = [...roster.items, ...groups.items].filter(row =>
-    isRemoteResourceUnread(user?.id ?? '', row.host.deviceId, row.item.ref.id, row.item.display.lastReplyAt, row.lastReplySequence)).length;
+    (row.chatUnread?.threadCount ?? 0) > 0 || ((row.chatUnread?.count ?? 1) > 0
+      && isRemoteResourceUnread(user?.id ?? '', row.host.deviceId, row.item.ref.id, row.item.display.lastReplyAt, row.lastReplySequence))).length;
   return <ScheduleUnreadContext.Provider value={setScheduleUnread}><RosterContext.Provider value={{ roster, groups }}><CountsContext.Provider value={{ tasks, teammates }}>{children}</CountsContext.Provider></RosterContext.Provider></ScheduleUnreadContext.Provider>;
 }
 export const useHomeUnreadCounts = () => useContext(CountsContext);

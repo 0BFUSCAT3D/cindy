@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   getPermissionsAsync: vi.fn(),
   requestPermissionsAsync: vi.fn(),
   getDevicePushTokenAsync: vi.fn(),
+  setNotificationHandler: vi.fn(),
 }));
 
 vi.mock('@react-native-async-storage/async-storage', () => ({
@@ -33,7 +34,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 vi.mock('expo-notifications', () => ({
-  setNotificationHandler: vi.fn(),
+  setNotificationHandler: mocks.setNotificationHandler,
   getPermissionsAsync: mocks.getPermissionsAsync,
   requestPermissionsAsync: mocks.requestPermissionsAsync,
   getDevicePushTokenAsync: mocks.getDevicePushTokenAsync,
@@ -59,6 +60,7 @@ vi.mock('@/config/devServerEnvironment', () => ({
 }));
 
 import {
+  configureForegroundNotificationBehavior,
   retryPendingUnregister,
   syncPushRegistration,
   unregisterPushTokenBestEffort,
@@ -83,6 +85,20 @@ function readStoredRealms(key: string): string[] {
 }
 
 describe('push notification realm routing', () => {
+  // Same group, another thread must still be noticeable while reading the main timeline.
+  it('passes the thread route to the foreground visibility gate', async () => {
+    const room = '00000000-0000-4000-8000-000000000001';
+    const message = '00000000-0000-4000-8000-000000000002';
+    const thread = '00000000-0000-4000-8000-000000000003';
+    const reading = vi.fn((_route: string) => false);
+    configureForegroundNotificationBehavior(reading);
+    const handler = mocks.setNotificationHandler.mock.calls.at(-1)![0];
+    const notification = { request: { content: { data: { deepLink: `/companions/groups/${room}?messageId=${message}&threadRootId=${thread}` } } } };
+    expect(await handler.handleNotification(notification)).toMatchObject({ shouldShowBanner: true });
+    expect(reading.mock.calls[0][0]).toContain(`threadRootId=${thread}`);
+    reading.mockReturnValue(true);
+    expect(await handler.handleNotification(notification)).toMatchObject({ shouldShowBanner: false, shouldPlaySound: false });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     store.clear();
@@ -161,7 +177,8 @@ describe('push notification realm routing', () => {
 
     expect(readStoredRealms(DEV_REGISTERED_KEY)).toEqual(['cn']);
     expect(readStoredRealms(RELEASE_REGISTERED_KEY)).toEqual(['cn']);
-    expect(apiFetch).toHaveBeenCalledTimes(2);
+    expect(apiFetch).toHaveBeenCalledTimes(4); // Each environment registers task and chat delivery.
+    expect(apiFetch.mock.calls.filter(([path]) => path === '/v1/push-token')).toHaveLength(2);
   });
 
   it('注册期间切换 CindyDev 环境仍把补偿状态留在原 namespace', async () => {
