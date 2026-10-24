@@ -68,7 +68,7 @@ import {
 } from './BotGroupAvatars';
 import { CHAT_HEADER_BLUR_FADE_INSIDE, ChatIdentityHeader } from './ChatIdentityHeader';
 import { SessionHeaderNativeBlur } from './SessionHeaderNativeControls';
-import { CompanionEntering } from './CompanionEntering';
+import { CompanionEntering, useMessageEntrances } from './CompanionEntering';
 import { BotGroupComposer, type BotGroupSendInput } from './BotGroupComposer';
 import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
 import { BotGroupTaskCard } from './BotGroupTaskCard';
@@ -432,6 +432,9 @@ export function BotGroupTimeline({
   const { t, i18n } = useTranslation();
   const styles = useThemedStyles(makeStyles);
   const messages = group.messages;
+  const entranceSignature = messages.map(message => message.id).join('\0');
+  const entranceKeys = useMemo(() => entranceSignature ? entranceSignature.split('\0') : [], [entranceSignature]);
+  const enteringMessageKeys = useMessageEntrances(entranceKeys, group.id);
   const planById = new Map(group.plans.map((plan) => [plan.id, plan]));
   const openPlan = openBotGroupPlan(group);
   const followUp = botGroupPlanFollowUp(openPlan);
@@ -457,7 +460,7 @@ export function BotGroupTimeline({
         && previous?.kind === 'message' && previous.authorKind === 'bot' && previous.authorBotId === message.authorBotId;
       return <View key={message.id} style={styles.item}>
         {groupTime !== undefined ? <Text style={styles.time}>{formatBotMessageGroupTime(groupTime, i18n.language)}</Text> : null}
-        <CompanionEntering id={message.id} createdAt={message.createdAt} kind={message.authorKind === 'user' ? 'send' : 'reply'}>
+        <CompanionEntering id={message.id} arrivedAt={enteringMessageKeys.get(message.id)}>
         <BotGroupTimelineItem message={message} continued={continued} member={message.authorBotId ? memberById.get(message.authorBotId) : undefined}
           quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, messages) : undefined}
           members={group.members} deviceId={deviceId} online={online} identityFor={identityFor} mentionLabels={mentionLabels}

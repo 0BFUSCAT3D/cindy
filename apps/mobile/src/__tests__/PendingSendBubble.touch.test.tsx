@@ -91,11 +91,12 @@ function show(
   selectedClientId: string | null = null,
   viewerDeviceId: string | null = null,
   busy = false,
+  reserveActionRow = true,
 ) {
   handlers.clear();
   const actions: PendingSendBubbleActions = { selectedClientId, onSelect: select, onRemove: remove,
     onBeginEdit: edit, onSteer: steer, onMove: move, onRetryOutbox: retryOutbox, onRemoveOutbox: removeOutbox, busy };
-  act(() => root.render(<PendingSendBubble item={{ ...item, ...overrides }} actions={actions} viewerDeviceId={viewerDeviceId}
+  act(() => root.render(<PendingSendBubble item={{ ...item, ...overrides }} actions={actions} viewerDeviceId={viewerDeviceId} reserveActionRow={reserveActionRow}
     onOpenImage={openImage}
     renderImage={() => null} renderFile={() => null}
     renderText={() => <MessageBodyText testID="link" onPress={openLink}>link</MessageBodyText>} />));
@@ -107,6 +108,18 @@ function touch(type: 'Start' | 'Move' | 'End' | 'Cancel', x = 0, y = 0, count = 
 function flush() {
   act(() => { for (const [id, callback] of [...frames]) { frames.delete(id); callback(0); } });
 }
+// Regression: companion messages settle to a long-press menu, not a 46pt toolbar.
+// The pending footer used to collapse on every acknowledgement. Keep failure controls available.
+// Unit, real PendingSendBubble entry; existing touch tests only covered the ordinary toolbar layout.
+it('does not add an empty toolbar to a companion send, but still exposes retry on failure', () => {
+  show({ phase: 'sending', actions: null }, null, null, false, false);
+  expect(host.querySelector('[data-testid="pendingSend.statusRow.a"]')).toBeNull();
+  show({ phase: 'failed', actions: null }, null, null, false, false);
+  const retry = host.querySelector('[data-testid="pendingSend.outboxRetry.a"]') as HTMLButtonElement;
+  expect(retry).not.toBeNull();
+  act(() => retry.click());
+  expect(retryOutbox).toHaveBeenCalledWith('a');
+});
 it.each([null, 'a'])('toggles the same message for selection %s, allowing finger jitter', (selected) => {
   show({}, selected); touch('Start'); touch('Move', 3, 2); touch('End', 3, 2);
   expect(select).not.toHaveBeenCalled(); flush(); flush();

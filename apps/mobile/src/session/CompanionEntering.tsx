@@ -1,11 +1,22 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import { appendedMessageKeys } from '@cindy/maker-shared/message-presentation';
 import { Animated, Easing } from 'react-native';
 import { useReduceMotionEnabled } from '@/hooks/useReduceMotion';
 import { motionDuration, motionEasing } from '@/theme';
 
-/** Only messages this recent animate: history loads, remounts and recycled cells stay still. */
-const FRESH_MS = 15_000;
-/** Fresh ids already played, so a remount inside FRESH_MS stays still. Old rows never need an entry. */
+/** Only live tail additions animate; creation time does not tell us when a reply was revealed. */
+export function useMessageEntrances(keys: readonly string[], scope: string | undefined, ready = true) {
+  const previous = useRef<{ scope: string | undefined; keys: readonly string[] } | null>(null);
+  const arriving = useMemo(() => {
+    const added = ready ? appendedMessageKeys(previous.current && previous.current.scope === scope ? previous.current.keys : undefined, keys) : [];
+    const now = Date.now();
+    return new Map([...added].map(key => [key, now]));
+  }, [keys, scope, ready]);
+  useLayoutEffect(() => { previous.current = ready ? { scope, keys } : null; }, [keys, scope, ready]);
+  return arriving;
+}
+
+/** A recycled or acknowledged message must not replay its entrance. */
 const MAX_REMEMBERED = 200;
 const animated = new Set<string>();
 
@@ -22,13 +33,13 @@ export function CompanionFadeIn({ play, distance, scaleFrom, duration = motionDu
   if (run.current === null) run.current = play && reduceMotion === false;
   const progress = useRef(new Animated.Value(run.current ? 0 : 1)).current;
   useEffect(() => {
-    if (!run.current) return;
+    if (!run.current || reduceMotion !== false) { progress.setValue(1); return; }
     const timing = Animated.timing(progress, {
       toValue: 1, duration, delay, easing: Easing.bezier(...motionEasing.out), useNativeDriver: true,
     });
     timing.start();
     return () => timing.stop();
-  }, [delay, duration, progress]);
+  }, [delay, duration, progress, reduceMotion]);
   if (!run.current) return <>{children}</>;
   const transform = [
     { translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) },
@@ -39,23 +50,34 @@ export function CompanionFadeIn({ play, distance, scaleFrom, duration = motionDu
 
 /**
  * Entering motion for a companion conversation row (M4 / M5). Keyed by message: a row animates at
- * most once and only while it is new (created within FRESH_MS). Your message rises 8pt from 0.96;
- * a teammate's finished reply rises 6pt (replies never stream).
+ * most once, when it is appended to an already open timeline. History stays still and a slow
+ * reply gets the same entrance as a fast one. Never scale text or change row layout.
  */
-export function CompanionEntering({ id, createdAt, kind, children }: {
-  id: string; createdAt: string | number | undefined; kind: 'send' | 'reply'; children: ReactNode;
+export function CompanionEntering({ id, arrivedAt, children }: {
+  id: string; arrivedAt?: number; children: ReactNode;
 }) {
-  const fresh = useRef<boolean | null>(null);
-  if (fresh.current === null) {
-    const at = typeof createdAt === 'number' ? createdAt : createdAt ? Date.parse(createdAt) : Number.NaN;
-    fresh.current = !animated.has(id) && Number.isFinite(at) && Date.now() - at < FRESH_MS;
-    if (fresh.current) {
-      animated.add(id);
-      // Insertion order: the oldest id is almost always past FRESH_MS; at worst a remount replays it once.
-      if (animated.size > MAX_REMEMBERED) animated.delete(animated.values().next().value!);
-    }
-  }
-  return <CompanionFadeIn play={fresh.current} distance={kind === 'send' ? 8 : 6} scaleFrom={kind === 'send' ? 0.96 : undefined}>
+  // Cells first mounted later by scrolling are history, even if their list projection is unchanged.
+  const entering = arrivedAt !== undefined && Date.now() - arrivedAt < 1000;
+  const reduceMotion = useReduceMotionEnabled();
+  const progress = useRef(new Animated.Value(entering && !animated.has(id) && reduceMotion === false ? 0 : 1)).current;
+  const animation = useRef<Animated.CompositeAnimation | null>(null);
+  useLayoutEffect(() => {
+    if (!entering || animated.has(id)) return;
+    animated.add(id);
+    if (animated.size > MAX_REMEMBERED) animated.delete(animated.values().next().value!);
+    if (reduceMotion !== false) { progress.setValue(1); return; }
+    progress.setValue(0);
+    animation.current = Animated.timing(progress, { toValue: 1, duration: motionDuration.base,
+      easing: Easing.bezier(...motionEasing.out), useNativeDriver: true });
+    animation.current.start();
+  }, [entering, id, progress, reduceMotion]);
+  useLayoutEffect(() => {
+    if (reduceMotion !== false) { animation.current?.stop(); progress.setValue(1); }
+    return () => { animation.current?.stop(); progress.setValue(1); };
+  }, [id, progress, reduceMotion]);
+  return <Animated.View style={{ opacity: progress, transform: [
+    { translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) },
+  ] }}>
     {children}
-  </CompanionFadeIn>;
+  </Animated.View>;
 }

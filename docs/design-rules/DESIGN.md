@@ -1199,6 +1199,22 @@ existing actions. Other composers keep their existing behavior.
 
 #### Motion tokens (the only tier source)
 
+**Message arrival and delivery continuity (2026-10-24).** Keep the existing bubble
+colors, shape and typography. Newly appended visible messages enter once with opacity
+and a 6px/pt upward translation on `base` / `ease-out`, without scaling text or changing
+layout dimensions. Decide arrival from the open timeline's visible message identities,
+not the age of the first token: a slow final reply still enters naturally. Initial
+history, older pages, window replacement and recycled cells do not replay; streaming
+updates and delivery acknowledgement retain their row identity. Reduced motion shows
+the final state immediately, including when enabled during an entrance.
+
+Pending mobile sends reserve a footer only where the settled message has an action
+row. Companion chats using long-press menus have no empty send footer; real queue,
+offline and failure actions remain accessible. Ordinary streamed replies reserve the
+eventual action row without exposing unfinished-message actions. Companion menu shells
+and avatar columns stay mounted across streaming completion, so enabling actions cannot
+recreate the body or change its width. Historical bubble styling stays unchanged.
+
 Global tokens live in `:root` of `apps/desktop/src/renderer/styles/globals.css`; mobile (`apps/mobile`) mirrors same-name same-value constants in `src/theme/tokens.ts` (dual-platform isomorphism, same policy as color tokens, landing with the mobile motion overhaul). **New transitions/animations must reference tokens — no hardcoded durations or cubic-beziers**; 5 interaction-duration tiers + 3 curves, the same philosophy as the §5 radius scale. Values outside the tiers require design review first. Narrow semantic exceptions are recorded directly below.
 
 | Token                | Value                           | Use                                                                                |

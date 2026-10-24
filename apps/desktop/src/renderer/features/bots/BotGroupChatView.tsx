@@ -1,4 +1,5 @@
 import { RemoveChatFromListButton } from './RemoveChatFromListButton';
+import { useMessageEntrance } from '@/components/chat/useMessageEntrance';
 import { useThreadPanelResize } from './useThreadPanelResize';
 import { cn } from '@/lib/utils';
 /**
@@ -476,10 +477,9 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   useEffect(() => { if (unreadReceipts) loadRef.current(); }, [unreadReceipts]);
   const messageByIdRef = useRef(new Map<string, BotGroupMessageView>());
   messageByIdRef.current = new Map(realMessages.map((message) => [message.id, message]));
-  const lastRealSequence = realMessages[realMessages.length - 1]?.sequence ?? 0;
-  /** Rows after this sequence arrived while the page was open: they fade in. */
-  const enterAfterRef = useRef<number | null>(null);
-  if (enterAfterRef.current === null && state.kind === 'ready') enterAfterRef.current = lastRealSequence;
+  const entranceSignature = rows.map(message => adoptedKeysRef.current.get(message.id) ?? message.id).join('\0');
+  const entranceKeys = useMemo(() => entranceSignature ? entranceSignature.split('\0') : [], [entranceSignature]);
+  const enterMessage = useMessageEntrance(entranceKeys, state.kind === 'ready' && !loadingOlder);
 
   // Quotes resolve against verified copies only; an unverified original falls back to the snapshot.
   const quoteSources = useMemo(
@@ -1071,7 +1071,6 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const pendingFor = (planId: string | null) =>
     planId && planPending?.planId === planId ? planPending.action : null;
   const canQuote = !!group.serverBacked && !group.archived && !group.dissolvedAt;
-  const enterAfter = enterAfterRef.current;
 
   return (
     <div ref={threadLayoutRef} className={cn('flex h-full min-w-0 overflow-hidden', threadResize.isDragging && 'select-none [&_*]:cursor-col-resize')}>
@@ -1175,7 +1174,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   onChanged={onChanged}
                   highlighted={highlightId === message.id}
                   focusable={jumpTarget === message.id || highlightId === message.id}
-                  entering={enterAfter !== null && (message.pending === true || message.sequence > enterAfter)}
+                  entranceRef={node => enterMessage(node, adoptedKeysRef.current.get(message.id) ?? message.id)}
                   canContinue={message.id === continueId}
                   continuing={continuing}
                   onContinue={onContinue}

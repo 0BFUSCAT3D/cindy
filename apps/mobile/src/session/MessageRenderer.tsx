@@ -34,7 +34,7 @@ import { extractPayloadToolResultMedia, managedToolMediaKind } from '@cindy/make
 import { AuthorizationMessageCard } from './AuthorizationMessageCard';
 import { collectBotMessageTimeGroups, formatBotMessageGroupTime, type BotTimelineMessage } from '@cindy/maker-shared/botTimeline';
 import { CompanionMessageCard } from '@/session/CompanionMessageCard';
-import { CompanionEntering } from '@/session/CompanionEntering';
+import { CompanionEntering, useMessageEntrances } from '@/session/CompanionEntering';
 import { LOCAL_SEND_FRESH_MS, localSendStartedAt } from '@/session/localSendMotion';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
 import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
@@ -477,7 +477,9 @@ const MOBILE_MESSAGE_DRAW_DISTANCE = 800;
 const FOLDABLE_HEADER_HIT_SLOP = { bottom: 10, left: 4, right: 4, top: 10 };
 
 function mobileMessageListItemType(item: MobileMessageRenderItem): MobileMessageRenderItem['type'] {
-  return item.type;
+  // An acknowledgement is the same list cell. Changing LegendList's item type here
+  // discards its measured row just as the local bubble becomes a persisted message.
+  return item.type === 'pending_send' ? 'message' : item.type;
 }
 
 function resolveMobileMessageHistoryAnchorOffset(
@@ -683,6 +685,7 @@ interface MessageActions {
   companionQuoteActions?: CompanionQuoteActions;
   /** VoiceOver / TalkBack on: the long-press menu has no screen-reader entry, keep the action row. */
   screenReaderEnabled?: boolean;
+  enteringMessageKeys?: ReadonlyMap<string, number>;
   onCompanionReadThrough?: (at: number) => void;
   onOpenCompanionSettings?: (page: 'memory' | 'capabilities') => void;
   companionWorkingLabel?: string | null;
@@ -1829,10 +1832,18 @@ export function MessageRenderer({
     };
   }, [companion, companionQuote, lastCompanionReplyKey]);
   const screenReaderEnabled = useScreenReaderEnabled();
+  const entranceSignature = listData.flatMap(item => item.type === 'pending_send'
+    || item.type === 'message' && !item.message.systemCardType
+      && (item.message.body.trim().length > 0 || item.message.attachments?.length)
+      && (item.message.kind === 'user' || item.message.kind === 'assistant') ? [item.key] : []).join('\0');
+  const entranceKeys = useMemo(() => entranceSignature ? entranceSignature.split('\0') : [], [entranceSignature]);
+  const enteringMessageKeys = useMessageEntrances(entranceKeys, scrollResetKey,
+    !syncingWhileEmpty && !historyPositioning && historyActive && !loadingEarlier);
   const actions: MessageActions & { firstUserMessageClientId?: string } = useMemo(() => ({
     companion,
     companionQuoteActions,
     screenReaderEnabled,
+    enteringMessageKeys,
     companionWorkingLabel,
   onOpenCompanionSettings,
     companionAvatar,
@@ -1877,6 +1888,7 @@ export function MessageRenderer({
     companion,
     companionQuoteActions,
     screenReaderEnabled,
+    enteringMessageKeys,
     companionWorkingLabel,
   onOpenCompanionSettings,
     companionAvatar,
@@ -3098,6 +3110,8 @@ const RenderItemView = memo(function RenderItemView({
           <PendingSendBubble
             actions={actions.pendingSend}
             item={item}
+            reserveActionRow={!(actions.companion && !actions.screenReaderEnabled
+              && (Platform.OS === 'ios' ? usesSystemActionMenu() : usesNativePullDownMenu()))}
             renderReplyQuote={actions.companionQuoteActions ? (quote) => (
               <View style={styles.companionQuote}>
                 <BotGroupQuote display={companionReplyQuoteDisplay(quote,
@@ -3147,16 +3161,10 @@ const RenderItemView = memo(function RenderItemView({
   const alignWithReplies = !!actions.companionAvatar && actions.companion
     && (item.type === 'work_group' || (item.type === 'message' && !!item.message.companion));
   const aligned = alignWithReplies ? <View style={styles.companionAvatarInset}>{node}</View> : node;
-  // Your own send eases in once, as its local bubble (both chats). Its echo keeps the same key and
-  // wrapper, so it neither remounts nor replays. Companion chats also ease in a new message or
-  // finished reply (M4 / M5).
-  const localSendAt = item.type === 'pending_send' || item.type === 'message'
-    ? localSendStartedAt(item.key) : null;
-  const entering = localSendAt !== null
-    ? <CompanionEntering key={item.key} id={item.key} createdAt={localSendAt} kind="send">{aligned}</CompanionEntering>
-    : actions.companion && item.type === 'message' && !item.message.systemCardType
+  // Keep the same entrance shell across local send, acknowledgement and streaming updates.
+  const entering = item.type === 'pending_send' || item.type === 'message' && !item.message.systemCardType
     && (item.message.kind === 'user' || item.message.kind === 'assistant')
-    ? <CompanionEntering key={item.key} id={item.key} createdAt={item.message.createdAt} kind={item.message.kind === 'user' ? 'send' : 'reply'}>{aligned}</CompanionEntering>
+    ? <CompanionEntering key={item.key} id={item.key} arrivedAt={actions.enteringMessageKeys?.get(item.key)}>{aligned}</CompanionEntering>
     : aligned;
   return (
     <View style={focused ? styles.focusedItem : undefined} testID={focused ? 'message.focusedItem' : undefined}>
@@ -3574,7 +3582,7 @@ function MessageBubble({
   // 操作行只挂在每轮收尾正文、且该行确实是一条发言(判据见
   // mobileMessageShowsActionBar):中间句不再逐条带复制/分叉/时间,系统边界卡整行
   // 不挂。分享态只保留与导出图片一致的消息内容,不显示操作图标、时间或费用。
-  // 流式回复不挂操作行或状态占位；任务运行状态由底部状态栏展示。
+  // 流式期间不显示操作，但保留它最终占用的位置，避免收尾时把正在看的正文推走。
   const showCompletedActionBar = !shareSelectionActive && mobileMessageShowsActionBar({
     hasSystemCard: !!item.message.systemCardType,
     isStreamingAssistant,
@@ -3705,8 +3713,9 @@ function MessageBubble({
   // 都不可用、或开着读屏（长按手势没有读屏入口）时退回原来的操作行，其中「回复」同样放引用。
   // 长按交给菜单后正文不再就地选字，改由「选择文字」打开。
   const companionQuote = actions.companionQuoteActions;
-  const companionMenuEnabled = !!(actions.companion && hasActions && !actions.screenReaderEnabled
+  const companionMenuAvailable = !!(actions.companion && !actions.screenReaderEnabled
     && (Platform.OS === 'ios' ? usesSystemActionMenu() : usesNativePullDownMenu()));
+  const companionMenuEnabled = companionMenuAvailable && hasActions;
   const bubbleTextSelectable = canSelectVisibleText && !companionMenuEnabled;
   const replyQuote = companionQuote && item.message.kind === 'user' ? item.message.replyQuote : undefined;
   const replyTargetId = companionQuote?.showReplyTargets && item.message.kind === 'assistant' && clientId
@@ -3821,11 +3830,11 @@ function MessageBubble({
   // Android's anchored menu opens here rather than wrapping the bubble, which would swallow its taps.
   const [companionMenuOpen, setCompanionMenuOpen] = useRecyclingState(false);
   // Long press fails as soon as the finger moves, so tables and code blocks keep scrolling sideways.
-  const companionMenuGesture = useMemo(() => Gesture.LongPress().minDuration(450).runOnJS(true)
+  const companionMenuGesture = useMemo(() => Gesture.LongPress().enabled(companionMenuEnabled).minDuration(450).runOnJS(true)
     .onStart(() => {
       if (Platform.OS === 'ios') openCompanionActionSheet();
       else setCompanionMenuOpen(true);
-    }), [openCompanionActionSheet, setCompanionMenuOpen]);
+    }), [companionMenuEnabled, openCompanionActionSheet, setCompanionMenuOpen]);
   const openMessageActionMenu = useCallback(() => {
     if (usesSystemActionMenu()) {
       const disabled = actionBusy
@@ -3903,7 +3912,7 @@ function MessageBubble({
   // The long-press menu lives on the bubble; without one (attachment-only, error) the action row stays.
   const bubbleShown = item.message.role !== 'error'
     && (hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0));
-  const companionMenuMounted = companionMenuEnabled && bubbleShown;
+  const companionMenuMounted = companionMenuAvailable && bubbleShown;
   // 气泡是纯 View,不承接任何手势:文本选择走正文原生 Text selectable(长按文字就地选择复制),
   // 气泡上不能挂 Pressable——它会参与触摸协商,干扰正文里表格/代码块横向 ScrollView 的拖动。
   const bubble = (
@@ -3913,7 +3922,7 @@ function MessageBubble({
         presentation.density === 'compact' && styles.bubbleCompact,
         presentation.density === 'rich' && styles.bubbleRich,
         isUser ? styles.userBubble : styles.agentBubble,
-        companionMenuEnabled && styles.companionMenuBubble,
+        companionMenuAvailable && styles.companionMenuBubble,
         actions.companion && !isUser && !item.message.systemCardType && styles.companionAnswer,
         hookSource && styles.hookSourceBubble,
         isUser && !item.message.systemCardType && userBubbleColors
@@ -4152,7 +4161,7 @@ function MessageBubble({
           {item.message.rawError ? <AgentErrorDetails key={item.message.key} message={item.message.rawError} /> : null}
         </ErrorNotice>
       ) : bubbleShown ? (
-        companionMenuEnabled ? (
+        companionMenuAvailable ? (
           <GestureDetector gesture={companionMenuGesture}>
             <View style={isUser ? styles.companionMenuUser : styles.companionMenuAgent} testID="companion.messageMenu">
               {Platform.OS === 'ios' ? bubble : (
@@ -4204,10 +4213,11 @@ function MessageBubble({
           else if (id === 'copy') selectControlAction(id);
           else if (id === 'share') actions.onEnterShareSelection?.(clientId);
           else if (messageMenu.some(item => item.id === id)) selectMenuAction(id as MobileMessageMenuActionId);
-        }} /> : hasActions ? (
+        }} /> : hasActions || (!actions.companion && isStreamingAssistant && !shareSelectionActive) ? (
         <View
           style={[
             styles.messageActionBar,
+            styles.messageActionSlot,
             actionBar.align === 'right' ? styles.userMessageActionBar : styles.agentMessageActionBar,
           ]}
           testID="message.actionBar"
@@ -9470,6 +9480,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     gap: 2,
     marginTop: 0,
   },
+  messageActionSlot: { minHeight: MESSAGE_CONTROL_TOUCH_SIZE },
   userMessageActionBar: { justifyContent: 'flex-end' },
   agentMessageActionBar: { justifyContent: 'flex-start' },
   messageIconAction: {
