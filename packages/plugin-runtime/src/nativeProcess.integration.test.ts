@@ -158,8 +158,15 @@ describe('native plugin worker', () => {
       }
       const revision = ghost.approval;
       await first.close();
-      const second = new NativePluginHost(options);
-      try { await second.open(); expect(second.list()[0].approval).toEqual(revision); }
+      const second = new NativePluginHost({...options,deferStart:true});
+      try {
+        await second.open(); expect(second.list()[0].approval).toEqual(revision);
+        await second.refresh();
+        expect(second.node.stateOf(id)).toBe('off');
+        await second.start();
+        expect(second.node.stateOf(id)).toBe('running');
+        expect(await second.handleNodeRequest(id,{type:'node-request',method:'echo',params:'after-host-composition'})).toEqual({ok:true,result:'after-host-composition'});
+      }
       finally { await second.close(); }
     } finally { await first.close(); }
   });

@@ -5,6 +5,8 @@ import {
   createPluginTaskService,
   PluginTaskError,
   readPluginTaskPlanReceipt,
+  isPluginTaskPermissionAllowed,
+  ownsTaskReceipt,
   type PluginTaskService,
   type PluginTaskStore,
 } from "@cindy/plugin-runtime/pluginTaskService";
@@ -33,6 +35,7 @@ import type {
   TerminalPluginSessionPort,
 } from "./session-contract.js";
 import { TerminalPluginTaskStore } from "./task-store.js";
+import { PluginWriteAccessGate } from "@cindy/plugin-runtime/pluginWriteAccessGate";
 
 const operations: readonly (typeof PLUGIN_TASK_OPERATIONS)[number][] = [
   "capabilities",
@@ -47,6 +50,7 @@ const operations: readonly (typeof PLUGIN_TASK_OPERATIONS)[number][] = [
   "listRuns",
   "cancel",
   "setHidden",
+  "requestWriteAccess",
 ];
 const policy = (value: unknown) =>
   ["ask", "plan", "acceptEdits", "auto"].includes(String(value))
@@ -64,12 +68,16 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
   private readonly port: TerminalPluginSessionPort;
   private service?: PluginTaskService;
   private closed = false;
+  private readonly abort = new AbortController();
+  private readonly writeGate = new PluginWriteAccessGate();
+  private writeRequestPending = false;
   constructor(
     private readonly options: {
       root: string;
       host: TerminalPlugins;
       tasks: TerminalTaskHost;
       guard(): void;
+      translate?(key: string): string;
     },
   ) {
     this.port = options.tasks.configurePluginSessions(this);
@@ -99,6 +107,163 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
       fail("HOST_NOT_READY", "Plugin model settings are unavailable");
     await this.options.host.models!.config(id);
     this.authorized(id);
+  }
+  private writeIdentity(id: string) {
+    this.authorized(id);
+    const ghost = this.options.host.installed(id)!;
+    return JSON.stringify([
+      ghost.dir,
+      ghostInstallApprovalToken(ghost.approval),
+    ]);
+  }
+  private async requestWriteAccess(
+    id: string,
+    taskId: string,
+    mode: "acceptEdits" | "auto",
+    explicit = false,
+    caller = () => {},
+  ) {
+    const service = this.service!;
+    const task = await service.get(id, taskId),
+      config = this.config(id),
+      identity = this.writeIdentity(id);
+    const check = () => {
+      caller();
+      if (identity !== this.writeIdentity(id))
+        fail("PERMISSION_DENIED", "Plugin installation changed");
+    };
+    const assertPlan = () => {
+      check();
+      const live = this.port.live(taskId);
+      if (
+        live &&
+        (!live.stablePlanModeState || live.stablePlanModeState.enabled)
+      )
+        fail(
+          "PERMISSION_DENIED",
+          "Exit Plan Mode before requesting write access",
+        );
+    };
+    if (task.status !== "active")
+      fail("TASK_BUSY", "Archived tasks cannot request write access");
+    assertPlan();
+    if (task.planModeEnabled)
+      fail(
+        "PERMISSION_DENIED",
+        "Exit Plan Mode before requesting write access",
+      );
+    if (
+      isPluginTaskPermissionAllowed(
+        task.permissionMode,
+        config.permissionMode,
+      ) &&
+      (mode === "auto"
+        ? task.permissionMode === "auto"
+        : ["acceptEdits", "auto"].includes(task.permissionMode ?? "ask"))
+    )
+      return { granted: true, task };
+    if (this.writeRequestPending)
+      fail("TASK_BUSY", "A permission request is already open");
+    const assertIdle = async () => {
+      if (
+        mode === "acceptEdits" &&
+        (await service.listRuns(id, taskId)).items.length
+      )
+        fail("TASK_BUSY", "Only an unstarted task can request write access");
+      await this.port.assertIdle(taskId, mode === "acceptEdits", check);
+    };
+    this.writeRequestPending = true;
+    try {
+      await this.port.withTaskLock(taskId, assertIdle);
+      check();
+      return await this.writeGate.request(
+        JSON.stringify([id, taskId]),
+        identity,
+        mode,
+        explicit,
+        async () => {
+          const t = (key: string) =>
+            this.options.translate?.(`pluginTaskWriteAccess.${key}`) ?? key;
+          const allowed = await this.port.confirmPermission(
+            taskId,
+            {
+              title: t(mode === "auto" ? "autoTitle" : "title"),
+              message: t(mode === "auto" ? "autoMessage" : "message").replace(
+                "{{name}}",
+                this.options.host.installed(id)!.manifest.name,
+              ),
+              detail: `${task.title}\n\n${t(mode === "auto" ? "autoDetail" : "detail")}`,
+            },
+            check,
+            this.abort.signal,
+          );
+          if (!allowed) return { granted: false };
+          return this.port.withPermissionLock(taskId, () =>
+            service.completeOperation(() =>
+              this.port.withTaskLock(taskId, async () => {
+                check();
+                if (JSON.stringify(config) !== JSON.stringify(this.config(id)))
+                  fail("PERMISSION_DENIED", "Plugin settings changed");
+                const fresh = await service.get(id, taskId);
+                if (
+                  fresh.status !== "active" ||
+                  fresh.revision !== task.revision
+                )
+                  fail("TASK_BUSY", "Task changed while awaiting permission");
+                if (fresh.planModeEnabled)
+                  fail(
+                    "PERMISSION_DENIED",
+                    "Exit Plan Mode before requesting write access",
+                  );
+                await assertIdle();
+                assertPlan();
+                await this.port.changePermission(taskId, mode, assertPlan, () =>
+                  this.options.host.models!.setPermission(
+                    id,
+                    mode,
+                    config,
+                    assertPlan,
+                  ),
+                );
+                check();
+                assertPlan();
+                return { granted: true, task: await service.get(id, taskId) };
+              }),
+            ),
+          );
+        },
+      );
+    } finally {
+      this.writeRequestPending = false;
+    }
+  }
+  async recoverWriteAccess(
+    taskId: string,
+    retry: boolean,
+    current: () => void,
+  ) {
+    await this.ready;
+    current();
+    this.guard();
+    const row = await (await this.store.get()).get(taskId);
+    if (!row || row.operation !== "create")
+      return { granted: false, available: false };
+    await this.refresh(row.pluginId);
+    await this.service!.get(row.pluginId, taskId);
+    current();
+    const mode = this.writeGate.recoverable(
+      JSON.stringify([row.pluginId, taskId]),
+      this.writeIdentity(row.pluginId),
+    );
+    if (!retry || !mode) return { granted: false, available: !!mode };
+    const result = await this.requestWriteAccess(
+      row.pluginId,
+      taskId,
+      mode,
+      true,
+      current,
+    );
+    return { granted: result.granted, available: !result.granted, mode };
   }
   private capture(id: string) {
     this.authorized(id);
@@ -282,6 +447,12 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
   ): Promise<unknown> {
     const service = this.service!;
     switch (request.kind) {
+      case "requestWriteAccess":
+        return this.requestWriteAccess(
+          id,
+          request.taskId,
+          request.mode ?? "acceptEdits",
+        );
       case "models": {
         const views = await this.options.tasks.models.views();
         const available = await Promise.all(
@@ -537,6 +708,61 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
     await this.ready;
     await this.service!.withUninstall(id, remove);
   }
+  /** Owner transparency remains available when a plugin is disabled. */
+  async background(id: string) {
+    await this.ready;
+    this.guard();
+    if (!this.options.host.installed(id)) throw new Error("PLUGIN_NOT_FOUND");
+    const store = await this.store.get(),
+      items = [];
+    let cursor = "";
+    for (;;) {
+      const rows = await store.list(id, "create", null, cursor, 100);
+      this.guard();
+      for (const row of rows) {
+        if (row.payload !== "" && !ownsTaskReceipt(row, id)) continue;
+        const task = await this.options.tasks.storage.get(row.id);
+        this.guard();
+        if (
+          task?.source === "plugin" &&
+          task.hiddenAt != null &&
+          !task.deleted &&
+          !task.agentDeviceId
+        )
+          items.push({
+            taskId: task.id,
+            title: task.title ?? "",
+            status: task.archived ? ("archived" as const) : ("active" as const),
+            updatedAt: task.updatedAt,
+            running: this.options.tasks.isTurnRunning(task.id),
+          });
+      }
+      if (rows.length < 100) break;
+      cursor = rows.at(-1)!.id;
+    }
+    if (!this.options.host.installed(id)) throw new Error("PLUGIN_NOT_FOUND");
+    return items.sort(
+      (a, b) => b.updatedAt - a.updatedAt || b.taskId.localeCompare(a.taskId),
+    );
+  }
+  async revealBackground(id: string, taskId: string, current: () => void) {
+    await this.ready;
+    const check = () => {
+      this.guard();
+      current();
+      if (!this.options.host.installed(id)) throw new Error("PLUGIN_NOT_FOUND");
+    };
+    check();
+    await this.port.withTaskLock(taskId, async () => {
+      const receipt = await (await this.store.get()).get(taskId);
+      check();
+      if (!ownsTaskReceipt(receipt, id)) return;
+      const task = await this.port.read(taskId);
+      check();
+      if (task?.hidden && task.status !== "deleted")
+        await this.port.hidden(taskId, false, check);
+    });
+  }
   async relocate(from: string, to: string) {
     await this.ready;
     await this.service!.relocatePlugin(from, to);
@@ -544,6 +770,7 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.abort.abort();
     await this.ready.catch(() => {});
     await this.service?.drain();
     await this.store.close();

@@ -34,7 +34,7 @@ export class TerminalPluginTasks {
   }){
     const guard=()=>{if(this.closed)throw new Error('PLUGIN_TASKS_CLOSED');options.assertCurrent();};
     const translate=(key:string)=>((translations as Record<string,Record<string,string>>)[options.locale()]??translations.en)[key]??(translations.en as Record<string,string>)[key]??key;
-    this.sessions=new TerminalPluginSessions({root:options.root,host:options.host,tasks:options.tasks,guard});
+    this.sessions=new TerminalPluginSessions({root:options.root,host:options.host,tasks:options.tasks,guard,translate});
     options.host.configureTaskSessions(this.sessions);
     this.preferences=new TerminalPluginPreferences(options.root,guard);
     const visibility:GhostVisibilityDeps={translate,listGhosts:()=>{guard();return options.host.native.list();},

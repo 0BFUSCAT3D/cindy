@@ -38,6 +38,7 @@ type Inspected = Exclude<Awaited<ReturnType<NativePluginHost['manager']['inspect
 type PendingInstall = {facts:GhostInstallConsentFacts;file:string; inspected:Inspected; decision:GhostInstallConsentDecision; controller:string; expiresAt:number; namespace:string|null; receiver:string|null; installOrigin:'manual'|'agent-forge'; sourceChanged:boolean; record?:PluginMarketInstallationRecord; target:ReturnType<typeof ghostInstallTargetContext>};
 export interface TerminalPluginOptions {
   root:string;
+  deferStart?:boolean;
   runtimeDirectory:string;
   executablePath:NonNullable<NativePluginHostOptions['web']>['executablePath'];
   secrets:TerminalDurableSecrets;
@@ -73,6 +74,7 @@ export class TerminalPlugins {
   readonly models?:TerminalPluginModels;
   private taskSessions?: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'>;
   configureTaskSessions(service: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'>) { this.guard();this.taskSessions=service; }
+  async start(){await this.ready;this.guard();await this.native.start();this.guard();}
   readonly setupChanges=new GhostSetupChangeBus();
   private readonly pending = new Map<string,PendingInstall>();
   private readonly removing=new Set<string>();
@@ -116,6 +118,7 @@ export class TerminalPlugins {
         return ()=>{this.guard();const current=this.native.list().find(ghost=>installedGhostStoragePart(ghost)===id);if(!current?.enabled||current.approval?.state!=='approved'||current.dir!==previous?.dir||ghostInstallApprovalToken(current.approval)!==approval)throw new Error('PLUGIN_CHANGED');};
       }});
     this.native=new NativePluginHost({
+      deferStart:options.deferStart,
       manager:{getRootDir:()=>path.join(options.root,'plugins'),getStateDir:()=>path.join(options.root,'plugin-approvals'),
         onArchiveSourceState:(from,to)=>this.archiveSourceState(from,to),
         getOwnerContextKey:()=>{this.guard();return options.root;},getLocale:options.locale,log:options.log,

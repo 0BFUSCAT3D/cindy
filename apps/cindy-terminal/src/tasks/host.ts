@@ -59,6 +59,7 @@ import { TerminalTurnLifecycle } from './turn-lifecycle.js';
 import { createChannelTurnSignals } from '@cindy/im-runtime/channelTurnSignal';
 import { createRuntimeRecoveryNotices } from '@cindy/im-runtime/runtimeRecoveryNotice';
 import { createSessionPermissionChanges } from '@cindy/im-runtime/sessionPermissionChange';
+import { PluginTaskError } from '@cindy/plugin-runtime/pluginTaskService';
 import { changeSessionPermissionMode } from '@cindy/im-runtime/permissionModeControl';
 import { buildAutoTitlePrompt } from '@cindy/im-runtime/titlePrompt';
 import { validateTitleOutput } from '@cindy/im-runtime/titleOutputValidation';
@@ -82,6 +83,7 @@ export const TERMINAL_TASK_CHANNELS = [
   'maker:list-active', 'maker:any-session-in-turn', 'maker:session-in-turn', 'maker:session:turn-active', 'maker:get-context-usage',
   'maker:get-pending-interactions', 'maker:resolve-interaction', 'maker:set-model', 'maker:set-effort',
   'maker:set-permission-mode', 'maker:set-plan-mode', 'maker:set-fast-mode', 'maker:compact-session',
+  'maker:get-plugin-write-access-recovery', 'maker:retry-plugin-write-access',
   'maker:list-available-agents', 'maker:agent:status', 'maker:provider:list',
   'maker:provider:presets', 'maker:provider:test-connection', 'maker:provider:models-fetch', 'maker:provider:models-refresh', 'maker:provider:models-rediscover', 'maker:provider:models-auto-refresh', 'maker:provider:custom:disconnect', 'maker:model-disable:set',
   'maker:provider:custom:create', 'maker:provider:custom:update', 'maker:provider:custom:delete',
@@ -441,8 +443,53 @@ export class TerminalTaskHost {
         if(!expected)return 'cancelled';
         return this.routes.withLock(id,async()=>{check();if(!isSameSessionExecution(execution(id),expected))return 'stale' as const;await this.invoke('maker:input:stop',[id],{source:'local',assertCurrent:check});check();return 'stopping' as const;});
       },
-      hidden: async(id,value,current)=>{guard();current();await this.storage.update(id,{hiddenAt:value?Date.now():null});guard();current();this.emit('terminal:tasks:changed',{sessionId:id});},
+      hidden: async(id,value,current)=>{guard();current();const row=await this.storage.update(id,{hiddenAt:value?Date.now():null});guard();current();this.emit('terminal:tasks:changed',{sessionId:id});this.emit('local-db:sessions:patched',{sessionId:id,patch:this.guiSession(row)});},
       history: async id=>{const rows=await this.contextMessages(id,Infinity);guard();return rows.map(row=>({...row,agentMeta:row.agentMeta??null}));},
+      withTaskLock: (id,run)=>this.routes.withLock(id,run),
+      withPermissionLock: (id,run)=>this.permissionChanges.withSessionPermissionChange(id,run),
+      assertIdle: async(id,unstarted,current)=>{
+        const check=()=>{guard();current();};check();await this.ready;check();
+        if(unstarted){
+          const row=await this.storage.get(id);check();
+          if(!row)throw new PluginTaskError('TASK_NOT_FOUND','Task not found');
+          if(row.userSendAt!=null)throw new PluginTaskError('TASK_BUSY','Only an unstarted task can request write access');
+          let cursor=0;
+          for(;;){
+            const page=await this.storage.history(id,cursor,1000);check();
+            // Clearing or rebuilding the visible conversation never renews a grant.
+            if(page.records.some(record=>record.kind==='user'))throw new PluginTaskError('TASK_BUSY','Only an unstarted task can request write access');
+            if(!page.hasMore)break;cursor=page.nextCursor;
+          }
+        }
+        const pending=await this.storage.queued(id);check();
+        if(pending.length||this.isTurnRunning(id)||this.starts.has(id)||this.sending.has(id)||[...this.pending.values()].some(value=>value.sessionId===id))throw new PluginTaskError('TASK_BUSY','Wait for the current turn before changing permission');
+      },
+      confirmPermission: async(id,input,current,signal)=>{
+        const task=await this.ensureLive(id);guard();current();
+        // This is an owner setting, not permission to resume a paused turn.
+        // It uses the same authenticated pending UI without releasing the queue.
+        const result=await this.interaction(id,{kind:'permission',requestId:randomUUID(),toolName:'cindy.plugin.task.writeAccess',input},signal,undefined,true);
+        guard();current();
+        return this.live.get(id)===task&&result.kind==='permission'&&result.behavior==='allow';
+      },
+      changePermission: async(id,mode,current,persistPreferences)=>{
+        guard();current();
+        const row=await this.storage.get(id);guard();current();
+        if(!row)throw new PluginTaskError('TASK_NOT_FOUND','Task not found');
+        const previous=permission(row.permissionMode==='default'?'ask':row.permissionMode??'ask'),live=this.live.get(id)?.session;
+        let touched=false;
+        try{
+          if(live)await live.setPermissionMode(mode);guard();current();
+          touched=true;await this.storage.update(id,{permissionMode:mode});guard();current();
+          await persistPreferences();guard();current();
+        }catch(error){
+          if(live)await live.setPermissionMode(previous).catch(()=>this.options.logger.warn('PLUGIN_PERMISSION_ROLLBACK_FAILED'));
+          if(touched)await this.storage.update(id,{permissionMode:previous}).catch(()=>this.options.logger.warn('PLUGIN_PERMISSION_PERSIST_ROLLBACK_FAILED'));
+          throw error;
+        }
+        this.emit('terminal:tasks:changed',{sessionId:id});
+        this.emit('local-db:sessions:patched',{sessionId:id,patch:{permissionMode:mode}});
+      },
     };
   }
   configurePlugins(factory:(context:PluginTaskContext)=>Promise<TerminalPluginTask>,setup:TerminalPluginSetup){this.pluginFactory=factory;this.pluginSetup=setup;}
@@ -1150,7 +1197,7 @@ export class TerminalTaskHost {
       void this.live.get(id)?.session.abort().catch(() => undefined);
     });
   }
-  private interaction(id: string, request: InteractionRequest, signal?: AbortSignal, shared?:SharedPermission): Promise<InteractionDecision> {
+  private interaction(id: string, request: InteractionRequest, signal?: AbortSignal, shared?:SharedPermission, ownerSetting = false): Promise<InteractionDecision> {
     const publicRequest = { ...request, ...(request.kind === 'permission' ? { input: redactToolInputForUntrustedBoundary(request.toolName, request.input) as Record<string, unknown> } : {}), requestId: randomUUID() };
     return new Promise(resolve => {
       let finished=false;
@@ -1166,7 +1213,7 @@ export class TerminalTaskHost {
       const cancel = () => settle(decisionForDismissal(publicRequest));
       const pending:Pending={sessionId:id,sourceRequestId:request.requestId,request:publicRequest,settle,shared,decide:decision=>{
         if(decision.kind!==request.kind||finished||pending.shared?.decision||pending.deferred||this.pending.get(publicRequest.requestId)!==pending)return false;
-        if(this.queuePaused.has(id)){pending.deferred=decision;return true;}
+        if(this.queuePaused.has(id)&&!ownerSetting){pending.deferred=decision;return true;}
         settle(decision);
         return true;
       }};
@@ -1509,7 +1556,20 @@ export class TerminalTaskHost {
         if (result.kind !== 'changed') throw new Error(result.kind === 'failed' || result.kind === 'invalid' ? result.reason : 'PERMISSION_CONFIRMATION_REQUIRED');
         return { success: true };
       }
-      case 'maker:set-plan-mode': { if (typeof args[1] !== 'boolean') throw new Error('INVALID_ARGUMENT'); const task = await this.ensureLive(string(args[0])); await task.session.setPlanMode(args[1]); await this.storage.update(task.session.id, { planMode: args[1] }); return { success: true }; }
+      case 'maker:get-plugin-write-access-recovery': case 'maker:retry-plugin-write-access': {
+        if(context.source!=='local'||context.sharedTask)throw new Error('LOCAL_ONLY_COMMAND');
+        if(!this.pluginSessions)return {granted:false,available:false};
+        return this.pluginSessions.recoverWriteAccess(string(args[0]),channel==='maker:retry-plugin-write-access',()=>this.guard(context));
+      }
+      case 'maker:set-plan-mode': {
+        if(typeof args[1]!=='boolean')throw new Error('INVALID_ARGUMENT');
+        const id=string(args[0]),enabled=args[1];
+        return this.permissionChanges.withSessionPermissionChange(id,async()=>{
+          this.guard(context);const task=await this.ensureLive(id);this.guard(context);
+          await task.session.setPlanMode(enabled);this.guard(context);
+          await this.storage.update(id,{planMode:enabled});return {success:true};
+        });
+      }
       case 'maker:set-fast-mode': { if (typeof args[1] !== 'boolean' && args[1] !== 'ultrafast') throw new Error('INVALID_ARGUMENT'); const task = await this.ensureLive(string(args[0])); await task.session.setFastMode(args[1]); await this.storage.update(task.session.id, { fastMode: args[1] }); return { success: true }; }
       case 'maker:compact-session': return (await this.ensureLive(string(args[0]))).session.compactSession(typeof args[1] === 'string' ? args[1] : undefined);
       case 'maker:list-available-agents': return ENGINES.filter(kind => Boolean(this.binaries.get(kind)));
@@ -1555,7 +1615,7 @@ export class TerminalTaskHost {
     const sendAtMs = options.sendAtMs === undefined ? undefined : Number(options.sendAtMs);
     if (sendAtMs !== undefined && (!Number.isFinite(sendAtMs) || sendAtMs < 0)) throw new Error('INVALID_SEND_TIME');
     const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId, pluginId:context.plugin?.id, sendAtMs })).digest('hex');
-    const claimed = await this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, sourceDevice: context.sourceDevice, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, plugin:context.plugin, deliveryProof:context.deliveryProof, sendAtMs });
+    const claimed = await this.permissionChanges.withSessionPermissionChange(id,()=>this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, sourceDevice: context.sourceDevice, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, plugin:context.plugin, deliveryProof:context.deliveryProof, sendAtMs }));
     for(const accepted of lifecycle.accepted) await accepted().catch(()=>this.options.logger.warn('ATTACHMENT_RELAY_CLEANUP_FAILED'));
     if (!claimed.created) return claimed.receipt;
     // Acceptance is durable before work begins; reconnecting with the same key

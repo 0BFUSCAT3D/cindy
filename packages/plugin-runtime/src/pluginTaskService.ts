@@ -22,7 +22,7 @@ export interface PluginTaskReceipt {
   revision: number;
   createdAt: number;
 }
-function ownsTaskReceipt(receipt: PluginTaskReceipt | undefined, pluginId: string): boolean {
+export function ownsTaskReceipt(receipt: PluginTaskReceipt | undefined, pluginId: string): boolean {
   if (!receipt || receipt.pluginId !== pluginId || receipt.operation !== 'create') return false;
   try {
     const payload = JSON.parse(receipt.payload);

@@ -1,4 +1,5 @@
 import { TerminalPluginSessions } from '../plugins/sessions.js';
+import { registerPluginResources } from '../plugins/resources.js';
 import { encodeCatalogModelPin } from '@cindy/model-providers/catalogModelPin';
 import { enqueueMessage, waitForTurn } from '../client-operations.js';
 import type { TerminalClient } from '../contracts.js';
@@ -1261,6 +1262,22 @@ describe('terminal task host', () => {
       let created=await call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true});
       expect(await call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true})).toMatchObject({taskId:created.taskId,hidden:true});
       expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(false);
+      // Owner-facing resource entry remains usable after disabling the plugin.
+      const registry=new RemoteResourceRegistry();registerPluginResources(registry,plugins,undefined,tasks.sessions);
+      const owner={controllerDeviceId:'terminal-owner'},client={protocolVersion:1,primitives:['text','actions'],locale:'en'};
+      const get=vi.spyOn(plugins,'get').mockResolvedValue(installed);
+      try{
+        const detail=await registry.get(owner,{client,ref:{collectionId:'plugins',kind:'plugin',id:'fixture-plugin'}});
+        const target=detail.links.find(link=>link.rel==='background-tasks')!.target;
+        expect(target.kind).toBe('resource');if(target.kind!=='resource')throw new Error('Expected task list');
+        installed.enabled=false;
+        const background=await registry.get(owner,{client,ref:target.ref});
+        expect(background.links).toEqual(expect.arrayContaining([expect.objectContaining({target:{kind:'session',sessionId:created.taskId}})]));
+        await registry.invoke(owner,{client,collectionId:'plugins',resourceRef:target.ref,actionId:'reveal-background',input:{taskId:created.taskId}});
+        expect(await tasks.sessions.background('fixture-plugin')).toEqual([]);
+        expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(true);
+      }finally{installed.enabled=true;get.mockRestore();}
+      await call('setHidden',{taskId:created.taskId,hidden:true});
       expect((await call('models')).models).toEqual(expect.arrayContaining([expect.objectContaining({route:expect.objectContaining({model:'test-model'})})]));
       const provider=host.models.snapshot().providers.find(p=>p.id==='fixture')!;
       await host.models.saveProvider({...provider,runtimes:{'claude-code':{...provider.runtimes['claude-code']!,models:[...provider.runtimes['claude-code']!.models,{id:'test-second',name:'Second',contextWindow:200000}]}}});
@@ -1270,6 +1287,25 @@ describe('terminal task host', () => {
       await expect(call('setModel',{taskId:created.taskId,expectedRevision:previous.revision,route:'plugin-default'})).rejects.toThrow('STALE_REVISION');
       created=(await call('setModel',{taskId:created.taskId,expectedRevision:created.revision,route:'plugin-default'})).task;
       expect(created.resolvedConfig.model).toBe('test-model');
+      // The real pending-interaction path supplies owner consent. Refusing once
+      // must not let a plugin reopen it; only the local owner's retry can do so.
+      const confirm=async(id:string,behavior:'allow'|'deny')=>{
+        const request=await vi.waitFor(async()=>{
+          const pending=await host.invoke('maker:get-pending-interactions',[id]) as Array<{request:{requestId:string;toolName?:string}}>;
+          expect(pending).toHaveLength(1);expect(pending[0].request.toolName).toBe('cindy.plugin.task.writeAccess');return pending[0].request;
+        });
+        await host.invoke('maker:resolve-interaction',[request.requestId,{kind:'permission',behavior}]);
+      };
+      const denied=call('requestWriteAccess',{taskId:created.taskId});
+      await confirm(created.taskId,'deny');expect(await denied).toEqual({granted:false});
+      expect(await call('requestWriteAccess',{taskId:created.taskId})).toEqual({granted:false});
+      expect(await host.invoke('maker:get-pending-interactions',[created.taskId])).toEqual([]);
+      expect(await host.invoke('maker:get-plugin-write-access-recovery',[created.taskId])).toEqual({granted:false,available:true});
+      await expect(host.invoke('maker:retry-plugin-write-access',[created.taskId],{source:'remote',deviceId:'other'})).rejects.toThrow('LOCAL_ONLY_COMMAND');
+      const granted=host.invoke('maker:retry-plugin-write-access',[created.taskId]);
+      await confirm(created.taskId,'allow');expect(await granted).toMatchObject({granted:true,available:false,mode:'acceptEdits'});
+      created=await call('get',{taskId:created.taskId});
+      expect(created.permissionMode).toBe('acceptEdits');expect((await plugins.models!.config('fixture-plugin')).permissionMode).toBe('acceptEdits');
       const run=await call('send',{taskId:created.taskId,requestKey:'send-1',expectedRevision:created.revision,text:'plugin-owned-input'});
       await vi.waitFor(async()=>expect(await call('getRun',{runId:run.runId})).toMatchObject({status:'completed'}));
       const firstPage=await call('readMessages',{taskId:created.taskId,limit:1});expect(firstPage.items[0]).toMatchObject({role:'user',content:'plugin-owned-input'});
@@ -1280,10 +1316,29 @@ describe('terminal task host', () => {
       expect(native.sends.at(-1)?.[AUTO_REVIEW_USER_INTENT]).toBe('');
       const history=await host.invoke('local-db:messages:list',[created.taskId,{limit:20}]) as Array<{role:string;agentMeta?:any}>;
       expect(history.find(row=>row.role==='user')?.agentMeta).toMatchObject({sourcePlugin:{pluginId:'fixture-plugin'},autoReviewUserText:{kind:'delegated-continuation'}});
+      await host.invoke('maker:set-permission-mode',[created.taskId,'ask']);
+      await expect(call('requestWriteAccess',{taskId:created.taskId})).rejects.toThrow('TASK_BUSY');
+      created=await call('get',{taskId:created.taskId});
       await host.invoke('maker:input:stop',[created.taskId]);
       const cancelled=await call('send',{taskId:created.taskId,requestKey:'queued-1',expectedRevision:created.revision,text:'never-dispatched'});
       expect(await call('cancel',{runId:cancelled.runId,requestKey:'cancel-1'})).toMatchObject({status:'cancelled'});
       expect(native.sent).toHaveLength(sent);
+      const changing=await call('create',{title:'Changing permission',requestKey:'permission-race'});
+      const stale=call('requestWriteAccess',{taskId:changing.taskId,mode:'auto'}).then(value=>value,error=>error);
+      await vi.waitFor(async()=>expect(await host.invoke('maker:get-pending-interactions',[changing.taskId])).toHaveLength(1));
+      await host.invoke('maker:set-permission-mode',[changing.taskId,'ask']);
+      await confirm(changing.taskId,'allow');
+      expect(await stale).toMatchObject({message:expect.stringContaining('TASK_BUSY')});
+      expect((await host.storage.get(changing.taskId))?.permissionMode).toBe('ask');
+      const rollback=await call('create',{title:'Failed preference commit',requestKey:'permission-rollback'});
+      await host.invoke('maker:input:stop',[rollback.taskId]);
+      const persist=vi.spyOn(plugins.models!,'setPermission').mockRejectedValueOnce(new Error('PREFERENCE_DISK_FAILURE'));
+      const failed=call('requestWriteAccess',{taskId:rollback.taskId,mode:'auto'}).then(value=>value,error=>error);
+      await confirm(rollback.taskId,'allow');expect(await failed).toBeInstanceOf(Error);persist.mockRestore();
+      expect((await host.storage.get(rollback.taskId))?.permissionMode).toBe('acceptEdits');
+      expect(native.permissionModes.slice(-2)).toEqual(['auto','acceptEdits']);
+      expect((await plugins.models!.config('fixture-plugin')).permissionMode).toBe('acceptEdits');
+      expect(await host.invoke('maker:input:get-projection',[rollback.taskId])).toMatchObject({queuePaused:true});
       await tasks.sessions.close();
       const reopened=new TerminalPluginSessions({root,host:plugins,tasks:host,guard:()=>{}});plugins.configureTaskSessions(reopened);
       try{

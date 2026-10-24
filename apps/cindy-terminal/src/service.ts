@@ -246,6 +246,7 @@ export class TerminalService {
     this.startGateway();
     if(!this.secrets.status().locked)await this.auth.initialize();
     await this.ownerChange;
+    await this.plugins!.start();
     this.refreshTimer=setInterval(()=>{
       const flow=this.auth.snapshot().flow;
       if(!this.secrets.status().locked && (!flow || flow.step==='completed'))void this.auth.refresh().catch(()=>logger.warn('AUTH_REFRESH_FAILED'));
@@ -258,7 +259,7 @@ export class TerminalService {
     const next=snapshot.session?.key ?? 'guest';
     if(next!==this.ownerKey || this.ownerSuspended){
       await this.closeOwnerServices();
-      await this.createTasks(next);this.ownerSuspended=false;this.tasks.resumePending();
+      await this.createTasks(next);this.ownerSuspended=false;this.tasks.resumePending();await this.plugins!.start();
       this.startGateway();
     }
     if(snapshot.session?.status==='authenticated')this.remote.start();
@@ -466,7 +467,7 @@ export class TerminalService {
     this.pluginAccount=new TerminalPluginAccount({endpoints,membership:()=>this.auth.snapshot().session?.membership??null,token:()=>this.auth.getAccessToken(),refresh:()=>this.auth.refresh(),assertCurrent:guardPlugin,onOrganization:organization=>this.plugins?.identity.rememberOrganization(organization)});
     const pluginAbort=new AbortController();
     const deposits=new DirDepositVault(),saves=new SaveDepositVault();
-    this.plugins=new TerminalPlugins({root:ownerDir,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),
+    this.plugins=new TerminalPlugins({root:ownerDir,deferStart:true,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),
       account:this.pluginAccount,
       models:{models:this.tasks.models,utility:this.tasks.utility},
       executablePath:()=>this.pluginBrowser.resolve(),locale:()=>this.settings.snapshot().effective.language,assertCurrent:guardPlugin,log:logger,onClose:()=>pluginAbort.abort(),
@@ -494,7 +495,7 @@ export class TerminalService {
       emit:(channel,payload)=>{guardPlugin();if(this.ownerSuspended)return;this.transport.publish(channel,[payload]);void this.remote.publish(channel,payload).catch(()=>{});},
     });
     await this.pluginTasks.ready;
-    registerPluginResources(this.resources.registry,this.plugins,this.pluginTasks.pages);
+    registerPluginResources(this.resources.registry,this.plugins,this.pluginTasks.pages,this.pluginTasks.sessions);
     registerLibraryResources(this.resources.registry,this.plugins);
 
     this.projects=new TerminalProjects(ownerDir,{guard:guardKnowledge,createSession:async(workingDir,title)=>{const created=await this.tasks.invoke('maker:create-session',[{workingDir,title}],{source:'local',assertCurrent:guardKnowledge}) as {sessionId?:string;id?:string};const id=created.sessionId??created.id;if(!id)throw new Error('SESSION_CREATE_FAILED');return id;}});

@@ -6,7 +6,7 @@ import { decodeCatalogModelPin, encodeCatalogModelPin } from '@cindy/model-provi
 import { resolveOneshotCatalogModel } from '@cindy/model-providers/utility-model/textOneshotPinOptions';
 import type { TerminalModelConfig } from '../models/config.js';
 import type { TerminalUtilityModels } from '../models/utility.js';
-import { atomicPrivateWrite, readPrivateFile } from '../platform.js';
+import { atomicPrivateWrite, atomicPrivateWriteSync, readPrivateFile } from '../platform.js';
 
 function selection(config: PluginTaskConfig): string | null {
   if (!config.model) return null;
@@ -76,6 +76,23 @@ export class TerminalPluginModels {
     const state = await this.options.utility.state();
     this.guard();
     return { config, selected: selection(config), options: state.options.filter(option => !option.budget && option.available) };
+  }
+  async setPermission(id: string, mode: 'acceptEdits' | 'auto', expected: PluginTaskConfig, current: () => void) {
+    await this.queue(async () => {
+      const { prefs, file } = await this.read();
+      current();
+      if (JSON.stringify(prefs.errand[id] ?? {}) !== JSON.stringify(expected)) throw new Error('PLUGIN_CONFIGURATION_CHANGED');
+      if (mode !== 'auto' && ['acceptEdits', 'auto'].includes(expected.permissionMode ?? 'ask')) return;
+      const previous = JSON.stringify(prefs);
+      prefs.errand[id] = { ...expected, permissionMode: mode };
+      // The permission receipt and its cached guard publish in the same turn,
+      // like Desktop's preference store. Uninstall/account events cannot pass
+      // the final identity check while this grant is being committed.
+      try { atomicPrivateWriteSync(file, JSON.stringify(prefs)); }
+      catch (error) { atomicPrivateWriteSync(file, previous); throw error; }
+      this.configs = structuredClone(prefs.errand);
+      current(); this.options.changed();
+    });
   }
   async setModel(id: string, pin: unknown, current: () => void = () => {}) {
     if (pin !== null && typeof pin !== 'string') throw new Error('INVALID_MODEL_SELECTION');

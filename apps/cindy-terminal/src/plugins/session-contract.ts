@@ -21,6 +21,11 @@ export interface TerminalPluginSessionHooks {
   ): Promise<void>;
   onSubmission(receipt: Submission): Promise<void>;
   review(request: AutoReviewRequest): Promise<AutoReviewRequest>;
+  recoverWriteAccess(
+    taskId: string,
+    retry: boolean,
+    current: () => void,
+  ): Promise<{ granted: boolean; available?: boolean; mode?: string }>;
 }
 export interface TerminalPluginSessionPort {
   resolve(route: Partial<PluginTaskRoute>): Promise<PluginTaskRoute>;
@@ -63,4 +68,23 @@ export interface TerminalPluginSessionPort {
   ): Promise<"cancelled" | "stopping" | "stale">;
   hidden(id: string, value: boolean, guard: () => void): Promise<void>;
   history(id: string): Promise<AutoReviewHistoryMessage[]>;
+  withTaskLock<T>(id: string, run: () => Promise<T>): Promise<T>;
+  withPermissionLock<T>(id: string, run: () => Promise<T>): Promise<T>;
+  assertIdle(
+    id: string,
+    unstarted: boolean,
+    current: () => void,
+  ): Promise<void>;
+  confirmPermission(
+    id: string,
+    input: { title: string; message: string; detail: string },
+    current: () => void,
+    signal: AbortSignal,
+  ): Promise<boolean>;
+  changePermission(
+    id: string,
+    mode: "acceptEdits" | "auto",
+    current: () => void,
+    persistPreferences: () => Promise<void>,
+  ): Promise<void>;
 }

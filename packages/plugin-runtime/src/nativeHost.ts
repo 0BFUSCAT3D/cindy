@@ -11,6 +11,8 @@ import { isGhostOwnerScopeUsable } from './ghostOwnerScope.js';
 import { resolvePluginInstanceQuery, installedGhostStoragePart } from './shared/pluginIdentity.js';
 
 export interface NativePluginHostOptions {
+  /** Allow the owner host to compose its task/settings ports before residents run. */
+  deferStart?: boolean;
   manager: GhostManagerOptions;
   web?: Omit<HeadlessSandboxOptions, 'capture' | 'receive'> & { receive(instanceId: string, payload: unknown): Promise<unknown> };
   node: NativeNodeWorkerOptions & { snapshotWorkerPath: string };
@@ -31,8 +33,10 @@ export class NativePluginHost {
   private refreshTail: Promise<void> = Promise.resolve();
   private closed = false;
   private opened = false;
+  private activated: boolean;
 
   constructor(private readonly options: NativePluginHostOptions) {
+    this.activated = !options.deferStart;
     this.manager = new GhostManager({ ...options.manager,
       mutateSnapshot: options.manager.mutateSnapshot ?? createNativeSnapshotMutation({ nodePath: options.node.nodePath, workerPath: options.node.snapshotWorkerPath }),
       onChanged: ghosts => { options.manager.onChanged?.(ghosts); if(this.opened)void this.refresh().catch(error => options.manager.log?.warn('plugin runtime refresh failed', { code: error instanceof Error ? error.name : 'Error' })); },
@@ -103,6 +107,14 @@ export class NativePluginHost {
 
   list(): InstalledGhost[] { return [...this.installed.values()].map(ghost => structuredClone(ghost)); }
 
+  async start(): Promise<void> {
+    if (this.closed) throw new Error('PLUGIN_HOST_CLOSED');
+    if (!this.opened) throw new Error('PLUGIN_HOST_NOT_READY');
+    if (this.activated) return;
+    this.activated = true;
+    await this.refresh();
+  }
+
   refresh(): Promise<void> {
     const next = this.refreshTail.catch(() => {}).then(async () => {
       if (this.closed) return;
@@ -115,6 +127,7 @@ export class NativePluginHost {
       }
       if (this.closed) return;
       this.installed = current;
+      if (!this.activated) return;
       for (const ghost of ghosts) {
         if (this.closed) return;
         if (!ghost.enabled || ghost.approval?.state !== 'approved') continue;
