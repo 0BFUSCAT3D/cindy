@@ -1,3 +1,4 @@
+import { describePermissionAction } from '@cindy/maker-shared/interaction';
 import {
   AUTO_REVIEW_UNAVAILABLE_PROMPT_TEXT,
   autoReviewReasonFromMetadata,
@@ -33,4 +34,27 @@ export function permissionPromptDescription(request: InteractionRequest): string
   if (request.kind !== 'permission' || !request.description) return undefined;
   if (!request.description.endsWith(AUTO_REVIEW_UNAVAILABLE_PROMPT_TEXT)) return request.description;
   return request.description.slice(0, -AUTO_REVIEW_UNAVAILABLE_PROMPT_TEXT.length).trim() || undefined;
+}
+
+const TEXT_PERMISSION_PREVIEW_MAX = 800;
+
+/**
+ * 文字渠道确认提示里「要执行的具体操作」：与桌面、手机、富卡、Hook 共用
+ * describePermissionAction，命令 / 文件 / 插件 / 浏览器步骤直接给出，认不出的工具给格式化 JSON。
+ * 反引号转义，避免模型控制的内容破坏提示里的代码围栏。
+ */
+export function permissionOperationPreview(request: InteractionRequest): string {
+  if (request.kind !== 'permission') return '';
+  if (!request.input || Object.keys(request.input).length === 0) return '';
+  let text: string;
+  try {
+    const action = describePermissionAction(request.toolName, request.input ?? {});
+    text = action.kind === 'tool' ? JSON.stringify(request.input ?? {}, null, 2) : action.preview;
+  } catch {
+    return '<无法序列化>';
+  }
+  if (!text) return '';
+  const clipped = text.length > TEXT_PERMISSION_PREVIEW_MAX
+    ? `${text.slice(0, TEXT_PERMISSION_PREVIEW_MAX)}\n…（已截断）` : text;
+  return clipped.replaceAll('`', '\\u0060');
 }
