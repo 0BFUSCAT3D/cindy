@@ -6,6 +6,7 @@
     "button": "使用原始檔案"
   },
   "mailReader": {
+    "showExternalImages": "顯示外部圖片",
     "markReadFailed": "未能同步已讀狀態，請檢查信箱授權後重新開啟。",
     "title": "郵件",
     "openMailbox": "在信箱中開啟",

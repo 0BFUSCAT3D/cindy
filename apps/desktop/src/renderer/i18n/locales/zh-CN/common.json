@@ -6,6 +6,7 @@
     "button": "使用原文件"
   },
   "mailReader": {
+    "showExternalImages": "显示外部图片",
     "markReadFailed": "未能同步已读状态，请检查邮箱授权后重新打开。",
     "title": "邮件",
     "openMailbox": "在邮箱中打开",

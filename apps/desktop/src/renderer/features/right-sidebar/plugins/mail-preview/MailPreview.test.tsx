@@ -1,15 +1,14 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, act, fireEvent } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { ReactNode } from 'react';
 import type { GhostCardFormField } from '@cindy/maker-shared/ghost-card-form';
+import { createHash } from 'node:crypto';
 const h = vi.hoisted(() => ({ read: vi.fn(), owner: 1 }));
 vi.mock('../../lib/mailPreview', () => ({ readMailPreview: h.read }));
 vi.mock('../../registry', () => ({ registerTabKind: () => {} }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({ getDataOwnerGeneration: () => h.owner, isDataOwnerGenerationCurrent: (o: number) => o === h.owner }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, args?: { from?: string; count?: number }) => args ? key + ' ' + (args.from ?? args.count) : key }) }));
 vi.mock('@/components/chat/GhostCardForm', () => ({ GhostCardForm: ({ fields, readOnly }: { fields: GhostCardFormField[]; readOnly?: boolean }) => <div data-testid="body" data-readonly={readOnly}>{fields.find(f => f.name === 'body')?.value}</div> }));
-vi.mock('@/components/chat/ChatSessionFileContext', () => ({ ChatSessionFileProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock('@/components/chat/GhostToolCard', () => ({ MailCardEditor: ({ html, callId }: { html: string; callId: string }) => <div data-testid="editor" data-call-id={callId}>{readMailCard(html)?.fields.find(f => f.name === 'body')?.value}</div> }));
 import { MailPreviewBody } from './index';
 import { MailCardBody } from './MailCardBody';
@@ -18,6 +17,48 @@ import { readMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { ingestCardPush } from '@/cindy-brain/ghostCardStore';
 const ctx = { tabId: 'tab', sessionId: 'a', workdir: '', remoteHostId: null, deviceLinkDeviceId: null, patchState() {}, onVisibilityChange() {}, setCloseInterceptor: () => () => {} };
 const mail = (bodyText: string) => ({ accountId: 'account', messageId: bodyText, from: 'sender', to: 'to', cc: '', bcc: '', subject: 'Subject', date: '', bodyText, bodyHtml: '', attachments: [] });
+// Integration through the reader: photo failure must advance exactly once to
+// public email/domain/initial fallbacks, without sending a raw email to the CDN.
+it('shows sender and recipient avatars and falls back without requesting public mailbox logos', async () => {
+  vi.stubGlobal('crypto', { subtle: { digest: async (_algorithm: string, bytes: Uint8Array) => Uint8Array.from(createHash('sha256').update(bytes).digest()).buffer } });
+  const photo = 'https://lh3.googleusercontent.com/contact-photo';
+  h.read.mockResolvedValue({ message: { ...mail('Readable'), from: 'Person <person@company.example.com>', to: 'Other <other@gmail.com>',
+    participantPhotos: [{ email: 'person@company.example.com', url: photo }] } });
+  const view = render(<MailPreviewBody state={{ url: 'https://mail.example/a' }} ctx={ctx} />);
+  await act(async () => {});
+  const sender = () => view.container.querySelector<HTMLImageElement>('img[src="' + photo + '"]');
+  expect(sender()).not.toBeNull();
+  expect(sender()!.getAttribute('referrerpolicy')).toBe('no-referrer');
+  await act(async () => { fireEvent.error(sender()!); });
+  const hash = createHash('sha256').update('person@company.example.com').digest('hex');
+  const publicImage = view.container.querySelector<HTMLImageElement>(`img[src*="${hash}"]`)!;
+  expect(publicImage.src).toBe(`https://gravatar.com/avatar/${hash}?s=64&d=404&r=g`);
+  await act(async () => { fireEvent.error(publicImage); });
+  const logo = view.container.querySelector('img[src*="icons.duckduckgo.com"]')!;
+  expect(logo.getAttribute('src')).toBe('https://icons.duckduckgo.com/ip3/company.example.com.ico');
+  await act(async () => { fireEvent.error(logo); });
+  const recipient = view.container.querySelector('img')!;
+  expect(recipient.getAttribute('src')).toContain('gravatar.com/avatar/');
+  await act(async () => { fireEvent.error(recipient); });
+  expect(view.container.querySelector('img')).toBeNull();
+  expect(screen.getByText('Readable')).toBeTruthy();
+  expect(screen.getByText('P')).toBeTruthy();
+  expect(screen.getByText('O')).toBeTruthy();
+});
+// Unit: plain-text mail previously had no clickable URLs. Only web URLs may
+// become actions; local paths and task deep links from senders remain text.
+it('makes plain-text mail URLs clickable without interpreting other content', async () => {
+  const openExternal = vi.fn(async () => ({ success: true }));
+  vi.stubGlobal('electronAPI', { openExternal });
+  h.read.mockResolvedValue({ message: mail('Details: https://example.test/page.\n/private/file.png <b>literal</b>') });
+  render(<MailPreviewBody state={{ url: 'https://mail.example/a' }} ctx={ctx} />);
+  await act(async () => {});
+  const link = screen.getByRole('link', { name: 'https://example.test/page' });
+  expect(screen.getAllByRole('link')).toHaveLength(1);
+  expect(link.parentElement!.textContent).toBe('Details: https://example.test/page.\n/private/file.png <b>literal</b>');
+  await act(async () => { fireEvent.click(link); });
+  expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.test/page');
+});
 // Unit regression: a remote draft binding must not replace the readable mail
 // with the local-only editor. Existing link tests only exercised local tasks.
 it('keeps remote drafts readable and preserves the mailbox link', async () => {

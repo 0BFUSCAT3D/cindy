@@ -3,10 +3,82 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest';
 import { MailHtmlPreview, safeMailHtml } from '../MailHtmlPreview';
 import { GhostCardForm } from '../GhostCardForm';
+import { ChatSessionFileProvider } from '../ChatSessionFileContext';
+import { openUrlInSidebarBrowser } from '@/features/right-sidebar/lib/openInSidebarBrowser';
+import { _resetLinkOpenPreferenceForTests } from '@/hooks/useLinkOpenPreference';
 import { mailInlineBindingScript, mailInlineRefreshScript } from '@cindy/maker-shared/mail-text-edit';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../ImageLightbox', () => ({ ImageLightbox: ({ src }: { src: string }) => <img alt="attachment-preview" src={src} /> }));
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+vi.mock('@/features/right-sidebar/lib/openInSidebarBrowser', () => ({ openUrlInSidebarBrowser: vi.fn(async () => undefined) }));
+vi.mock('@/features/right-sidebar/lib/mailPreview', () => ({ readMailPreview: vi.fn(async () => ({ supported: false })) }));
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); localStorage.clear(); _resetLinkOpenPreferenceForTests(); });
+
+// Unit regressions: the reader previously had no opt-in and swallowed all links.
+// Exercise the actual iframe event listeners and shared chat navigation policy.
+it('loads external images only after a click and resets consent when changing mail', () => {
+  const first = '<p>First</p><img src="https://images.example.test/first.png">';
+  const second = '<p>Second</p><img src="https://images.example.test/second.png">';
+  const view = render(<MailHtmlPreview value={first} reading />);
+  const load = () => {
+    const frame = screen.getByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement;
+    const doc = frame.contentDocument!;
+    doc.open(); doc.write(frame.srcdoc); doc.close(); fireEvent.load(frame);
+    return { frame, doc };
+  };
+  const blocked = load();
+  expect(blocked.doc.querySelector('img')!.hasAttribute('src')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'mailReader.showExternalImages' }));
+  const allowed = load();
+  expect(allowed.frame).not.toBe(blocked.frame);
+  expect(allowed.frame.getAttribute('sandbox')).toBe('allow-same-origin');
+  expect(allowed.doc.querySelector('img')!.getAttribute('src')).toBe('https://images.example.test/first.png');
+  expect(allowed.doc.querySelector('img')!.getAttribute('referrerpolicy')).toBe('no-referrer');
+  expect(screen.queryByRole('button', { name: 'mailReader.showExternalImages' })).toBeNull();
+  view.rerender(<MailHtmlPreview value={second} reading />);
+  expect(load().doc.querySelector('img')!.hasAttribute('src')).toBe(false);
+  view.rerender(<MailHtmlPreview value={first} reading />);
+  expect(screen.getByRole('button', { name: 'mailReader.showExternalImages' })).toBeTruthy();
+  view.rerender(<MailHtmlPreview value='<img src="data:image/png;base64,YQ==">' reading />);
+  expect(screen.queryByRole('button', { name: 'mailReader.showExternalImages' })).toBeNull();
+  view.rerender(<MailHtmlPreview value={first} onChange={vi.fn()} />);
+  expect(screen.queryByRole('button', { name: 'mailReader.showExternalImages' })).toBeNull();
+});
+
+it('opens reader links with chat preferences and modifiers but never navigates the iframe or editor', async () => {
+  const openExternal = vi.fn(async () => ({ success: true }));
+  vi.stubGlobal('electronAPI', { openExternal });
+  localStorage.setItem('chat.webLinkOpenPreference', 'sidebar');
+  _resetLinkOpenPreferenceForTests();
+  const value = '<a href="https://example.test/page"><b>Open</b></a><a href="javascript:alert(1)">Unsafe</a>';
+  const view = render(<ChatSessionFileProvider value={{ sessionId: 'mail-task', workingDir: '', origin: { kind: 'local' } }}>
+    <MailHtmlPreview value={value} reading />
+  </ChatSessionFileProvider>);
+  const frame = screen.getByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement;
+  const doc = frame.contentDocument!;
+  doc.open(); doc.write(frame.srcdoc); doc.close(); fireEvent.load(frame);
+  const click = (type: string, init: MouseEventInit = {}) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...init });
+    doc.querySelector('b')!.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  };
+  await act(async () => { click('click'); });
+  expect(openUrlInSidebarBrowser).toHaveBeenCalledWith('mail-task', 'https://example.test/page');
+  expect(openExternal).not.toHaveBeenCalled();
+  for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+    await act(async () => { click('click', modifiers); });
+  }
+  await act(async () => { click('auxclick', { button: 1 }); });
+  expect(openExternal).toHaveBeenCalledTimes(4);
+  expect(openExternal).toHaveBeenLastCalledWith('https://example.test/page');
+  expect(doc.querySelectorAll('a')[1].hasAttribute('href')).toBe(false);
+  await act(async () => { fireEvent.click(doc.querySelectorAll('a')[1]); });
+  expect(openExternal).toHaveBeenCalledTimes(4);
+  view.rerender(<ChatSessionFileProvider value={{ sessionId: 'mail-task', workingDir: '', origin: { kind: 'local' } }}>
+    <MailHtmlPreview value={value} reading onChange={vi.fn()} />
+  </ChatSessionFileProvider>);
+  await act(async () => { click('click'); });
+  expect(openUrlInSidebarBrowser).toHaveBeenCalledTimes(1);
+});
 // Chromium can expose a document before the srcdoc parser creates its body.
 // Account/CID updates during that interval must wait for load, then apply the
 // latest source without crashing the whole conversation reader.
