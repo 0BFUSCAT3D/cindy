@@ -24394,13 +24394,18 @@ describe('CodexAgent native fork anchor events', () => {
 describe('CodexAgent.forkSdkSession', () => {
   // Review #6563: exercise createHost/spawn configuration, which a mocked getHost
   // bypasses. A shared subscription needs the same scoped proxy as a guest turn.
+  // The fake mirrors Desktop's guest gate (maker-host prepareCodexExtraSpawnConfig): a shared-provider
+  // host also needs a guest session. Forks used to omit it, so every Codex fork through a shared
+  // provider failed with "requires its own session-bound scoped proxy".
   it('starts shared-subscription forks with their own proxy scope and retires it', async () => {
     MockCodexTransport.userAgent = 'mock-codex/0.153.4';
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-guest-fork-'));
     tempRoots.push(home);
     const onHostRetired = vi.fn(async () => {});
     const prepare = vi.fn<NonNullable<AgentDeps['prepareCodexExtraSpawnConfig']>>(async (_providers, ctx) => {
-      if (!ctx?.accountHostKey) throw Object.assign(new Error('shared-provider Codex host requires its own scoped proxy'), { codexSpawnConfigFatal: true });
+      if (ctx?.deviceHostedGuestProviderId !== undefined && (!ctx.deviceHostedGuestSessionId?.trim() || !ctx.accountHostKey)) {
+        throw Object.assign(new Error('shared-provider Codex host requires its own session-bound scoped proxy'), { codexSpawnConfigFatal: true });
+      }
       return { extraArgs: [], extraEnv: {}, onHostRetired };
     });
     MockCodexTransport.onCreate = transport => transport.setMockResponse('account/login/start', {
@@ -24418,7 +24423,13 @@ describe('CodexAgent.forkSdkSession', () => {
         accountHostKey: expect.stringMatching(/^local-fork:/),
         runtimeCodexHome: path.join(home, 'codex'),
         deviceHostedGuestProviderId: 'openai',
+        deviceHostedGuestModelIds: ['gpt-5.4'],
       }));
+      // The guest session is this one-shot fork host's own key (never registered as a guest
+      // session; codexProxyGuestRoute.test.ts covers that the guard then refuses everything).
+      const spawnCtx = prepare.mock.calls[0]?.[1];
+      expect(spawnCtx?.deviceHostedGuestSessionId).toMatch(/^local-fork:[0-9a-f-]{36}$/);
+      expect(spawnCtx?.accountHostKey?.startsWith(`${spawnCtx.deviceHostedGuestSessionId}:`)).toBe(true);
       expect(createdTransports).toHaveLength(1);
       expect(createdTransports[0].closed).toBe(true);
       expect(onHostRetired).toHaveBeenCalledOnce();
@@ -24440,6 +24451,16 @@ describe('CodexAgent.forkSdkSession', () => {
     }));
     expect(resolveCodexThreadStorage).not.toHaveBeenCalled();
     expect(prepareCodexResumeSession).not.toHaveBeenCalled();
+  });
+  // Fail closed: without the shared provider a guest fork would start an ordinary host that
+  // can use the owner's own login.
+  it('refuses a guest fork that has no shared provider before starting any host', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, undefined, { userAgent: 'mock-codex/0.153.4' });
+    await expect(agent.forkSdkSession({ sourceSdkSessionId: 'guest-source', upToMessageId: undefined,
+      lastTurnId: 'guest-turn', hostedGuestHome: path.join(os.tmpdir(), 'guest-fork-fixture') }))
+      .rejects.toThrow(/requires the shared provider/);
+    expect(host.getHost).not.toHaveBeenCalled();
   });
   it('reads cross-account fork boundaries and records the child in the source index', async () => {
     const recordCodexThreadLocation = vi.fn(async () => {});
