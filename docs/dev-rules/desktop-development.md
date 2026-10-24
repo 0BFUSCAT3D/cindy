@@ -259,6 +259,50 @@ pnpm ui:check:selftest
 改前／改后数值，原样写进 PR 正文。登录、发送、跨设备等单页验证覆盖不到的变化，仍按原方式附
 完整 Cindy 截图。
 
+### 公开截图与 CDP 操作指南
+
+公开截图（PR 正文、评论、发到 fork 的图）的原则：能证明改动就够，不公开能认出真实的人、
+电脑、账号的信息，以及别人的私密内容；数值和界面状态照常展示。
+
+- 优先用 `ui:check` 或 `--mock`；`--mock` 只在没登录过账号的模拟沙箱里生效，登录过就换
+  一个新的 `--isolated=<名字>`，见 [UI 模拟数据](ui-mock-data.md)。
+- 发到 fork 的图按提交 SHA 仍能公开访问，删分支撤不回。
+
+必须用真实账号截完整 Desktop 时，只连接开发版，按以下步骤操作：
+
+1. **确认实例和端口**：给自己启动的实例显式设置 `XDT_CDP_PORT`，例如
+   `XDT_CDP_PORT=19247 pnpm restart:desktop:remote --region=global -- --isolated=<名字>`。
+   多开时每个 worktree 用不同端口和沙箱。用 `curl http://127.0.0.1:19247/json/list` 核对
+   主窗口页面地址，Vite 端口必须与自己的启动日志一致；不一致或没有目标就停止，别猜。
+2. 用任意 CDP 客户端连接这个主窗口：Playwright `connectOverCDP`、agent-browser、
+   Chrome DevTools 或最小的 WebSocket 调用均可。仓内 `scripts/cdp-eval.mjs` 写死了 CDP
+   `9222` 和页面 `5173`，只适合确认过地址的单实例。
+3. 在该页面用 `Runtime.evaluate` 执行 [cdp-screenshot-mask.js](../../apps/desktop/scripts/cdp-screenshot-mask.js)，
+   再执行 `window.undoScreenshotMask = __cindyScreenshotMask({ "原文": "示例" })`（保存返回的还原函数）。
+   昵称、邮箱、电脑名、分享者、分享链接、本机路径和私密内容按当前页面补齐；真实对照表
+   不进提交、命令参数或日志。短昵称用完整显示文本作键，避免误改其他文字。
+4. 等悬停提示／页面刷新完成后，用 `Page.captureScreenshot`，参数 `{ "format": "png" }`；
+   只需局部时加 `clip: { x, y, width, height, scale: 1 }`（页面 CSS 坐标）。将返回的
+   `data` 按 base64 解码，只保存到 Git 忽略的 `tmp/desktop-screenshots/` 等本地目录。
+5. 在 `finally` 中再次 `Runtime.evaluate` 执行 `window.undoScreenshotMask?.()`；异常断连
+   就刷新该页面（先保护未保存的草稿）。发出前再看一眼，确认没有漏掉真实信息。
+
+片段只改 DOM 显示，按字面、区分大小写匹配，长词优先；页面变化监听会处理 React 重绘和
+后来出现的提示。**不改输入框的值、正在编辑的输入框和富文本编辑区**，有敏感值时先退出编辑或裁剪。
+默认模糊远程 `<img>`（包括头像，可按页面缩小 CSS 选择器）；不覆盖 canvas、嵌入内容、
+窗口标题栏、系统弹窗，以及跨节点拆开的文字。这些地方要避开或裁剪；这不是自动隐私检查。
+截图期间不要编辑或保存，结束后立即还原；再次替换前先还原上一次。
+
+执行文件的客户端示例（先按步骤 1、2 选定自己的主窗口，随后调用替换函数）：
+
+```bash
+node scripts/cdp-eval.mjs eval apps/desktop/scripts/cdp-screenshot-mask.js # 仅上述单实例
+agent-browser --cdp 19247 eval "$(cat apps/desktop/scripts/cdp-screenshot-mask.js)"
+```
+
+Playwright：`await page.evaluate(await fs.readFile("apps/desktop/scripts/cdp-screenshot-mask.js", "utf8"))`
+（`fs` 为 `node:fs/promises`，`page` 为核对后的主窗口）。
+
 `ui:check` 通过只说明列出的场景在真实组件上渲染正确；报告里 `not covered` 列出的行为仍须按
 对应流程验收，正式 PR 前的真实运行验收要求不变。
 
