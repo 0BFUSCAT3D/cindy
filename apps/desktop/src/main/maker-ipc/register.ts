@@ -4115,6 +4115,16 @@ const pendingFailedTurnAssistantPersistId = new Map<string, string>();
 const appliedContextWindowBudgets = new Map<string, number | null>();
 
 /**
+ * 已登记、但还没真正落到活实例的预算重建意图。
+ *
+ * 只在这条集合里重放（发送边界），而不是「dedup 缺失就重放」：任务启动时
+ * `applySessionContextWindowBudgetToCreateOpts` 已把偏好预算带给引擎，此时 dedup 里
+ * 还没有条目，靠「缺失」判断会误判窗口变化，把刚配置好的实例再关一次
+ * （首条直发多等一次冷启动；Greptile P2，2026-10-24）。
+ */
+const pendingSessionContextWindowBudgetReconciles = new Set<string>();
+
+/**
  * 跟踪每个 session 的逻辑 turn 与后台节流 keepalive。外部 running guard
  * 通过 isSessionInTurn 查询真实 busy；mainWindow 后台节流订阅 keepalive 聚合状态。
  *
@@ -6010,6 +6020,7 @@ function cleanupClosedSessionRuntime(session: WiredSession): void {
   clearOrcaMcpHydrated(session.id);
   knownNonOrcaSessionIds.delete(session.id);
   appliedContextWindowBudgets.delete(session.id);
+  pendingSessionContextWindowBudgetReconciles.delete(session.id);
   lastReportedCostUsdBySession.delete(session.id);
   lastReportedModelUsageBySession.delete(session.id);
   turnModelPromiseBySession.delete(session.id);
@@ -6501,7 +6512,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   ): Promise<void> => {
     const live = getMakerIfReady()?.getSession(sessionId);
     if (!live) {
+      // 实例已关：下次启动会按偏好文件注入预算，没有需要重放的意图了。
       appliedContextWindowBudgets.delete(sessionId);
+      pendingSessionContextWindowBudgetReconciles.delete(sessionId);
       return;
     }
     // 已应用（偏好文件里的当前值 == 记账值）→ 立即返回：发送边界每次都会调这里，
@@ -6579,11 +6592,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 不记的话发送边界的对账会一直重试，直到新实例确实采用预算。
     if (result.status === 'applied') {
       appliedContextWindowBudgets.set(sessionId, latestBudget);
+      pendingSessionContextWindowBudgetReconciles.delete(sessionId);
       log.info('session context window budget applied via runtime rebuild', {
         sessionId, previous, next: latestBudget,
       });
       return;
     }
+    // 只登记意图、不记 dedup：发送边界会重试，直到新实例确实采用预算。
+    pendingSessionContextWindowBudgetReconciles.add(sessionId);
     log.info('session context window budget rebuild deferred to the send boundary', {
       sessionId, previous, next: latestBudget,
     });
@@ -10764,6 +10780,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   cancelPendingAgentSwitchHolder = (sessionId) => {
     agentSwitchPending.clear(sessionId);
     appliedContextWindowBudgets.delete(sessionId);
+    // 预算重放意图**不**在这里清：取消的只是路由切换，预算仍要按当前 live 路由生效
+    // （清掉就退回 Greptile P1 的原场景：pending 被清 → 预算永久不生效）。
     broadcastSessionPatched(sessionId, {
       agentSwitchIntent: null,
       agentSwitchIntentCanceled: true,
@@ -11432,12 +11450,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       // 预算对账的重放：回合中登记的预算重建意图可能被「重选当前模型」清掉，而预算
       // 变更通知只来一次 —— 不在这里补一次，活实例会一直按旧窗口跑（Greptile P1）。
-      // 已应用（dedup == 偏好值）时内部立即返回，多发一条消息只多一次内存比较。
-      stage = 'direct-send:reconcileContextWindowBudget';
-      await reconcileSessionContextWindowBudgetUnderLock(
-        sessionId,
-        appliedContextWindowBudgets.get(sessionId) ?? null,
-      );
+      // 只在**有未完成意图**时重放：任务启动本就把偏好预算带进了 create opts，此
+      // 时 dedup 还没有条目，按「dedup 缺失」判断会把刚配置好的实例再关一次
+      // （Greptile P2，2026-10-24）。
+      if (pendingSessionContextWindowBudgetReconciles.has(sessionId)) {
+        stage = 'direct-send:reconcileContextWindowBudget';
+        await reconcileSessionContextWindowBudgetUnderLock(
+          sessionId,
+          appliedContextWindowBudgets.get(sessionId) ?? null,
+        );
+      }
       let resolvedSelection: ScheduledModelSelection | undefined;
       if (selection) {
         stage = 'direct-send:applyScheduledModelSelection';

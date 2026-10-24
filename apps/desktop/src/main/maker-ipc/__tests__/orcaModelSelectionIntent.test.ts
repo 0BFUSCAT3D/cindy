@@ -205,6 +205,7 @@ describe('complete selection commit boundaries', () => {
       // 发送边界的预算对账（register.ts）：本用例只关心路由选择，注入 no-op。
       reconcileSessionContextWindowBudgetUnderLock: vi.fn(async () => {}),
       appliedContextWindowBudgets: new Map<string, number | null>(),
+      pendingSessionContextWindowBudgetReconciles: new Set<string>(),
     });
     const directSend = compile(directSendEntry, { pendingAgentSwitchApplyHolder: adapter });
     const lease = await directSend('scheduled-task', undefined,
@@ -242,7 +243,8 @@ describe('complete selection commit boundaries', () => {
       reconcileBotModelRoute: vi.fn(), applyPendingAgentSwitchIfIdle, isUserPendingAgentSwitchIntent,
       agentSwitchDeps: deps, contextOverflowRolloverHolder: null,
       reconcileSessionContextWindowBudgetUnderLock: vi.fn(async () => {}),
-      appliedContextWindowBudgets: new Map<string, number | null>() });
+      appliedContextWindowBudgets: new Map<string, number | null>(),
+      pendingSessionContextWindowBudgetReconciles: new Set<string>() });
     const sending = directSend('queued-picker');
     finishPicker();
     await picker;
@@ -342,6 +344,7 @@ describe('Orca model-only picker intent admission', () => {
       applyPendingAgentSwitchIfIdle, isUserPendingAgentSwitchIntent, agentSwitchDeps: deps, contextOverflowRolloverHolder: null,
       reconcileSessionContextWindowBudgetUnderLock: vi.fn(async () => {}),
       appliedContextWindowBudgets: new Map<string, number | null>(),
+      pendingSessionContextWindowBudgetReconciles: new Set<string>(),
     });
     if (mode === 'cross-engine' || mode === 'relocation') {
       const stageAxis = compile(stageAxisAdapter, { ...axisCatalogBindings(row), agentSwitchPending: pending, agentSwitchDeps: deps,

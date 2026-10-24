@@ -46,6 +46,7 @@ describe('maker:event hot path ordering', () => {
     // 任务级窗口预算的应用去重表也在这一段的 `delete` 里（见 register.ts 的
     // cleanupClosedSessionRuntime）：沙箱必须把它当依赖注入，否则抽样执行会 ReferenceError。
     const appliedContextWindowBudgets = new Map<string, number | null>([['departing-task', 300_000]]);
+    const pendingSessionContextWindowBudgetReconciles = new Set<string>(['departing-task']);
     const deps = {
       pendingCredentialSwitchHolder: null, deferredCodexRestartHolder: null,
       gatewayCodexRestartHolder: { onSessionSettled: vi.fn() },
@@ -54,6 +55,7 @@ describe('maker:event hot path ordering', () => {
       gitSnapshotCoordinator: { onSessionClosed: vi.fn() },
       clearOrcaMcpHydrated: vi.fn(), knownNonOrcaSessionIds: new Set(),
       appliedContextWindowBudgets,
+      pendingSessionContextWindowBudgetReconciles,
       lastReportedCostUsdBySession: new Map(), lastReportedModelUsageBySession: new Map(),
       turnModelPromiseBySession: new Map(), turnUsageContextBySession: new Map(),
       productTurnWallClockTracker: { clear: cleared }, productTurnUsageTargetTracker: { clear: vi.fn() },
@@ -67,6 +69,7 @@ describe('maker:event hot path ordering', () => {
     expect(cleared).toHaveBeenCalledWith('departing-task');
     // 关闭任务时必须把窗口预算的去重记账一起清掉，否则同 id 的替换实例会沿用旧值。
     expect(appliedContextWindowBudgets.has('departing-task')).toBe(false);
+    expect(pendingSessionContextWindowBudgetReconciles.has('departing-task')).toBe(false);
     expect(deps.clearSessionPersistState).toHaveBeenCalledWith('departing-task');
     expect(deps.handleAgentIslandSessionClosedAfterCleanup).toHaveBeenCalledWith('departing-task', 'process-closed');
   });
@@ -1228,6 +1231,7 @@ describe('session context window budget reconciler', () => {
     // agentSwitchPending.clear），预算就永久不生效（Greptile P1，2026-10-24）。
     const { code, js } = loadBudgetReconciler();
     const applied = new Map<string, number | null>();
+    const pending = new Set<string>();
     const applyRuntimeSetModelChange = vi.fn(async () => ({ status }));
     const deps = {
       getMakerIfReady: () => ({ getSession: () => ({ model: 'grok-4.6' }) }),
@@ -1245,6 +1249,7 @@ describe('session context window budget reconciler', () => {
       getActiveCatalog: () => ({}),
       readStoredSessionContextWindowBudget: async () => 300_000,
       appliedContextWindowBudgets: applied,
+      pendingSessionContextWindowBudgetReconciles: pending,
       contextWindowBudgetChangesEffectiveWindow: () => true,
       getPendingCredentialSwitchTarget: () => null,
       registerPendingCredentialSwitchForSession: vi.fn(),
@@ -1262,5 +1267,18 @@ describe('session context window budget reconciler', () => {
     expect(applyRuntimeSetModelChange).toHaveBeenCalledOnce();
     if (recorded) expect(applied.get('task-1')).toBe(300_000);
     else expect(applied.has('task-1')).toBe(false);
+    // 意图集合才是重放的唯一开关：deferred 留下，applied 清掉。
+    if (recorded) expect(pending.has('task-1')).toBe(false);
+    else expect(pending.has('task-1')).toBe(true);
+  });
+
+  it('replays a budget at the send boundary only when a rebuild is still pending', () => {
+    // 任务启动时 create opts 已带上偏好预算（applySessionContextWindowBudgetToCreateOpts），
+    // 此时 dedup 还没有条目 —— 若按「dedup 缺失」重放，首条直发会把刚配置好的实例再关一次
+    // （首条消息多等一次冷启动；Greptile P2，2026-10-24）。
+    const boundary = source.slice(source.indexOf("stage = 'direct-send:"));
+    expect(boundary).toContain('if (pendingSessionContextWindowBudgetReconciles.has(sessionId)) {');
+    expect(boundary.indexOf('pendingSessionContextWindowBudgetReconciles.has(sessionId)'))
+      .toBeLessThan(boundary.indexOf('reconcileSessionContextWindowBudgetUnderLock('));
   });
 });
