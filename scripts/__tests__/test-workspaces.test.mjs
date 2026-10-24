@@ -262,11 +262,6 @@ test("real agent integration tests are explicit tiers outside unit", () => {
 	assert.deepEqual(piManager.tiers.integration.include, [
 		"src/__tests__/pi-manager.integration.test.ts",
 	]);
-	assert.equal(desktop.tiers.integration.execution, "exclusive");
-	assert.deepEqual(desktop.tiers.integration.include, [
-		"src/main/local-agent/__tests__/*.integration.test.ts",
-		"src/main/__tests__/windowsPackagedInstanceBarrier.integration.test.ts",
-	]);
 	assert.deepEqual(desktop.tiers.e2e.include, [
 		"src/main/maker-host/__tests__/*.e2e.test.ts",
 		"src/main/remote-agent/__tests__/groupRelayClaudeFork.e2e.test.ts",

@@ -367,14 +367,11 @@ export default {
         },
         integration: {
           status: 'manual',
-          reason: 'Local Agent protocol tests open real sockets and stores; Windows packaged-instance tests start PowerShell and hold a real OS mutex.',
+          reason: 'Local application Agent protocol tests open real loopback sockets and temporary authorization stores.',
           execution: 'exclusive',
           coverage: 'allowlist',
           command: vitestBin('run', '--maxWorkers=2'),
-          include: [
-            'src/main/local-agent/__tests__/*.integration.test.ts',
-            'src/main/__tests__/windowsPackagedInstanceBarrier.integration.test.ts',
-          ],
+          include: ['src/main/local-agent/__tests__/*.integration.test.ts'],
         },
         'git-integration': {
           status: 'manual',
