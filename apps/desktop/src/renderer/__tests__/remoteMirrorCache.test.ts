@@ -439,6 +439,38 @@ describe('冷缓存 hydrate', () => {
     }
   });
 
+  it('fills the missed-page gap before writing a refreshed mirror', async () => {
+    const s = sid();
+    const rows = Array.from({ length: 8 }, (_, i) => ({
+      ...dbMessage(s, String(i + 1), String(i + 1), `2026-10-11T00:00:0${i + 1}.000Z`), role: 'user' as const,
+    }));
+    const historyView = encodeRemoteHistory({ items: projectHistoryView(rows.slice(0, 3), false),
+      details: new Map(), expanded: new Set(), ready: true, loading: false, error: null, nextCursor: null, hasMore: false });
+    getMessages.mockResolvedValueOnce({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0, historyView } as CachedRead);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [
+      { id: s, status: 'active', updatedAt: rows[7].createdAt },
+    ] as never);
+    let finish!: () => void;
+    invoke.mockImplementationOnce((async () => ({ version: 1,
+      items: projectHistoryView(rows.slice(6), false), hasMore: true, nextCursor: '7',
+    })) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    invoke.mockImplementationOnce((async (_device: string, channel: string, args: unknown[]) => {
+      expect(channel).toBe('local-db:messages:view');
+      expect(args).toEqual([s, { lazyDetails: true, before: '7' }]);
+      await new Promise<void>(resolve => { finish = resolve; });
+      return { version: 1, items: projectHistoryView(rows.slice(2, 6), false), hasMore: true, nextCursor: '3' };
+    }) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    const pending = makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'), { interval: 1 });
+    expect(putMessages).not.toHaveBeenCalled();
+    finish();
+    await pending;
+    await vi.waitFor(() => expect(putMessages).toHaveBeenCalled());
+    const saved = decodeRemoteHistory(putMessages.mock.calls.at(-1)![6]!)!;
+    expect(saved.items.map(item => item.key)).toEqual(rows.map(row => row.clientId));
+    expect(saved.hasMore).toBe(false);
+  });
+
   it('reads changed tasks ahead into the mirror after a refresh that may follow missed pushes', async () => {
     const s = sid();
     const old = dbMessage(s, 'old', 'cached reply', '2026-10-11T00:00:01.000Z');

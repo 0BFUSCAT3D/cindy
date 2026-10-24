@@ -6,6 +6,7 @@ import {
   selectHistoryPrefetchSessions,
   mergeHistoryPrefetchRequest, type HistoryPrefetchRequest,
   nextHistoryCacheReceipt,
+  readContinuousHistoryPage,
 } from '@cindy/maker-shared/message-window';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
@@ -73,12 +74,15 @@ export async function prefetchRemoteHistories(
           let page;
           try {
             page = await reader.readHistoryView(session.id);
+            if (page) page = await readContinuousHistoryPage(page, previous,
+              (before) => reader.readHistoryView(session.id, before),
+              () => isCurrent() && authority.current() && !isRemoteHistoryViewMounted(deviceId, session.id));
           } catch (error) {
             // A Host without the history view serves tasks the old way; nothing to read ahead.
             if (isHistoryViewUnavailable(error)) return;
             throw error;
           }
-          if (!isCurrent() || isRemoteHistoryViewMounted(deviceId, session.id)) continue;
+          if (!page || !isCurrent() || isRemoteHistoryViewMounted(deviceId, session.id)) continue;
           const snapshot = historySnapshotForCache(page, previous, fitsHistoryDisk);
           if (!snapshot || !await writeHistoryDisk(authority, { ...snapshot, readReceipt })) continue;
           dropDetachedRemoteHistoryView(deviceId, session.id);

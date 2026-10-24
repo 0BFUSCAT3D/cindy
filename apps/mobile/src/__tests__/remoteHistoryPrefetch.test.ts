@@ -43,6 +43,30 @@ afterEach(async () => {
 });
 
 describe('history read ahead after a list refresh', () => {
+  it.each([false, true])('fills a gap before replacing the offline reading window (failure=%s)', async (failure) => {
+    setMobileAuthOwner('user-1');
+    const rows: RemoteMessage[] = Array.from({ length: 8 }, (_, index) => ({ ...row(String(index + 1), index + 1), role: 'user' }));
+    const authority = historyDiskAuthority(DEVICE, 's');
+    const previous = snapshotOf(rows.slice(0, 3));
+    await writeHistoryDisk(authority, previous);
+    remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [session('s', rows[7].createdAt)]);
+    let finish!: () => void;
+    const reader = { readHistoryView: vi.fn(async (_id: string, before?: string) => {
+      if (!before) return { ...page(rows.slice(6)), hasMore: true, nextCursor: '7' };
+      await new Promise<void>(resolve => { finish = resolve; });
+      if (failure) throw new Error('temporary connection failure');
+      return { ...page(rows.slice(2, 6)), hasMore: true, nextCursor: '3' };
+    }) };
+    const pending = prefetchRemoteHistories(DEVICE, reader, () => true);
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'), { interval: 1 });
+    expect((await readHistoryDisk(authority))?.items).toEqual(previous.items);
+    finish();
+    await pending;
+    expect(reader.readHistoryView.mock.calls).toEqual([['s'], ['s', '7']]);
+    const cached = await readHistoryDisk(authority);
+    expect(cached?.items).toEqual(failure ? previous.items : page(rows).items);
+    expect(cached?.hasMore).toBe(false);
+  });
   // A bounded reconnect read is not a superset of completion targets. Hold one
   // real read pending, then enqueue both request kinds in either order.
   it.each([false, true])('retains completion targets alongside a queued reconnect (recent first=%s)', async (recentFirst) => {

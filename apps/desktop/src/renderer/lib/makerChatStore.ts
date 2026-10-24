@@ -44,7 +44,7 @@ import { parsePluginConnectionInput, type InputHandoffSnapshot } from '@cindy/de
 
 import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
-import { nextHistoryCacheReceipt, isHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
+import { nextHistoryCacheReceipt, isHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, readContinuousHistoryPage, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
 import { SESSION_SYNC_CHANNEL } from '@cindy/device-link';
 import { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from '@cindy/maker-shared/message-window';
 import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
@@ -12001,20 +12001,25 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
           // Capture write authority before the read, like an open view does.
           const write = remoteHistoryCacheWriter(deviceId, session.id);
           const readReceipt = nextHistoryCacheReceipt();
-          let page: HistoryViewPage<Message>;
+          const readPage = async (before?: string): Promise<HistoryViewPage<HistoryChatMessage> | null> => {
+            const page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
+              [session.id, { lazyDetails: true, ...(before ? { before } : {}) }]) as HistoryViewPage<Message> | null;
+            return page && { ...page, items: mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
+              ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
+            }))) };
+          };
+          let page: HistoryViewPage<HistoryChatMessage> | null;
           try {
-            page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
-              [session.id, { lazyDetails: true }]) as HistoryViewPage<Message>;
+            page = await readPage();
+            if (page) page = await readContinuousHistoryPage(page, previous, readPage,
+              () => isCurrent(session.id) && token === sessionCacheInvalidationToken(session.id) && !getRemoteHistoryView(session.id));
           } catch (error) {
             // A Host without the history view serves tasks the old way; nothing to read ahead.
             if (isHistoryViewUnavailable(error)) return;
             throw error;
           }
           if (page == null || !isCurrent(session.id) || getRemoteHistoryView(session.id)) continue;
-          const items = mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
-            ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
-          })));
-          const snapshot = historySnapshotForCache({ ...page, items }, previous,
+          const snapshot = historySnapshotForCache(page, previous,
             (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)));
           if (!snapshot) continue;
           write({ ...snapshot, readReceipt });
