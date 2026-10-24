@@ -460,9 +460,6 @@
     "apps/desktop/src/main/voice-input/__tests__/globalShortcut.test.ts": {
       "resetModules": 1
     },
-    "apps/desktop/src/main/voice-input/__tests__/MacModifierShortcutListenerStartRace.test.ts": {
-      "resetModules": 1
-    },
     "apps/desktop/src/main/voice-input/__tests__/RealtimeAsrWebSocketProvider.test.ts": {
       "realWaits": 3
     },

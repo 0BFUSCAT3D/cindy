@@ -220,6 +220,14 @@ describe('REMOTE_INVOKE_ALLOWLIST', () => {
     expect(REMOTE_INVOKE_ALLOWLIST.has('sidebar-settings:set-project-order')).toBe(false);
   });
 
+  it('exposes host project aliases as a read-only snapshot and forwards invalidations', () => {
+    expect(REMOTE_INVOKE_ALLOWLIST.has('sidebar-settings:get-project-aliases')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:list')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:set')).toBe(false);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:delete')).toBe(false);
+    expect(PUSH_FORWARD_ALLOWLIST.has('local-db:project-aliases:changed')).toBe(true);
+  });
+
   it('放行 Git safety 只读查询(远程 Codex Rewind 按被控端 snapshot 设置 gate)', () => {
     expect(REMOTE_INVOKE_ALLOWLIST.has('maker:git-safety:get')).toBe(true);
     expect(REMOTE_INVOKE_ALLOWLIST.has('maker:git-safety:set')).toBe(false);
