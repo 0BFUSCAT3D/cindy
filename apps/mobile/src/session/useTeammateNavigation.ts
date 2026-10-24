@@ -7,7 +7,6 @@ import type { RemoteResourceRef } from '@cindy/device-link';
 import type { HostedRemoteCollectionItem, RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { useGuardedPush } from '@/utils/useGuardedPush';
 import { useHomeMode } from './useHomeMode';
-import type { HomeMode } from './homeViewPreferenceStore';
 import { homeDismissCount, teammateIdentity, teammateResourceRoute, teammateSessionPreview } from './teammateNavigation';
 import { remoteSessionStore } from './remoteSessionStore';
 import { readRemoteCollectionCache, writeRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
@@ -24,31 +23,26 @@ export function useTeammateNavigation() {
   const pendingAccount = useRef<number | null>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const chooseMode = useCallback(async (mode: HomeMode) => {
+  /** Back to the home, whose teammate section replaced the separate teammate list. */
+  const returnHome = useCallback(() => {
     if (pendingAccount.current === accountGeneration) return;
-    pendingAccount.current = accountGeneration;
     Keyboard.dismiss();
-    try {
-      await preferences.setMode(mode);
-      if (mounted.current && current.current === accountGeneration) {
-        const state = navigation.getState();
-        const routes = state?.routes.slice(0, state.index + 1) ?? [];
-        const count = homeDismissCount(routes);
-        // Pop by position to preserve the mounted home's state.
-        if (count === null) {
-          const legacyIndex = routes.findIndex(route => route.name === 'resources/[collectionId]'
-            && (route.params as { collectionId?: string } | undefined)?.collectionId === 'teammates');
-          // POP_TO only replaces the top when home is absent, leaving the retired route underneath.
-          if (legacyIndex >= 0) navigation.reset({
-            index: legacyIndex,
-            routes: [...routes.slice(0, legacyIndex), { name: 'devices/index' }],
-          } as never);
-          else router.dismissTo('/devices');
-        }
-        else if (count > 0) router.dismiss(count);
-      }
-    } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
-  }, [accountGeneration, navigation, preferences.setMode, router]);
+    const state = navigation.getState();
+    const routes = state?.routes.slice(0, state.index + 1) ?? [];
+    const count = homeDismissCount(routes);
+    // Pop by position to preserve the mounted home's state.
+    if (count === null) {
+      const legacyIndex = routes.findIndex(route => route.name === 'resources/[collectionId]'
+        && (route.params as { collectionId?: string } | undefined)?.collectionId === 'teammates');
+      // POP_TO only replaces the top when home is absent, leaving the retired route underneath.
+      if (legacyIndex >= 0) navigation.reset({
+        index: legacyIndex,
+        routes: [...routes.slice(0, legacyIndex), { name: 'devices/index' }],
+      } as never);
+      else router.dismissTo('/devices');
+    }
+    else if (count > 0) router.dismiss(count);
+  }, [accountGeneration, navigation, router]);
   /** `replace` swaps the current screen (the cloud view handing over to the new main computer). */
   const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem, options?: { replace?: boolean }) => {
     const identity = teammateIdentity(hosted);
@@ -89,5 +83,5 @@ export function useTeammateNavigation() {
       });
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
   }, [accountGeneration, preferences.selectTeammate, push]);
-  return { ...preferences, chooseMode, openTeammate, openCreatedTeammate };
+  return { ...preferences, returnHome, openTeammate, openCreatedTeammate };
 }
