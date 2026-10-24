@@ -12,7 +12,8 @@ import { registerNightlyLearningIpc } from '../../routines/nightlyLearningIpc.js
  * lifecycle 统一编排（避免与 feishuBot.dispose 等其它清理 race）。
  */
 
-import { ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
+import path from 'node:path';
 
 import { closeDb, ensureReady, getCurrentUserId } from '../index';
 import { getCurrentDbClientUserId, tryGetDbClient } from '../client/current';
@@ -46,6 +47,9 @@ import { reconcileSessionMediaRefsForDeletedSessions } from '../../cindy-media/s
 import { reconcileGeneratedImageRecovery } from '../../cindy-media/generatedImageRecovery';
 import { reconcileMediaRefCompensationsForOwner } from '../../cindy-media/refCompensationJournal';
 import { setSessionRouteLockImplementation } from '../sessionRouteLock';
+import { LOCAL_DATA_OWNER_ID } from '../../appSessionState';
+import { ensureDialogueWorkspaceDir } from '../dialogueWorkspace';
+import { isUiMockDataEnabled, seedUiMockData } from '../uiMockSeed';
 
 const log = createLogger('registerAll');
 const MEDIA_REF_COMPENSATION_BUSY_RETRY_MS = 12_000;
@@ -141,6 +145,22 @@ export function registerLocalDbIpc(opts: RegisterLocalDbIpcOpts = {}): void {
         tryGetDbClient() === client &&
         getCurrentDbClientUserId() === userId &&
         (opts.isOwnerCurrent?.(userId) ?? true);
+      if (isUiMockDataEnabled() && userId === LOCAL_DATA_OWNER_ID) {
+        // Dev `--mock` sandbox: seed before the renderer lists tasks. Never block startup.
+        try {
+          const added = await seedUiMockData({
+            db: client.drizzle,
+            projectRoot: path.join(app.getPath('userData'), 'ui-mock', 'projects'),
+            dialogueDir: ensureDialogueWorkspaceDir,
+          });
+          log.info('ui mock data seeded', { added });
+        } catch (error) {
+          log.warn('ui mock data seed failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        if (!isReadyOwnerCurrent()) return;
+      }
       // Resume saved invitations after the database and account boundary are ready.
       await recoverActiveTeammateInvitations();
       if (!isReadyOwnerCurrent()) return;
