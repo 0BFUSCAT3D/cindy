@@ -12,7 +12,7 @@ import {
 } from '../device-link/broadcast-tap.js';
 import { createLogger } from '../logger.js';
 import { getDbClient } from '../localDb/client/current.js';
-import { botSessionLinks } from '../localDb/schema.js';
+import { botDelegations, botSessionLinks } from '../localDb/schema.js';
 import {
   activeOwnerScopeKey,
   isAppSessionBoundaryPending,
@@ -107,4 +107,32 @@ export function scheduleBotRemoteResourceChangedForSession(
         });
       });
   });
+}
+
+/**
+ * A background task the teammate started is one it looks after: once the task exists,
+ * remote task rows need the roster's follow links again.
+ */
+export function scheduleBotRemoteResourceChangedForDelegation(delegationId: string, childSessionId: string | null): void {
+  if (!childSessionId) return;
+  let ownerScope: string;
+  try {
+    ownerScope = activeOwnerScopeKey();
+  } catch {
+    return;
+  }
+  void getDbClient().drizzle
+    .select({ botId: botDelegations.requestingBotId })
+    .from(botDelegations)
+    .where(eq(botDelegations.id, delegationId))
+    .limit(1)
+    .then(([row]) => {
+      if (!row?.botId || !isOwnerScopeCurrent(ownerScope)) return;
+      broadcastBotRemoteResourceChanged(row.botId);
+    })
+    .catch((error: unknown) => {
+      log.warn('resolve teammate delegation invalidation failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 }

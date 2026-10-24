@@ -1423,6 +1423,46 @@ export interface BotRemoteResourceSource {
   activityAt: number;
   currentVersion: number;
   updatedAt: number;
+  /** Open tasks this Bot looks after, for the follow mark on remote task rows. Absent = none. */
+  followingSessionIds?: string[];
+}
+
+const MAX_FOLLOWED_TASK_LINKS = 200;
+
+/**
+ * The tasks the desktop sidebar marks as followed by this Bot (`useSessionFollowers`):
+ * active, local, ordinary tasks only, so archived history never grows the roster.
+ */
+async function readFollowedTaskIds(
+  db: ReturnType<typeof getDbClient>['drizzle'],
+  userDataDir: string,
+  botId: string,
+): Promise<string[]> {
+  let ids: string[];
+  try {
+    ids = (await readBotResponsibilityScope(userDataDir, botId)).sessionIds;
+  } catch {
+    // A damaged store may hold releases: show no mark rather than guess (collectTaskResponsibilityScopes).
+    return [];
+  }
+  const followed: Array<{ id: string; updatedAt: number }> = [];
+  for (let start = 0; start < ids.length; start += 500) {
+    const rows = await db.select({ id: sessions.id, updatedAt: sessions.updatedAt }).from(sessions).where(and(
+      inArray(sessions.id, ids.slice(start, start + 500)),
+      eq(sessions.status, 'active'),
+      isNull(sessions.remoteHostId),
+      // isWorkbenchTaskSource: ordinary tasks only, never a Bot's own or a channel conversation.
+      inArray(sessions.source, ['desktop', 'plugin']),
+      or(isNull(sessions.orcaRole), ne(sessions.orcaRole, 'worker')),
+    ));
+    followed.push(...rows);
+  }
+  // Keep the roster row small: the most recently active tasks, in a stable order.
+  return followed
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, MAX_FOLLOWED_TASK_LINKS)
+    .map((row) => row.id)
+    .sort();
 }
 
 async function readBotRemoteResourceSource(
@@ -1443,6 +1483,8 @@ async function readBotRemoteResourceSource(
     .from(botProfileVersions).where(and(eq(botProfileVersions.botId, botId), eq(botProfileVersions.version, profile.currentVersion))).limit(1);
   const invitation = botInvitationProgress(parseJson(version?.capabilitiesJson ?? '{}').invitation);
   const reply = latest.role === 'assistant' ? latest : await readCanonicalChatPreview(db, canonicalSessionId, canonical?.clearedAt ?? null, true);
+  // Paused or archived companions show no mark, as on the desktop sidebar.
+  const followingSessionIds = profile.status === 'active' ? await readFollowedTaskIds(db, owner.userDataDir, botId) : [];
   owner.assertCurrent();
   return {
     ...(invitation ? { invitation } : {}),
@@ -1465,6 +1507,7 @@ async function readBotRemoteResourceSource(
     activityAt: Math.max(profile.createdAt, latest.createdAt ?? 0, canonical?.updatedAt ?? 0),
     currentVersion: profile.currentVersion,
     updatedAt: profile.updatedAt,
+    followingSessionIds,
   };
 }
 

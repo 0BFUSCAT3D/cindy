@@ -330,6 +330,7 @@
       "openAutomationLatest": "自動化タスク {{title}} の最新セッションを開く",
       "automationTask": "自動化タスク {{title}}",
       "openConversation": "セッション {{title}} を開く",
+      "followedBy": "、担当: {{names}}",
       "collapse": "{{title}} を折りたたむ",
       "expand": "{{title}} を展開",
       "taskError": "タスクでエラー",

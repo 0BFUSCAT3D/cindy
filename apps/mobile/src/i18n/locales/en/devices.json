@@ -330,6 +330,7 @@
       "openAutomationLatest": "Open the latest session of automation {{title}}",
       "automationTask": "Automation {{title}}",
       "openConversation": "Open session {{title}}",
+      "followedBy": ", looked after by {{names}}",
       "collapse": "Collapse {{title}}",
       "expand": "Expand {{title}}",
       "taskError": "Task failed",

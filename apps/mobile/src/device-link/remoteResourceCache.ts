@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { resolveRemoteText } from '@cindy/device-link';
 import { isMobileRemoteCollectionSupported, normalizeRemoteCollectionItems, parseRemoteResourceTargets, type HostedRemoteCollectionItem, type RemoteHomeCollection } from './remoteResources';
 
 const PREFIX = 'cindy.remoteResources.v1.';
@@ -175,6 +176,30 @@ export function cachedBotIdForSession(userId: string, collectionId: string, devi
     && item.ref.kind === 'bot' && item.links.some(({ rel, target }) => rel === 'conversation'
       && target.kind === 'session' && target.sessionId === sessionId));
   return row?.item.ref.id ?? '';
+}
+const NO_FOLLOWERS: readonly HostedRemoteCollectionItem[] = [];
+let followIndex: { userId: string; revision: number; byTask: Map<string, HostedRemoteCollectionItem[]> } | null = null;
+/**
+ * Teammates whose roster row follows this task (link rel `following`), by name, as the desktop
+ * sidebar mark orders them. Same computer only; presentation only, never authorization.
+ */
+export function cachedTaskFollowers(userId: string, deviceId: string, sessionId: string): readonly HostedRemoteCollectionItem[] {
+  if (!userId || !deviceId) return NO_FOLLOWERS;
+  if (followIndex?.userId !== userId || followIndex.revision !== revision) {
+    const byTask = new Map<string, HostedRemoteCollectionItem[]>();
+    for (const row of snapshots.get(userId)?.items.teammates ?? []) {
+      if (row.item.ref.kind !== 'bot') continue;
+      for (const { rel, target } of row.item.links) {
+        if (rel !== 'following' || target.kind !== 'session') continue;
+        const key = JSON.stringify([row.host.deviceId, target.sessionId]);
+        byTask.set(key, [...(byTask.get(key) ?? []), row]);
+      }
+    }
+    const name = (row: HostedRemoteCollectionItem) => resolveRemoteText(row.item.display.title);
+    for (const rows of byTask.values()) rows.sort((left, right) => name(left).localeCompare(name(right)));
+    followIndex = { userId, revision, byTask };
+  }
+  return followIndex.byTask.get(JSON.stringify([deviceId, sessionId])) ?? NO_FOLLOWERS;
 }
 /** A cached roster row for display (name/avatar) only; never an authorization or availability signal. */
 export function cachedBotItem(userId: string, collectionId: string, deviceId: string, botId: string) {
