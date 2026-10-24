@@ -41,6 +41,8 @@ it('uses a plain list only when requested and preserves form sheets', () => {
   } finally { act(() => root.unmount()); }
 });
 vi.mock('@expo/ui/swift-ui/modifiers', () => ({
+  containerRelativeFrame: vi.fn(() => ({})),
+  onGeometryChange: vi.fn(() => ({})),
   ...Object.fromEntries(['accessibilityLabel', 'contentShape', 'buttonStyle', 'font', 'foregroundStyle', 'frame', 'padding', 'presentationDetents', 'presentationDragIndicator', 'interactiveDismissDisabled', 'scrollContentBackground', 'listStyle', 'scrollDismissesKeyboard'].map(name => [name, vi.fn(() => ({}))])),
   shapes: { rectangle: () => ({}) },
 }));
