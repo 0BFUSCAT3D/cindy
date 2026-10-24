@@ -899,6 +899,14 @@ function previewOf(value: unknown): string {
   return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }
 
+/** Progressive `call_tool.args` may arrive as a JSON string (issue #350); approval parses it the same way. */
+function argsObject(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return {}; }
+  }
+  return isRecord(value) ? value : {};
+}
+
 /** One-line arguments after the tool name; empty when there are none. */
 function argsPreview(args: Record<string, unknown>): string {
   if (!Object.keys(args).length) return '';
@@ -949,7 +957,7 @@ export function describePermissionAction(toolName: string, input: Record<string,
   const name = toolName.toLowerCase();
   // Progressive MCP dispatchers: mcp__server__call_tool / mcp:server:call_tool → inner tool.
   const innerName = readString(input.name);
-  const innerArgs = isRecord(input.args) ? input.args : {};
+  const innerArgs = argsObject(input.args);
   if (name.includes('browser') || innerName === 'browser') {
     return { kind: 'browser', preview: browserStep(innerName === 'browser' ? innerArgs : input) };
   }
@@ -958,7 +966,7 @@ export function describePermissionAction(toolName: string, input: Record<string,
     const tool = readString(input.tool);
     const dispatched = tool === 'call_tool' && readString(innerArgs.name);
     const call = dispatched || tool;
-    const args = dispatched ? (isRecord(innerArgs.args) ? innerArgs.args : {}) : innerArgs;
+    const args = dispatched ? argsObject(innerArgs.args) : innerArgs;
     return { kind: 'plugin', subject: readString(input.ghost_id)!, preview: [call, argsPreview(args)].filter(Boolean).join(' ') || previewOf(input) };
   }
   if (COMMAND_TOOLS.has(name)) {

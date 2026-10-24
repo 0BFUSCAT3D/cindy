@@ -308,6 +308,13 @@ describe('interaction shared model', () => {
     expect(describePermissionAction('mcp:cindy_browser:call_tool', {
       name: 'browser', args: { action: 'recipe', recipeId: 'post-reply', site: 'x.com', text: 'hello' },
     }).preview).toBe('recipe {"recipeId":"post-reply","site":"x.com","text":"hello"}');
+    // call_tool.args stringified by the caller (issue #350) is parsed like the approval policy does.
+    expect(describePermissionAction('mcp:cindy_browser:call_tool', {
+      name: 'browser', args: JSON.stringify({ action: 'recipe', recipeId: 'post-reply' }),
+    }).preview).toBe('recipe {"recipeId":"post-reply"}');
+    expect(describePermissionAction('mcp:cindy:ghost_call', {
+      ghost_id: 'cindy-github', tool: 'call_tool', args: JSON.stringify({ name: 'get_user', args: JSON.stringify({ username: 'octo' }) }),
+    }).preview).toBe('get_user {"username":"octo"}');
     expect(describePermissionAction('file_change', { changes: [
       { path: '/repo/a.ts', kind: { type: 'update', move_path: '/repo/b.ts' }, diff: '@@ -1 +1 @@' },
       { path: '/repo/old.ts', kind: { type: 'delete' } },
