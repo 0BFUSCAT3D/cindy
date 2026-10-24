@@ -91,6 +91,12 @@ JSON 已包含 `worktree` / `expectedSource`、`region` / `bundleId`、目标设
 
 ## 分层验证
 
+Release 构建必须使用 `NODE_ENV=production BABEL_ENV=production`，包括手动调用
+`xcodebuild`、Gradle 或 `expo export:embed --dev false`。Expo 会保留父进程的环境变量，
+因此 `__DEV__=false` 或 Xcode 的 Release 配置本身不能证明 Worklets 已按生产模式编译。
+仓库 iOS/Android 构建脚本会固定这两个变量；Metro 的 Babel transformer 另按每次请求的
+`dev` 标志统一编译模式，防止外部开发环境把动画调试堆栈编进 Release 包，同时保留开发包调试能力。
+
 ```bash
 pnpm --filter mobile typecheck
 pnpm --filter mobile exec vitest run <测试文件路径>

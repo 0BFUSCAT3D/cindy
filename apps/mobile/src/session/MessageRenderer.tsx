@@ -263,7 +263,6 @@ import { ChatPathChipSpan } from '@/session/ChatPathChipSpan';
 import {
   useRemoteDeviceIdentity,
   useRemoteSessionMessages,
-  useRemoteSessions,
 } from '@/session/remoteSessionStore';
 import {
   isCrossDeviceSourceSessionId,
@@ -5997,8 +5996,7 @@ function MarkdownBodyBase({
   }, [layout, managedImagePreviewUrl, onOpenPayload, openMarkdownImage, resolveMarkdownMedia]);
   // Preserve the inline renderer while streaming or unrelated task metadata
   // changes; referenced task title changes still refresh every affected chip.
-  const remoteSessions = useRemoteSessions();
-  const sessionLinkTitles = useMarkdownSessionLinkTitles(text, remoteSessions);
+  const sessionLinkTitles = useMarkdownSessionLinkTitles(text);
   const renderInlines = useCallback(
     (
       inlines: readonly MobileMarkdownInline[],
