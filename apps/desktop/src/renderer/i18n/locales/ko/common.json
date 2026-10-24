@@ -10866,6 +10866,7 @@
         "stt": "음성 인식",
         "realtime": "실시간 음성",
         "embedding": "임베딩",
+        "decision": "의사결정",
         "compression": "압축",
         "ungrouped": "미분류",
         "other": "기타"

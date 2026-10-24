@@ -10865,9 +10865,10 @@
         "stt": "語音轉寫",
         "realtime": "即時語音",
         "embedding": "向量",
+        "decision": "決策",
         "compression": "壓縮",
         "ungrouped": "未分組",
-        "other": "其它"
+        "other": "其他"
       },
       "search": {
         "placeholder": "搜尋 {{source}} 的模型…",

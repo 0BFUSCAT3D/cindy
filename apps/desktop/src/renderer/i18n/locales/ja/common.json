@@ -10866,6 +10866,7 @@
         "stt": "音声認識",
         "realtime": "リアルタイム音声",
         "embedding": "埋め込み",
+        "decision": "意思決定",
         "compression": "圧縮",
         "ungrouped": "未分類",
         "other": "その他"

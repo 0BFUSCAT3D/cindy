@@ -10901,6 +10901,7 @@
         "stt": "Speech to Text",
         "realtime": "Realtime Audio",
         "embedding": "Embeddings",
+        "decision": "Decision",
         "compression": "Compression",
         "ungrouped": "Ungrouped",
         "other": "Other"
