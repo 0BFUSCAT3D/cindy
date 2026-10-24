@@ -308,19 +308,24 @@ export function parseZhipuCodingPlanQuota(
         ? line.nextResetTime
         : null;
     const unit = typeof line.unit === 'number' ? line.unit : null;
-    // unit 3 = 5 小时窗口、6 = 每周窗口；缺失时兑底：无 reset 优先归 5 小时。
+    // unit 3 = 5 小时窗口、6 = 每周窗口（新套餐 unit 6 的 number 有 7 和 1 两种取值，
+    // 只锚 unit）；缺失时兑底见下。
     if (unit === 3 && !fiveHour) fiveHour = { usedPercent: percent, resetsAt };
     else if (unit === 6 && !weekly) weekly = { usedPercent: percent, resetsAt };
     else if (unit == null) unclassified.push({ reset: resetsAt, percent });
   }
+  // unit 缺失的兑底（与社区工具同口径）：无 nextResetTime 的条目优先归 5 小时
+  // （0% 状态下 5 小时桶可能没有 reset），其余按 reset 升序依次填入空缺槽位——
+  // 新套餐周末比 5 小时窗更早重置时，按数组顺序填会标反。
+  unclassified.sort((a, b) => {
+    const aHas = a.reset === null ? 0 : 1;
+    const bHas = b.reset === null ? 0 : 1;
+    if (aHas !== bHas) return aHas - bHas;
+    return (a.reset ?? 0) - (b.reset ?? 0);
+  });
   for (const entry of unclassified) {
-    if (!fiveHour && entry.reset === null) fiveHour = { usedPercent: entry.percent, resetsAt: null };
-    else if (!fiveHour || !weekly) {
-      const target = fiveHour ? 'weekly' : 'fiveHour';
-      const window = { usedPercent: entry.percent, resetsAt: entry.reset };
-      if (target === 'weekly') weekly = window;
-      else fiveHour = window;
-    }
+    if (!fiveHour) fiveHour = { usedPercent: entry.percent, resetsAt: entry.reset };
+    else if (!weekly) weekly = { usedPercent: entry.percent, resetsAt: entry.reset };
   }
   return { kind: 'zhipu-coding-plan-quota', noPlan: false, level, fiveHour, weekly, fetchedAt };
 }

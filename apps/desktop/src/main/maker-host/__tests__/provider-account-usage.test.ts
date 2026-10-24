@@ -138,6 +138,44 @@ describe('parseZhipuCodingPlanQuota', () => {
     expect(() => parseZhipuCodingPlanQuota({ success: true }, 1)).toThrow(/invalid/);
     expect(() => parseZhipuCodingPlanQuota(null, 1)).toThrow(/invalid/);
   });
+
+  it('classifies unit-less limits by reset order (new plan variant), ignoring TIME_LIMIT', () => {
+    // 新套餐 unit 缺失变体：两条 TOKENS_LIMIT，nextResetTime 较近的归 5 小时、
+    // 较远的归周限；故意把周限放数组前面，验证不依赖输入顺序。
+    const snapshot = parseZhipuCodingPlanQuota(
+      {
+        success: true,
+        data: {
+          limits: [
+            { type: 'TOKENS_LIMIT', percentage: 53, nextResetTime: 2_000_000_000_000 },
+            { type: 'TOKENS_LIMIT', percentage: 44, nextResetTime: 1_000_000_000_000 },
+            { type: 'TIME_LIMIT', percentage: 7 },
+          ],
+          level: 'pro',
+        },
+      },
+      7,
+    );
+    expect(snapshot.fiveHour).toEqual({ usedPercent: 44, resetsAt: 1_000_000_000_000 });
+    expect(snapshot.weekly).toEqual({ usedPercent: 53, resetsAt: 2_000_000_000_000 });
+  });
+
+  it('falls back to five-hour for a single unit-less limit (old plan)', () => {
+    const snapshot = parseZhipuCodingPlanQuota(
+      {
+        success: true,
+        data: {
+          limits: [
+            { type: 'TOKENS_LIMIT', percentage: 2, nextResetTime: 1_774_967_594_803 },
+            { type: 'TIME_LIMIT', percentage: 0 },
+          ],
+        },
+      },
+      7,
+    );
+    expect(snapshot.fiveHour).toEqual({ usedPercent: 2, resetsAt: 1_774_967_594_803 });
+    expect(snapshot.weekly).toBeNull();
+  });
 });
 
 describe('resolveProviderAccountUsage', () => {
