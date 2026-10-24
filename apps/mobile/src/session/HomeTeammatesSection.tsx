@@ -57,7 +57,7 @@ export function useHomeTeammatesSectionContext() {
   return useMemo(() => ({ navigation, route, shared }), [navigation, route, shared]);
 }
 
-export function HomeTeammatesSection({ context, active, refreshKey, visible, query, showFooter, runDisclosure, prepareDisclosure }: {
+export function HomeTeammatesSection({ context, active, refreshKey, visible, query, showFooter, push, runDisclosure, prepareDisclosure }: {
   context: ReturnType<typeof useHomeTeammatesSectionContext>;
   /** The home is the screen in front. */
   active: boolean;
@@ -69,6 +69,8 @@ export function HomeTeammatesSection({ context, active, refreshKey, visible, que
   query: string;
   /** Full-width hairline under the section, unless the next block draws its own top line. */
   showFooter: boolean;
+  /** Embedded lists close their modal drawer before dispatching the route. */
+  push?: ReturnType<typeof useGuardedPush>;
   runDisclosure(apply: () => void): void;
   prepareDisclosure(): void;
 }) {
@@ -76,21 +78,23 @@ export function HomeTeammatesSection({ context, active, refreshKey, visible, que
   if (!shared) return null;
   return <NavigationContext.Provider value={navigation}><NavigationRouteContext.Provider value={route}>
     <SectionContent shared={shared} active={active} refreshKey={refreshKey} visible={visible} query={query} showFooter={showFooter}
-      runDisclosure={runDisclosure} prepareDisclosure={prepareDisclosure} />
+      push={push} runDisclosure={runDisclosure} prepareDisclosure={prepareDisclosure} />
   </NavigationRouteContext.Provider></NavigationContext.Provider>;
 }
 
-function SectionContent({ shared, active, refreshKey, visible, query, showFooter, runDisclosure, prepareDisclosure }: {
+function SectionContent({ shared, active, refreshKey, visible, query, showFooter, push: hostPush, runDisclosure, prepareDisclosure }: {
   shared: NonNullable<ReturnType<typeof useHomeRoster>>;
   active: boolean; refreshKey: number; visible: boolean; query: string; showFooter: boolean;
+  push?: ReturnType<typeof useGuardedPush>;
   runDisclosure(apply: () => void): void; prepareDisclosure(): void;
 }) {
   const { t, i18n } = useTranslation();
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
   const list = useThemedStyles(homeListStyles);
-  const push = useGuardedPush();
-  const navigation = useTeammateNavigation();
+  const guardedPush = useGuardedPush();
+  const push = hostPush ?? guardedPush;
+  const navigation = useTeammateNavigation(push);
   const focused = useIsFocused() && active;
   const { roster, groups } = shared;
   const cloud = useCloudCompanionHome(focused && visible);

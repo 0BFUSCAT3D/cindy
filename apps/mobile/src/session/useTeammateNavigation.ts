@@ -12,11 +12,14 @@ import { remoteSessionStore } from './remoteSessionStore';
 import { readRemoteCollectionCache, writeRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
 
 /** Push keeps the current chat/composer mounted; known teammates validate in the destination. */
-export function useTeammateNavigation() {
+export function useTeammateNavigation(hostPush?: ReturnType<typeof useGuardedPush>) {
   const preferences = useHomeMode();
   const { user, accountGeneration } = useAuth();
   const { i18n } = useTranslation();
-  const push = useGuardedPush();
+  const guardedPush = useGuardedPush();
+  // Defer only the final dispatch: selection and its account/mount guards must finish while the
+  // drawer still exists. The host then closes/unmounts the drawer before executing the push.
+  const push = hostPush ?? guardedPush;
   const router = useRouter();
   const navigation = useNavigation();
   const current = useRef(accountGeneration); current.current = accountGeneration;

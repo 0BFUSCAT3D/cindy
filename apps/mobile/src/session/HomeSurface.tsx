@@ -2977,6 +2977,7 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
         sections={sections}
         ListHeaderComponent={<>
         <HomeTeammatesSection context={teammatesSectionContext} active={active} refreshKey={teammatesRefreshKey}
+          push={guardedPush}
           // Independent of the computer-connection guide: server group chats and cloud companions need no computer.
           visible={indexedSearch.activeFilterCount === 0 && statusFilter !== 'archived'}
           query={searchQuery}
