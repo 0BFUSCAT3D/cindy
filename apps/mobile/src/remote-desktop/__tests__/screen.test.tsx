@@ -17,6 +17,7 @@ import { RemoteDesktopDisplaySettings } from "../RemoteDesktopDisplaySettings";
 import { AppState } from "react-native";
 import { goBackGuarded } from "@/utils/backGuard";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { darkColors, lightColors } from "@/theme/tokens";
 
 // Node >= 25 replaces jsdom's localStorage (AsyncStorage's web fallback) with a
 // method-less stub, so keep storage in memory like the other mobile tests.
@@ -5548,16 +5549,43 @@ describe("remote desktop controls", () => {
       topInset: 0,
       bottomInset: 0,
     });
+    // P1 #7009: Light app chrome still needs a matching dark viewer palette
+    // for the fallback cursor and telemetry inside the retro screen opening.
+    expect(
+      sent()
+        .filter((m) => m.type === "theme")
+        .at(-1),
+    ).toMatchObject({
+      surface: darkColors.surface,
+      foreground: darkColors.textPrimary,
+    });
+    expect(
+      sent()
+        .filter((m) => m.type === "networkStatus")
+        .at(-1),
+    ).toMatchObject({
+      color: darkColors.textPrimary,
+    });
     // Unit: 2026-10-24 retro Easter egg. Existing fold coverage did not switch
     // skins: a lower-rail swipe must restore the original viewport without
     // replacing the viewer or sending pointer input; vertical/cancelled gestures do nothing.
-    const swipe = (dx: number, dy = 0, cancel = false) => {
+    const swipe = (
+      dx: number,
+      dy = 0,
+      cancel = false,
+      shouldCapture = true,
+    ) => {
       const rail = fixture.views["remoteDesktop.skinSwipe"];
       act(() =>
         rail.onStartShouldSetResponderCapture({
           nativeEvent: { pageX: 100, pageY: 440 },
         }),
       );
+      const captured = rail.onMoveShouldSetResponderCapture({
+        nativeEvent: { pageX: 100 + dx, pageY: 440 + dy },
+      });
+      expect(captured).toBe(shouldCapture);
+      if (!captured) return;
       act(() =>
         rail.onResponderGrant({ nativeEvent: { pageX: 100, pageY: 440 } }),
       );
@@ -5572,7 +5600,9 @@ describe("remote desktop controls", () => {
     expect(
       host.querySelector('[data-testid="remoteDesktop.retroKeys"]'),
     ).not.toBeNull();
-    swipe(10, 80);
+    swipe(10, 80, false, false);
+    swipe(8, 0, false, false);
+    swipe(20);
     swipe(100, 0, true);
     expect(
       host.querySelector('[data-testid="remoteDesktop.retroKeys"]'),
@@ -5616,6 +5646,21 @@ describe("remote desktop controls", () => {
     ).not.toBeNull();
     swipe(-100); // ThinkPad → modern.
     expect(
+      sent()
+        .filter((m) => m.type === "theme")
+        .at(-1),
+    ).toMatchObject({
+      surface: lightColors.surface,
+      foreground: lightColors.textPrimary,
+    });
+    expect(
+      sent()
+        .filter((m) => m.type === "networkStatus")
+        .at(-1),
+    ).toMatchObject({
+      color: lightColors.textPrimary,
+    });
+    expect(
       host.querySelector('[data-testid="remoteDesktop.retroKeys"]'),
     ).toBeNull();
     expect(sent()).toContainEqual({ type: "releaseInput" });
@@ -5651,7 +5696,14 @@ describe("remote desktop controls", () => {
     expect(
       host.querySelector('[data-testid="remoteDesktop.retroKeys"]'),
     ).toBeNull();
-    act(() => fixture.views["remoteDesktop.skinSwitch"].onPress()); // Accessible next wraps to classic.
+    act(() =>
+      fixture.views["remoteDesktop.skinSwipe"].onStartShouldSetResponderCapture(
+        {
+          nativeEvent: { pageX: 100, pageY: 440 },
+        },
+      ),
+    );
+    act(() => fixture.views["remoteDesktop.skinSwitch"].onPress()); // Next tap wraps to classic.
     expect(
       host.querySelector('[data-testid="remoteDesktop.retroKeys"]'),
     ).not.toBeNull();

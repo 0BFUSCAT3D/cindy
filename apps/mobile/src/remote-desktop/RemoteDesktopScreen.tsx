@@ -574,6 +574,7 @@ export function RemoteDesktopSession({
     frameReady &&
     !keyboard &&
     !operations;
+  const viewerColors = retroDesktop ? darkColors : colors;
   // Artwork covers both physical halves, including the division and system
   // reservations. Only interactive content is constrained to the safe regions.
   const foldSeam = tableRegion
@@ -1789,10 +1790,10 @@ export function RemoteDesktopSession({
   useEffect(() => {
     send({
       type: "theme",
-      surface: retroDesktop ? darkColors.surface : colors.surface,
-      foreground: colors.textPrimary,
+      surface: viewerColors.surface,
+      foreground: viewerColors.textPrimary,
     });
-  }, [colors.surface, colors.textPrimary, retroDesktop, send]);
+  }, [viewerColors.surface, viewerColors.textPrimary, send]);
   useEffect(() => {
     send({ type: "mode", mode });
   }, [mode, send]);
@@ -3512,6 +3513,7 @@ export function RemoteDesktopSession({
             )}
           {lease && !showConnectionStatus && !operations && !landscape && (
             <RemoteDesktopNetworkStatus
+              foreground={viewerColors.textPrimary}
               send={send}
               stats={network}
               video={status === "live"}
