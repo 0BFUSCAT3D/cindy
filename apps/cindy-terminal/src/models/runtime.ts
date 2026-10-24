@@ -1,4 +1,5 @@
 import { createChatgptProxy, createGrokProxy } from './subscription-proxy.js';
+import { getHostClaudeReadOnlyAllowedTools, getHostMcpToolApprovalPolicy } from '@cindy/mcps/host/mcpToolApprovalPolicy';
 import type { BridgeSessionPrefs } from '@cindy/anthropic-responses-bridge';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -129,8 +130,16 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
     async logout() { throw new Error('USE_NATIVE_CLI_LOGOUT'); },
   };
   const catalogModels = route.provider.models[selection.agentKind] ?? [];
+  // Trust belongs to the host registration, not a server name supplied by a
+  // custom endpoint or discovered in the native CLI's settings.
+  const hostServers = new Set((input.tools?.providers ?? []).map(provider => provider.name)
+    .filter(name => !Object.hasOwn(input.capabilities?.factories ?? {}, name)));
   const deps = {
     auth, binaryPath, logger,
+    getMcpToolApprovalPolicy: (context: import('@cindy/maker-core').McpToolApprovalContext) =>
+      hostServers.has(context.serverName) ? getHostMcpToolApprovalPolicy(context) : 'prompt' as const,
+    claudeAllowedTools: getHostClaudeReadOnlyAllowedTools().filter(tool =>
+      [...hostServers].some(name => tool.startsWith(`mcp__${name}__`))),
     turnChangeCapture: input.turnChangeCapture,
     reviewAutoPermissionAction: input.reviewAutoPermissionAction,
     makerMemory: input.memory,

@@ -5,6 +5,7 @@ import { createOrcaUiAssignmentDispatchClaims, createOrcaUiAssignmentHistoryGate
 import { buildUiAssignmentInitialTask } from '@cindy/orca-workflow/host/orcaUiAssignment';
 import type { OrcaMcpDeps } from '../../../../packages/lizi-mcps/src/orca/server.js';
 import type { TerminalOrcaStore } from './orca-store.js';
+import { TerminalRemoteError } from '../remote/types.js';
 
 export const ORCA_CONTROL_CHANNELS = [
   'maker:session:enable-orca', 'maker:session:disable-orca', 'maker:team:end',
@@ -21,7 +22,9 @@ const workerOptions = z.object({
   worktree: z.object({ sourceBranch: z.string().min(1).optional() }).optional(),
 });
 const unwrap = <T extends { ok: boolean; errorCode?: string; message?: string }>(result: T): Extract<T, { ok: true }> => {
-  if (!result.ok) throw new Error(`[${result.errorCode ?? 'INTERNAL'}] ${result.message ?? 'Orca operation failed'}`);
+  // Preserve the public protocol code without forwarding internal paths or
+  // provider details that may occur in a lifecycle failure's message.
+  if (!result.ok) throw new TerminalRemoteError(result.errorCode ?? 'INTERNAL', 'Orca operation failed');
   return result as Extract<T, { ok: true }>;
 };
 export function createTerminalOrcaIpc(deps: {

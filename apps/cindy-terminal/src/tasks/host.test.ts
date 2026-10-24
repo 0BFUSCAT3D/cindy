@@ -506,6 +506,11 @@ describe('terminal task host', () => {
       assertCurrent: () => { if (!authorized) throw new Error('CONTROLLER_REVOKED'); } };
     const lead = await host.invoke('maker:create-session', [{}]) as { id: string };
     await host.invoke('maker:input:stop', [lead.id]);
+    // The real remote test exposed INVALID_PARAMS being obscured as INTERNAL.
+    // A rejected locator must carry its safe wire code and create no team.
+    await expect(host.invoke('maker:session:enable-orca', [lead.id, { label: '原生回报验收' }], remote))
+      .rejects.toMatchObject({ code: 'INVALID_PARAMS', message: 'Orca operation failed' });
+    expect(await host.orcaStore.getActiveTeamByLead(lead.id)).toBeNull();
     expect(await host.invoke('maker:collaboration-settings:set', [{ key: 'workerIdleReleaseMinutes', value: 1 }], remote)).toMatchObject({ workerIdleReleaseMinutes: 1 });
     const created = await host.invoke('maker:session:enable-orca', [lead.id, { workerAgent: 'claude-code', label: 'Recovery', delegateTask: 'Durable GUI assignment' }], remote) as { workerId: string; workerSessionId: string };
     const pending = await host.storage.queued(created.workerSessionId);
@@ -546,7 +551,7 @@ describe('terminal task host', () => {
 
   // Integration: public MCP creation must boot real Maker Sessions with their
   // role, persist local assignments, and settle explicit reports exactly once.
-  it('creates teams and reports through native MCP, then restores Lead identity after restart', async () => {
+  it.each([false, true])('creates teams through native MCP and restores identity (report settlement crash: %s)', async settlementCrash => {
     const connect = async (input: RuntimeInput, options: StartSessionOptions, name: string) => {
       const tools = input.tools!, ctx = { sessionId: options.sessionId!, sessionInstanceId: options.sessionInstanceId!,
         workingDir: options.workingDir, agentKind: input.selection.agentKind, vendorOptions: options.vendorOptions,
@@ -556,6 +561,7 @@ describe('terminal task host', () => {
         { requestInit: { headers: { Authorization: `Bearer ${bridge.mcpBridge!.token}` } } }));
       return { call: async (tool: string, args: Record<string, unknown>) => {
         const result = await client.callTool({ name: tool, arguments: args });
+        if (result.isError) return { ok: false };
         return JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
       }, close: async () => { await client.close(); bridge.disposeSessionCtx?.(); } };
     };
@@ -586,15 +592,25 @@ describe('terminal task host', () => {
       expect((await host.storage.get(workerSessionId))?.source).not.toBe('plugin');
       const queued = await host.storage.queued(workerSessionId);
       expect(queued).toHaveLength(1);
+      if (settlementCrash) {
+        // Crash after the Lead received an explicit report, before Worker status
+        // commits. Automatic completion must not repair the simulated crash.
+        vi.spyOn(host.orcaTeamService, 'settleReportedWorker').mockRejectedValueOnce(new Error('simulated exit before Worker settlement'));
+        vi.spyOn(host.orcaReports, 'terminal').mockRejectedValueOnce(new Error('simulated process exit'));
+      }
       host.resumePending();
       expect(await host.invoke('terminal:tasks:wait', [workerSessionId, queued[0]!.requestId])).toMatchObject({ status: 'completed' });
-      expect(reports).toEqual([expect.objectContaining({ ok: true, queued: true })]);
+      expect(reports).toEqual([expect.objectContaining(settlementCrash ? { ok: false } : { ok: true, queued: true })]);
+      expect((await host.storage.submission(workerSessionId, queued[0]!.requestId))?.orcaReport)
+        .toMatchObject({ phase: 'delivered', ...(settlementCrash ? {} : { settled: true }) });
+      if (settlementCrash) expect((await host.orcaStore.listWorkersByLead(lead.id))[0]?.status).toBe('running');
       const leadQueue = await host.orcaQueue.snapshot(lead.id);
       expect(leadQueue).toHaveLength(1);
       expect(leadQueue[0]!.origin).toMatchObject({ kind: 'orca', displayText: 'MCP_WORKER_RESULT', senderSessionId: workerSessionId });
     } finally { await control.close(); }
     await host.close();
-    const restarted = create(); await restarted.ready;
+    const restarted = create(); await restarted.ready; await restarted.orcaReports.recover();
+    expect(await restarted.orcaQueue.snapshot(lead.id)).toHaveLength(1);
     expect(await restarted.orcaStore.listWorkersByLead(lead.id)).toEqual([expect.objectContaining({ id: workerId, status: 'done' })]);
     await restarted.invoke('maker:set-thinking-enabled', [lead.id, true]);
     const currentInput = native.inputs.at(-1)!, currentStart = native.starts.at(-1)!;

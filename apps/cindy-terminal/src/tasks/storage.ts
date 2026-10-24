@@ -29,6 +29,8 @@ export type TerminalOrcaReport = {
   clientId: string;
   content?: string;
   completion?: 'done' | 'error';
+  /** The shared lifecycle committed its Worker status after report delivery. */
+  settled?: boolean;
 };
 type ChannelRotation = { version: 1; rows: TerminalTaskMeta[]; bindings: ImBindingRow[] };
 export type Submission = { orcaReport?: TerminalOrcaReport; collaboration?: import('./orca-input.js').TerminalOrcaInput; orca?: import('./orca-remote.js').RemoteWorkerAssignment; requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; plugin?: { id: string; name: string }; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
@@ -365,6 +367,10 @@ export class TerminalTaskStorage implements SessionStorage {
   async reportSubmissions(id: string): Promise<Submission[]> {
     taskId(id); await this.writes.get(id);
     return structuredClone((this.submissions.get(id) ?? []).filter(item => item.orcaReport));
+  }
+  async latestSubmission(id: string): Promise<Submission | null> {
+    taskId(id); await this.writes.get(id);
+    return structuredClone(this.submissions.get(id)?.at(-1) ?? null);
   }
   changeOrcaReport(id: string, requestId: string, change: (current: TerminalOrcaReport | undefined) => TerminalOrcaReport | undefined, guard: () => void): Promise<TerminalOrcaReport | undefined> {
     return this.enqueue(id, async () => {

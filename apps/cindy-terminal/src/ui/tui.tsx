@@ -1,4 +1,5 @@
 import { localModelText } from '../local-models/text.js';
+import { parseOrcaCommunicationContent } from '@cindy/maker-shared/message-source';
 import { providerPresetOAuth, providerPresetOAuthRuntimes, type OAuthProviderDescriptor, type ProviderPreset } from '@cindy/model-providers';
 import { ChannelRegistration } from './channel-registration.js';
 import { readModelConfiguration, saveModelProvider, invokeModelConfiguration } from '../models/client.js';
@@ -525,12 +526,18 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
       return [...wrapAnsi(terminalText(text), Math.max(8, columns - 2), { hard: true, trim: false }).split('\n'), ''];
     }
     if (record(message.agentMeta).contextRebuild) return [controls.contextRebuilt, ''];
-    const raw=message.content;
+    const origin = record(record(message.agentMeta).origin);
+    const collaboration = message.role === 'user' && origin.kind === 'orca' && typeof message.content === 'string'
+      ? parseOrcaCommunicationContent(message.content) : null;
+    const raw = collaboration?.content ?? message.content;
     let structured:Data|undefined;
     if(typeof raw==='string'&&raw.startsWith('{')){try{const value=record(JSON.parse(raw));if(typeof value.text==='string')structured=value;}catch{/* Ordinary text remains text. */}}
     const content = structured?[label(structured.text),...[...array(structured.images),...array(structured.files)].map(file=>`[${controls.attachment}] ${label(file.name,label(file.originalName,'…'))}`)].filter(Boolean).join('\n')
       :typeof raw === 'string' ? raw : Array.isArray(raw)?raw.map(part=>label(record(part).text)).filter(Boolean).join('\n'):label(message.text);
-    return [...wrapAnsi(terminalText(`${message.role==='user'?t.you:message.role==='assistant'?'Cindy':t.error}  ${content}`),Math.max(8,columns-2),{hard:true,trim:false}).split('\n'), ''];
+    const role = collaboration?.orcaSource === 'lead' ? 'Lead' : 'Worker';
+    const sender = collaboration ? [role, label(origin.senderLabel)].filter((value, index, values) => value && values.indexOf(value) === index).join(' · ')
+      : message.role === 'user' ? t.you : message.role === 'assistant' ? 'Cindy' : t.error;
+    return [...wrapAnsi(terminalText(`${sender}  ${content}`),Math.max(8,columns-2),{hard:true,trim:false}).split('\n'), ''];
   });
   return <Box flexDirection="column" width={columns} height={height} paddingX={1}>
     <Box justifyContent="space-between" gap={2}><Text bold>Cindy</Text><Box flexShrink={1}><Text wrap="truncate-end">{device ? deviceLabel||label(device) : label(status.deviceName,t.local)} · {connected && targetOnline ? t.connected : t.offline}</Text></Box></Box>

@@ -649,8 +649,12 @@ export class TerminalTaskHost {
           const link = await linkForCaller({ workerId: input.workerId, workerSessionId: id });
           if (input.source !== 'worker' || link?.leadSessionId !== input.targetSessionId) throw new Error('ORCA_ASSIGNMENT_REVOKED');
           const capture = this.orcaTeamService.captureWorkerTerminalTurn(id);
-          const result = await this.orcaReports.manual(id, this.activeSubmissions.get(id), input);
-          if (result.ok) await this.orcaTeamService.settleReportedWorker(capture);
+          const requestId = this.activeSubmissions.get(id);
+          const result = await this.orcaReports.manual(id, requestId, input);
+          if (result.ok) {
+            await this.orcaTeamService.settleReportedWorker(capture);
+            await this.orcaReports.markSettled(id, requestId);
+          }
           return result;
         },
       }).toClaudeSdkConfig(context);

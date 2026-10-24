@@ -39,7 +39,15 @@ export class TerminalOrcaReports {
     if (!receipt?.orcaReport || !requestId) return operation();
     if (turn.capture?.manualInterrupt) await this.suppress(id, requestId);
     else await this.prepare(id, requestId, formatOrcaWorkerCompletion(turn), turn.status);
-    return this.context.run({ id, requestId }, operation);
+    await this.context.run({ id, requestId }, operation);
+    await this.markSettled(id, requestId);
+  }
+  async markSettled(id: string, requestId?: string) {
+    if (!requestId) return;
+    const report = (await this.deps.storage.submission(id, requestId))?.orcaReport;
+    if (report?.phase !== 'delivered' || report.settled) return;
+    await this.deps.storage.changeOrcaReport(id, requestId, current => current?.phase === 'delivered'
+      ? { ...current, settled: true } : current, this.deps.guard);
   }
   private prepare(id: string, requestId: string, content: string, completion: 'done' | 'error') {
     return this.deps.storage.changeOrcaReport(id, requestId, current => current?.phase === 'pending'
@@ -112,7 +120,7 @@ export class TerminalOrcaReports {
       if (task.archived || task.deleted) continue;
       const reports = await this.deps.storage.reportSubmissions(task.id);
       for (const receipt of reports) {
-        if (receipt.orcaReport?.phase === 'delivered' || receipt.orcaReport?.phase === 'suppressed') continue;
+        if (receipt.orcaReport?.phase === 'suppressed' || receipt.orcaReport?.phase === 'delivered' && receipt.orcaReport.settled) continue;
         const assignment = receipt.collaboration!;
         try { await assertTerminalOrcaInput(this.deps.store, this.deps.storage, task.id, assignment); }
         catch (error) { if (error instanceof Error && error.message === 'ORCA_ASSIGNMENT_REVOKED') { await this.suppress(task.id, receipt.requestId); continue; } throw error; }
@@ -120,15 +128,21 @@ export class TerminalOrcaReports {
           if (!['completed', 'failed', 'interrupted'].includes(receipt.status)) continue;
           await this.restoreTerminal(receipt);
         }
-        const result = await this.deliver(task.id, receipt.requestId);
-        if (result.ok && reports.at(-1)?.requestId === receipt.requestId) {
+        const delivered = receipt.orcaReport?.phase === 'delivered' || (await this.deliver(task.id, receipt.requestId)).ok;
+        if (delivered) {
           await this.deps.withWorkerLock(task.id, async () => {
             const latest = (await this.deps.storage.reportSubmissions(task.id)).at(-1);
-            if (latest?.requestId === receipt.requestId && latest.orcaReport?.phase === 'delivered') {
+            const input = await this.deps.storage.latestSubmission(task.id);
+            const worker = await this.deps.store.workerForLead(assignment.leadSessionId, assignment.workerId);
+            // A new direct human turn has no report, but still owns its status.
+            // Preserve idle acknowledgements and all newer assignments as well.
+            if (input?.requestId === receipt.requestId && latest?.requestId === receipt.requestId
+              && latest.orcaReport?.phase === 'delivered' && worker?.status === 'running') {
               this.deps.guard();
               await this.deps.store.updateWorkerStatus(assignment.workerId, latest.orcaReport?.completion ?? 'error');
               this.deps.settled(task.id);
             }
+            await this.markSettled(task.id, receipt.requestId);
           });
         }
       }
