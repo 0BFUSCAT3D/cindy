@@ -8,6 +8,8 @@ import type {
 } from '../../shared/worktreeBranchSync';
 
 const localOpts = { timeoutMs: 5_000, extraEnv: { LC_ALL: 'C' } };
+// Never interrupt a local write halfway through checkout; disable interactive prompts instead.
+const writeOpts = { extraEnv: { LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' } };
 async function git(cwd: string, ...args: string[]): Promise<string> {
   return (await gitExec(args, cwd, localOpts)).stdout.trim();
 }
@@ -210,13 +212,10 @@ async function syncBranchOnce(req: BranchSyncRequest): Promise<BranchSyncResult>
     if ((await git(status.checkoutPath, 'symbolic-ref', 'HEAD')) !== `refs/heads/${req.branch}`)
       throw new Error('The checked-out branch changed; retry');
     try {
-      await git(
+      await gitExec(
+        ['merge', '--ff-only', '--no-autostash', '--no-overwrite-ignore', next],
         status.checkoutPath,
-        'merge',
-        '--ff-only',
-        '--no-autostash',
-        '--no-overwrite-ignore',
-        next,
+        writeOpts,
       );
     } catch (error) {
       const refreshed = await readBranchSyncStatus(req);
@@ -229,13 +228,10 @@ async function syncBranchOnce(req: BranchSyncRequest): Promise<BranchSyncResult>
     try {
       // Local fetch refuses non-fast-forwards and branches checked out in any
       // worktree at write time. update-ref has no checkout guard.
-      await git(
+      await gitExec(
+        ['fetch', '--no-tags', '--recurse-submodules=no', '.', `${next}:refs/heads/${req.branch}`],
         req.baseRepo,
-        'fetch',
-        '--no-tags',
-        '--recurse-submodules=no',
-        '.',
-        `${next}:refs/heads/${req.branch}`,
+        writeOpts,
       );
     } catch (error) {
       const refreshed = await readBranchSyncStatus(req);
