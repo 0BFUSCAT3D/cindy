@@ -51,6 +51,22 @@ export default {
         await hint.waitFor();
         assert.equal(await hint.textContent(), await ui.t(`newChat.chatInput.voiceInput.${key}`));
       };
+      // Playwright fill mutates the DOM selection outside ProseMirror's input
+      // flow. After a hold/drag, that selection can be restored before deletion.
+      // Use the real next keyboard interaction and verify the entire document
+      // is selected before deleting, so a partial clear cannot hide a hint path.
+      const clearWithKeyboard = async () => {
+        await editor.press('ControlOrMeta+A');
+        await page.waitForFunction(() => {
+          const current = document.querySelector('.ProseMirror')?.editor;
+          if (!current) return false;
+          const { doc, selection } = current.state;
+          return doc.textBetween(selection.from, selection.to) === doc.textContent;
+        });
+        await editor.press('Backspace');
+        assert.equal(await editor.textContent(), '');
+        assert.equal(await editor.evaluate((node) => node.editor.isEmpty), true);
+      };
       const card = page.locator('[data-split-group-composer-drop-target]');
       const cardBox = await card.boundingBox();
       // Start in the card's padding, outside the single text line.
@@ -118,14 +134,14 @@ export default {
       await page.mouse.move(releasedText.x + 90, releasedText.y + releasedText.height / 2, { steps: 4 });
       await page.mouse.up();
       assert.notEqual(await page.evaluate(() => window.getSelection()?.toString()), '');
-      await editor.fill('');
+      await clearWithKeyboard();
       const mic = page.locator('button[aria-pressed]');
       await mic.click();
       await hintText('speakPressAgain');
       await ui.capture('click-empty');
       await mic.click();
       await page.locator('.ProseMirror[contenteditable="true"]').waitFor();
-      await editor.fill('');
+      await clearWithKeyboard();
       await mic.hover();
       await page.mouse.down();
       await page.getByRole('button', { name: await ui.t('newChat.chatInput.voiceInput.releaseToStop'), exact: true }).waitFor();
