@@ -876,7 +876,10 @@ export function BranchWorktreeChip({
               </button>
             </span>
           </Tooltip.Trigger>
-          <Tooltip.Content side="top" className="max-w-[320px] whitespace-pre-line">
+          <Tooltip.Content
+            side="top"
+            className="max-w-[320px] whitespace-pre-line break-normal [overflow-wrap:anywhere]"
+          >
             {sync.hint}
           </Tooltip.Content>
         </Tooltip.Root>
