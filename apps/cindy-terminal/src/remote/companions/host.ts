@@ -1,6 +1,7 @@
 import type { TerminalCompanionRoutines } from './routines.js';
 import path from 'node:path';
-import { buildClientDeviceNote } from '@cindy/maker-shared/message-source';
+import { buildClientDeviceNote, buildMessageSourceNote, messageSourceSenderFromMeta } from '@cindy/maker-shared/message-source';
+import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_DELEGATED_CONTINUATION } from '@cindy/maker-core';
 import { createHash, randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { Maker, MakerMemoryManager, buildBotMemoryScopeKey, type AgentEvent, type BaseAgent, type InteractionRequest, type InteractionDecision, type Logger, type Session, type UserMessage } from '@cindy/maker-core';
@@ -20,7 +21,7 @@ import { TerminalCompanionProfiles, type TerminalCompanionProfile } from './prof
 
 type Live = { maker:Maker; session:Session; tools:Awaited<ReturnType<typeof createTaskTools>>; memory:MakerMemoryManager; revision:number; off:()=>void };
 type CompanionSchedule = NonNullable<Submission['scheduler']>;
-type CompanionContext = InvocationContext & { scheduler?: CompanionSchedule };
+type CompanionContext = InvocationContext & { scheduler?: CompanionSchedule; targetPlugin?: Submission['targetPlugin']; normalizedInput?: boolean };
 type Pending = { sessionId:string; request:InteractionRequest; resolve:(value:InteractionDecision)=>void };
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('INVALID_ARGUMENT');return value as Record<string,unknown>;};
 const string=(value:unknown)=>{if(typeof value!=='string'||!value.trim())throw new Error('INVALID_ARGUMENT');return value;};
@@ -43,6 +44,92 @@ export class TerminalCompanionHost {
   private closed=false;
   private readonly generations=new Map<string,number>();
   private readonly deliveries=new Map<string,Promise<string>>();
+  private pluginTargetValidator?: (sessionId: string, clientId: string) => Promise<void>;
+  private readonly steering = new Map<string, { controller: AbortController; result: Promise<'queue' | 'steer'> }>();
+  private readonly queueWake = new Map<string, Set<() => void>>();
+  private async validateTarget(sessionId: string, clientId: string) {
+    this.guard(); if (!this.pluginTargetValidator) throw new Error('PLUGIN_TARGET_AUTHORITY_UNAVAILABLE');
+    await this.pluginTargetValidator(sessionId, clientId); this.guard();
+  }
+  configurePluginTargetDelivery(validate: (sessionId: string, clientId: string) => Promise<void>) {
+    this.pluginTargetValidator = validate;
+    return {
+      send: async (plugin: NonNullable<Submission['targetPlugin']>, sessionId: string, clientId: string, text: string,
+        images: import('@cindy/plugin-runtime/pluginMessageAttachments').PluginMessageImage[], guard: () => void,
+        delivery: 'queue' | 'steer'): Promise<'queue' | 'steer'> => {
+        guard(); await this.validateTarget(sessionId, clientId);
+        const profile = await this.profileForSession(sessionId);
+        const input = { text, files: images.map(image => ({ type: 'image', base64: image.buffer.toString('base64'), mimeType: image.mimeType, name: image.name })) };
+        const message = await this.prepareInput(sessionId, input); guard(); await this.validateTarget(sessionId, clientId);
+        const session = this.live.get(sessionId)?.session;
+        if (delivery === 'steer' && session?.isTurnRunning() && session.capabilities.sameTurnSteer.supported &&
+            !this.steering.has(sessionId) && !(await this.storage.get(sessionId))?.queuePaused &&
+            ![...this.pending.values()].some(item => item.sessionId === sessionId)) {
+          const controller = new AbortController();
+          const result = this.steerTarget(profile, plugin, clientId, message, session, guard, controller.signal);
+          const operation = { controller, result }; this.steering.set(sessionId, operation);
+          try { return await result; } finally { if (this.steering.get(sessionId) === operation) this.steering.delete(sessionId); }
+        }
+        await this.send(profile.id, message, clientId, { source: 'local', targetPlugin: plugin, assertCurrent: guard, normalizedInput: true });
+        return 'queue';
+      },
+      withdraw: async (sessionId: string, clientId: string, guard: () => void) => {
+        this.guard(); guard(); const receipt = await this.storage.submission(sessionId, clientId); guard();
+        if (receipt?.targetPlugin && receipt.status === 'queued' && this.active.get(sessionId)?.clientId !== clientId)
+          await this.storage.updateSubmission(sessionId, clientId, 'interrupted', 'INPUT_CANCELLED');
+        this.wakeQueue(sessionId);
+      },
+      close: () => { if (this.pluginTargetValidator === validate) this.pluginTargetValidator = undefined; },
+    };
+  }
+  private async steerTarget(profile: TerminalCompanionProfile, plugin: NonNullable<Submission['targetPlugin']>, clientId: string,
+    message: UserMessage, session: Session, guard: () => void, signal: AbortSignal): Promise<'queue' | 'steer'> {
+    const id = profile.sessionId, generation = session.getTurnGeneration();
+    const current = async () => {
+      this.guard(); guard(); if (signal.aborted) throw new Error('COMPANION_STOPPED');
+      await this.assertMayRun(profile.id); await this.validateTarget(id, clientId); guard();
+    };
+    const sameTurn = () => this.live.get(id)?.session === session && session.isTurnRunning() && session.getTurnGeneration() === generation;
+    let dispatched = false, accepted = false;
+    const claim = await this.storage.claimSubmission(id, clientId, this.inputHash(message, plugin), () => { this.guard(); guard(); },
+      { message, source: 'local', targetPlugin: plugin });
+    if (!claim.created) throw new Error('DELIVERY_UNCERTAIN');
+    try {
+      await current();
+      if (!sameTurn()) throw new Error('[STALE_TURN]');
+      await this.storage.updateSubmission(id, clientId, 'sending');
+      const agentMeta = { sourcePlugin: { pluginId: plugin.id, name: plugin.name }, delivery: 'steer', autoReviewUserText: { kind: 'delegated-continuation' } };
+      const note = buildMessageSourceNote(messageSourceSenderFromMeta(agentMeta));
+      await session.steer(note ? appendInputText(message, note) : message, {
+        signal, [AUTO_REVIEW_SOURCE_CONTENT]: '', [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+        beforeProviderStart: async () => { await current(); if (!sameTurn()) throw new Error('[STALE_TURN]'); dispatched = true; },
+      });
+      accepted = true;
+      await this.storage.append(id, { kind: 'user', message, clientId, origin: 'local', agentMeta });
+      await this.storage.updateSubmission(id, clientId, 'completed'); this.changed(profile.id);
+      return 'steer';
+    } catch (error) {
+      if (accepted) { this.options.logger.warn('COMPANION_STEER_PERSISTENCE_FAILED'); return 'steer'; }
+      const reason = error instanceof Error ? error.message : '';
+      if (dispatched && !/\[NO_ACTIVE_TURN\]|\[STALE_TURN\]|no active .*turn|has no active turn/i.test(reason)) {
+        await this.storage.update(id, { queuePaused: true });
+        await this.storage.updateSubmission(id, clientId, 'queued', 'STEER_DELIVERY_UNCERTAIN');
+        throw new Error('DELIVERY_UNCERTAIN');
+      }
+      try { await current(); } catch {
+        await this.storage.updateSubmission(id, clientId, 'failed', 'DELIVERY_REJECTED'); throw new Error('DELIVERY_REJECTED');
+      }
+      const receipt = await this.storage.updateSubmission(id, clientId, 'queued');
+      // Schedule after the steering lane releases; do not normalize or reserve a
+      // second input when the original native turn ended before dispatch.
+      this.queue(profile, receipt, { source: 'local', targetPlugin: plugin, assertCurrent: guard });
+      return 'queue';
+    }
+  }
+  private inputHash(message: UserMessage, plugin?: Submission['targetPlugin']) {
+    return createHash('sha256').update(JSON.stringify(plugin ? { message, targetPlugin: plugin } : message)).digest('hex');
+  }
+  private wakeQueue(id: string) { for (const wake of this.queueWake.get(id) ?? []) wake(); this.queueWake.delete(id); }
   async assertMayRun(id:string){this.guard();await this.executionGuard?.(id);this.guard();}
   private executionGuard?:(id:string)=>Promise<void>;
   setExecutionGuard(guard:(id:string)=>Promise<void>){this.executionGuard=guard;}
@@ -113,13 +200,14 @@ export class TerminalCompanionHost {
   }
   async prepareInput(sessionId:string,input:unknown){const profile=await this.profileForSession(sessionId);return normalizeTaskInput({profileDir:this.options.root,...this.options.attachments},sessionId,input,{source:'local'},path.join(this.profiles.home(profile.id),'workspace'),()=>this.guard());}
   async send(id:string,input:unknown,clientId:string=randomUUID(),context?:CompanionContext):Promise<{accepted:true;clientId:string;completion:Promise<string>}>{
-    this.guard();context?.assertCurrent?.();await this.executionGuard?.(id);if(!/^[A-Za-z0-9_-]{1,100}$/.test(clientId))throw new Error('INVALID_CLIENT_ID');
+    this.guard();context?.assertCurrent?.();await this.executionGuard?.(id);if(!(context?.targetPlugin?/^plugin-target:[A-Za-z0-9_-]{1,100}$/:/^[A-Za-z0-9_-]{1,100}$/).test(clientId))throw new Error('INVALID_CLIENT_ID');
     const profile=await this.profiles.get(id);if(!profile)throw new Error('COMPANION_NOT_FOUND');if(profile.status!=='active')throw new Error('COMPANION_PAUSED');await this.ensureCanonical(profile);
     const lifecycle:AttachmentLifecycle={accepted:[],cleanup:[]};
     try {
-      const message=await normalizeTaskInput({profileDir:this.options.root,...this.options.attachments},profile.sessionId,input,context??{source:'local'},path.join(this.profiles.home(id),'workspace'),()=>{this.guard();context?.assertCurrent?.();},lifecycle);
+      const message=context?.normalizedInput?input as UserMessage:await normalizeTaskInput({profileDir:this.options.root,...this.options.attachments},profile.sessionId,input,context??{source:'local'},path.join(this.profiles.home(id),'workspace'),()=>{this.guard();context?.assertCurrent?.();},lifecycle);
       if(inputPlainText(message).length>200_000)throw new Error('INVALID_COMPANION_MESSAGE');
-      const hash=createHash('sha256').update(JSON.stringify(message)).digest('hex');const claim=await this.storage.claimSubmission(profile.sessionId,clientId,hash,()=>{this.guard();context?.assertCurrent?.();},{message,source:context?.source??'local',deviceId:context?.deviceId,sourceDevice:context?.sourceDevice,...(context?.scheduler?{scheduler:context.scheduler}:{})});
+      if(context?.targetPlugin)await this.validateTarget(profile.sessionId,clientId);
+      const hash=this.inputHash(message,context?.targetPlugin);const claim=await this.storage.claimSubmission(profile.sessionId,clientId,hash,()=>{this.guard();context?.assertCurrent?.();},{message,source:context?.source??'local',deviceId:context?.deviceId,sourceDevice:context?.sourceDevice,targetPlugin:context?.targetPlugin,...(context?.scheduler?{scheduler:context.scheduler}:{})});
       if(!claim.created){if(claim.receipt.status==='completed')return {accepted:true,clientId,completion:Promise.resolve(claim.receipt.finalText??'')};const running=this.deliveries.get(profile.sessionId+':'+clientId);if(running)return {accepted:true,clientId,completion:running};if(claim.receipt.status!=='queued')throw new Error('COMPANION_DELIVERY_'+claim.receipt.status.toUpperCase());}
       for(const accept of lifecycle.accepted)await accept();
       return {accepted:true,clientId,completion:this.queue(profile,claim.receipt,context)};
@@ -134,30 +222,46 @@ export class TerminalCompanionHost {
     let resolve!:(value:string)=>void,reject!:(reason:Error)=>void;const completion=new Promise<string>((yes,no)=>{resolve=yes;reject=no;});void completion.catch(()=>{});this.deliveries.set(key,completion);
     const assertCurrent=()=>{this.guard();context?.assertCurrent?.();if((this.generations.get(profile.id)??0)!==generation)throw new Error('COMPANION_STOPPED');};
     const previous=this.queues.get(profile.sessionId)??Promise.resolve();const queued=previous.catch(()=>{}).then(async()=>{
+      await this.steering.get(profile.sessionId)?.result.catch(()=>{});
+      while((await this.storage.get(profile.sessionId))?.queuePaused) {
+        assertCurrent();
+        if((await this.storage.submission(profile.sessionId,receipt.requestId))?.status!=='queued')throw new Error('INPUT_CANCELLED');
+        await new Promise<void>(resolve=>{const waiters=this.queueWake.get(profile.sessionId)??new Set();waiters.add(resolve);this.queueWake.set(profile.sessionId,waiters);void this.storage.get(profile.sessionId).then(row=>{if(!row?.queuePaused||this.closed||(this.generations.get(profile.id)??0)!==generation)this.wakeQueue(profile.sessionId);},()=>this.wakeQueue(profile.sessionId));});
+      }
+      if((await this.storage.submission(profile.sessionId,receipt.requestId))?.status!=='queued')throw new Error('INPUT_CANCELLED');
+      if(receipt.targetPlugin)await this.validateTarget(profile.sessionId,receipt.requestId);
       assertCurrent();await this.executionGuard?.(profile.id);const fresh=await this.profiles.get(profile.id);if(!fresh||fresh.status!=='active')throw new Error('COMPANION_PAUSED');if(!receipt.message)throw new Error('COMPANION_MESSAGE_MISSING');const live=await this.ensureLive(fresh);assertCurrent();await this.executionGuard?.(profile.id);
       const sourceDevice=receipt.source==='remote'?receipt.sourceDevice??null:null;
-      await this.storage.append(profile.sessionId,{kind:'user',message:receipt.message,clientId:receipt.requestId,origin:receipt.source??'local',...(receipt.scheduler?{agentMeta:{origin:receipt.scheduler}}:sourceDevice?{agentMeta:{sourceDevice}}:{})});
+      const agentMeta=receipt.targetPlugin?{sourcePlugin:{pluginId:receipt.targetPlugin.id,name:receipt.targetPlugin.name},autoReviewUserText:{kind:'delegated-continuation'}}:receipt.scheduler?{origin:receipt.scheduler}:sourceDevice?{sourceDevice}:undefined;
+      await this.storage.append(profile.sessionId,{kind:'user',message:receipt.message,clientId:receipt.requestId,origin:receipt.source??'local',...(agentMeta?{agentMeta}:{})});
       assertCurrent();this.active.set(profile.sessionId,{clientId:receipt.requestId,text:'',finished:resolve,failed:reject});await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'sending');assertCurrent();
-      const message=receipt.scheduler?appendInputText(receipt.message,`[Scheduled run context]\nschedule: ${JSON.stringify(receipt.scheduler.scheduleName)} (schedule_id: ${receipt.scheduler.scheduleId})\nrun_id: ${receipt.scheduler.runId}\nfiredAtUtc: ${new Date(receipt.scheduler.firedAt??Date.now()).toISOString()}`):sourceDevice?appendInputText(receipt.message,buildClientDeviceNote(sourceDevice)):receipt.message;
-      const result=await live.session.send(message,...(receipt.scheduler?[{origin:receipt.scheduler}]:[]));if(!result.accepted)throw new Error(result.reason);await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'running');await completion;
-    }).catch(async error=>{const active=this.active.get(profile.sessionId);if(active?.clientId===receipt.requestId)this.active.delete(profile.sessionId);await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'failed',error instanceof Error?error.message:'COMPANION_TURN_FAILED');reject(error);});
+      const pluginNote=receipt.targetPlugin?buildMessageSourceNote(messageSourceSenderFromMeta(agentMeta)):null;
+      const message=pluginNote?appendInputText(receipt.message,pluginNote):receipt.scheduler?appendInputText(receipt.message,`[Scheduled run context]\nschedule: ${JSON.stringify(receipt.scheduler.scheduleName)} (schedule_id: ${receipt.scheduler.scheduleId})\nrun_id: ${receipt.scheduler.runId}\nfiredAtUtc: ${new Date(receipt.scheduler.firedAt??Date.now()).toISOString()}`):sourceDevice?appendInputText(receipt.message,buildClientDeviceNote(sourceDevice)):receipt.message;
+      const result=await live.session.send(message,{
+        ...(receipt.scheduler?{origin:receipt.scheduler}:{}),
+        ...(receipt.targetPlugin?{[AUTO_REVIEW_SOURCE_CONTENT]:'',[AUTO_REVIEW_DELEGATED_CONTINUATION]:true}:{}),
+        beforeProviderStart:async()=>{assertCurrent();await this.executionGuard?.(profile.id);if(receipt.targetPlugin)await this.validateTarget(profile.sessionId,receipt.requestId);assertCurrent();},
+      });
+      if(!result.accepted)throw new Error(result.reason);
+      if((await this.storage.submission(profile.sessionId,receipt.requestId))?.status==='sending')await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'running');await completion;
+    }).catch(async error=>{const active=this.active.get(profile.sessionId);if(active?.clientId===receipt.requestId)this.active.delete(profile.sessionId);const latest=await this.storage.submission(profile.sessionId,receipt.requestId);if(latest&&!['completed','interrupted','failed'].includes(latest.status))await this.storage.updateSubmission(profile.sessionId,receipt.requestId,'failed',error instanceof Error?error.message:'COMPANION_TURN_FAILED');reject(error);});
     this.queues.set(profile.sessionId,queued);void queued.finally(()=>{if(this.queues.get(profile.sessionId)===queued)this.queues.delete(profile.sessionId);this.deliveries.delete(key);});this.changed(profile.id);return completion;
   }
   /** Only definitely unsubmitted work is resumed, after the caller installed its
    * owner/home lease fence. Ambiguous native turns remain interrupted. */
   async resumePending(id?:string){await this.ready;for(const profile of await this.profiles.list()){if(id&&profile.id!==id||profile.status!=='active')continue;await this.executionGuard?.(profile.id);for(const receipt of await this.storage.queued(profile.sessionId))this.queue(profile,receipt);}}
   private async closeSession(sessionId:string){this.options.protectedInput?.handoff.cleanupForSession(sessionId);const current=this.live.get(sessionId);if(!current)return;this.live.delete(sessionId);for(const pending of [...this.pending.values()])if(pending.sessionId===sessionId)pending.resolve(pending.request.kind==='ask_user_question'?{kind:'ask_user_question',answers:{}}:{kind:pending.request.kind,behavior:'deny',reason:'Session closed'} as InteractionDecision);this.active.get(sessionId)?.failed(new Error('COMPANION_STOPPED'));this.active.delete(sessionId);current.off();await current.maker.shutdown();await current.tools.close();await current.memory.dispose();}
-  async stop(id:string){this.generations.set(id,(this.generations.get(id)??0)+1);const profile=await this.profiles.get(id);if(profile)await this.closeSession(profile.sessionId);}
+  async stop(id:string){this.generations.set(id,(this.generations.get(id)??0)+1);const profile=await this.profiles.get(id);if(profile){this.steering.get(profile.sessionId)?.controller.abort();this.wakeQueue(profile.sessionId);await this.closeSession(profile.sessionId);}}
   async records(id:string,after=0,limit=200):Promise<HistoryRecord[]>{await this.ready;const profile=await this.profiles.get(id);if(!profile)throw new Error('COMPANION_NOT_FOUND');await this.ensureCanonical(profile);return (await this.storage.history(profile.sessionId,after,limit)).records;}
   async messages(sessionId:string){const profile=await this.profileForSession(sessionId);await this.ensureCanonical(profile);const result:Array<{id:string;clientId:string;sessionId:string;role:string;content:string;createdAt:string;agentKind:string;agentMeta:Record<string,unknown>|null}>=[];let cursor=0;let assistant:typeof result[number]|undefined;const row=await this.storage.get(sessionId);do{const page=await this.storage.history(sessionId,cursor,1000);for(const entry of page.records){const base={id:`${sessionId}:${entry.sequence}`,clientId:entry.clientId??`${sessionId}:${entry.sequence}`,sessionId,createdAt:new Date(typeof entry.agentMeta?.cloudCreatedAt==='number'?entry.agentMeta.cloudCreatedAt:entry.timestamp).toISOString(),agentKind:row?.agentKind==='claude-code'?'cc':row?.agentKind??'pi',agentMeta:entry.agentMeta??null};if(entry.kind==='user'&&entry.message){assistant=undefined;result.push({...base,role:'user',content:persistedInput(entry.message)});}else if(entry.event?.type==='text'){const text=textOf(entry.event);if(!assistant||entry.event.standaloneText){assistant={...base,role:'assistant',content:text};result.push(assistant);}else assistant.content=(entry.event.data as {isFinal?:boolean})?.isFinal?text:assistant.content+text;if(entry.event.standaloneText)assistant=undefined;}else if(entry.event?.type==='done')assistant=undefined;}if(!page.hasMore)break;cursor=page.nextCursor;}while(true);return result;}
-  async projection(sessionId:string,options:Record<string,unknown>={}){const requested=options.deliveryClientIds;const receipts=Array.isArray(requested)?await Promise.all(requested.slice(0,100).map(async clientId=>{const receipt=typeof clientId==='string'?await this.storage.submission(sessionId,clientId):null;return {clientId,state:receipt?'accepted':'unknown',turnStatus:receipt?.status,finalText:receipt?.finalText,errorCode:receipt?.error};})):undefined;return {sessionId,terminalTurnReceiptsVersion:1,deliveryReceipts:receipts,turnInProgress:this.active.has(sessionId),pendingQueue:(await this.storage.queued(sessionId)).map(receipt=>({id:receipt.requestId,clientId:receipt.requestId,text:inputPlainText(receipt.message),createdAt:receipt.createdAt,source:receipt.source??'local'})),steeringQueueClientIds:[],queuePaused:false,queueExpanded:true,queueInteractionLocks:[],queueEditLocks:[],queueAbortPending:false,error:null,errorReason:null,recovery:null,errorRetryText:null,credentialSwitchWait:null};}
+  async projection(sessionId:string,options:Record<string,unknown>={}){const requested=options.deliveryClientIds;const receipts=Array.isArray(requested)?await Promise.all(requested.slice(0,100).map(async clientId=>{const receipt=typeof clientId==='string'?await this.storage.submission(sessionId,clientId):null;return {clientId,state:receipt?'accepted':'unknown',turnStatus:receipt?.status,finalText:receipt?.finalText,errorCode:receipt?.error};})):undefined;return {sessionId,terminalTurnReceiptsVersion:1,deliveryReceipts:receipts,turnInProgress:this.active.has(sessionId),pendingQueue:(await this.storage.queued(sessionId)).map(receipt=>({id:receipt.requestId,clientId:receipt.requestId,text:inputPlainText(receipt.message),createdAt:receipt.createdAt,source:receipt.source??'local',...(receipt.targetPlugin?{sourcePlugin:{pluginId:receipt.targetPlugin.id,name:receipt.targetPlugin.name}}:{})})),steeringQueueClientIds:[],queuePaused:(await this.storage.get(sessionId))?.queuePaused===true,queueExpanded:true,queueInteractionLocks:[],queueEditLocks:[],queueAbortPending:false,error:null,errorReason:null,recovery:null,errorRetryText:null,credentialSwitchWait:null};}
   async invoke(channel:string,args:unknown[],context:InvocationContext):Promise<unknown>{this.guard();context.assertCurrent?.();if(context.sharedTask)throw new Error('COMPANION_OWNER_REQUIRED');const id=channel==='local-db:history:messages'?string(object(args[0]).sessionId):string(args[0]);const profile=await this.profileForSession(id);
-    switch(channel){case 'maker:send':case 'maker:input:enqueue':{const input=typeof args[1]==='string'?{text:args[1]}:object(args[1]);const sent=await this.send(profile.id,input.message??input,typeof input.clientId==='string'?input.clientId:undefined,context);return {accepted:true,clientId:sent.clientId,sessionId:id};}case 'maker:input:get-projection':return this.projection(id,args[1]?object(args[1]):{});case 'local-db:history:messages':case 'local-db:messages:list':{const opts=channel==='local-db:history:messages'?object(args[0]):args[1]?object(args[1]):{};const rows=await this.messages(id);return rows.filter(row=>(!opts.before||Number(row.id.split(':').at(-1))<Number(String(opts.before).split(':').at(-1)))&&(!opts.after||Number(row.id.split(':').at(-1))>Number(String(opts.after).split(':').at(-1)))).slice(-Math.min(1000,typeof opts.limit==='number'?opts.limit:200));}case 'maker:abort-session':await this.stop(profile.id);return {ok:true};case 'maker:session-in-turn':return this.isBusy(profile.id);case 'maker:get-context-usage':return this.live.get(id)?.session.getUsageSnapshot()??null;case 'maker:get-pending-interactions':return [...(this.options.protectedInput?.handoff.pendingSnapshots(id)??[]),...[...this.pending.values()].filter(row=>row.sessionId===id).map(row=>({request:row.request}))];case 'local-db:sessions:get':return {id,title:profile.name,agentKind:(await this.storage.get(id))?.agentKind??'pi',botId:profile.id,status:'active',createdAt:new Date(profile.createdAt).toISOString(),updatedAt:new Date(profile.updatedAt).toISOString()};case 'terminal:tasks:history':return this.storage.history(id,typeof args[1]==='number'?args[1]:0);default:throw new Error('COMPANION_CHANNEL_UNAVAILABLE');}
+    switch(channel){case 'maker:input:resume':await this.storage.update(id,{queuePaused:false});this.wakeQueue(id);await this.resumePending(profile.id);return this.projection(id);case 'maker:input:remove':{const clientId=string(args[1]);const receipt=await this.storage.submission(id,clientId);if(!receipt||receipt.status!=='queued'||this.active.get(id)?.clientId===clientId)throw new Error('QUEUED_MESSAGE_NOT_FOUND');await this.storage.updateSubmission(id,clientId,'interrupted','INPUT_CANCELLED');this.wakeQueue(id);return this.projection(id);}case 'maker:send':case 'maker:input:enqueue':{const input=typeof args[1]==='string'?{text:args[1]}:object(args[1]);const sent=await this.send(profile.id,input.message??input,typeof input.clientId==='string'?input.clientId:undefined,context);return {accepted:true,clientId:sent.clientId,sessionId:id};}case 'maker:input:get-projection':return this.projection(id,args[1]?object(args[1]):{});case 'local-db:history:messages':case 'local-db:messages:list':{const opts=channel==='local-db:history:messages'?object(args[0]):args[1]?object(args[1]):{};const rows=await this.messages(id);return rows.filter(row=>(!opts.before||Number(row.id.split(':').at(-1))<Number(String(opts.before).split(':').at(-1)))&&(!opts.after||Number(row.id.split(':').at(-1))>Number(String(opts.after).split(':').at(-1)))).slice(-Math.min(1000,typeof opts.limit==='number'?opts.limit:200));}case 'maker:abort-session':await this.stop(profile.id);return {ok:true};case 'maker:session-in-turn':return this.isBusy(profile.id);case 'maker:get-context-usage':return this.live.get(id)?.session.getUsageSnapshot()??null;case 'maker:get-pending-interactions':return [...(this.options.protectedInput?.handoff.pendingSnapshots(id)??[]),...[...this.pending.values()].filter(row=>row.sessionId===id).map(row=>({request:row.request}))];case 'local-db:sessions:get':return {id,title:profile.name,agentKind:(await this.storage.get(id))?.agentKind??'pi',botId:profile.id,status:'active',createdAt:new Date(profile.createdAt).toISOString(),updatedAt:new Date(profile.updatedAt).toISOString()};case 'terminal:tasks:history':return this.storage.history(id,typeof args[1]==='number'?args[1]:0);default:throw new Error('COMPANION_CHANNEL_UNAVAILABLE');}
   }
   resolveInteraction(requestId:string,decision:unknown,context:InvocationContext){this.guard();context.assertCurrent?.();if(context.sharedTask)throw new Error('COMPANION_OWNER_REQUIRED');const pending=this.pending.get(requestId);if(!pending)throw new Error('INTERACTION_NOT_FOUND');const value=object(decision);if(value.kind!==pending.request.kind)throw new Error('INVALID_INTERACTION_DECISION');let clean:InteractionDecision;
     if(value.kind==='ask_user_question'){const answers=object(value.answers);if(Object.values(answers).some(value=>typeof value!=='string'))throw new Error('INVALID_ANSWERS');clean={kind:'ask_user_question',answers:answers as Record<string,string>};}
     else {if(value.behavior!=='allow'&&value.behavior!=='deny')throw new Error('INVALID_PERMISSION_DECISION');clean=value.kind==='permission'?{kind:'permission',behavior:value.behavior,...(typeof value.reason==='string'?{reason:value.reason}:{})}:{kind:'plan_review',behavior:value.behavior,...(typeof value.editedPlan==='string'?{editedPlan:value.editedPlan}:{})};}
     pending.resolve(clean);return {success:true};}
   hasInteraction(id:string){return this.pending.has(id);}
-  async close(){if(this.closed)return;this.closed=true;await Promise.allSettled(this.starts.values());await Promise.allSettled([...this.live.keys()].map(id=>this.closeSession(id)));await Promise.allSettled(this.queues.values());await this.storage.flush();await this.profiles.close();}
+  async close(){if(this.closed)return;this.closed=true;for(const entry of this.steering.values())entry.controller.abort();for(const id of this.queueWake.keys())this.wakeQueue(id);await Promise.allSettled(this.starts.values());await Promise.allSettled([...this.live.keys()].map(id=>this.closeSession(id)));await Promise.allSettled([...this.steering.values()].map(entry=>entry.result));await Promise.allSettled(this.queues.values());await this.storage.flush();await this.profiles.close();}
 }

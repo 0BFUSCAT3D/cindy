@@ -1,4 +1,5 @@
 import { TerminalPluginSessions } from './sessions.js';
+import { TerminalPluginTargets } from './targets.js';
 import path from 'node:path';
 import { isCindyAccountGhostId } from '@cindy/plugin-runtime/shared/ghost';
 import type { GhostVisibilityDeps } from '@cindy/plugin-runtime/ghostVisibility';
@@ -20,6 +21,7 @@ import { pluginManagementDependencies } from './management.js';
 /** Owner-scoped wiring; no process-global Desktop singleton is borrowed. */
 export class TerminalPluginTasks {
   readonly sessions:TerminalPluginSessions;
+  readonly targets:TerminalPluginTargets;
   readonly setup:TerminalPluginSetup;
   readonly pages:TerminalPluginPages;
   readonly preferences:TerminalPluginPreferences;
@@ -34,11 +36,14 @@ export class TerminalPluginTasks {
     emit(channel:string,payload:unknown):void;
     mediaTransfer?:Pick<import('../media-transfer.js').TerminalMediaTransfer,'resolve'>;
     projectDirectories?():Promise<string[]>;
+    companions?():import('../remote/companions/host.js').TerminalCompanionHost|undefined;
   }){
     const guard=()=>{if(this.closed)throw new Error('PLUGIN_TASKS_CLOSED');options.assertCurrent();};
     const translate=(key:string)=>((translations as Record<string,Record<string,string>>)[options.locale()]??translations.en)[key]??(translations.en as Record<string,string>)[key]??key;
     this.sessions=new TerminalPluginSessions({root:options.root,host:options.host,tasks:options.tasks,guard,translate});
     options.host.configureTaskSessions(this.sessions);
+    this.targets=new TerminalPluginTargets({host:options.host,sessions:this.sessions,tasks:options.tasks,companions:options.companions,projects:options.projectDirectories??(async()=>[]),owner:options.owner,guard});
+    options.host.configureTargets(this.targets);
     this.preferences=new TerminalPluginPreferences(options.root,guard);
     const visibility:GhostVisibilityDeps={translate,listGhosts:()=>{guard();return options.host.native.list();},
       isAvailableForActiveSession:id=>{guard();const ghost=options.host.installed(id);return !!ghost&&(!isCindyAccountGhostId(ghost.manifest.id)||options.signedIn());},
@@ -63,7 +68,7 @@ export class TerminalPluginTasks {
         forge:createTerminalPluginForge({...options,context:scoped,media:options.tasks.media,publisher:this.publisher,requestPermission:options.tasks.requestHostPermission,translate}),
       });
     },this.setup);
-    this.ready=Promise.all([this.preferences.refresh(),this.sessions.ready]).then(()=>undefined);
+    this.ready=Promise.all([this.preferences.refresh(),this.sessions.ready,this.targets.ready]).then(()=>undefined);
   }
-  async close(){if(this.closed)return;this.closed=true;this.pages.close();this.setup.close();this.publisher.close();await this.sessions.close();}
+  async close(){if(this.closed)return;this.closed=true;this.targets.close();this.pages.close();this.setup.close();this.publisher.close();await this.sessions.close();}
 }

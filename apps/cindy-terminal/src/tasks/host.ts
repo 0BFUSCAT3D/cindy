@@ -149,7 +149,7 @@ export interface TerminalTaskHostOptions extends InputHost {
   nativeStatus?: (kind: AgentKind, binary: string | null) => ReturnType<typeof nativeAuthState>;
 }
 type ScheduledOrigin = { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string; firedAt?: number };
-type TaskInvocationContext = InvocationContext & { collaboration?: TerminalOrcaInput; orca?: RemoteWorkerAssignment; scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; plugin?: {id:string;name:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
+type TaskInvocationContext = InvocationContext & { targetPlugin?: { id: string; name: string }; collaboration?: TerminalOrcaInput; orca?: RemoteWorkerAssignment; scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; plugin?: {id:string;name:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
 type LiveTask = { revoke():void; didInjectOrcaInstructions: boolean; plugin?:TerminalPluginTask; capabilityRevision: number; modelRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
 type Pending = { sessionId: string; sourceRequestId: string; request: InteractionRequest; settle: (decision: InteractionDecision) => void; decide: (decision:InteractionDecision)=>boolean; deferred?:InteractionDecision; shared?: SharedPermission; migrated?: boolean };
 
@@ -173,6 +173,64 @@ export class TerminalTaskHost {
   readonly channels = TERMINAL_TASK_CHANNELS;
   readonly models: TerminalModelConfig;
   readonly storage: TerminalTaskStorage;
+  private pluginTargetValidator?: (taskId: string, clientId: string) => Promise<void>;
+  private async assertPluginTargetInput(id: string, clientId?: string) {
+    if (!clientId || !this.pluginTargetValidator) throw new Error('PLUGIN_TARGET_AUTHORITY_UNAVAILABLE');
+    await this.pluginTargetValidator(id, clientId);
+  }
+  /** Only the sandbox target slot registers this port. A target delivery never
+   * makes an existing owner task into a plugin-owned task. */
+  configurePluginTargetDelivery(validate: (taskId: string, clientId: string) => Promise<void>) {
+    this.pluginTargetValidator = validate;
+    return {
+      send: async (plugin: { id: string; name: string }, id: string, clientId: string, text: string,
+        images: import('@cindy/plugin-runtime/pluginMessageAttachments').PluginMessageImage[],
+        guard: () => void, delivery: 'queue' | 'steer'): Promise<'queue' | 'steer'> => {
+        const current = async () => { this.guard({ source: 'local' }); guard(); await validate(id, clientId); guard(); };
+        await current();
+        const files: NonNullable<AgentInputQueuedMessage['files']> = [];
+        for (const image of images) {
+          const media = await this.media.ingest({ sessionId: id, bytes: image.buffer, mimeType: image.mimeType, name: image.name }, guard);
+          await current(); files.push({ id: image.hash, category: 'image', path: media.path, mimeType: image.mimeType, name: image.name, ext: path.extname(image.name), size: image.buffer.length });
+        }
+        if (delivery === 'steer') {
+          const outcome = await this.routes.withLock(id, async () => {
+            await current();
+            const session = this.live.get(id)?.session, row = await this.storage.get(id);
+            if (!session?.isTurnRunning() || !row) return 'not-attempted';
+            const item: AgentInputQueuedMessage = { clientId, text, persistedContent: text, model: row.model,
+              effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir, files,
+              sourcePlugin: { pluginId: plugin.id, name: plugin.name },
+              chatMessage: { clientId, role: 'user', content: text, createdAt: new Date().toISOString() },
+              createOpts: { agentKind: row.agentKind, workingDir: row.workDir, model: row.model, providerId: row.providerId } };
+            return this.steerOrcaInput(id, item, { session, turnGeneration: session.getTurnGeneration() }, plugin);
+          });
+          if (outcome === 'steered') return 'steer';
+          if (outcome === 'queued') throw new Error('DELIVERY_UNCERTAIN');
+          if (outcome === 'rejected') throw new Error('DELIVERY_REJECTED');
+        }
+        await current();
+        // A turn may end between reserving a steering input and its native
+        // boundary. That input already owns its normalized queue receipt.
+        const existing = await this.storage.submission(id, clientId);
+        if (existing) {
+          if (existing.targetPlugin?.id !== plugin.id || existing.status !== 'queued' || existing.error === 'STEER_DELIVERY_UNCERTAIN')
+            throw new Error('DELIVERY_UNCERTAIN');
+          return 'queue';
+        }
+        const receipt = await this.submit(id, { text, files }, { requestId: clientId }, { source: 'local', targetPlugin: plugin, assertCurrent: guard });
+        if (receipt.status === 'failed' || receipt.status === 'interrupted') throw new Error('DELIVERY_REJECTED');
+        return 'queue';
+      },
+      withdraw: async (id: string, clientId: string, guard: () => void) => {
+        guard();
+        const receipt = await this.storage.submission(id, clientId);
+        if (receipt?.targetPlugin && receipt.status === 'queued' && this.activeSubmissions.get(id) !== clientId)
+          await this.removeQueued(id, clientId, { source: 'local', assertCurrent: guard });
+      },
+      close: () => { if (this.pluginTargetValidator === validate) this.pluginTargetValidator = undefined; },
+    };
+  }
   readonly orcaStore: TerminalOrcaStore;
   private readonly orcaRemoteController: ReturnType<typeof createOrcaRemoteWorkers>;
   readonly orcaTeamService: OrcaTeamService;
@@ -570,7 +628,7 @@ export class TerminalTaskHost {
       if (row.queuePaused) this.queuePaused.add(row.id);
       if (row.groupBinding) this.groupBindings.set(row.id, row.groupBinding);
       const queued = await this.storage.queued(row.id);
-      for (const receipt of queued) if (receipt.message) this.enqueueSubmission(row.id, receipt.message, receipt.requestId, { source: receipt.source ?? 'local', deviceId: receipt.deviceId, sourceDevice: receipt.sourceDevice, ownerId: receipt.ownerId, scheduler: receipt.scheduler, sender:receipt.sender, plugin:receipt.plugin, orca:receipt.orca, collaboration:receipt.collaboration, deliveryProof: receipt.deliveryProof, ...(receipt.sharedTask ? { sharedTask: receipt.sharedTask, assertCurrent: () => { throw new Error('SHARED_TASK_REVALIDATION_REQUIRED'); } } : {}) }, receipt.sendAtMs);
+      for (const receipt of queued) if (receipt.message) this.enqueueSubmission(row.id, receipt.message, receipt.requestId, { source: receipt.source ?? 'local', deviceId: receipt.deviceId, sourceDevice: receipt.sourceDevice, ownerId: receipt.ownerId, scheduler: receipt.scheduler, sender:receipt.sender, plugin:receipt.plugin, targetPlugin:receipt.targetPlugin, orca:receipt.orca, collaboration:receipt.collaboration, deliveryProof: receipt.deliveryProof, ...(receipt.sharedTask ? { sharedTask: receipt.sharedTask, assertCurrent: () => { throw new Error('SHARED_TASK_REVALIDATION_REQUIRED'); } } : {}) }, receipt.sendAtMs);
     }
     this.guard({ source: 'local' });
     await this.orcaRemoteController.start();
@@ -868,14 +926,14 @@ export class TerminalTaskHost {
   }
   /** Called with the route lock held, including by the shared dispatcher. */
   private steerOrcaInput(id: string, item: AgentInputQueuedMessage,
-    expected: { session: object; turnGeneration: number }): Promise<ControlSteerOutcome> {
-    const operation = this.performOrcaSteer(id, item, expected);
+    expected: { session: object; turnGeneration: number }, targetPlugin?: { id: string; name: string }): Promise<ControlSteerOutcome> {
+    const operation = this.performOrcaSteer(id, item, expected, targetPlugin);
     this.steerOperations.add(operation);
     void operation.finally(() => this.steerOperations.delete(operation)).catch(() => undefined);
     return operation;
   }
   private async performOrcaSteer(id: string, item: AgentInputQueuedMessage,
-    expected: { session: object; turnGeneration: number }): Promise<ControlSteerOutcome> {
+    expected: { session: object; turnGeneration: number }, targetPlugin?: { id: string; name: string }): Promise<ControlSteerOutcome> {
     const session = this.live.get(id)?.session;
     const currentTurn = () => this.live.get(id)?.session === session && session === expected.session
       && session.getTurnGeneration() === expected.turnGeneration && session.isTurnRunning();
@@ -884,7 +942,10 @@ export class TerminalTaskHost {
       || [...this.pending.values()].some(pending => pending.sessionId === id) || this.routes.intent(id) !== null;
     if (!session || !currentTurn() || blocked() || this.steeringSubmissions.has(id)) return 'not-attempted';
     if (!session.capabilities.sameTurnSteer.supported) return 'not-attempted';
-    const collaboration = await captureTerminalOrcaInput(this.orcaStore, this.storage, id, item);
+    const collaboration = targetPlugin ? undefined : await captureTerminalOrcaInput(this.orcaStore, this.storage, id, item);
+    const validate = () => targetPlugin ? this.assertPluginTargetInput(id, item.clientId)
+      : assertTerminalOrcaInput(this.orcaStore, this.storage, id, collaboration!);
+    await validate();
     if (!currentTurn() || blocked()) return 'not-attempted';
     const controller = new AbortController(), boundary = { clientId: item.clientId, controller };
     this.steeringSubmissions.set(id, boundary);
@@ -896,21 +957,23 @@ export class TerminalTaskHost {
     try {
       let receipt = await this.storage.submission(id, item.clientId);
       if (!receipt) receipt = await this.submit(id, { text: item.text, files: item.files, mentions: item.mentions },
-        { requestId: item.clientId }, { source: 'local', collaboration });
-      if (receipt.status !== 'queued' || !receipt.message || !receipt.collaboration) return 'rejected';
+        { requestId: item.clientId }, { source: 'local', collaboration, targetPlugin });
+      if (receipt.status !== 'queued' || !receipt.message || !(receipt.collaboration || receipt.targetPlugin)) return 'rejected';
       const message = receipt.message;
-      await assertTerminalOrcaInput(this.orcaStore, this.storage, id, receipt.collaboration);
+      await validate();
       if (!currentTurn() || blocked() || controller.signal.aborted) return 'not-attempted';
       // A crash after the RPC starts leaves an interrupted receipt, never a
       // replayable queued row. Only a confirmed non-delivery can restore it.
       if (!await this.updateReceipt(id, item.clientId, 'sending')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
-      const source = buildMessageSourceNote(messageSourceSenderFromMeta({ origin: receipt.collaboration.origin }));
+      const attribution = targetPlugin ? { sourcePlugin: { pluginId: targetPlugin.id, name: targetPlugin.name } }
+        : { origin: receipt.collaboration!.origin };
+      const source = buildMessageSourceNote(messageSourceSenderFromMeta(attribution));
       await session.steer(source ? appendInputText(message, source) : message, {
         signal: controller.signal, [AUTO_REVIEW_SOURCE_CONTENT]: '', [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
         beforeProviderStart: async () => {
           this.guard({ source: 'local', signal: controller.signal });
           if (!currentTurn() || blocked()) throw new Error('ORCA_STEER_BOUNDARY_CHANGED');
-          await assertTerminalOrcaInput(this.orcaStore, this.storage, id, receipt!.collaboration!);
+          await validate();
           this.guard({ source: 'local', signal: controller.signal });
           if (!currentTurn() || blocked()) throw new Error('ORCA_STEER_BOUNDARY_CHANGED');
           providerBoundaryReached = true;
@@ -920,7 +983,7 @@ export class TerminalTaskHost {
       removeWaiting();
       this.orcaDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(item.clientId);
       const visible = terminalOrcaHistoryMessage(message, receipt.collaboration);
-      const agentMeta = { origin: receipt.collaboration.origin, delivery: 'steer', autoReviewUserText: { kind: 'delegated-continuation' } };
+      const agentMeta = { ...attribution, delivery: 'steer', autoReviewUserText: { kind: 'delegated-continuation' } };
       const stored = await this.storage.append(id, { kind: 'user', message: visible, clientId: item.clientId, origin: 'local', agentMeta });
       if (!await this.updateReceipt(id, item.clientId, 'completed')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
       this.emit('local-db:messages:created', { sessionId: id, message: { id: `${id}:${stored.sequence}`, clientId: item.clientId,
@@ -2086,7 +2149,7 @@ export class TerminalTaskHost {
           const incoming=channel.endsWith('update-text')?{type:'user',content:typeof previous.message?.content==='string'?string(args[2]):[{type:'text',text:string(args[2])},...(previous.message?.content??[]).filter(block=>block.type!=='text')]}:args[2];
           const message=await this.message(id,incoming,context);this.guard(context);await this.storage.editQueuedSubmission(id,clientId,{message,sharedTask:context.sharedTask,deviceId:context.deviceId,source:context.source,deliveryProof:undefined,orca:undefined,collaboration:undefined},()=>this.guard(context));
           this.orcaDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(clientId);
-          const item=this.queuedSubmissions.get(id)?.find(item=>item.requestId===clientId);if(item){item.message=message;item.context={...context,plugin:previous.plugin,signal:undefined};}
+          const item=this.queuedSubmissions.get(id)?.find(item=>item.requestId===clientId);if(item){item.message=message;item.context={...context,plugin:previous.plugin,targetPlugin:previous.targetPlugin,signal:undefined};}
         });return this.projection(id);
       }
       case 'maker:input:move': {
@@ -2216,12 +2279,13 @@ export class TerminalTaskHost {
           this.guard(context);
           if(context.deliveryProof){await validateTaskDelivery(this.options.remoteInvoke,context.deliveryProof);this.guard(context);}
           if(context.plugin){if(!this.pluginSessions)throw new Error('PLUGIN_TASKS_UNAVAILABLE');await this.pluginSessions.assertDispatch(context.plugin.id,id);this.guard(context);}
+          if (context.targetPlugin) { await this.assertPluginTargetInput(id, this.activeSubmissions.get(id)); this.guard(context); }
           if (context.orca) { await assertRemoteWorkerAssignment(this.storage, id, context.orca); this.guard(context); }
           if (context.collaboration) { await assertTerminalOrcaInput(this.orcaStore, this.storage, id, context.collaboration); this.guard(context); }
-          const agentMeta = context.collaboration ? { origin: context.collaboration.origin } : context.orca ? { origin: context.orca.origin } : context.plugin ? {sourcePlugin:{pluginId:context.plugin.id,name:context.plugin.name}} : context.deliveryProof ? {origin:{kind:'session' as const,senderSessionId:`${context.deliveryProof.controllerDeviceId}::${context.deliveryProof.sessionId}`,senderSessionTitle:context.deliveryProof.senderTitle,displayText:context.deliveryProof.message}} : context.sender ? {origin:{kind:'session' as const,senderSessionId:context.sender.sessionId,senderSessionTitle:context.sender.title,displayText:inputPlainText(message)}} : context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.sourceDevice ? { sourceDevice: context.sourceDevice } : undefined;
+          const agentMeta = context.collaboration ? { origin: context.collaboration.origin } : context.orca ? { origin: context.orca.origin } : context.plugin || context.targetPlugin ? {sourcePlugin:{pluginId:(context.plugin ?? context.targetPlugin)!.id,name:(context.plugin ?? context.targetPlugin)!.name}} : context.deliveryProof ? {origin:{kind:'session' as const,senderSessionId:`${context.deliveryProof.controllerDeviceId}::${context.deliveryProof.sessionId}`,senderSessionTitle:context.deliveryProof.senderTitle,displayText:context.deliveryProof.message}} : context.sender ? {origin:{kind:'session' as const,senderSessionId:context.sender.sessionId,senderSessionTitle:context.sender.title,displayText:inputPlainText(message)}} : context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.sourceDevice ? { sourceDevice: context.sourceDevice } : undefined;
           const projection=createAutoReviewIntentProjection();
           const authoredText=projection.readText(persistedInput(message))??'';
-          const authorityMeta={...agentMeta,delivery:'turn',autoReviewUserText:context.scheduler?{kind:'scheduled-continuation'}:context.collaboration||context.orca||context.plugin||context.sender||context.deliveryProof||context.sharedTask?{kind:'delegated-continuation'}:authoredText};
+          const authorityMeta={...agentMeta,delivery:'turn',autoReviewUserText:context.scheduler?{kind:'scheduled-continuation'}:context.collaboration||context.orca||context.plugin||context.targetPlugin||context.sender||context.deliveryProof||context.sharedTask?{kind:'delegated-continuation'}:authoredText};
           this.changes.assertCanDispatch(task.session.workDir);
           const historyMessage = terminalOrcaHistoryMessage(message, context.collaboration);
           const stored=await this.storage.append(id, { kind: 'user', message: historyMessage, clientId: this.activeSubmissions.get(id) ?? randomUUID(), origin: context.source, agentMeta:authorityMeta });
@@ -2233,7 +2297,7 @@ export class TerminalTaskHost {
           try {
             const outgoing = await this.taskContext.prepareHandoff(id, payload);
             const history=await this.contextMessages(id,Infinity);
-            const intent=projection.restore(history.map(message=>({...message,agentMeta:message.agentMeta??null})),context.collaboration||context.orca||context.plugin||context.scheduler||context.sender||context.deliveryProof?undefined:{clientId:stored.clientId!,content:persistedInput(message),authoredText});
+            const intent=projection.restore(history.map(message=>({...message,agentMeta:message.agentMeta??null})),context.collaboration||context.orca||context.plugin||context.targetPlugin||context.scheduler||context.sender||context.deliveryProof?undefined:{clientId:stored.clientId!,content:persistedInput(message),authoredText});
             this.guard(context);
             const result = await this.channelSignals.withChannelTurnSource(id, this.channelSignals.channelTurnSourceFor(agentMeta?.origin, false), () => task.session.send(outgoing.message, {
               ...(context.scheduler ? { origin: context.scheduler } : {}),
@@ -2242,6 +2306,7 @@ export class TerminalTaskHost {
               ...(context.sharedTask?{turnPermissionPolicy:{origin:{kind:'desktop' as const},confirmationSurface:'desktop' as const,autoReviewContext:{requesterAuthority:'guest' as const,source:'group' as const},forceConfirmToolCall:()=>false}}:{}),
               onAccepted: async () => {
                 this.guard(context);
+                if (context.targetPlugin) await this.assertPluginTargetInput(id, stored.clientId);
                 if (context.orca) await assertRemoteWorkerAssignment(this.storage, id, context.orca);
                 if (context.collaboration) await assertTerminalOrcaInput(this.orcaStore, this.storage, id, context.collaboration);
                 if(context.plugin){if(!this.pluginSessions)throw new Error('PLUGIN_TASKS_UNAVAILABLE');await this.pluginSessions.accept(context.plugin.id,id,stored.clientId!,{instanceId:task.session.instanceId,generation:task.session.getTurnGeneration()});this.guard(context);}
@@ -2367,11 +2432,11 @@ export class TerminalTaskHost {
     try {
     const message = await this.message(id, input, context, lifecycle);
     const requestId = options.requestId === undefined ? randomUUID() : string(options.requestId);
-    if (!(context.plugin ? /^plugin-task:[a-zA-Z0-9_-]{1,100}$/ : /^[a-zA-Z0-9_-]{1,100}$/).test(requestId)) throw new Error('INVALID_REQUEST_ID');
+    if (!(context.plugin ? /^plugin-task:[a-zA-Z0-9_-]{1,100}$/ : context.targetPlugin ? /^plugin-target:[a-zA-Z0-9_-]{1,100}$/ : /^[a-zA-Z0-9_-]{1,100}$/).test(requestId)) throw new Error('INVALID_REQUEST_ID');
     const sendAtMs = options.sendAtMs === undefined ? undefined : Number(options.sendAtMs);
     if (sendAtMs !== undefined && (!Number.isFinite(sendAtMs) || sendAtMs < 0)) throw new Error('INVALID_SEND_TIME');
-    const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId, pluginId:context.plugin?.id, orca:context.orca, collaboration:context.collaboration, sendAtMs })).digest('hex');
-    const claimed = await this.permissionChanges.withSessionPermissionChange(id,()=>this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, sourceDevice: context.sourceDevice, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, plugin:context.plugin, orca:context.orca, collaboration:context.collaboration, deliveryProof:context.deliveryProof, sendAtMs }, atHead));
+    const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId, pluginId:context.plugin?.id, targetPlugin:context.targetPlugin, orca:context.orca, collaboration:context.collaboration, sendAtMs })).digest('hex');
+    const claimed = await this.permissionChanges.withSessionPermissionChange(id,()=>this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, sourceDevice: context.sourceDevice, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, plugin:context.plugin, targetPlugin:context.targetPlugin, orca:context.orca, collaboration:context.collaboration, deliveryProof:context.deliveryProof, sendAtMs }, atHead));
     for(const accepted of lifecycle.accepted) await accepted().catch(()=>this.options.logger.warn('ATTACHMENT_RELAY_CLEANUP_FAILED'));
     if (!claimed.created) return claimed.receipt;
     // Acceptance is durable before work begins; reconnecting with the same key
@@ -2420,7 +2485,7 @@ export class TerminalTaskHost {
     const persisted = await this.storage.queued(id);
     const order = this.queuedSubmissions.get(id)??[];const queued = [...persisted].sort((a,b)=>order.findIndex(item=>item.requestId===a.requestId)-order.findIndex(item=>item.requestId===b.requestId));
     return { sessionId: id, terminalTurnReceiptsVersion: 1, ...(deliveryReceipts ? {deliveryReceipts} : {}), turnInProgress: this.activeSubmissions.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning() === true,
-      pendingQueue: queued.map(item => ({ clientId: item.requestId, ...(item.collaboration || item.orca ? { origin: item.collaboration?.origin ?? item.orca?.origin } : {}), ...(item.sendAtMs ? {sendAtMs:item.sendAtMs} : {}), text: inputPlainText(item.message), persistedContent: item.message ? persistedInput(terminalOrcaHistoryMessage(item.message, item.collaboration)) : '', model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir,
+      pendingQueue: queued.map(item => ({ clientId: item.requestId, ...(item.targetPlugin ? { sourcePlugin: { pluginId: item.targetPlugin.id, name: item.targetPlugin.name } } : {}), ...(item.collaboration || item.orca ? { origin: item.collaboration?.origin ?? item.orca?.origin } : {}), ...(item.sendAtMs ? {sendAtMs:item.sendAtMs} : {}), text: inputPlainText(item.message), persistedContent: item.message ? persistedInput(terminalOrcaHistoryMessage(item.message, item.collaboration)) : '', model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir,
         chatMessage: { clientId: item.requestId, role: 'user', content: item.message ? persistedInput(terminalOrcaHistoryMessage(item.message, item.collaboration)) : '', createdAt: new Date(item.createdAt).toISOString() },
         createOpts: { agentKind: row.agentKind, workingDir: row.workDir, model: row.model, providerId: row.providerId },
       })), steeringQueueClientIds: this.steeringSubmissions.has(id) ? [this.steeringSubmissions.get(id)!.clientId] : [], queuePaused: this.queuePaused.has(id), queueExpanded: row.queueExpanded!==false, queueInteractionLocks: [...(this.queueLocks.get(id)??[])], queueEditLocks: [...(this.queueEditLocks.get(id)??[])], queueAbortPending: false, error: null, errorReason: null, recovery: null, errorRetryText: null, credentialSwitchWait: null };
@@ -2433,7 +2498,7 @@ export class TerminalTaskHost {
       // These dispatchers own their retry and source metadata. Generic replay
       // deliberately leaves them alone, including task-to-task inputs whose
       // source is persisted but is not a Maker SendOrigin.
-      if (context.collaboration || context.orca || context.plugin || context.scheduler || context.sender || context.deliveryProof) this.externalSubmissions.set(id, requestId);
+      if (context.collaboration || context.orca || context.plugin || context.targetPlugin || context.scheduler || context.sender || context.deliveryProof) this.externalSubmissions.set(id, requestId);
       else this.externalSubmissions.delete(id);
       if (!await this.updateReceipt(id, requestId, 'sending')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
       const result = await this.invoke('maker:send', [id, message], {...context, normalizedInput:true}) as { accepted: boolean; reason?: string };

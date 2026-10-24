@@ -39,6 +39,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { z } from 'zod';
 import { TerminalPlugins } from '../plugins/host.js';
 import { TerminalPluginTasks } from '../plugins/tasks.js';
+import { TerminalCompanionHost } from '../remote/companions/host.js';
 import { TerminalPluginMarket } from '../plugins/market.js';
 import { TerminalPluginAccount } from '../plugins/account.js';
 import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
@@ -1794,7 +1795,9 @@ describe('terminal task host', () => {
       cards:{persist:async()=>{},broadcast:()=>{}},fs:{getSessionSnapshot:async()=>null,requestWriteConfirm:async()=>({confirmed:false,reason:'cancelled'}),writeSaveDeposit:async()=>null},
     });
     const market=new TerminalPluginMarket({root,host:plugins,account,assertCurrent:()=>{}});
-    const tasks=new TerminalPluginTasks({root,runtimeDirectory:root,host:plugins,account,market,tasks:host,protectedInput:{configurePlugins:()=>{}},deposits:new DirDepositVault(),saves:new SaveDepositVault(),owner:()=>({mode:'local',dataOwnerId:'test',generation:1}),signedIn:()=>false,remoteAvailable:()=>false,locale:()=> 'en',assertCurrent:()=>{},emit:()=>{}});
+    const createCompanion=()=>new TerminalCompanionHost({root:path.join(root,'companions'),profileDir:root,models:host.models,logger,guard:()=>{},emit:()=>{},binary:async()=>process.execPath,createAgent:native.create});
+    let companions=createCompanion();
+    const tasks=new TerminalPluginTasks({root,runtimeDirectory:root,host:plugins,account,market,tasks:host,companions:()=>companions,projectDirectories:async()=>[root],protectedInput:{configurePlugins:()=>{}},deposits:new DirDepositVault(),saves:new SaveDepositVault(),owner:()=>({mode:'local',dataOwnerId:'test',generation:1}),signedIn:()=>false,remoteAvailable:()=>false,locale:()=> 'en',assertCurrent:()=>{},emit:()=>{}});
     try{
       await plugins.ready;await tasks.ready;
       // Integration tier: task ownership, durable replay, terminal input source
@@ -1809,6 +1812,68 @@ describe('terminal task host', () => {
       let created=await call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true});
       expect(await call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true})).toMatchObject({taskId:created.taskId,hidden:true});
       expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(false);
+      {
+      // Integration/security: targets used to fall through the real sandbox
+      // pipe. Exercise owner-task and Profile delivery, independent approval,
+      // receipt replay, revocation and cancellation through that same entry.
+      const target=(kind:string,args:Record<string,unknown>={})=>plugins.receive('_root__fixture-plugin',{type:'targets-request',kind,...args}) as Promise<{ok:boolean;data:any;error?:{code:string}}>;
+      expect(await target('list',{targetKind:'task'})).toMatchObject({ok:false,error:{code:'PERMISSION_DENIED'}});
+      installed.manifest.agent!.targets=true;installed.targetCapabilityApproved=true;
+      const existing=await host.invoke('maker:create-session',[{title:'Owner target'}]) as {id:string};
+      expect((await target('list',{targetKind:'task'})).data.targets.map((row:{id:string})=>row.id)).toContain(existing.id);
+      expect((await target('list',{targetKind:'task'})).data.targets.map((row:{id:string})=>row.id)).not.toContain(created.taskId);
+      const request={target:{kind:'task',id:existing.id},requestKey:'target-once',text:'Target queue'};
+      const delivered=await target('send',request);expect(delivered).toMatchObject({ok:true,data:{taskId:existing.id,delivery:'queue'}});
+      await expect.poll(()=>host.storage.queued(existing.id),{interval:5}).toEqual([]);
+      await expect.poll(async()=>((await host.invoke('local-db:messages:list',[existing.id])) as Array<{role:string}>).some(row=>row.role==='assistant'),{interval:5}).toBe(true);
+      expect(await target('send',request)).toEqual(delivered);expect(native.sentFor(existing.id)).toHaveLength(1);
+      expect(await host.invoke('local-db:sessions:get',[existing.id])).not.toHaveProperty('source','plugin');
+      expect(await host.invoke('local-db:messages:list',[existing.id])).toContainEqual(expect.objectContaining({role:'user',agentMeta:expect.objectContaining({sourcePlugin:{pluginId:'_root__fixture-plugin',name:'Task fixture'},autoReviewUserText:{kind:'delegated-continuation'}})}));
+      await host.invoke('maker:send',[existing.id,{text:'wait-for-steer'}]);await native.waitForHeld(existing.id);
+      expect(await target('send',{target:request.target,requestKey:'target-steer',text:'Target steer',delivery:'steer'})).toMatchObject({ok:true,data:{delivery:'steer'}});
+      const cancelled=await target('send',{target:request.target,requestKey:'target-cancel',text:'Must not execute'});expect(cancelled.ok).toBe(true);
+      expect(await target('cancel',{requestKey:'target-cancel'})).toMatchObject({ok:true});
+      await target('send',{target:request.target,requestKey:'target-revoke',text:'Revoked queue'});
+      delete installed.targetCapabilityApproved;native.finishHeld(existing.id);
+      await expect.poll(()=>host.storage.queued(existing.id),{interval:5}).toEqual([]);
+      expect(native.sentFor(existing.id)).toHaveLength(2);installed.targetCapabilityApproved=true;
+      const project=await target('send',{target:{kind:'project',id:root},requestKey:'project-target',text:'Project target',title:'Project target'});
+      expect(project.ok).toBe(true);expect(await host.storage.get(project.data.taskId)).toMatchObject({workDir:await realpath(root)});
+      const profile=await companions.create({name:'Target companion'});
+      expect((await target('list',{targetKind:'bot'})).data.targets).toContainEqual(expect.objectContaining({id:profile.id}));
+      const companionRequest={target:{kind:'bot',id:profile.id},requestKey:'companion-target',text:'Companion queue'};
+      expect(await target('send',companionRequest)).toMatchObject({ok:true,data:{taskId:profile.sessionId}});
+      await expect.poll(async()=>(await companions.messages(profile.sessionId)).some(row=>row.role==='assistant'),{interval:5}).toBe(true);
+      expect(await target('send',companionRequest)).toMatchObject({ok:true});expect(native.sentFor(profile.sessionId)).toHaveLength(1);
+      expect((await companions.messages(profile.sessionId))[0].agentMeta).toMatchObject({sourcePlugin:{pluginId:'_root__fixture-plugin',name:'Task fixture'}});
+      await companions.send(profile.id,'wait-for-steer','companion-held');await native.waitForHeld(profile.sessionId);
+      expect(await target('send',{target:companionRequest.target,requestKey:'companion-steer',text:'Companion steer',delivery:'steer'})).toMatchObject({ok:true,data:{delivery:'steer'}});
+      await target('send',{target:companionRequest.target,requestKey:'companion-cancel',text:'Cancelled companion'});
+      await target('cancel',{requestKey:'companion-cancel'});
+      await target('send',{target:companionRequest.target,requestKey:'companion-revoke',text:'Revoked companion'});
+      delete installed.targetCapabilityApproved;native.finishHeld(profile.sessionId);
+      await expect.poll(()=>companions.hasRunningWork(),{interval:5}).toBe(false);
+      expect(native.sentFor(profile.sessionId)).toHaveLength(2);installed.targetCapabilityApproved=true;
+      await companions.send(profile.id,'wait-for-steer','companion-uncertain-held');await native.waitForHeld(profile.sessionId);
+      native.steer.reply=async()=>{throw new Error('fixture ACK lost');};
+      const uncertainRequest={target:companionRequest.target,requestKey:'companion-uncertain',text:'Uncertain companion',delivery:'steer'};
+      expect(await target('send',uncertainRequest)).toMatchObject({ok:false,error:{code:'DELIVERY_UNCERTAIN'}});
+      expect(await companions.projection(profile.sessionId)).toMatchObject({queuePaused:true});
+      expect(await target('send',uncertainRequest)).toMatchObject({ok:false,error:{code:'DELIVERY_UNCERTAIN'}});
+      await companions.close();companions=createCompanion();await companions.ready;tasks.targets.connectCompanions();
+      native.steer.reply=async()=>{};
+      await companions.resumePending();
+      expect(await companions.projection(profile.sessionId)).toMatchObject({queuePaused:true,pendingQueue:[expect.objectContaining({text:'Uncertain companion'})]});
+      expect(native.sentFor(profile.sessionId)).toHaveLength(3);
+      // The restored durable input must check current approval at the native
+      // boundary, even though its original process-local guard no longer exists.
+      delete installed.targetCapabilityApproved;
+      await companions.invoke('maker:input:resume',[profile.sessionId],{source:'local'});
+      await expect.poll(()=>companions.hasRunningWork(),{interval:5}).toBe(false);
+      expect(native.sentFor(profile.sessionId)).toHaveLength(3);
+      expect((await companions.storage.latestSubmission(profile.sessionId))?.status).toBe('failed');
+      installed.targetCapabilityApproved=true;
+      }
       // Owner-facing resource entry remains usable after disabling the plugin.
       const registry=new RemoteResourceRegistry();registerPluginResources(registry,plugins,tasks.pages,tasks.sessions);
       const owner={controllerDeviceId:'terminal-owner'},client={protocolVersion:1,primitives:['text','actions'],locale:'en'};
@@ -2018,7 +2083,7 @@ describe('terminal task host', () => {
       await host.invoke('maker:send',[task.id,{text:'plugin-ready'}]);
       const normalHistory=await host.invoke('local-db:messages:list',[task.id,{limit:10}]) as Array<{content:string}>;
       expect(normalHistory.map(item=>item.content)).toContain('Echo: plugin-ready');
-    }finally{await host.close();await tasks.close();await market.close();await plugins.close();account.close();}
+    }finally{await companions.close();await host.close();await tasks.close();await market.close();await plugins.close();account.close();}
   });
   it('persists user/assistant history and resumes the original native task after a daemon restart', async () => {
     const { host, root, create, native } = await setup();

@@ -31,6 +31,7 @@ import { createDownloader } from '@cindy/plugin-runtime/download/index';
 import { fetchSingleHopWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';
 import { ghostManifestDigest, type PluginMarketInstallationRecord } from '@cindy/plugin-runtime/market/ledger';
 import { TerminalPluginModels } from './models.js';
+import { ensurePluginTaskApproval } from '@cindy/plugin-runtime/taskCapability';
 import type { TerminalModelConfig } from '../models/config.js';
 import type { TerminalUtilityModels } from '../models/utility.js';
 
@@ -74,6 +75,25 @@ export class TerminalPlugins {
   readonly models?:TerminalPluginModels;
   private taskSessions?: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'|'models'>;
   configureTaskSessions(service: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'|'models'>) { this.guard();this.taskSessions=service; }
+  private targets?: Pick<import('./targets.js').TerminalPluginTargets, 'receive'>;
+  configureTargets(service: NonNullable<TerminalPlugins['targets']>) { this.guard(); this.targets = service; }
+  /** Invoked only by the owner resource action after its permission confirmation. */
+  async approveTaskCapability(id: string, revision: string, capability: 'tasks' | 'targets', current: () => void) {
+    return this.mutate(async () => {
+      const ghost = await this.get(id);
+      const active = () => {
+        try { this.guard(); current(); const now = this.installed(id); return now?.dir === ghost.dir &&
+          now?.approval.state === 'approved' && now.approval.revision === revision; } catch { return false; }
+      };
+      if (!active()) throw new Error('PLUGIN_CHANGED');
+      const approved = await ensurePluginTaskApproval(id, {
+        getGhost: key => this.installed(key), isCurrent: active, confirm: async () => active(),
+        approve: (key, expected, valid) => this.native.manager.approveTaskCapability(key, expected, valid, capability),
+      }, capability);
+      if (!approved) throw new Error('PERMISSION_DENIED');
+      await this.native.refresh();
+    });
+  }
   async start(){await this.ready;this.guard();await this.native.start();this.guard();}
   readonly setupChanges=new GhostSetupChangeBus();
   private readonly pending = new Map<string,PendingInstall>();
@@ -146,6 +166,7 @@ export class TerminalPlugins {
   async receive(id:string,payload:unknown):Promise<unknown>{
     this.guard();const type=(payload as {type?:unknown}|null)?.type;
     if(type==='tasks-request'&&this.taskSessions)return this.taskSessions.receive(id,payload);
+    if(type==='targets-request'&&this.targets)return this.targets.receive(id,payload);
     if(type==='fetch-request'&&this.network)return this.network.handleFetchRequest(id,payload);
     if(type==='fs-request')return this.fs.handleFsRequest(id,payload);
     if(type==='library-request')return this.library.slot.handleLibraryRequest(id,payload);

@@ -115,6 +115,15 @@ jobs:
         run: pnpm --filter desktop exec vitest run src/main/local-model-runtime/__tests__/ollamaRuntime.test.ts src/main/local-model-runtime/__tests__/ollamaInstall.test.ts src/main/local-model-runtime/__tests__/ollamaDownload.test.ts src/main/local-model-runtime/__tests__/ollamaSidecar.test.ts src/main/local-model-runtime/__tests__/managedOllamaProvider.test.ts src/main/local-model-runtime/__tests__/managedOllamaMigrate.test.ts src/main/local-model-runtime/__tests__/service.list.test.ts src/main/local-model-runtime/__tests__/service.pull.test.ts src/main/local-model-runtime/__tests__/service.owner.test.ts src/main/local-model-runtime/__tests__/service.delete.test.ts src/main/local-model-runtime/__tests__/ollamaClient.test.ts src/main/local-model-runtime/__tests__/ollamaPurge.test.ts src/main/local-model-runtime/__tests__/ollamaRelease.test.ts src/main/local-model-runtime/__tests__/pausedPullStore.test.ts src/main/local-model-runtime/__tests__/pullProgress.test.ts src/main/local-model-runtime/__tests__/localConnectDetect.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal
         run: pnpm --filter cindy-terminal typecheck
+      - name: Shared worktree host contracts
+        run: pnpm --filter @cindy/worktree-core typecheck
+      - name: Desktop adapters and shared package compatibility
+        if: matrix.target == 'linux-x64'
+        env:
+          NODE_OPTIONS: '--max-old-space-size=6144'
+        run: pnpm --filter desktop exec tsc --noEmit -p tsconfig.json
+      - name: Preserve Desktop worktree lifecycle and Git behavior
+        run: pnpm --filter desktop exec vitest run src/main/__tests__/worktreeManagerCreate.test.ts src/main/__tests__/worktreeManagerRemove.test.ts src/main/__tests__/worktreeStore.test.ts src/main/worktree/__tests__/copyClaudeSiviDirs.test.ts src/main/worktree/__tests__/cwdProbeScheduler.test.ts src/main/worktree/__tests__/gitExec.test.ts src/main/__tests__/worktreeNameGenerator.test.ts src/main/__tests__/worktreeErrorClassifier.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing llama.cpp model and process lifecycle
         run: pnpm --filter desktop exec vitest run src/main/local-model-runtime/__tests__/llamaCppService.test.ts src/main/local-model-runtime/__tests__/llamaCppDownloads.test.ts src/main/local-model-runtime/__tests__/llamaCppProcess.test.ts src/main/local-model-runtime/__tests__/managedLlamaCppProvider.test.ts src/main/local-model-runtime/__tests__/llamaCppIpc.test.ts src/main/reviewer/__tests__/reviewOwnerLiveness.test.ts src/main/scheduler-host/__tests__/procUtilRetry.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing SuperGrok device login, discovery and recovery

@@ -45,6 +45,41 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{await rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
 
+/** Integration/security: an older installed receipt may predate independent
+ * task/target approval. Owner resource actions must confirm the exact revision,
+ * retain both approvals across restart, and reject a stale controller. */
+it('grants legacy task and target capabilities only through revision-bound owner actions',async()=>{
+  const root=path.join(directory,'legacy-target-owner');
+  const archive=new JSZip();
+  archive.file('ghost.json',JSON.stringify({schemaVersion:2,id:'legacy-target-fixture',name:'Legacy target fixture',version:'1.0.0',kind:'chip',entry:'main.js',slots:['agent'],agent:{tasks:true,targets:true}}));
+  archive.file('main.js','');const file=path.join(directory,'legacy-target.cindy');await writeFile(file,await archive.generateAsync({type:'nodebuffer'}));
+  let active=true;
+  const secrets={get:async()=>null,set:async()=>{},delete:async()=>{},getSync:()=>null,setSync:()=>{},deleteSync:()=>{},setManySync:()=>{}};
+  const options={root,deferStart:true,runtimeDirectory:runtime,executablePath:'unused',secrets,assertCurrent:()=>{if(!active)throw new Error('OWNER_CHANGED');},locale:()=> 'en',changed:()=>{},receive:async()=>({}),cards:{persist:async()=>{},broadcast:()=>{}},fs:{getSessionSnapshot:async()=>null,requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null}};
+  let host=new TerminalPlugins(options);
+  try {
+    await host.ready;
+    const installed=await host.native.manager.install(file);
+    if('rejection' in installed)throw new Error('FIXTURE_INSTALL_REJECTED');
+    const id=installedGhostStoragePart(installed.ghost);
+    const registry=new RemoteResourceRegistry();registerPluginResources(registry,host);
+    const context={controllerDeviceId:'owner',assertCurrent:options.assertCurrent};const client={protocolVersion:1,primitives:['text','actions'],locale:'en'};
+    const ref={collectionId:'plugins',kind:'plugin',id};
+    const resource=await registry.get(context,{client,ref});
+    const task=resource.actions!.find(action=>action.id.startsWith('approve-capability:tasks:'))!;
+    expect(task.confirmation?.body).toBeDefined();expect(resource.actions!.some(action=>action.id.startsWith('approve-capability:targets:'))).toBe(false);
+    await registry.invoke(context,{client,collectionId:'plugins',resourceRef:ref,actionId:task.id});
+    const target=(await registry.get(context,{client,ref})).actions!.find(action=>action.id.startsWith('approve-capability:targets:'))!;
+    expect(host.installed(id)).toMatchObject({taskCapabilityApproved:true});
+    await expect(registry.invoke(context,{client,collectionId:'plugins',resourceRef:ref,actionId:'approve-capability:targets:stale'})).rejects.toThrow('PLUGIN_CHANGED');
+    active=false;await expect(registry.invoke(context,{client,collectionId:'plugins',resourceRef:ref,actionId:target.id})).rejects.toThrow('OWNER_CHANGED');active=true;
+    expect(host.installed(id)?.targetCapabilityApproved).toBeUndefined();
+    await registry.invoke(context,{client,collectionId:'plugins',resourceRef:ref,actionId:target.id});
+    await host.close();host=new TerminalPlugins(options);await host.ready;
+    expect(host.installed(id)).toMatchObject({taskCapabilityApproved:true,targetCapabilityApproved:true});
+  } finally {await host.close();}
+});
+
 it('creates and packs a real plugin using the cwd-bound Node scaffold worker without replacing files',async()=>{
   const input={dir:path.join(directory,'author'),template:'node-json-rpc' as const,id:'terminal-authored',name:'Terminal authored',minCindyVersion:'0.1.0'};
   const options={sessionWorkdir:directory,writeScaffold:createNativeScaffoldWriter({nodePath:process.execPath,workerPath:path.join(runtime,'plugin-scaffold-worker.cjs')})};

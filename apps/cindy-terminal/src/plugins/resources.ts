@@ -16,6 +16,7 @@ import permissions from "./permissions.json";
 import type { TerminalPluginPages } from "./pages.js";
 import type { TerminalPluginSessions } from "./sessions.js";
 import translations from "./translations.json";
+import { hasPluginTaskApproval } from '@cindy/plugin-runtime/taskCapability';
 
 const copy = {
   plugins: ["Plugins", "插件", "外掛", "プラグイン", "플러그인"],
@@ -212,6 +213,16 @@ export function registerPluginResources(
         },
       ],
       actions: [
+        ...(ghost.enabled && ghost.approval.state === 'approved' && ghost.manifest.agent?.tasks
+          ? (['tasks','targets'] as const).filter(capability => capability === 'tasks' ? !ghost.taskCapabilityApproved
+            : hasPluginTaskApproval(ghost) && ghost.manifest.agent?.targets && !ghost.targetCapabilityApproved).map(capability => {
+            const items = ghostPermissionItems(ghost.manifest).filter(item => item.key === `agent:${capability}`);
+            const text: RemoteLocalizedText = { fallback: permissionText(items, 'en'), translations: Object.fromEntries(Object.keys(permissions).map(locale => [locale, permissionText(items, locale)])) };
+            const key = capability === 'tasks' ? 'agentTasks' : 'agentTargets';
+            const title: RemoteLocalizedText = { fallback: permissions.en[key], translations: Object.fromEntries(Object.entries(permissions).map(([locale, values]) => [locale, values[key]])) };
+            return { id: `approve-capability:${capability}:${ghost.approval.state === 'approved' ? ghost.approval.revision : ''}`,
+              label: title, confirmation: { title, body: text } };
+          }) : []),
         {
           id: ghost.enabled ? "disable" : "enable",
           label: label(ghost.enabled ? "disable" : "enable"),
@@ -634,6 +645,10 @@ export function registerPluginResources(
         else if (request.actionId === "cancel-install")
           host.cancelInstall(id.slice(8), context.controllerDeviceId);
         else throw new Error("INVALID_ACTION");
+      } else if (request.actionId.startsWith('approve-capability:')) {
+        const [, capability, revision, extra] = request.actionId.split(':');
+        if (!['tasks','targets'].includes(capability) || !revision || extra) throw new Error('INVALID_ACTION');
+        await host.approveTaskCapability(id, revision, capability as 'tasks' | 'targets', () => context.assertCurrent?.());
       } else if (["enable", "disable"].includes(request.actionId))
         await host.setEnabled(id, request.actionId === "enable");
       else if (request.actionId === "remove") await host.uninstall(id);

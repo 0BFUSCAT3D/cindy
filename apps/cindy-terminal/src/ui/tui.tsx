@@ -535,8 +535,9 @@ function TerminalApp({ client, locale: initialLocale, initialPage, initialTask, 
     const content = structured?[label(structured.text),...[...array(structured.images),...array(structured.files)].map(file=>`[${controls.attachment}] ${label(file.name,label(file.originalName,'…'))}`)].filter(Boolean).join('\n')
       :typeof raw === 'string' ? raw : Array.isArray(raw)?raw.map(part=>label(record(part).text)).filter(Boolean).join('\n'):label(message.text);
     const role = collaboration?.orcaSource === 'lead' ? 'Lead' : 'Worker';
+    const plugin = record(record(message.agentMeta).sourcePlugin);
     const sender = collaboration ? [role, label(origin.senderLabel)].filter((value, index, values) => value && values.indexOf(value) === index).join(' · ')
-      : message.role === 'user' ? t.you : message.role === 'assistant' ? 'Cindy' : t.error;
+      : message.role === 'user' ? label(plugin.name, label(plugin.pluginId, t.you)) : message.role === 'assistant' ? 'Cindy' : t.error;
     return [...wrapAnsi(terminalText(`${sender}  ${content}`),Math.max(8,columns-2),{hard:true,trim:false}).split('\n'), ''];
   });
   return <Box flexDirection="column" width={columns} height={height} paddingX={1}>

@@ -123,7 +123,8 @@
     "./agent-input-queue": "./src/agentInputQueue.ts",
     "./orca-worker-project": "./src/orca-worker-project.ts",
     "./orca-worker-permission-mode": "./src/orca-worker-permission-mode.ts",
-    "./history-query": "./src/historyQuery.ts"
+    "./history-query": "./src/historyQuery.ts",
+    "./worktree-branches": "./src/managedWorktreeBranches.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
