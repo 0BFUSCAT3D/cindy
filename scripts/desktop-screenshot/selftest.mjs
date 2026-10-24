@@ -91,11 +91,17 @@ try {
   await client.evaluate("document.body.classList.add('preview-mode')");
   await client.evaluate(`window.${key}.audit()`);
   assert.equal(await client.evaluate("getComputedStyle(document.querySelector('.ProseMirror[contenteditable=false]')).opacity"), '0');
-  await client.evaluate("document.body.classList.remove('preview-mode')");
+  await client.evaluate("document.body.classList.remove('preview-mode'); editor.setProps({editable:()=>false})");
+  await client.evaluate(`window.${key}.audit()`);
+  assert.equal(await client.evaluate("document.querySelectorAll('.ProseMirror[data-cindy-screenshot-copy]').length"), 1);
+  assert.equal(await client.evaluate('getComputedStyle(editor.dom).opacity'), '0');
+  assert.equal(await client.evaluate("document.querySelector('.ProseMirror[data-cindy-screenshot-copy]').textContent.includes('Synthetic Alice')"), false);
+  assert.deepEqual(await client.evaluate('editorState()'), { text: 'Synthetic Alice', changes: 0, undo: 0 });
+  await client.evaluate('editor.setProps({editable:()=>true})');
   await client.evaluate("renderFixture(2); document.getElementById('hover').dispatchEvent(new MouseEvent('mouseover',{bubbles:true})); document.getElementById('input').value='new@private.test';");
   // Force the same synchronous final audit the production capture invokes; hidden
   // Electron windows do not promise requestAnimationFrame delivery.
-  assert.deepEqual(await client.evaluate(`window.${key}.audit()`), { residual: 0, fault: false });
+  assert.deepEqual(await client.evaluate(`window.${key}.audit()`), { residual: 0, uncheckedFrames: 0, fault: false });
   state = await view();
   assert.ok(state.text.includes('2') && !state.text.includes('Synthetic'));
   assert.ok(state.input.endsWith('@example.com'));
@@ -155,6 +161,14 @@ try {
   await assert.rejects(screenshot(client, parseArgs([]), local), /身份自查未通过/);
   await client.evaluate("document.getElementById('split-secret').remove()");
   console.log('PASS 跨文字节点残留拒绝输出');
+  await client.evaluate(`new Promise(resolve => { const frame=document.createElement('iframe'); frame.id='private-frame'; frame.style.cssText='position:fixed;inset:0;width:200px;height:100px'; frame.srcdoc='<p>Synthetic Alice</p>'; frame.onload=resolve; document.body.append(frame); })`);
+  let iframeCaptured = false;
+  await assert.rejects(screenshot(client, parseArgs([]), local, { capture: async () => { iframeCaptured = true; } }), /可见嵌入内容/);
+  assert.equal(iframeCaptured, false);
+  await client.evaluate("document.getElementById('private-frame').style.display='none'");
+  await screenshot(client, parseArgs([]), local);
+  await client.evaluate("document.getElementById('private-frame').remove()");
+  console.log('PASS 可见 iframe 拒绝输出，隐藏 iframe 不阻塞');
   await client.evaluate('electronAPI.authListAccounts=async()=>{throw Error("synthetic collection error")};');
   let captured = false;
   await assert.rejects(screenshot(client, parseArgs([]), local, { capture: async () => { captured = true; } }));

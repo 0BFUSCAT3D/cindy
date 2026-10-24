@@ -284,6 +284,7 @@ pnpm desktop:screenshot --mask-file /本机私有目录/masks.json
 默认按窗口原始像素密度输出 PNG 到 Git 忽略的 `tmp/desktop-screenshots/`；`--output` 可另选
 Git 忽略的位置，不覆盖已有文件。身份收集失败或自查发现残留时不写图片，结束与失败均还原。
 异常断连有 60 秒自动还原兜底，仍异常就刷新该窗口。不要在截图期间编辑界面。
+可见 iframe / webview 等嵌入内容无法核验时拒绝写图，请用模拟沙箱或先关闭该预览。
 
 `--mask`、`--keep` 可重复；映射文件是 JSON 对象（原文: 替换）或“原文=替换”字符串数组，
 真实映射不要提交；含真实原文的命令用 `pnpm --silent` 避免 pnpm 回显参数，或使用映射文件。

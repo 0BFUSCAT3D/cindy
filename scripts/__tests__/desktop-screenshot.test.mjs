@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import path from 'node:path';
 import { parseArgs, parseMask, captureClip, screenshot } from '../desktop-screenshot.mjs';
-import { assertPortOwner, parseListeners, selectInstance } from '../desktop-screenshot/instances.mjs';
+import { assertPortOwner, parseListeners, readLinuxListeners, selectInstance } from '../desktop-screenshot/instances.mjs';
 import { identifyDesktopProcesses } from '../desktop-whoami.mjs';
 import { collectIdentities, createReplacer } from '../desktop-screenshot/masking.mjs';
 
@@ -33,6 +33,20 @@ test('port ownership requires a single exact PID; parse macOS and Windows listen
   for (const listeners of [[], [{ pid: 22, port: 19401 }], [{ pid: 11, port: 19401 }, { pid: 22, port: 19401 }]]) assert.throws(() => assertPortOwner(selected, listeners), /不属于/);
   assert.deepEqual(parseListeners('p11\nf5\nn127.0.0.1:19401\np22\nn[::1]:19402\nn*:19403\n', 'darwin'), [{ pid: 11, port: 19401 }, { pid: 22, port: 19402 }, { pid: 22, port: 19403 }]);
   assert.deepEqual(parseListeners('{"OwningProcess":11,"LocalPort":19401}', 'win32'), [{ pid: 11, port: 19401 }]);
+});
+
+test('Linux port ownership reads procfs without optional system commands', () => {
+  const io = {
+    readFileSync(file) {
+      return 'sl local_address rem_address st tx_queue rx tr tm retr uid timeout inode\n'
+        + (file.endsWith('tcp6') ? '0: 00000000000000000000000001000000:4BCA 00000000:0 0A 0:0 0:0 0 1000 0 102\n'
+          : '0: 0100007F:4BC9 00000000:0 0A 0:0 0:0 0 1000 0 101\n1: 0100007F:4BCC 00000000:0 01 0:0 0:0 0 1000 0 103\n');
+    },
+    readdirSync(file) { if (file === '/proc') return ['net', '11', '22', '33']; if (file.includes('/33/')) throw Error('exited'); return ['0', '1', '2']; },
+    readlinkSync(file) { if (file.endsWith('/0')) return '/dev/null'; return file.includes('/11/') ? 'socket:[101]' : 'socket:[102]'; },
+  };
+  assert.deepEqual(readLinuxListeners(io), [{ pid: 11, port: 19401 }, { pid: 22, port: 19402 }]);
+  assertPortOwner({ ...a, port: 19401 }, readLinuxListeners(io));
 });
 
 test('arguments reject invalid input without echoing sensitive values', () => {
@@ -177,4 +191,10 @@ test('explicit example text is stable when it contains the original text', () =>
   assert.equal(emailPrefix.replace('contact-1@example.com.invalid'), 'contact-1@example.com');
   assert.equal(emailPrefix.count('contact-1@example.com.invalid'), 1);
   assert.equal(emailPrefix.count('contact-1@example.com'), 0);
+  assert.equal(emailPrefix.count('contact-1@example.com '.repeat(3000)), 0);
+  const userDemo = createReplacer([{ source: 'demo', replacement: '示例用户', category: 'local' }]);
+  const link = userDemo.replace('cindy://provider-share/join?shareId=synthetic');
+  assert.equal(link, 'https://example.com/share/demo');
+  assert.equal(userDemo.replace(link), link);
+  assert.equal(userDemo.count(link), 0);
 });

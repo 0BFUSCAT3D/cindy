@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
 import { collectDesktopWhoamiReport } from '../desktop-whoami.mjs';
 
@@ -18,12 +19,45 @@ export function parseListeners(text, platform = process.platform) {
   return rows;
 }
 
+// Linux exposes listening socket inodes and owning file descriptors in procfs;
+// no optional lsof/ss package is required. Disappearing or other-user processes
+// are skipped; absence of an owner still causes the later ownership check to fail.
+export function readLinuxListeners(io = fs) {
+  const inodes = new Map();
+  for (const table of ['tcp', 'tcp6']) {
+    let text;
+    try { text = io.readFileSync(`/proc/net/${table}`, 'utf8'); }
+    catch (error) { if (table === 'tcp6' && error.code === 'ENOENT') continue; throw error; }
+    for (const line of text.trim().split(/\n/).slice(1)) {
+      const columns = line.trim().split(/\s+/);
+      if (columns[3] === '0A') inodes.set(columns[9], parseInt(columns[1].split(':').at(-1), 16));
+    }
+  }
+  const rows = new Map();
+  for (const pid of io.readdirSync('/proc').filter(value => /^\d+$/.test(value))) {
+    const directory = `/proc/${pid}/fd`;
+    let files;
+    try { files = io.readdirSync(directory); } catch { continue; }
+    for (const file of files) {
+      let link;
+      try { link = io.readlinkSync(`${directory}/${file}`); } catch { continue; }
+      const inode = link.match(/^socket:\[(\d+)\]$/)?.[1];
+      const port = inodes.get(inode);
+      if (port) rows.set(`${pid}:${port}`, { pid: Number(pid), port });
+    }
+  }
+  return [...rows.values()];
+}
+
 export function readListeners() {
+  if (process.platform === 'linux') {
+    try { return readLinuxListeners(); } catch { throw new Error('无法读取 Linux /proc 监听信息，无法核对 CDP 归属；请检查当前进程的 /proc 访问权限。'); }
+  }
   const windows = process.platform === 'win32';
   const result = spawnSync(windows ? 'powershell.exe' : 'lsof', windows
     ? ['-NoProfile', '-Command', "$ErrorActionPreference='Stop'; @(Get-NetTCPConnection -State Listen | Select-Object OwningProcess,LocalPort) | ConvertTo-Json -Compress"]
     : ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'], { encoding: 'utf8', windowsHide: true });
-  if (result.status !== 0) throw new Error('无法核对监听端口归属；请确认 lsof（macOS/Linux）或 Get-NetTCPConnection（Windows）可用。');
+  if (result.status !== 0) throw new Error('无法核对监听端口归属；请确认 lsof（macOS）或 Get-NetTCPConnection（Windows）可用。');
   return parseListeners(result.stdout);
 }
 

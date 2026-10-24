@@ -27,7 +27,8 @@ export function createReplacer(entries, keep = []) {
   // Generated examples are semantic placeholders, even when a one-letter name
   // occurs inside them (e.g. real nickname A -> 用户 A). Protect the complete
   // placeholder on subsequent observer scans; never exempt the raw name itself.
-  const protectedValues = [...new Set(rules.filter(r => r.replacement && !rules.some(other => other.source === r.replacement)).map(r => r.replacement))];
+  const protectedValues = [...new Set([...rules.map(r => r.replacement), 'https://example.com/share/demo', '<示例目录>']
+    .filter(value => value && !rules.some(rule => rule.source === value)))];
   // Longest matching text wins across known identities, examples and automatic
   // candidates. A short example must not hide a longer identity or email address.
   const alternatives = [
@@ -41,8 +42,8 @@ export function createReplacer(entries, keep = []) {
   const transform = (value, audit = false) => {
     let count = 0;
     let boundaries;
-    const discovered = [...value.matchAll(automaticRegex)].map(match => ({ pattern: escape(match[0]),
-      length: match[0].length, index: rules.length + match.slice(1).findIndex(group => group !== undefined) }));
+    const discovered = [...new Map([...value.matchAll(automaticRegex)].map(match => [match[0], { pattern: escape(match[0]),
+      length: match[0].length, index: rules.length + match.slice(1).findIndex(group => group !== undefined) }])).values()];
     const candidates = discovered.length ? [...alternatives, ...discovered].sort((a, b) => b.length - a.length) : alternatives;
     if (!candidates.length) return { value, count: 0 };
     const result = value.replace(discovered.length ? compile(candidates) : regex, (...args) => {
@@ -189,14 +190,15 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
   const avatarSet = new Set(avatars.filter(v => !keep.includes(v)));
   const originals = new Map();
   const editors = new Map();
+  const editorSelector = ':is([contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], .ProseMirror):not([data-cindy-screenshot-copy])';
   const editorStyle = document.createElement('style');
-  editorStyle.textContent = '[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"] { opacity: 0 !important; }';
+  editorStyle.textContent = `${editorSelector} { opacity: 0 !important; }`;
   const originalEditor = node => {
     if (!node) return null;
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-    let editor = element?.closest('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]');
+    let editor = element?.closest(editorSelector);
     let outer;
-    while (editor && (outer = editor.parentElement?.closest('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'))) editor = outer;
+    while (editor && (outer = editor.parentElement?.closest(editorSelector))) editor = outer;
     return editor;
   };
   const syncEditors = () => {
@@ -205,8 +207,8 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
     // remain observable instead of copying our own opacity override.
     editorStyle.disabled = true;
     try {
-      for (const [source, entry] of editors) if (!source.isConnected) { entry.clone.remove(); editors.delete(source); }
-      for (const source of document.querySelectorAll('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]')) {
+      for (const [source, entry] of editors) if (!source.isConnected || !source.matches(editorSelector)) { entry.clone.remove(); editors.delete(source); }
+      for (const source of document.querySelectorAll(editorSelector)) {
         if (originalEditor(source.parentElement)) continue;
         const previous = editors.get(source);
         const content = source.innerHTML;
@@ -219,9 +221,11 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
         const clone = source.cloneNode(true);
         clone.style.cssText = style;
         clone.setAttribute('contenteditable', 'false');
+        clone.setAttribute('data-cindy-screenshot-copy', '');
         clone.removeAttribute('id');
-        for (const child of clone.querySelectorAll('[id], [contenteditable]')) {
+        for (const child of clone.querySelectorAll('[id], [contenteditable], .ProseMirror')) {
           child.removeAttribute('id');
+          child.setAttribute('data-cindy-screenshot-copy', '');
           if (child.hasAttribute('contenteditable')) child.setAttribute('contenteditable', 'false');
         }
         Object.assign(clone.style, { position: 'absolute', left: `${source.offsetLeft}px`, top: `${source.offsetTop}px`,
@@ -275,6 +279,7 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
   };
   const isAvatar = value => typeof value === 'string' && [...avatarSet].some(url => value.includes(url));
   const placeholder = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#888"/><circle cx="32" cy="23" r="11" fill="#ddd"/><path d="M10 64v-8a22 22 0 0 1 44 0v8" fill="#ddd"/></svg>');
+  let uncheckedFrames = 0;
   const visit = (root, apply) => {
     let residual = 0;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
@@ -287,6 +292,11 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
         if (apply) change(node, '#text', avatarInitial ? '●' : replacer.replace(node.nodeValue));
         else residual += avatarInitial ? 1 : replacer.count(node.nodeValue);
       } else if (node.nodeType === Node.ELEMENT_NODE) {
+        if (!apply && ['IFRAME', 'FRAME', 'WEBVIEW'].includes(node.tagName)) {
+          const box = node.getBoundingClientRect();
+          if (node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && box.width > 0 && box.height > 0
+            && box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight) uncheckedFrames++;
+        }
         for (const attr of attributes) {
           const value = node.getAttribute(attr);
           if (value !== null) {
@@ -379,7 +389,9 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
       scan();
       // Check continuous inline text too, excluding the untouched editors behind
       // the visual copies. Per-node checks miss Alice <strong>Smith</strong>.
-      return { residual: visit(document.documentElement, false) + replacer.count(renderedText(document.body)), fault: fault || renderedChanged() };
+      uncheckedFrames = 0;
+      const residual = visit(document.documentElement, false) + replacer.count(renderedText(document.body));
+      return { residual, uncheckedFrames, fault: fault || renderedChanged() };
     },
     restore,
   };
