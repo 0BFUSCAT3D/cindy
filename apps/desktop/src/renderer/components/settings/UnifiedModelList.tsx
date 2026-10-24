@@ -991,7 +991,8 @@ export function UnifiedModelList({
                 是用来在读到某个模型名时顺手知道它贵不贵。拿不到报价就整个
                 不渲染 —— 不画假的「$」也不画「—」。 */}
         {(() => {
-          if (rep.displayPricing) return null;
+          // Mixed-unit quotes are shown in the existing model details only.
+          if (rep.displayPricing && rep.currency) return null;
           const display = rowPriceDisplay(row);
           if (!display) return null;
           if (display.kind === 'free') {
