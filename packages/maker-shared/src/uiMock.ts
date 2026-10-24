@@ -332,7 +332,9 @@ const MINUTE_MS = 60_000;
  * demo projects; times are relative to `now` so lists always look recent.
  */
 export function buildUiMockRows({ now, projectRoot }: { now: number; projectRoot: string }): UiMockRows {
-  const root = projectRoot.replace(/[\\/]+$/, '');
+  let end = projectRoot.length;
+  while (end > 0 && (projectRoot[end - 1] === '/' || projectRoot[end - 1] === '\\')) end -= 1;
+  const root = projectRoot.slice(0, end);
   const separator = root.includes('\\') && !root.includes('/') ? '\\' : '/';
   const sessions: UiMockSessionRow[] = [];
   const messages: UiMockMessageRow[] = [];
