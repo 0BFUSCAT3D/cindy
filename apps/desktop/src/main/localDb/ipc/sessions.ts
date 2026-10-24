@@ -917,6 +917,8 @@ export async function persistSessionFields(
   }
   // 预算写偏好文件放在行更新**之后**：偏好文件不可读时 store 会拒绝写（保留坏文件给
   // 人工修），若先写就会让同一个 patch 里的其它字段（改名、归档…）整包失败。
+  // 纯预算请求不能降级：那是用户唯一的意图，吞掉错误等于「看着成功、实际还是旧窗口」。
+  const budgetOnlyPatch = Object.keys(rowPatch).length === 0;
   let budgetWritten = false;
   let nextContextWindowBudget: number | null = null;
   if (hasBudgetChange) {
@@ -926,10 +928,14 @@ export async function persistSessionFields(
       );
       budgetWritten = true;
     } catch (error) {
+      if (budgetOnlyPatch) throw error;
+      // 混合更新：其它字段已落库，只降级为「预算未保存」，并从广播里剔除这个键 ——
+      // 否则 UI 会显示一个没存下去的值（Greptile P1，2026-10-24）。
       console.warn('[sessions] write context window budget failed; other fields already saved', {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
+      delete clean.contextWindowBudget;
     }
   }
   let runtimeProjection = {};
@@ -2522,6 +2528,9 @@ export async function updateSessionInDb(
         nextContextWindowBudget = writeSessionContextWindowBudget(sid, p.contextWindowBudget ?? null);
         budgetWritten = true;
       } catch (error) {
+        // 纯预算请求（`maker:set-context-window-budget` 就是这种）：这是用户唯一的
+        // 意图，必须让它失败，否则「看着成功、实际还是旧窗口」（Greptile P1，2026-10-24）。
+        if (Object.keys(p).every((key) => key === 'contextWindowBudget')) throw error;
         console.warn('[sessions] write context window budget failed; row update already applied', {
           sessionId: sid,
           error: error instanceof Error ? error.message : String(error),

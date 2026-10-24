@@ -935,6 +935,18 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(readSessionContextWindowBudget('cc-local')).toBeNull();
   });
 
+  it('fails a budget-only update when the budget store refuses to write', async () => {
+    // 纯预算请求只有这一个意图：吞掉错误就是「看着成功、实际还是旧窗口」，
+    // 用户想靠缩小窗口省钱时会被骗（Greptile P1，2026-10-24）。
+    vi.mocked(writeSessionContextWindowBudget).mockImplementationOnce(() => {
+      throw new Error('session context budget settings file is unreadable');
+    });
+    await expect(invokeUpdate('cc-local', { contextWindowBudget: 300_000 })).rejects.toThrow(
+      /unreadable/,
+    );
+    expect(readSessionContextWindowBudget('cc-local')).toBeNull();
+  });
+
   it('does not write the context window budget into the next account after an owner change', async () => {
     // 偏好文件按「当前」账号的 userData 解析，而 DB 更新是 await 出来的：保存期间切账号
     // 时，过期请求不得把原任务的预算写进新账号的文件（Greptile P1，2026-10-24）。
