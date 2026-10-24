@@ -126,18 +126,29 @@ async function type(id: string, value: string) {
 
 // Unit regression: the real card/hook disabled submit during recording. Existing
 // voice coverage only exercised signed-out errors, never final text or failures.
-it.each(['free', 'custom', 'multi', 'failed', 'removed'])(
+it.each(['free', 'custom', 'multi', 'failed', 'removed', 'connecting', 'connecting-failed', 'connecting-removed', 'connecting-cancelled'])(
   'submits final voice text once and preserves failed/cancelled answers: %s', async (mode) => {
     let finish!: () => void;
     let fail!: (error: Error) => void;
+    let connect!: () => void;
+    let failConnection!: (error: Error) => void;
+    let signal: AbortSignal | undefined;
     const stop = vi.fn();
-    startDictation.mockImplementation(async (input: { onListening: () => void; setText: (text: string) => void }) => {
+    const cancel = vi.fn(async () => undefined);
+    startDictation.mockImplementation(async (input: { signal?: AbortSignal; onListening: () => void; setText: (text: string) => void }) => {
+      signal = input.signal;
       input.onListening();
       stop.mockImplementation(() => new Promise<void>((resolve, reject) => {
         finish = () => { input.setText('Final answer'); resolve(); };
         fail = reject;
       }));
-      return { stop, cancel: vi.fn(async () => undefined) };
+      const run = { stop, cancel };
+      // PR #7017 review: listening can precede the ASR handshake. The previous
+      // fixture always resolved startup immediately and missed lost recordings.
+      if (mode.startsWith('connecting')) {
+        await new Promise<void>((resolve, reject) => { connect = resolve; failConnection = reject; });
+      }
+      return run;
     });
     remoteSessionStore.setPendingInteractions('s1', [{ request: {
       kind: 'ask_user_question', requestId, questions: [{ question: 'Question?',
@@ -152,12 +163,38 @@ it.each(['free', 'custom', 'multi', 'failed', 'removed'])(
       </AskCardAuthContext.Provider>,
     ));
     if (mode === 'multi') await click('interaction.ask.option.1');
-    if (mode === 'failed') await type('interaction.ask.textInput', 'Saved draft');
+    if (mode === 'failed' || mode === 'connecting-failed') await type('interaction.ask.textInput', 'Saved draft');
     await click('interaction.ask.voice');
     const send = host.querySelector<HTMLButtonElement>('[data-testid="interaction.ask.submitButton"]')!;
     expect(send.disabled).toBe(false);
+    if (mode === 'connecting-cancelled') {
+      await click('interaction.ask.voice');
+      expect(signal?.aborted).toBe(true);
+      await act(async () => connect());
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(stop).not.toHaveBeenCalled();
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      return;
+    }
     await click('interaction.ask.submitButton');
     await click('interaction.ask.submitButton');
+    if (mode.startsWith('connecting')) {
+      expect(signal?.aborted).toBe(false);
+      expect(stop).not.toHaveBeenCalled();
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      if (mode === 'connecting-removed') {
+        await act(async () => remoteSessionStore.setPendingInteractions('s1', []));
+        expect(signal?.aborted).toBe(true);
+      }
+      await act(async () => mode === 'connecting-failed' ? failConnection(new Error('Connection failed')) : connect());
+      if (mode !== 'connecting') {
+        expect(resolveInteraction).not.toHaveBeenCalled();
+        expect(stop).not.toHaveBeenCalled();
+        if (mode === 'connecting-failed') expect(readAskUserDraft(requestId)?.customInput).toBe('Saved draft');
+        else expect(cancel).toHaveBeenCalledOnce();
+        return;
+      }
+    }
     expect(stop).toHaveBeenCalledOnce();
     expect(resolveInteraction).not.toHaveBeenCalled();
     if (mode === 'removed') await act(async () => remoteSessionStore.setPendingInteractions('s1', []));
