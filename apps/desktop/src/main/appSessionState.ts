@@ -6,6 +6,7 @@
  * the reserved owner below and never masquerades as a server user id.
  */
 import { app } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -114,6 +115,16 @@ function ensureLoaded(): ActiveAppSession {
     generation: 0,
   };
   return active;
+}
+
+/**
+ * Dev UI mock sandbox only: a profile that has never chosen a mode starts
+ * account-free, as if "Skip login" had been chosen once. Any saved choice wins.
+ */
+export function startFreshProfileInLocalMode(): boolean {
+  if (active || fs.existsSync(settingsFilePath())) return false;
+  store.writePatch({ activeMode: 'local' });
+  return true;
 }
 
 /** Read the last committed stable session. */

@@ -14,6 +14,10 @@ pnpm mobile:sim:start
 pnpm mobile:sim:whoami
 ```
 
+只看界面时加 `--mock`（`pnpm mobile:sim:start -- --mock`）：App 不登录、不连电脑，直接显示
+与 Desktop 共用的模拟任务；`whoami`、`rebuild` 也要带同一个开关，见
+[UI 模拟数据](ui-mock-data.md)。
+
 iOS 模拟器不在仓库里固定：`whoami`、`rebuild`、`open` 默认先用 Cindy 模拟器（官方 Baguette
 插件的独立设备目录）中已启动的设备，没有或插件关闭运行时用系统（Xcode）模拟器；个人选择用
 仓库外的 `CINDY_MOBILE_SIMULATOR=auto|cindy|system|<设备目录绝对路径>`，细节见
