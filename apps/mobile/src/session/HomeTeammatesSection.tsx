@@ -101,7 +101,7 @@ function SectionContent({ shared, active, visible, showFooter, runDisclosure, pr
   const entries = useTeammateEntries(items, showGroups ? groups.items : undefined);
   const openTeammate = (row: HostedRemoteCollectionItem) => {
     const actor = cloudActor(row);
-    if (actor) { Keyboard.dismiss(); push(cloudCompanionRoute(row, actor.id, i18n.language)); }
+    if (actor) { Keyboard.dismiss(); push(cloudCompanionRoute(row, actor.id, i18n.language, { keepMode: true })); }
     else void navigation.openTeammate(row, { keepMode: true });
   };
   const openGroup = (row: HostedRemoteCollectionItem) => { Keyboard.dismiss(); push(botGroupRoute(row.host, row.item.ref.id)); };

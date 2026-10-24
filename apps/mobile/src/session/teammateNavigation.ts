@@ -49,13 +49,15 @@ export function teammateResourceRoute(hosted: HostedRemoteCollectionItem, locale
  * The read-only cloud view of a companion whose main computer is offline
  * (docs/product-rules/cloud-companions.md §3.1). The row's computer is that main computer.
  */
-export function cloudCompanionRoute(hosted: HostedRemoteCollectionItem, actorId: string, locale: string) {
+/** `keepMode`: opened from the task home, so the conversation that takes over still returns to the tasks. */
+export function cloudCompanionRoute(hosted: HostedRemoteCollectionItem, actorId: string, locale: string, options?: { keepMode?: boolean }) {
   return {
     pathname: '/companions/cloud/[actorId]' as const,
     params: {
       actorId, botId: hosted.item.ref.id,
       deviceId: hosted.host.deviceId, deviceName: hosted.host.deviceName,
       title: resolveRemoteText(hosted.item.display.title, locale),
+      ...(options?.keepMode ? { keepMode: '1' } : {}),
     },
   };
 }

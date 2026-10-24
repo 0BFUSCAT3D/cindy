@@ -13,10 +13,11 @@ function firstParam(value: string | string[] | undefined): string {
  */
 export default function CloudCompanionRoute() {
   const params = useLocalSearchParams<{ actorId?: string | string[]; botId?: string | string[]; deviceId?: string | string[];
-    deviceName?: string | string[]; title?: string | string[] }>();
+    deviceName?: string | string[]; title?: string | string[]; keepMode?: string | string[] }>();
   const { accountGeneration } = useAuth();
   const actorId = firstParam(params.actorId);
   const deviceId = firstParam(params.deviceId);
   return <CloudCompanionScreen key={`${accountGeneration}:${actorId}`} actorId={actorId} botId={firstParam(params.botId)}
-    deviceId={deviceId} deviceName={firstParam(params.deviceName) || deviceId} title={firstParam(params.title)} />;
+    deviceId={deviceId} deviceName={firstParam(params.deviceName) || deviceId} title={firstParam(params.title)}
+    keepMode={firstParam(params.keepMode) === '1'} />;
 }
