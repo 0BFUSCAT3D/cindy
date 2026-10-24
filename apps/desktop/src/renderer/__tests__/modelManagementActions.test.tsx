@@ -141,26 +141,3 @@ it('waits for the shared lock and reports asynchronous write failures', async ()
     expect(enabled('pi')).toBe(true);
   } finally { vi.unstubAllGlobals(); }
 });
-
-// Unit regression: real list rows previously hid all displayPricing. Summary chooses output, then input;
-// cache-only or absent summaries retain the previous behavior. Existing tests only covered visibility actions.
-it.each(['output', 'input', 'cacheRead', 'absent'] as const)('shows the first eligible %s summary quote in a media row', role => {
-  const quote = { price: 6, maxPrice: 10, unit: 'token', quantity: 1000000, tier: '480P/720P', priceType: 'starting_at' as const };
-  const summary = role === 'absent' ? undefined : {
-    [role]: [quote, { ...quote, price: 15, maxPrice: 20, unit: 'second' }],
-    ...(role === 'output' ? { input: [{ price: 140, unit: 'character', quantity: 1000000 }] } : {}),
-  };
-  render(<UnifiedModelList provider={{ ...provider, models: {}, videoModels: [{
-    id: 'video', name: 'Video', mode: 'video_generation', currency: 'CNY', costDiscount: 0.2,
-    modalities: { input: ['text'], output: ['video'] },
-    displayPricing: { items: [{ ...quote, label: 'Supplier quote' }], summary },
-  }] }} />);
-  if (role === 'cacheRead' || role === 'absent') {
-    expect(screen.queryByText(/¥/)).toBeNull();
-  } else {
-    expect(screen.getByText(/480P\/720P/).textContent).toContain('¥4.8–¥8');
-    expect(screen.getByText('¥6–¥10').tagName).toBe('S');
-    expect(screen.queryByText(/¥112|¥12/)).toBeNull();
-    expect(screen.getByText(/480P\/720P/).textContent).toContain('newChat.modelSelector.displayPricing.startingAt');
-  }
-});

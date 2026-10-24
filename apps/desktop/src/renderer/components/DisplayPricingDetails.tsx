@@ -46,12 +46,14 @@ export function DisplayPricingQuote({
         ? t('newChat.modelSelector.displayPricing.startingAt', { price })
         : price;
   return (
-    <span className="min-w-0 break-words tabular-nums">
-      {quote.tier && <>{quote.tier} </>}
-      {qualifiedPrice}
-      {amount.original && <s className="ml-1.5 text-[var(--text-tertiary)]">{amount.original}</s>}
-      <span className="ml-1 text-[var(--text-tertiary)]">
-        {denominator}
+    <span className="inline-flex min-w-0 max-w-full flex-col gap-1 tabular-nums">
+      {quote.tier && <span className="break-words text-[var(--text-secondary)]">{quote.tier}</span>}
+      <span className="flex flex-wrap items-baseline justify-end gap-x-1.5 gap-y-1">
+        <span className="whitespace-nowrap">{qualifiedPrice}</span>
+        {amount.original && <s className="whitespace-nowrap text-[var(--text-tertiary)]">{amount.original}</s>}
+        <span className="whitespace-nowrap text-[var(--text-tertiary)]">
+          {denominator}
+        </span>
       </span>
     </span>
   );

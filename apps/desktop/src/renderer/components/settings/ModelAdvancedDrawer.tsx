@@ -442,6 +442,10 @@ export function ModelAdvancedDrawer({
   );
   const description = localizedModelDescription(primaryModel, t);
   const price = pricePresentationOf(primaryAgent, primaryModel);
+  // Ordinary Gateway chat models carry effective cost; keep their inferred discount.
+  const discount =
+    (!primaryModel.displayPricing && price?.kind === 'priced' ? price.discount : undefined) ??
+    primaryModel.costDiscount;
   const protocols = modelProtocolComparison(provider, row.byAgent);
   const protocolLabel = (api: PiModelApi | null) =>
     api ? MODEL_PROTOCOL_LABEL[api] ?? null : t('settings.providers.models.advanced.undeclared');
@@ -1005,16 +1009,18 @@ export function ModelAdvancedDrawer({
                               key={role}
                               label={t(`settings.providers.models.advanced.price.${role === 'cacheWrite' ? 'cacheCreate' : role}`)}
                             >
-                              {quotes.map((quote, index) => (
-                                <span key={index}>
-                                  {index > 0 && ' · '}
-                                  <DisplayPricingQuote
-                                    quote={quote}
-                                    currency={primaryModel.currency!}
-                                    costDiscount={primaryModel.costDiscount}
-                                  />
-                                </span>
-                              ))}
+                              <span className="flex flex-wrap items-start justify-end gap-x-2 gap-y-2">
+                                {quotes.map((quote, index) => (
+                                  <span key={index} className="inline-flex min-w-0 max-w-full items-start gap-x-2">
+                                    {index > 0 && <span aria-hidden> · </span>}
+                                    <DisplayPricingQuote
+                                      quote={quote}
+                                      currency={primaryModel.currency!}
+                                      costDiscount={discount}
+                                    />
+                                  </span>
+                                ))}
+                              </span>
                             </Row>
                           );
                         })}
@@ -1057,7 +1063,7 @@ export function ModelAdvancedDrawer({
                         </Row>
                       ))
                     )}
-                    {!primaryModel.displayPricing && price?.kind === 'priced' && price.discount !== undefined && (
+                    {discount !== undefined && discount > 0 && discount <= 1 && (
                       <Row label={t('settings.providers.models.advanced.discount')}>
                         <span
                           className="inline-flex items-center rounded-full px-2 py-[1px] text-10 font-medium"
@@ -1066,7 +1072,7 @@ export function ModelAdvancedDrawer({
                             backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
                           }}
                         >
-                          {`↓${Math.round(price.discount * 100)}%`}
+                          {`↓${Math.round(discount * 100)}%`}
                         </span>
                       </Row>
                     )}

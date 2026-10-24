@@ -1,9 +1,6 @@
 import { mountPage, subscription } from '../../ui-page/harness';
 import { ModelAdvancedDrawer } from '../../../src/renderer/components/settings/ModelAdvancedDrawer';
-import {
-  buildUnionRows,
-  UnifiedModelList,
-} from '../../../src/renderer/components/settings/UnifiedModelList';
+import { buildUnionRows } from '../../../src/renderer/components/settings/UnifiedModelList';
 import {
   BUNDLED_CATALOG,
   type ProviderView,
@@ -26,18 +23,19 @@ const image: ModelDisplayPricing = {
 };
 const video: ModelDisplayPricing = {
   items: [
-    { label: 'Video generation', price: 6, tier: '480P', unit: 'token', quantity: 1000000 },
-    { label: 'Video generation', price: 10, tier: '720P', unit: 'token', quantity: 1000000 },
+    { label: 'Video generation', price: 0.05, tier: '480P', unit: 'second', quantity: 1 },
+    { label: 'Video generation', price: 0.1, tier: '720P', unit: 'second', quantity: 1 },
+    { label: 'Video generation', price: 0.2, tier: '1080P', unit: 'second', quantity: 1 },
   ],
   notes: ['Billed by generated resolution.'],
   summary: {
     output: [
       {
-        price: 6,
-        maxPrice: 10,
-        tier: '480P/720P',
-        unit: 'token',
-        quantity: 1000000,
+        price: 0.05,
+        maxPrice: 0.2,
+        tier: '480P/720P/1080P',
+        unit: 'second',
+        quantity: 1,
         priceType: 'starting_at',
       },
     ],
@@ -92,7 +90,6 @@ void mountPage({
           name: 'Qwen Speech',
           mode: 'audio_speech',
           currency: 'CNY',
-          costDiscount: 0.2,
           displayPricing: ctx.case === 'legacy' ? quote : speech,
           modalities: { input: ['text'], output: ['audio'] },
         },
@@ -103,7 +100,6 @@ void mountPage({
           name: 'Seedream',
           mode: 'image_generation',
           currency: 'USD',
-          costDiscount: 0.2,
           displayPricing: image,
           modalities: { input: ['text', 'image'], output: ['image'] },
         },
@@ -114,18 +110,12 @@ void mountPage({
           name: 'Video',
           mode: 'video_generation',
           currency: 'CNY',
-          costDiscount: 0.2,
-          displayPricing: ctx.case === 'list' ? video : quote,
+          costDiscount: 0.4,
+          displayPricing: quote,
           modalities: { input: ['text'], output: ['video'] },
         },
       ],
     };
-    if (ctx.case === 'list')
-      return (
-        <main className="p-5">
-          <UnifiedModelList provider={provider} />
-        </main>
-      );
     const rowId = ['speech', 'legacy'].includes(ctx.case) ? 'speech' : ctx.case === 'image' ? 'image' : 'video';
     return (
       <ModelAdvancedDrawer

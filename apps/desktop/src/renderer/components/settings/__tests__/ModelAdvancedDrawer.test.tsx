@@ -47,6 +47,7 @@ vi.mock('../ModelPriceOverrideDialog', () => ({ ModelPriceOverrideDialog: () => 
 import { ModelAdvancedDrawer } from '../ModelAdvancedDrawer';
 import { setModelVisibility } from '@/state/modelVisibilityPrefs';
 import { setProviderModelEffort, getProviderModelEffort, clearProviderModelEffort } from '@/state/providerModelMemory';
+import { modelPricePresentation } from '@/lib/modelPriceFormat';
 
 const model: CatalogModel = {
   id: 'gpt-6',
@@ -809,7 +810,8 @@ it.each([{ hasSummary: true, withNotes: true }, { hasSummary: true, withNotes: f
   expect(input.textContent).toContain('¥112');
   expect(input.querySelector('s')?.textContent).toBe('¥0.02');
   const output = screen.getByText('settings.providers.models.advanced.price.output').parentElement!;
-  expect(output.textContent).toContain('480P/720P ¥4.8–¥8');
+  expect(screen.getByText('480P/720P')).toBeTruthy();
+  expect(output.textContent).toContain('¥4.8–¥8');
   expect(output.querySelector('s')?.textContent).toBe('¥6–¥10');
   expect(screen.getByText('settings.providers.models.advanced.price.cacheRead')).toBeTruthy();
   expect(screen.getByText('settings.providers.models.advanced.price.cacheCreate')).toBeTruthy();
@@ -826,4 +828,42 @@ it.each([false, true])('omits only a fully redundant supplementary table (notes=
   expect(screen.getByText('settings.providers.models.advanced.price.input').parentElement!.textContent).toContain('¥140');
   expect(screen.queryByText('Text input') !== null).toBe(withNotes);
   expect(screen.queryByText('Provider billing condition') !== null).toBe(withNotes);
+});
+
+// Unit regression: the real drawer hid the discount row for displayPricing models.
+// Existing summary tests checked discounted amounts but not the separate discount row.
+// Minimal failure: one video quote with costDiscount=0.4 and no token price presentation.
+it.each([
+  { costDiscount: 0.4, pricing: 'summary', expected: '↓40%' },
+  { costDiscount: 0.4, pricing: 'table', expected: '↓40%' },
+  { costDiscount: 0.4, pricing: 'chat', expected: '↓40%' },
+  { costDiscount: 1, pricing: 'summary', expected: '↓100%' },
+  ...[undefined, 0, -0.1, 1.1, NaN].map(costDiscount => ({ costDiscount, pricing: 'summary', expected: null })),
+])('shows a discount row only for valid model discounts: %j', ({ costDiscount, pricing, expected }) => {
+  const quote = { price: 0.05, maxPrice: 0.2, unit: 'second', quantity: 1 };
+  draw({ ...model, currency: 'CNY', costDiscount,
+    ...(pricing === 'chat' ? {} : { displayPricing: {
+      items: [{ label: 'Generated video', price: 0.05, unit: 'second', quantity: 1 }],
+      ...(pricing === 'summary' ? { summary: { output: [quote] } } : {}),
+    } }),
+  });
+  const label = screen.queryByText('settings.providers.models.advanced.discount');
+  if (expected) expect(label?.parentElement?.textContent).toContain(expected);
+  else expect(label).toBeNull();
+});
+
+// Unit regression found during review: ordinary Gateway chat projections carry effective cost,
+// not costDiscount. Direct-field cases above cannot cover the existing inferred-discount path.
+it('retains the chat discount inferred from standard and effective prices', () => {
+  const primary = { ...model, cost: { input: 1.2, output: 6 } };
+  render(<ModelAdvancedDrawer
+    provider={{ ...provider, id: 'xd' }}
+    row={{ id: primary.id, name: primary.name, avail: ['codex'], byAgent: { codex: primary } }}
+    open onOpenChange={vi.fn()} onDisable={vi.fn()} disabled={false} paymentRequired={false}
+    pricePresentationOf={() => modelPricePresentation({
+      providerId: 'xd', modelId: primary.id, source: 'gateway', approximate: false,
+      currency: 'CNY', inputPerMtok: 2, outputPerMtok: 10,
+    }, primary.cost)}
+  />);
+  expect(screen.getByText('settings.providers.models.advanced.discount').parentElement?.textContent).toContain('↓40%');
 });

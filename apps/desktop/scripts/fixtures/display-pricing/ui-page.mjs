@@ -2,7 +2,7 @@ export default {
   name: 'display-pricing',
   entry: './display-pricing-fixture.tsx',
   viewport: { width: 800, height: 800 },
-  real: 'ModelAdvancedDrawer, UnifiedModelList, DisplayPricingDetails, localized roles, quantities, ranges and discounts',
+  real: 'ModelAdvancedDrawer, DisplayPricingDetails, localized roles, quantities, ranges and discounts',
   notCovered:
     'Live Gateway responses, account permissions and actual billing; prices are fixture inputs',
   cases: {
@@ -11,30 +11,44 @@ export default {
     video: { about: 'Resolution tier with discounted range and starting price' },
     default: { about: 'Multiple units, all four roles and supplementary conditions' },
     legacy: { about: 'Existing table without summary' },
-    list: {
-      about: 'Media list selects output first, then input',
-      viewport: { width: 800, height: 600 },
-    },
   },
   async check(page, ui) {
-    if (ui.case === 'list') {
-      const groups = page.locator('button[aria-expanded="false"]:not([aria-haspopup])');
-      while (await groups.count()) await groups.first().click();
-      await page.getByText('¥112', { exact: false }).waitFor();
-      if (!(await page.locator('body').textContent()).includes('¥4.8–¥8'))
-        throw Error('Missing discounted video summary');
+    const pricing = page.getByText(await ui.t('settings.providers.models.advanced.pricing'), {
+      exact: true,
+    });
+    await pricing.scrollIntoViewIfNeeded();
+    if (ui.case !== 'legacy') {
+      const role = ui.case === 'video' ? 'output' : 'input';
+      await page
+        .getByText(await ui.t(`settings.providers.models.advanced.price.${role}`), {
+          exact: true,
+        })
+        .waitFor();
+    }
+    const discount = page.getByText(await ui.t('settings.providers.models.advanced.discount'), { exact: true });
+    if (['speech', 'image', 'legacy'].includes(ui.case)) {
+      if (await discount.count()) throw Error('Unexpected discount on an undiscounted model');
     } else {
-      const pricing = page.getByText(await ui.t('settings.providers.models.advanced.pricing'), {
-        exact: true,
+      await discount.waitFor();
+      await page.getByText('↓40%', { exact: true }).waitFor();
+    }
+    // Browser regression: the original range split across lines in the real video drawer.
+    // Measure rendered text, not Tailwind classes; tier must sit above the amount group.
+    if (ui.case === 'video') {
+      const layout = await page.getByText('¥0.05–¥0.2', { exact: true }).evaluate(original => {
+        const amounts = original.parentElement;
+        const tier = amounts.previousElementSibling;
+        return {
+          lines: Array.from(amounts.children, part => {
+            const range = document.createRange();
+            range.selectNodeContents(part);
+            return range.getClientRects().length;
+          }),
+          tierBelowAmounts: tier.getBoundingClientRect().bottom > amounts.getBoundingClientRect().top,
+        };
       });
-      await pricing.scrollIntoViewIfNeeded();
-      if (ui.case !== 'legacy') {
-        const role = ['video'].includes(ui.case) ? 'output' : 'input';
-        await page
-          .getByText(await ui.t(`settings.providers.models.advanced.price.${role}`), {
-            exact: true,
-          })
-          .waitFor();
+      if (layout.lines.some(count => count !== 1) || layout.tierBelowAmounts) {
+        throw Error(`Broken video quote wrapping: ${JSON.stringify(layout)}`);
       }
     }
     await ui.capture('pricing');

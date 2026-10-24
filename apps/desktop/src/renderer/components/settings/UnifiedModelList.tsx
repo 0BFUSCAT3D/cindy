@@ -1,4 +1,3 @@
-import { DisplayPricingQuote } from '@/components/DisplayPricingDetails';
 import { Button } from '@/components/ui/button';
 import { localizedModelName, localizedBrandName, matchesModelName } from '@/lib/modelDisplayNames';
 import { modelManagementState } from './modelManagementState';
@@ -992,15 +991,7 @@ export function UnifiedModelList({
                 是用来在读到某个模型名时顺手知道它贵不贵。拿不到报价就整个
                 不渲染 —— 不画假的「$」也不画「—」。 */}
         {(() => {
-          if (rep.displayPricing && rep.currency) {
-            const summary = rep.displayPricing.summary;
-            const quote = summary?.output?.[0] ?? summary?.input?.[0];
-            return quote ? (
-              <span className="min-w-0 text-11 text-[var(--text-secondary)]">
-                <DisplayPricingQuote quote={quote} currency={rep.currency} costDiscount={rep.costDiscount} />
-              </span>
-            ) : null;
-          }
+          if (rep.displayPricing) return null;
           const display = rowPriceDisplay(row);
           if (!display) return null;
           if (display.kind === 'free') {
