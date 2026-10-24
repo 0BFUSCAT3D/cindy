@@ -40,7 +40,7 @@ export default {
         const tier = amounts.previousElementSibling;
         return {
           lines: Array.from(amounts.children, part => {
-            const range = document.createRange();
+            const range = original.ownerDocument.createRange();
             range.selectNodeContents(part);
             return range.getClientRects().length;
           }),
