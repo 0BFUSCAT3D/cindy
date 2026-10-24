@@ -468,6 +468,13 @@ function getSafeOwnerPushStamp(): ReturnType<typeof broadcastTap.getSafeDataOwne
  * 广播 sessions:patched 到本机所有窗口 + device-link tap。tap 让该 patch 经 topic 路由
  * 转发给订阅了 `sessions` 的控制端(push 驱动:控制端 applyPatch 即时镜像,无需重拉)。
  */
+let sessionStatusPatchedListener: ((sessionId: string) => void) | null = null;
+
+/** Archive / restore observer, set at registration so this module does not load teammate dependencies. */
+export function setSessionStatusPatchedListener(next: ((sessionId: string) => void) | null): void {
+  sessionStatusPatchedListener = next;
+}
+
 export function broadcastSessionPatched(
   sessionId: string,
   patch: Record<string, unknown>,
@@ -500,6 +507,14 @@ export function broadcastSessionPatched(
       sessionId,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+  // Archive / restore changes which open tasks a teammate's roster row links as followed.
+  if (patch.status !== undefined && !isProvisionalSession(sessionId)) {
+    try {
+      sessionStatusPatchedListener?.(sessionId);
+    } catch {
+      // Teammate roster refresh never blocks the task patch itself.
+    }
   }
   let windows: ReturnType<typeof BrowserWindow.getAllWindows> = [];
   try {

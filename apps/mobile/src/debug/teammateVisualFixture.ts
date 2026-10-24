@@ -6,6 +6,7 @@ import {
   type RemoteCollectionListResponse,
   type RemoteResourceManifestResponse,
 } from '@cindy/device-link';
+import { UI_MOCK_ID_PREFIX } from '@cindy/maker-shared/ui-mock';
 
 /**
  * `--mock` teammates (docs/dev-rules/ui-mock-data.md): the roster the teammate home and the task
@@ -13,13 +14,16 @@ import {
  */
 const TEAMMATES = 'teammates';
 const MINUTE = 60_000;
-const teammates: ReadonlyArray<{ id: string; name: string; preview: string; minutesAgo: number; avatar: RemoteCollectionItem['display']['avatar']; working?: boolean }> = [
+const teammates: ReadonlyArray<{ id: string; name: string; preview: string; minutesAgo: number; avatar: RemoteCollectionItem['display']['avatar']; working?: boolean; following?: string[] }> = [
   { id: 'visual-bot-cindy', name: 'Cindy', preview: '登录页窄窗口的错位已经修好，截图放在任务里了。', minutesAgo: 2,
-    avatar: { kind: 'asset', value: 'cindy://avatar/preset/cindy', fallbackText: 'C' }, working: true },
+    avatar: { kind: 'asset', value: 'cindy://avatar/preset/cindy', fallbackText: 'C' }, working: true,
+    // Task rows show the follow mark (`ui-mock` tasks): one shared with LiZi, so the mark picks by name.
+    following: ['visual-running', `${UI_MOCK_ID_PREFIX}rich-answer`] },
   { id: 'visual-bot-dash', name: 'Dash', preview: 'Weekly numbers are in: sign-ups up 12%, churn flat.', minutesAgo: 25,
     avatar: { kind: 'asset', value: 'cindy://avatar/preset/dash', fallbackText: 'D' } },
   { id: 'visual-bot-lizi', name: 'LiZi', preview: '这个 PR 我看完了，留了两条建议。', minutesAgo: 90,
-    avatar: { kind: 'asset', value: 'cindy://avatar/preset/lizi', fallbackText: 'L' } },
+    avatar: { kind: 'asset', value: 'cindy://avatar/preset/lizi', fallbackText: 'L' },
+    following: ['visual-running', `${UI_MOCK_ID_PREFIX}english`] },
   { id: 'visual-bot-xiaoman', name: '小满', preview: '明天上午十点的会已经帮你约好。', minutesAgo: 60 * 20,
     avatar: { kind: 'emoji', value: '🌾', fallbackText: '小' } },
   { id: 'visual-bot-research', name: 'Research Assistant', preview: 'Three sources disagree on the release date; details inside.', minutesAgo: 60 * 30,
@@ -52,7 +56,7 @@ export function teammateVisualFixture(channel: string, args: unknown[], now = FI
         avatar: bot.avatar,
         ...(bot.working ? { generation: { phase: 'replying', startedAt: now - MINUTE } } : {}),
       },
-      links: [],
+      links: (bot.following ?? []).map((sessionId) => ({ rel: 'following', target: { kind: 'session' as const, sessionId } })),
       revision: 'visual-1',
     })),
   } satisfies RemoteCollectionListResponse;

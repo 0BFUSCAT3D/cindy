@@ -436,8 +436,9 @@ function normalizeRemoteCollectionItem(
   const display = normalizeRemoteDisplay(item?.display);
   const revision = boundedString(item?.revision, 1_024);
   if (!item || !ref || ref.collectionId !== collectionId || !display || !revision) return null;
+  // A teammate row carries a link per open task it follows (the desktop sends at most 200).
   const links = Array.isArray(item.links)
-    ? item.links.slice(0, 64).flatMap((link) => {
+    ? item.links.slice(0, 256).flatMap((link) => {
         const normalized = normalizeRemoteLink(link);
         return normalized ? [normalized] : [];
       })
