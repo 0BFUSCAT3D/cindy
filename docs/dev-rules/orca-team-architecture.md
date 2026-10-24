@@ -437,7 +437,9 @@ Worker turn 被 vendor 报终止型 error，但 interrupted-turn auto-resume 仍
     排队消息的 accepted 回调要等目标排空队列才跑，此时发起它的那一轮早已结束；因此它只能复核
     交付级不变量（账号 epoch、会话行仍 active 且 `cleared_at` 未变、任务归属未变、权限档未被撤销、
     Worker 仍属于该 Lead 的活跃团队），不能复用轮次级凭证（本轮输入来源、`turnOrigin`）。
-    运行时被释放／重建不算撤销：会话行与权限按准入快照比对，不能比 live 会话实例。
+    运行时被释放／重建本身不算撤销：权限按持久化的 permission mode / Plan 与准入快照比对
+    （不能比 live 会话的 generation 计数——它随实例重建归零）；权限档正在切换（stable 快照为空）
+    时拒绝投递。独立 UI 的 done 确认不带调用方凭证，不取交付凭证。
     只有身份／归属／权限真的变了才取消，并按既有 rollback 恢复；accepted 里的状态写与广播
     失败仍走既有失败路径（簿记失败是否该取消投递是另一个议题，另单处理）。同步控制面（归档、结束团队、
     改名、切焦点、队列增删改）仍用轮次凭证。实现指针：`register.ts` 的 `captureOrcaPluginAuthority`（轮次）与

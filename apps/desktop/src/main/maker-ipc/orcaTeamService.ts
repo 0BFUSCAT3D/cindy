@@ -574,9 +574,14 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
   const captureDeferredAuthority = async (
     leadSessionId: string,
     opts?: { assertCurrent?: () => Promise<void>; assertDeliveryCurrent?: () => Promise<void> },
-  ): Promise<(() => Promise<void>) | undefined> => opts?.assertDeliveryCurrent
-    ?? await deps.captureDeliveryAuthority?.(leadSessionId).catch(() => undefined)
-    ?? opts?.assertCurrent;
+  ): Promise<(() => Promise<void>) | undefined> => {
+    // An independent UI acknowledgement carries no caller authority: it must keep the
+    // no-credential semantics, otherwise a later permission change strands the worker on done.
+    if (!opts?.assertCurrent && !opts?.assertDeliveryCurrent) return undefined;
+    return opts.assertDeliveryCurrent
+      ?? await deps.captureDeliveryAuthority?.(leadSessionId).catch(() => undefined)
+      ?? opts.assertCurrent;
+  };
 
   async function withWorkerTransition<T>(
     workerId: string,

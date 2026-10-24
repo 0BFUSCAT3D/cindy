@@ -15493,7 +15493,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const pluginId = receipt?.operation === 'create' && !hasRevokedPluginTaskOwnership(receipt) ? receipt.pluginId : null;
     const readSessionRow = async () => {
       const [row] = await epoch.client.drizzle
-        .select({ status: sessions.status, clearedAt: sessions.clearedAt })
+        .select({
+          status: sessions.status,
+          clearedAt: sessions.clearedAt,
+          permissionMode: sessions.permissionMode,
+          planModeEnabled: sessions.planModeEnabled,
+        })
         .from(sessions)
         .where(eq(sessions.id, leadSessionId))
         .limit(1);
@@ -15501,14 +15506,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     };
     const sessionAtCapture = await readSessionRow();
     const liveAtCapture = maker.getSession(leadSessionId);
-    // Permission generation counters are per Session instance, so only the persisted semantics
-    // are comparable across a released/rehydrated runtime.
+    // Permission baselines are persisted semantics: instance generation counters restart on
+    // rehydrate, so they can never be compared across a released runtime. Fall back to the row
+    // when the runtime has no stable snapshot at admission.
     const permissionAtCapture = liveAtCapture?.stablePermissionModeState && liveAtCapture.stablePlanModeState
       ? {
           mode: liveAtCapture.stablePermissionModeState.mode,
           planEnabled: liveAtCapture.stablePlanModeState.enabled,
         }
-      : null;
+      : sessionAtCapture
+        ? {
+            mode: sessionAtCapture.permissionMode,
+            planEnabled: sessionAtCapture.planModeEnabled,
+          }
+        : null;
     return async () => {
       if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED', 'Account changed');
       if (isAppSessionBoundaryPending()) throw new PluginTaskError('HOST_NOT_READY', 'Account is switching');
@@ -15518,16 +15529,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const row = await readSessionRow();
       if (!row || row.status === 'deleted' || row.clearedAt !== (sessionAtCapture?.clearedAt ?? null))
         throw new PluginTaskError('PERMISSION_DENIED', 'Orca task is no longer deliverable');
-      // An absent runtime is released or not rehydrated yet, never a revocation.
       const live = maker.getSession(leadSessionId);
-      if (live && permissionAtCapture) {
+      if (live) {
         const permission = live.stablePermissionModeState;
         const plan = live.stablePlanModeState;
-        // An in-flight mode/Plan switch (null stable state) is not observable as a revocation.
-        if (permission && plan
-          && (permission.mode !== permissionAtCapture.mode
-            || plan.enabled !== permissionAtCapture.planEnabled))
+        // A permission/Plan switch in flight is a live revocation: never start work on the old
+        // snapshot while the owner is changing it.
+        if (!permission || !plan)
+          throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions are changing');
+        if (permissionAtCapture && (permission.mode !== permissionAtCapture.mode
+          || plan.enabled !== permissionAtCapture.planEnabled))
           throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions changed before delivery');
+      } else if (permissionAtCapture
+        && (row.permissionMode !== permissionAtCapture.mode
+          || row.planModeEnabled !== permissionAtCapture.planEnabled)) {
+        // An absent runtime is released or not rehydrated yet, not a revocation by itself —
+        // but the persisted row is then the only authority left to compare against.
+        throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions changed before delivery');
       }
       if (pluginId === null) return;
       const task = await pluginTaskServiceForCurrentOwner!().get(pluginId, leadSessionId);

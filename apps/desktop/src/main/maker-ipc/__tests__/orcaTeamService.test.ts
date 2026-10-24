@@ -1645,6 +1645,33 @@ describe('OrcaTeamService', () => {
     expect(h.getWorker().status).toBe('idle');
   });
 
+  it('does not acquire delivery authority for an independent UI acknowledgement', async () => {
+    let turnRunning = true;
+    const captureDeliveryAuthority = vi.fn(async () => async () => {
+      throw new Error('Orca task is no longer deliverable');
+    });
+    const h = createDeps({
+      getLiveSession: vi.fn(() => ({ isTurnRunning: () => turnRunning })),
+      captureDeliveryAuthority,
+    });
+    h.setWorker(createWorker({ status: 'done' }));
+
+    // A renderer confirmation carries no caller guard, so it keeps the no-credential semantics.
+    await expect(
+      h.service.idleWorker({ callerLeadSessionId: 'lead-1', workerId: 'worker-1', expectedStatus: 'done' }),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'WORKER_STATE_CHANGED' });
+
+    turnRunning = false;
+    await h.service.handleWorkerTerminalTurn({
+      sessionId: 'worker-session-1',
+      status: 'done',
+      finalText: 'finished',
+    });
+
+    expect(captureDeliveryAuthority).not.toHaveBeenCalled();
+    expect(h.getWorker().status).toBe('idle');
+  });
+
   it('does not let an older provisional rollback overwrite a newer manual interrupt', async () => {
     let accepted: (() => void | Promise<void>) | undefined;
     let rollback: (() => void | Promise<void>) | undefined;
@@ -3777,7 +3804,9 @@ describe('Orca delivery authority', () => {
   const start = source.indexOf('  const captureOrcaDeliveryAuthority = async (');
   const end = source.indexOf('  async function discardWorkerWorktree(', start);
 
-  function compile(initialLine: { status: string; clearedAt: number | null } | null) {
+  type Row = { status: string; clearedAt: number | null; permissionMode: string; planModeEnabled: boolean };
+
+  function compile(initialLine: Row | null) {
     let line = initialLine;
     let live: unknown = null;
     const epoch = {
@@ -3807,7 +3836,8 @@ describe('Orca delivery authority', () => {
     };
     const factory = new Function(
       ...Object.keys(bindings),
-      ts.transpileModule(`${source.slice(start, end)}\nreturn captureOrcaDeliveryAuthority;`, {
+      ts.transpileModule(`${source.slice(start, end)}
+return captureOrcaDeliveryAuthority;`, {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText,
     )(...Object.values(bindings)) as (leadSessionId: string) => Promise<() => Promise<void>>;
@@ -3815,7 +3845,7 @@ describe('Orca delivery authority', () => {
       setLive: (session: unknown) => {
         live = session;
       },
-      setLine: (next: { status: string; clearedAt: number | null } | null) => {
+      setLine: (next: Row | null) => {
         line = next;
       },
       authorize: () => factory('lead-1'),
@@ -3826,9 +3856,16 @@ describe('Orca delivery authority', () => {
     stablePermissionModeState: { mode, generation },
     stablePlanModeState: { enabled: plan, generation },
   });
+  const row = (overrides: Partial<Row> = {}): Row => ({
+    status: 'active',
+    clearedAt: 100,
+    permissionMode: 'bypassPermissions',
+    planModeEnabled: false,
+    ...overrides,
+  });
 
   it('accepts a rehydrated runtime whose permission counters restarted', async () => {
-    const h = compile({ status: 'active', clearedAt: 100 });
+    const h = compile(row());
     h.setLive(permission('bypassPermissions', 3));
     const assertDelivery = await h.authorize();
 
@@ -3836,24 +3873,50 @@ describe('Orca delivery authority', () => {
     h.setLive(permission('bypassPermissions', 0));
     await expect(assertDelivery()).resolves.toBeUndefined();
 
-    // A released runtime is not a revocation either.
+    // A released runtime is not a revocation on its own: the persisted mode still matches.
     h.setLive(null);
     await expect(assertDelivery()).resolves.toBeUndefined();
   });
 
-  it('rejects delivery when the task or its permissions really changed', async () => {
-    const h = compile({ status: 'active', clearedAt: 100 });
+  it('rejects delivery while the owner is switching permissions or when the mode changed', async () => {
+    const h = compile(row());
     h.setLive(permission('bypassPermissions', 3));
     const assertDelivery = await h.authorize();
+
+    // Mid-switch: the stable snapshots disappear. Work must not start on the old snapshot.
+    h.setLive({
+      stablePermissionModeState: null,
+      stablePlanModeState: { enabled: false, generation: 0 },
+    });
+    await expect(assertDelivery()).rejects.toThrow('Task permissions are changing');
 
     h.setLive(permission('ask', 0));
     await expect(assertDelivery()).rejects.toThrow('Task permissions changed before delivery');
 
     h.setLive(permission('bypassPermissions', 0, true));
     await expect(assertDelivery()).rejects.toThrow('Task permissions changed before delivery');
+  });
+
+  it('compares the persisted mode when the runtime is gone', async () => {
+    const h = compile(row());
+    h.setLive(permission('bypassPermissions', 3));
+    const assertDelivery = await h.authorize();
+    h.setLive(null);
+
+    h.setLine(row({ permissionMode: 'ask' }));
+    await expect(assertDelivery()).rejects.toThrow('Task permissions changed before delivery');
+
+    h.setLine(row({ planModeEnabled: true }));
+    await expect(assertDelivery()).rejects.toThrow('Task permissions changed before delivery');
+  });
+
+  it('rejects delivery when the task really changed', async () => {
+    const h = compile(row());
+    h.setLive(permission('bypassPermissions', 3));
+    const assertDelivery = await h.authorize();
 
     h.setLive(permission('bypassPermissions', 0));
-    h.setLine({ status: 'active', clearedAt: 200 });
+    h.setLine(row({ clearedAt: 200 }));
     await expect(assertDelivery()).rejects.toThrow('Orca task is no longer deliverable');
 
     h.setLine(null);
@@ -3861,7 +3924,6 @@ describe('Orca delivery authority', () => {
   });
 
   it('is wired into the Orca team service', () => {
-    const teamService = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
-    expect(teamService).toMatch(/captureDeliveryAuthority:\s*\(leadSessionId\)\s*=>/);
+    expect(source).toMatch(/captureDeliveryAuthority:\s*\(leadSessionId\)\s*=>/);
   });
 });
