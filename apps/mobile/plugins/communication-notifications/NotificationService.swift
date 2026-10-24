@@ -21,7 +21,8 @@ final class NotificationService: UNNotificationServiceExtension {
     let content = request.content
     let category = content.userInfo["category"] as? String
     let isChat = category == "chat-message"
-    guard category == "session-done" || isChat,
+    let isGroup = isChat && (content.userInfo["conversationKind"] as? String) != "direct"
+    guard ["session-done", "session-error", "session-needs-reply"].contains(category ?? "") || isChat,
           let senderData = content.userInfo["sender"] as? [String: Any],
           let id = senderData["id"] as? String, !id.isEmpty, id.utf8.count <= 128,
           !content.title.isEmpty, !content.threadIdentifier.isEmpty else {
@@ -44,7 +45,7 @@ final class NotificationService: UNNotificationServiceExtension {
       recipients: nil,
       outgoingMessageType: .outgoingMessageText,
       content: message,
-      speakableGroupName: isChat ? INSpeakableString(spokenPhrase: content.title) : nil,
+      speakableGroupName: isGroup ? INSpeakableString(spokenPhrase: content.title) : nil,
       conversationIdentifier: content.threadIdentifier,
       serviceName: nil,
       sender: sender,

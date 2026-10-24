@@ -37,6 +37,15 @@ describe('direct Chat Server client', () => {
     expect(deleted.messages[0].quote).toMatchObject({ messageId: id(20), originalDeleted: true });
   });
 
+  it('opens a direct notification with the peer identity and no group leave control', () => {
+    const source = snapshot();
+    const peer = { ...source.members[0]!, id: id(12), kind: 'human' as const, name: 'Chris', state: 'joined' };
+    const view = chatGroupView({ snapshot: { ...source, room: { ...source.room, kind: 'direct', name: '' }, members: [...source.members, peer] },
+      messages: [message(20)], before: null }, source.members[0]!.id);
+    expect(view).toMatchObject({ conversationKind: 'direct', name: 'Chris', supportsGroupLeave: false });
+    expect(view.messages).toHaveLength(1);
+  });
+
   it('names the home computer of my own companions from the account actors, never of other members', () => {
     const mine = { id: id(12), kind: 'bot' as const, name: 'Mine', state: 'joined', ownerActorId: id(11), ownerName: '', avatar: null, role: 'member' as const };
     const theirs = { id: id(13), kind: 'bot' as const, name: 'Theirs', state: 'joined', ownerActorId: id(10), ownerName: '', avatar: null, role: 'member' as const };

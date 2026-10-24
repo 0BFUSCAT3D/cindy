@@ -80,6 +80,7 @@ vi.mock('electron', () => ({
   }),
   nativeImage: {
     createFromPath: () => ({ isEmpty: () => true }),
+    createFromBuffer: (bytes: Buffer) => ({ bytes, isEmpty: () => false }),
   },
 }));
 
@@ -162,7 +163,7 @@ async function freshService() {
   markSessionNeedsAttention.mockClear();
   sendMobileSessionNotify.mockReset().mockReturnValue(true);
   getMobileNotifyGeneration.mockClear();
-  latestMessageText.mockClear();
+  latestMessageText.mockReset().mockResolvedValue('');
   readSessionNotificationPreview.mockReset().mockImplementation(async (sessionId, includeReply = true) => {
     if (!includeReply) return {};
     const text = await latestMessageText(sessionId, 'assistant');
@@ -543,6 +544,7 @@ describe('notificationService — channels 分发', () => {
     await registeredHandlers.get('notification:show-session-event')!({}, {
       sessionId: 's1', title: 'Hello', kind, channels: { desktop: true, mobile: true },
     });
+    await vi.advanceTimersByTimeAsync(0);
     expect(notificationCtor).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(sendMobileSessionNotify).toHaveBeenCalledTimes(1);
@@ -605,40 +607,39 @@ describe('notificationService — channels 分发', () => {
     expect(sendMobileSessionNotify).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', teammateBotId: 'bot-1', teammateAvatar: { kind: 'preset', value: 'cindy' } }));
   });
 
-  it('routes a teammate approval push to the teammate chat without changing its title or fallback', async () => {
+  it.each(['error', 'needs-reply'] as const)('routes teammate %s with its actual identity and state, never an older answer', async (kind) => {
     const { initNotificationService } = await freshService();
     initNotificationService(baseDeps(makeFeishuIm('ou_owner')));
-    readSessionNotificationPreview.mockResolvedValue({ teammateName: 'Cindy', teammateBotId: 'bot-1' });
-    await invokeHandler({ sessionId: 's1', title: 'Hello', kind: 'needs-reply', channels: { desktop: false, feishu: false, mobile: true } });
+    readSessionNotificationPreview.mockResolvedValue({ teammateName: 'Cindy', teammateBotId: 'bot-1', teammateAvatar: { kind: 'jpeg', value: 'YQ==' } });
+    await invokeHandler({ sessionId: 's1', title: 'Hello', kind, channels: { desktop: true, feishu: false, mobile: true } });
     await flushAsync();
     expect(sendMobileSessionNotify).toHaveBeenCalledWith({
-      sessionId: 's1', title: 'Hello', kind: 'needs-reply', generation: 7, teammateBotId: 'bot-1',
+      sessionId: 's1', title: 'Cindy', kind, generation: 7, teammateBotId: 'bot-1', teammateAvatar: { kind: 'jpeg', value: 'YQ==' },
     });
+    expect(latestMessageText).not.toHaveBeenCalled();
+    expect(notificationCtor).toHaveBeenCalledWith(expect.objectContaining({ title: 'Cindy', icon: expect.objectContaining({ bytes: Buffer.from('a') }) }));
     // A failed identity read keeps the ordinary push.
     sendMobileSessionNotify.mockClear();
     readSessionNotificationPreview.mockRejectedValueOnce(new Error('read unavailable'));
-    await invokeHandler({ sessionId: 's2', title: 'Hello', kind: 'needs-reply', channels: { desktop: false, feishu: false, mobile: true } });
+    await invokeHandler({ sessionId: 's2', title: 'Hello', kind, channels: { desktop: false, feishu: false, mobile: true } });
     await flushAsync();
-    expect(sendMobileSessionNotify).toHaveBeenCalledWith({ sessionId: 's2', title: 'Hello', kind: 'needs-reply', generation: 7 });
+    expect(sendMobileSessionNotify).toHaveBeenCalledWith({ sessionId: 's2', title: 'Hello', kind, generation: 7 });
   });
 
-  it('does not let a slow teammate lookup spend the approval push preview window', async () => {
+  it('bounds a slow approval identity lookup without reusing the previous answer', async () => {
     const { initNotificationService } = await freshService();
     initNotificationService(baseDeps(makeFeishuIm('ou_owner')));
     vi.useFakeTimers();
     readSessionNotificationPreview.mockReturnValueOnce(new Promise(() => {}));
-    let releaseDrain!: () => void;
-    drainPersistQueue.mockReturnValueOnce(new Promise<void>((resolve) => { releaseDrain = resolve; }));
-    latestMessageText.mockResolvedValueOnce('要删除 build 目录吗？');
+    latestMessageText.mockResolvedValueOnce('上一轮已完成');
     await registeredHandlers.get('notification:show-session-event')!({}, {
       sessionId: 's1', title: 'Hello', kind: 'needs-reply', channels: { desktop: false, feishu: false, mobile: true },
     });
-    // The reply read starts without waiting for the routing lookup.
-    releaseDrain();
+    // A missing identity cannot indefinitely hide the action request.
     await vi.advanceTimersByTimeAsync(1_000);
     expect(sendMobileSessionNotify).toHaveBeenCalledTimes(1);
     expect(sendMobileSessionNotify).toHaveBeenCalledWith({
-      sessionId: 's1', title: 'Hello', kind: 'needs-reply', generation: 7, detail: '要删除 build 目录吗？',
+      sessionId: 's1', title: 'Hello', kind: 'needs-reply', generation: 7,
     });
   });
 
@@ -801,18 +802,18 @@ describe('notificationService — channels 分发', () => {
     expect(feishuIm.sendMarkdownText).not.toHaveBeenCalled();
   });
 
-  it('伙伴最终答复没有可读正文时飞书使用本地化新回复兜底', async () => {
+  it('伙伴纯图片回复使用本地化图片摘要而不是泛泛新回复', async () => {
     const { initNotificationService } = await freshService();
     const feishuIm = makeFeishuIm('ou_owner');
     initNotificationService(baseDeps(feishuIm));
     readSessionNotificationPreview.mockImplementation(async (_id, includeReply = true) => ({
       teammateName: 'Mika', eventId: 'turn:300:400',
-      ...(includeReply ? { reply: { clientId: 'final-2', text: '![image](https://example.com/chart.png)' } } : {}),
+      ...(includeReply ? { reply: { clientId: 'final-2', text: '![](https://example.com/chart.png)' } } : {}),
     }));
 
     await invokeHandler({ sessionId: 'bot-main', title: 'Old title', kind: 'done', channels: { desktop: false, feishu: true } });
 
-    expect(feishuIm.sendText).toHaveBeenCalledWith('ou_owner', 'Mika\n有新回复');
+    expect(feishuIm.sendText).toHaveBeenCalledWith('ou_owner', 'Mika\n图片');
     expect(feishuIm.sendMarkdownText).not.toHaveBeenCalled();
   });
 

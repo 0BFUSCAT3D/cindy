@@ -189,10 +189,12 @@ function isAttachmentDrag(event: DragEvent): boolean {
 
 export function BotGroupChatView() {
   const { groupId } = useParams();
-  return <BotGroupChatContent key={groupId ?? ''} groupId={groupId ?? ''} />;
+  const { search } = useLocation();
+  const direct = new URLSearchParams(search).get('conversationKind') === 'direct';
+  return <BotGroupChatContent key={`${groupId}:${direct}`} groupId={groupId ?? ''} direct={direct} />;
 }
 
-function BotGroupChatContent({ groupId }: { groupId: string }) {
+function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boolean }) {
   const { t, i18n } = useTranslation();
   const locale = i18n.language;
   const controlledBy = useControlledBy();
@@ -277,8 +279,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         // Older pages are not re-read, so their shares ask for the reply's current state.
         const shownShares = shown ? botGroupShownShares(displayed.older) : [];
         const result = sourceMessageIds.length || shownShares.length
-          ? await api.getBotGroup(groupId, { sourceMessageIds, ...(shownShares.length ? { shownShares } : {}) })
-          : await api.getBotGroup(groupId);
+          ? await api.getBotGroup(groupId, { ...(direct ? { conversationKind: 'direct' as const } : {}), sourceMessageIds, ...(shownShares.length ? { shownShares } : {}) })
+          : await api.getBotGroup(groupId, direct ? { conversationKind: 'direct' } : undefined);
         if (!isApplicable()) return;
         if (result.ok) {
           readOwner.current = owner;
@@ -304,7 +306,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           if (displayed.kind === 'ready' && displayed.group.id === groupId && result.group.messages.length > 0) {
             const latestFrom = Math.min(...result.group.messages.map((message) => message.sequence));
             const refreshed = await refreshPendingBotGroupAttachments(displayed.older, latestFrom, async (before) => {
-              const page = await api.getBotGroup(groupId, { beforeSequence: before });
+              const page = await api.getBotGroup(groupId, { ...(direct ? { conversationKind: 'direct' as const } : {}), beforeSequence: before });
               return page.ok && isCurrent() ? page.group.messages : null;
             });
             if (refreshed && isCurrent()) {
@@ -361,7 +363,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       for (let page = 0; remaining.length > 0 && page < targets.length; page += 1) {
         let messages: BotGroupMessageView[] | null = null;
         try {
-          const read = await api.getBotGroup(groupId, { beforeSequence: remaining[0]!.sequence + 1 });
+          const read = await api.getBotGroup(groupId, { ...(direct ? { conversationKind: 'direct' as const } : {}), beforeSequence: remaining[0]!.sequence + 1 });
           messages = read.ok ? read.group.messages : null;
         } catch {
           messages = null;
@@ -542,7 +544,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     const latest = readMessages.current.at(-1);
     if (current.kind === 'ready' && current.group.serverUnread && latest && readRequest.current !== latest.id) {
       readRequest.current = latest.id;
-      void window.electronAPI.maker.chatServer.manage({ groupId, action: { type: 'read', messageId: latest.id } })
+      void window.electronAPI.maker.chatServer.manage({ groupId, action: { type: 'read', messageId: latest.id, ...(direct ? { conversationKind: 'direct' as const } : {}) } })
         .then(result => { if (!result.ok && readRequest.current === latest.id) readRequest.current = null; })
         .catch(() => { if (readRequest.current === latest.id) readRequest.current = null; });
     }
@@ -580,10 +582,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     state.kind === 'ready' && (state.older.length > 0 ? state.olderHasMore : state.group.hasMoreBefore);
 
   const openSettings = useCallback(() => {
+    if (direct) return;
     const search = new URLSearchParams(location.search);
     search.set(BOT_GROUP_SETTINGS_PARAM, '1');
     navigate(`${location.pathname}?${search.toString()}`);
-  }, [location.pathname, location.search, navigate]);
+  }, [direct, location.pathname, location.search, navigate]);
 
   const separator = t('bots.groupChat.memberSeparator');
   const [threadRootId, setThreadRootId] = useState<string | null>(null);
@@ -662,16 +665,17 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       <div ref={threadHeaderRef} data-testid="bot-group-content-header" className="flex h-full w-full min-w-0 items-center gap-2 pr-2">
         <button
           type="button"
-          onClick={openSettings}
+          onClick={direct ? undefined : openSettings}
+          disabled={direct}
           className="flex min-w-0 items-center gap-2 rounded-xl px-2 py-1 text-left hover:bg-[var(--surface-hover)]"
           style={WINDOW_NO_DRAG_STYLE}
         >
-          <BotGroupAvatarStack members={members} />
+          <BotGroupAvatarStack members={direct ? members.filter(member => !member.isSelf) : members} />
           <span className="flex min-w-0 flex-col">
             <span className="min-w-0 truncate text-13 font-medium leading-5 text-[var(--text-primary)]">{headerGroup.name}</span>
             <span className="flex min-w-0 items-center gap-2 text-11 leading-4 text-[var(--text-tertiary)]">
               <span className="hidden min-w-0 items-center gap-1 truncate sm:flex" title={names}>
-                {members.map((member, index) => (
+                {(direct ? members.filter(member => !member.isSelf) : members).map((member, index) => (
                   <Fragment key={member.botId}>
                     {index > 0 ? <span aria-hidden>{separator}</span> : null}
                     <span className="shrink-0">{botGroupMemberDisplayName(member)}</span>
@@ -685,7 +689,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         </button>
         <div className="ml-auto flex shrink-0 items-center">
           {headerGroup.serverBacked && headerGroup.canInvite && <ChatInviteButton groupId={headerGroup.id} />}
-          <Tip text={settingsLabel}>
+          {!direct && <Tip text={settingsLabel}>
             <button
               type="button"
               onClick={openSettings}
@@ -695,11 +699,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             >
               <Settings2 size={15} />
             </button>
-          </Tip>
+          </Tip>}
         </div>
       </div>
     );
-  }, [headerGroup?.name, headerGroup?.id, headerGroup?.serverBacked, headerGroup?.canInvite, members, organizerBotId, headerStatus, openSettings, separator, settingsLabel]);
+  }, [direct, headerGroup?.name, headerGroup?.id, headerGroup?.serverBacked, headerGroup?.canInvite, members, organizerBotId, headerStatus, openSettings, separator, settingsLabel]);
   useRegisterContentHeader(header);
 
   const running = group?.round.status === 'running';
@@ -752,7 +756,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     setLoadingOlder(true);
     try {
       const sourceMessageIds = loaded.map(message => message.id);
-      const result = await api.getBotGroup(groupId, { beforeSequence: before, sourceMessageIds });
+      const result = await api.getBotGroup(groupId, { ...(direct ? { conversationKind: 'direct' as const } : {}), beforeSequence: before, sourceMessageIds });
       if (!isDataOwnerGenerationCurrent(owner)) return null;
       if (!result.ok) {
         toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
@@ -1208,13 +1212,13 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   locale={locale}
                   shareScope={shareScope}
                   sharing={sharing}
-                  reactionGroupId={group.serverBacked ? group.id : undefined}
+                  reactionGroupId={group.serverBacked && !direct ? group.id : undefined}
                   reactionRevision={messageReactionRevision(group, message.id)}
                   readOnly={Boolean(group.archived || group.dissolvedAt)}
                   quoteDisplay={quoteDisplays.get(message.id)?.display}
                   onLocateQuote={onLocateQuote}
                   onQuote={quotable ? onQuote : undefined}
-                  onOpenThread={group.serverBacked && !message.pending ? onOpenThread : undefined}
+                  onOpenThread={group.serverBacked && !direct && !message.pending ? onOpenThread : undefined}
                   onChanged={onChanged}
                   highlighted={highlightId === message.id}
                   focusable={jumpTarget === message.id || highlightId === message.id}
@@ -1302,6 +1306,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
         getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived || group.dissolvedAt ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t(group.dissolvedAt ? 'bots.groupChat.lifecycle.dissolved' : 'bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
         groupId={group.id}
+        conversationKind={direct ? 'direct' : undefined}
         draftKey={attachmentScope}
         members={group.members}
         running={running}

@@ -27,13 +27,13 @@ class CindyChatNotificationsModule : Module() {
       appContext.reactContext?.getSharedPreferences("cindy-chat-background", android.content.Context.MODE_PRIVATE)
         ?.edit()?.putBoolean("preview", enabled)?.apply()
     }
-    AsyncFunction("configure") { owner: String, actor: String, baseUrl: String, token: String, title: String, stop: String, preview: Boolean ->
+    AsyncFunction("configure") { owner: String, actor: String, baseUrl: String, token: String, title: String, stop: String, preview: Boolean, language: String? ->
       val context = appContext.reactContext ?: throw Exception("CHAT_CONTEXT_UNAVAILABLE")
       val endpoint = URI(baseUrl)
       require(endpoint.scheme == "https" && endpoint.host != null && endpoint.userInfo == null && endpoint.query == null && endpoint.fragment == null) { "CHAT_ENDPOINT_INVALID" }
       require(token.isNotBlank() && token.length <= 16000 && actor.length <= 128 && owner.length <= 512)
       ChatDelivery.identity(context, actor)
-      ChatConnectionService.configure(ChatConnection(owner, actor, baseUrl.trimEnd('/'), token, title, stop, preview))
+      ChatConnectionService.configure(ChatConnection(owner, actor, baseUrl.trimEnd('/'), token, title, stop, preview, language ?: "en"))
       // Only a visible activity can initiate the foreground service. Token updates
       // from an already-running service never start/restart an application.
       if (!ChatConnectionService.running) {

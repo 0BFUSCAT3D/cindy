@@ -8,7 +8,7 @@ import { readPushEnabled, readPushPreviewEnabled, subscribePushPreferences } fro
 /** The existing auth owner rotates tokens; Android receives only a current in-memory copy. */
 export function ChatBackgroundBridge() {
   const api = useChatClient();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   useEffect(() => {
     const native = Native;
     if (!native) return;
@@ -32,7 +32,7 @@ export function ChatBackgroundBridge() {
         const [base, token] = await Promise.all([api.endpoint(), api.token()]);
         if (cancelled || !api.current() || !token) return;
         await native.configure(api.owner, actor, base, token,
-          t('settings.notifications.backgroundActive'), t('settings.notifications.backgroundStop'), preview);
+          t('settings.notifications.backgroundActive'), t('settings.notifications.backgroundStop'), preview, i18n.language);
       } catch { /* Foreground and the service's next token refresh retry transient failures. */ }
       finally {
         refreshing = false;
@@ -48,6 +48,6 @@ export function ChatBackgroundBridge() {
     const background = subscribeChatBackground(() => { void update(); });
     void update();
     return () => { cancelled = true; state.remove(); refresh.remove(); prefs(); background(); void native.stop(); void native.setIdentity(''); };
-  }, [api, t]);
+  }, [api, t, i18n.language]);
   return null;
 }

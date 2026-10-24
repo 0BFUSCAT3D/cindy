@@ -43,8 +43,7 @@ object ChatDelivery {
       prefs.edit().putString("ids", next.toString()).apply()
     }
     val display = data.toMutableMap()
-    if (body.optString("category") == "chat-message" &&
-      !context.getSharedPreferences("cindy-chat-background", Context.MODE_PRIVATE).getBoolean("preview", true)) {
+    if (!context.getSharedPreferences("cindy-chat-background", Context.MODE_PRIVATE).getBoolean("preview", true)) {
       body.remove("sender"); body.remove("senderName"); body.remove("body")
       display["body"] = body.toString(); display["message"] = ""
     }
@@ -65,7 +64,8 @@ class ChatNotificationsService : NotificationsService() {
       val data = content.body ?: return original
       val chat = data.optString("category") == "chat-message"
       val sender = data.optJSONObject("sender")
-      if (!chat && (data.optString("category") != "session-done" || sender == null)) return original
+      if (!chat && (data.optString("category") !in listOf("session-done", "session-error", "session-needs-reply") || sender == null)) return original
+      val group = chat && data.optString("conversationKind") != "direct"
       val name = if (chat) data.optString("senderName") else content.title ?: ""
       if (name.isBlank()) return original
       val person = Person.Builder().setName(name).setKey(sender?.optString("id") ?: name)
@@ -75,7 +75,7 @@ class ChatNotificationsService : NotificationsService() {
         .setCategory(NotificationCompat.CATEGORY_MESSAGE).setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
         .setOnlyAlertOnce(true)
         .setStyle(NotificationCompat.MessagingStyle(Person.Builder().setName("Cindy").build())
-          .setConversationTitle(if (chat) content.title else null).setGroupConversation(chat)
+          .setConversationTitle(if (group) content.title else null).setGroupConversation(group)
           .addMessage(text, notification.originDate.time.takeIf { it > 0 } ?: System.currentTimeMillis(), person)).build()
     }
   }

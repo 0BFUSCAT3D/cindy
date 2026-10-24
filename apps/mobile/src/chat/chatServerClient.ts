@@ -204,7 +204,9 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
     const member = members.find(candidate => candidate.id === failure.botId);
     return [{ ...failure, botName: member ? memberName(member) : '' }];
   });
-  return { id: room.id, name: room.name, serverBacked: true, supportsGroupLeave: true, dissolvedAt: room.dissolved_at ?? null, archived: room.archived, selfActorId: selfId,
+  return { id: room.id, conversationKind: room.kind === 'direct' ? 'direct' : 'group',
+    name: room.kind === 'direct' ? active.filter(member => member.id !== selfId).map(memberName).join(', ') || room.name : room.name,
+    serverBacked: true, supportsGroupLeave: room.kind !== 'direct', dissolvedAt: room.dissolved_at ?? null, archived: room.archived, selfActorId: selfId,
     revision: room.revision, members: memberViews, replyMode: room.response_mode, speakingMode: room.speaking_mode,
     organizerBotId: room.organizer_id ?? null, projectDir: null, projectDirName: null,
     createdAt: Date.parse(room.created_at), updatedAt: Date.parse(room.updated_at),

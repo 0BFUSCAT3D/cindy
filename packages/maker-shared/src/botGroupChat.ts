@@ -446,6 +446,8 @@ export interface BotGroupRoundView {
 }
 
 export interface BotGroupSummary {
+  /** Explicit direct-message landing; group management remains unavailable. */
+  conversationKind?: 'direct' | 'group';
   serverBacked?: boolean;
   /** Authoritative unread window for this account, including followed thread replies. */
   serverUnread?: { count: number; mentioned: boolean };
@@ -599,6 +601,7 @@ export interface BotGroupSetMembersInput {
 }
 
 export interface BotGroupSendInput {
+  conversationKind?: 'direct';
   groupId: string;
   text: string;
   mentions: BotGroupMention;
@@ -627,6 +630,7 @@ export interface BotGroupPlanEditInput extends BotGroupPlanActionInput {
 }
 
 export interface BotGroupGetOptions {
+  conversationKind?: 'direct';
   /** Load messages with a smaller sequence (older page). */
   beforeSequence?: number;
   limit?: number;
@@ -801,7 +805,7 @@ export interface ChatInvitePreview {
   reusable?: boolean;
 }
 export type ChatGroupAction =
-  | { type: 'read'; messageId: string }
+  | { type: 'read'; messageId: string; conversationKind?: 'direct' }
   | { type: 'update'; name: string; topic: string; description: string; expectedRevision: number; responseMode?: BotGroupReplyMode; speakingMode?: BotGroupSpeakingMode }
   | { type: 'nickname'; actorId: string; nickname: string | null }
   | { type: 'avatar'; actorId: string; avatar: { type: 'keep' | 'reset' } | { type: 'set'; data: Uint8Array; mimeType: string } }

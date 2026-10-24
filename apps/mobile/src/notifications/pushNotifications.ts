@@ -1,3 +1,4 @@
+import { i18n } from '@/i18n';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import type { ClientEndpointRegion } from '@cindy/maker-shared/client-endpoints';
@@ -200,7 +201,7 @@ function pushTargets(realm: ClientEndpointRegion) {
 }
 async function mutatePushTokens(apiFetch: AuthedApiFetch, realm: ClientEndpointRegion, method: 'PUT' | 'DELETE', body?: unknown) {
   const results = await Promise.allSettled(pushTargets(realm).map(async target => {
-    try { await apiFetch(target.path, { baseUrl: target.baseUrl, method, ...(body ? { body: target.optional ? body : Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'preview')) } : {}) }); }
+    try { await apiFetch(target.path, { baseUrl: target.baseUrl, method, headers: { 'Accept-Language': i18n.language || 'en' }, ...(body ? { body } : {}) }); }
     catch (error) {
       // An older chat server can roll forward independently of existing task pushes.
       if (target.optional && [404, 405].includes((error as { status?: number }).status ?? 0)) return;

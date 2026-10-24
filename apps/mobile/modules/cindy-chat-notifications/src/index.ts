@@ -1,6 +1,6 @@
 import { requireOptionalNativeModule } from 'expo-modules-core';
 export interface ChatNotificationsNative {
-  configure(owner: string, actor: string, baseUrl: string, accessToken: string, title: string, stopLabel: string, preview: boolean): Promise<void>;
+  configure(owner: string, actor: string, baseUrl: string, accessToken: string, title: string, stopLabel: string, preview: boolean, language?: string): Promise<void>;
   stop(): Promise<void>;
   isPaused(): Promise<boolean>;
   resume(): Promise<void>;

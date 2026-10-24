@@ -1,3 +1,4 @@
+import { richAnswerText } from '@cindy/maker-shared/rich-answer';
 import { normalizeMathDelimiters } from '@cindy/maker-shared/math-markdown';
 import {
   BARE_HTTP_URL_RE_SOURCE,
@@ -71,7 +72,7 @@ export type MobileMarkdownBlock =
 /** Plain summaries share the message parser, keeping labels and omitting link destinations. */
 export function mobileMarkdownPreviewText(markdown: string): string {
   const inlineText = (inlines: MobileMarkdownInline[]) => inlines.map(inline => inline.type === 'image' ? inline.alt : inline.text).join('');
-  return parseMobileMarkdown(markdown).map(block => {
+  return parseMobileMarkdown(richAnswerText(markdown)).map(block => {
     if ('inlines' in block) return inlineText(block.inlines);
     if (block.type === 'table') return [...block.header, ...block.rows.flatMap(row => row.cells)].map(inlineText).join(' ');
     return block.text;

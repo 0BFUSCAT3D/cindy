@@ -72,7 +72,7 @@ import {
   BotGroupDuoAvatar,
   useBotGroupIdentities,
 } from './BotGroupAvatars';
-import { CHAT_HEADER_BLUR_FADE_INSIDE, ChatIdentityHeader } from './ChatIdentityHeader';
+import { CHAT_HEADER_MARK_SIZE, CHAT_HEADER_BLUR_FADE_INSIDE, ChatIdentityHeader } from './ChatIdentityHeader';
 import { SessionHeaderNativeBlur } from './SessionHeaderNativeControls';
 import { CompanionEntering, CompanionFadeIn } from './CompanionEntering';
 import { BotGroupComposer, type BotGroupSendInput } from './BotGroupComposer';
@@ -361,13 +361,15 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
   };
 
   const title = group?.name ?? (cachedRow ? resolveRemoteText(cachedRow.item.display.title, i18n.language) : '');
-  const memberLine = group
+  const direct = group?.conversationKind === 'direct';
+  const peer = direct ? group.members.find(member => !member.isSelf) : undefined;
+  const memberLine = direct ? '' : group
     ? botGroupMemberNames(group.members, t('groupChat.memberSeparator'))
     : cachedRow?.item.display.subtitle ? resolveRemoteText(cachedRow.item.display.subtitle, i18n.language) : '';
   const headerMembers = group ? group.members.map((member) => identityFor(member.botId, member.name)) : [];
 
   const header = <ChatIdentityHeader testIDPrefix="botGroup" settingsTestID="botGroup.settingsButton" nativeHeader={nativeHeader}
-    mark={<BotGroupDuoAvatar deviceId={deviceId} members={headerMembers} online={chat.online} variant="header"
+    mark={peer ? <BotGroupAvatar deviceId={deviceId} identity={identityFor(peer.botId, peer.name)} size={CHAT_HEADER_MARK_SIZE} online={chat.online} /> : <BotGroupDuoAvatar deviceId={deviceId} members={headerMembers} online={chat.online} variant="header"
       working={group?.round.status === 'running'} />}
     title={title}
     subtitle={threadRootId ? t('message.renderer.reply') : memberLine}
@@ -375,7 +377,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
     identityHint={t('groupChat.settings.open')}
     controlsReady={!!group}
     onBack={threadRootId ? () => router.replace(`/companions/groups/${groupId}?messageId=${threadRootId}` as never) : leave}
-    onOpenSettings={() => setSettings(true)}
+    onOpenSettings={direct ? undefined : () => setSettings(true)}
     settingsLabel={t('groupChat.settings.open')} />;
 
   const offlineNote = group && !chat.online
@@ -482,7 +484,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
       {header}
       {body}
     </>}
-    {group ? <BotGroupSettingsSheet readOnly={chat.server} visible={settings} group={group} host={host} identityFor={identityFor} online={chat.online}
+    {group && !direct ? <BotGroupSettingsSheet readOnly={chat.server} visible={settings} group={group} host={host} identityFor={identityFor} online={chat.online}
       act={actFromSettings} onClose={() => setSettings(false)}
       onRefresh={chat.reload}
       onClosed={() => { if (leaveAfterSettings.current) { leaveAfterSettings.current = false; leave(); } }}

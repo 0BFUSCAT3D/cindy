@@ -24,7 +24,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 internal data class ChatConnection(val owner: String, val actor: String, val base: String, val token: String,
-  val title: String, val stopLabel: String, val preview: Boolean)
+  val title: String, val stopLabel: String, val preview: Boolean, val language: String = "en")
 
 /** User-visible, opt-in socket. No boot receiver, hidden restart or stored access token. */
 class ChatConnectionService : Service() {
@@ -108,7 +108,7 @@ class ChatConnectionService : Service() {
   private fun current(config: ChatConnection) = !stopped && active === config && configuration?.owner == config.owner
   private fun get(config: ChatConnection, path: String): String {
     check(current(config))
-    http.newCall(Request.Builder().url(config.base + "/v1" + path).header("Authorization", "Bearer ${config.token}").build()).execute().use { response ->
+    http.newCall(Request.Builder().url(config.base + "/v1" + path).header("Authorization", "Bearer ${config.token}").header("Accept-Language", config.language).build()).execute().use { response ->
       if (response.code == 401) handler.post { refreshRequested?.invoke() }
       check(response.isSuccessful) { "CHAT_REQUEST_FAILED" }
       val body = response.body ?: throw Exception("CHAT_EMPTY_RESPONSE")

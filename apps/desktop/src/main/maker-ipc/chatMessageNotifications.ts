@@ -4,6 +4,8 @@ export interface ChatMessageNotification {
   groupName: string;
   messageId: string;
   threadRootId?: string;
+  conversationKind?: 'direct' | 'group';
+  threadName?: string;
   senderName: string;
   avatar: string;
   preview: string;
