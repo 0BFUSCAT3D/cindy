@@ -108,5 +108,8 @@ docs/dev-rules/mobile-development.md 的「冷更边界」。 -->
 - [ ] 每个 commit 都带 DCO 签名（`git commit -s`，见 [DCO](../DCO)）
 - [ ] UI 改动已在「UI 变化」注明引用的设计规范章节（不涉及 UI 则跳过）
 - [ ] 未提交凭证、令牌或授权文件
+<!-- 扩大第三方 OAuth scope 或同类平台授权时勾选，并在下方列出新增 scope、原因与平台审核状态。
+未扩大则留空。合并条件见 docs/dev-rules/development-workflow.md 的「第三方平台授权」。 -->
+- [ ] 是否扩大第三方 OAuth 授权范围（列出 scope 与平台审核状态）
 - [ ] 已核对受影响的文档，行为变化涉及的旧结论已同步修订（不涉及则无需修改文档）
 - [ ] 已确认测试结果或说明未执行原因

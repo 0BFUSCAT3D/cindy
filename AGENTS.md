@@ -175,6 +175,9 @@
   或修改 device-link 的重试／超时／断链恢复逻辑前，必须先读
   `docs/dev-rules/remote-and-mobile-adaptation.md`；其中恢复路径改动必须回答该文件的
   「故障半径三问」。
+- 新增或扩大第三方 OAuth scope，或同类会被平台安全审核卡住的授权前，必须先读
+  `docs/dev-rules/development-workflow.md` 的「第三方平台授权」：平台尚未批准的不合，
+  其余改动照旧。
 - 在 Cindy 内嵌 worktree 会话里工作、准备提交或直推、或做 code review 前，必须先读
   `docs/dev-rules/development-workflow.md`。
 

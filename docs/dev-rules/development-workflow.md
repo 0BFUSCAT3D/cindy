@@ -1,12 +1,12 @@
 # 开发工作流：worktree、提 PR 与 Review
 
 > **状态**：权威开发规则（authoritative）
-> **读取时机**：在 Cindy 内嵌的 worktree 会话里工作、准备提交或直推、或做 code review
-> 之前
+> **读取时机**：在 Cindy 内嵌的 worktree 会话里工作、准备提交或直推、做 code review，
+> 或新增、扩大第三方 OAuth 授权范围之前
 
 本文细化根 [`../../AGENTS.md`](../../AGENTS.md) 的「通用工作流程」「Git 与交付」两节，补上
-worktree 会话契约、直推 `main` 的额外门禁与 review 严重度口径，不重复根文件已有的通用
-流程。
+worktree 会话契约、直推 `main` 的额外门禁、第三方平台授权与 review 严重度口径，不重复根文件
+已有的通用流程。
 
 ## 1. Dogfooding：在本仓 worktree 会话里工作
 
@@ -121,6 +121,20 @@ worktree 建成空目录或自动切到项目根继续修改代码。
 - **直推 `main` 的额外门禁**：push 前由独立 reviewer 对最终 diff 做一次对抗性 review，对照
   `docs/` 下规则找实际问题；发现 P0／P1 必须先修复并重新 review，直到没有 P0／P1。commit
   可以先创建，但 push 的必须是 review 通过的最终 commit。
+
+### 第三方平台授权
+
+Cindy 主程序用共用的 OAuth 应用（如 Google）申请授权。新增或扩大授权范围（例如通讯录的
+读取或修改）会触发平台安全审核，须先在平台侧申请并获得批准。
+
+- 任何新增或扩大第三方 OAuth scope，或同类会被平台安全审核卡住的授权，合并前由维护者确认
+  新授权已在平台批准。PR 说明写清新增哪些 scope、为什么需要、平台审核状态。尚未批准的先
+  不合；批准后更新该说明，再合并。
+- 向平台申请时，把近期可预见要用的 scope 一次规划，包括插件仓
+  makecindy/cindy-official-plugins 里依赖宿主的需求，避免反复触发审核。用不上的不申请。
+  该仓的对应规则见
+  [cindy-official-plugins#220](https://github.com/makecindy/cindy-official-plugins/pull/220)。
+- 这条等待只用于会被平台安全审核卡住的授权变动。其余改动按原有流程合并。
 
 ## 3. Review 严重度口径
 
