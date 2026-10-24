@@ -10781,11 +10781,12 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "million": "百萬",
         "free": "免費",
         "estimated": "約 {{price}}",
         "startingAt": "{{price}} 起",
         "units": {
-          "token": "token",
+          "token": "tokens",
           "character": "字元",
           "image": "張",
           "second": "秒",
@@ -10865,9 +10866,10 @@
         "stt": "語音轉寫",
         "realtime": "即時語音",
         "embedding": "向量",
+        "decision": "決策",
         "compression": "壓縮",
         "ungrouped": "未分組",
-        "other": "其它"
+        "other": "其他"
       },
       "search": {
         "placeholder": "搜尋 {{source}} 的模型…",

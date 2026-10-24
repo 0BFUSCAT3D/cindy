@@ -10781,11 +10781,12 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "million": "100만",
         "free": "무료",
         "estimated": "약 {{price}}",
         "startingAt": "{{price}}부터",
         "units": {
-          "token": "토큰",
+          "token": "tokens",
           "character": "문자",
           "image": "장",
           "second": "초",
@@ -10866,6 +10867,7 @@
         "stt": "음성 인식",
         "realtime": "실시간 음성",
         "embedding": "임베딩",
+        "decision": "의사결정",
         "compression": "압축",
         "ungrouped": "미분류",
         "other": "기타"

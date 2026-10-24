@@ -10816,6 +10816,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "million": "1M",
         "free": "Free",
         "estimated": "About {{price}}",
         "startingAt": "From {{price}}",
@@ -10901,6 +10902,7 @@
         "stt": "Speech to Text",
         "realtime": "Realtime Audio",
         "embedding": "Embeddings",
+        "decision": "Decision",
         "compression": "Compression",
         "ungrouped": "Ungrouped",
         "other": "Other"
