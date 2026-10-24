@@ -12283,6 +12283,8 @@ function SessionComposerInput({
     <>
       {visibleRecommendation ? (
         <View style={{ paddingHorizontal: composerTouchLayout.composerPaddingHorizontal }}>
+          {/* 推荐条的右滑是 RNGH Pan(关闭提示),iOS 26 整屏返回会抢走它并退出会话;显示期间只保留边缘返回。 */}
+          <Stack.Screen options={{ fullScreenGestureEnabled: false }} />
           <PromptRecommendation
             key={`${sessionId}:${visibleRecommendation}`}
             prompt={visibleRecommendation}
