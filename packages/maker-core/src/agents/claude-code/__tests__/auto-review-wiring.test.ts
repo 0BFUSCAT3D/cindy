@@ -322,8 +322,8 @@ describe('Auto-review wiring: native first, Cindy fallback', () => {
     const { handle, preToolUse } = await startSession('auto', {
       providerId: 'anthropic',
       authSource: 'oauth',
-      mcpProviderNames: ['custom_prompt_mcp'],
-      mcpToolApprovalPolicy: () => 'prompt',
+      mcpProviderNames: ['custom_prompt_mcp', 'cindy_orca'],
+      mcpToolApprovalPolicy: ({ serverName }) => (serverName === 'cindy_orca' ? 'auto-approve' : 'prompt'),
     });
     await handle.send({ type: 'user', content: 'group request' }, {
       turnPermissionPolicy: {
@@ -335,7 +335,9 @@ describe('Auto-review wiring: native first, Cindy fallback', () => {
     expect(handle.getAutoReviewOwner?.()).toBe('cindy');
     expect(await preToolUse('Bash', { command: 'npm test' })).toEqual(['ask']);
     expect(await preToolUse('mcp__custom_prompt_mcp__write_record', { value: 1 })).toEqual(['ask']);
-    expect(await preToolUse('Read', { file_path: 'README.md' })).toEqual([]);
+    // A channel policy outranks trusted-MCP approval and read-only shortcuts.
+    expect(await preToolUse('Read', { file_path: 'README.md' })).toEqual(['ask']);
+    expect(await preToolUse('mcp__cindy_orca__create_workers', { workers: [] })).toEqual(['ask']);
     await handle.close();
   });
 

@@ -2215,10 +2215,9 @@ export class ClaudeCodeAgent extends BaseAgent {
       });
       const isMcp = resolveMcpToolTarget(toolName, registeredMcpServerNames) !== null;
       const mcpPolicy = isMcp ? classifyMcpApprovalPolicy(toolName, pre.tool_input) : null;
-      // Requester authority (owner / group guest) is only known to Cindy.
-      if (activeTurnPermissionPolicy && !isReadOnlyClaudeTool(toolName) && mcpPolicy !== 'auto-approve') {
-        return decide('ask', 'Cindy reviews tool calls in channel turns.');
-      }
+      // Requester authority (owner / group guest) and forceConfirmToolCall are only known to
+      // Cindy, and a channel policy outranks trusted-MCP approval: route every call to canUseTool.
+      if (activeTurnPermissionPolicy) return decide('ask', 'Cindy reviews tool calls in channel turns.');
       if (mcpPolicy === 'auto-approve') return decide('allow', 'Trusted Cindy tool.');
       if (mcpPolicy === 'prompt-each-time') return decide('ask', 'This tool requires Cindy confirmation.');
       return { continue: true };

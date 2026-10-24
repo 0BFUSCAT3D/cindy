@@ -139,6 +139,7 @@ export function composeInteractionCard(req: InteractionRequest): ComposedInterac
   const inputSummary = action.kind === 'tool'
     ? summarizeInput(model.input)
     : truncate(action.preview, HOOK_PERMISSION_INPUT_SUMMARY_MAX);
+  const handoff = autoReviewUnavailablePromptLine(req) !== null;
   const body = [
     permissionPromptDescription(req) ?? '',
     autoReviewUnavailablePromptLine(req) ?? '',
@@ -154,13 +155,14 @@ export function composeInteractionCard(req: InteractionRequest): ComposedInterac
       body,
       buttons: [
         { id: 'perm:allow', label: '允许一次', style: allowOnce.style },
-        { id: 'perm:always', label: '本任务总是允许', style: allowAlways.style },
+        // Auto-review handoffs (AI ask or unavailable) only ever allow this one call.
+        ...(handoff ? [] : [{ id: 'perm:always', label: '本任务总是允许', style: allowAlways.style }]),
         { id: 'perm:deny', label: '拒绝', style: deny.style },
       ],
     },
     decisions: new Map<string, InteractionDecision>([
       ['perm:allow', allowOnce.decision],
-      ['perm:always', allowAlways.decision],
+      ...(handoff ? [] : [['perm:always', allowAlways.decision] as [string, InteractionDecision]]),
       ['perm:deny', deny.decision],
     ]),
     defaultDecision: model.buildDefaultDecision(TIMEOUT_REASON),

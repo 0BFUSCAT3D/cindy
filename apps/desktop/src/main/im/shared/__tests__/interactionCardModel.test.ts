@@ -434,7 +434,10 @@ describe('跨实现一致性 — IM cardBuilders vs hook composeInteractionCard'
     const im = cards.buildPermissionCard(request);
     expect(im.body).toContain('自动审批需要你决定：这会删除所有 iOS 模拟器，你只让我排查键盘问题。');
     expect(im.buttons.map((b) => b.id)).toEqual(['permission:allow:once', 'permission:deny']);
-    expect(composeInteractionCard(request)?.card.body).toContain('自动审批需要你决定：');
+    const hook = composeInteractionCard(request);
+    expect(hook?.card.body).toContain('自动审批需要你决定：');
+    expect(hook?.card.buttons.map((b) => b.id)).toEqual(['perm:allow', 'perm:deny']);
+    expect(hook?.decisions.has('perm:always')).toBe(false);
   });
 
   it('安全默认: IM cancelPending 与 hook defaultDecision 同形(只有 reason 由渠道给)', async () => {
