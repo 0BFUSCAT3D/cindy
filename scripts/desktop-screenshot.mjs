@@ -136,7 +136,7 @@ export async function screenshot(client, options, local, { capture = params => c
     const audit = async () => {
       if (!options.mask) return;
       const result = await evalPage(`window[${JSON.stringify(key)}]?.audit()`);
-      if (result?.uncheckedFrames) throw new Error(`存在无法核验身份的可见嵌入内容（${result.uncheckedFrames} 处），未写出截图；请改用未登录的模拟沙箱，或先关闭该预览。`);
+      if (result?.uncheckedFrames) throw new Error(`存在无法核验身份的可见嵌入或画布内容（${result.uncheckedFrames} 处），未写出截图；请改用未登录的模拟沙箱，或先关闭该预览。`);
       if (!result || result.fault || result.residual) throw new Error(`身份自查未通过（残留 ${result?.residual ?? '未知'} 项），未写出截图。`);
     };
     await audit();

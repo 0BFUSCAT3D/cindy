@@ -292,7 +292,7 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
         if (apply) change(node, '#text', avatarInitial ? '●' : replacer.replace(node.nodeValue));
         else residual += avatarInitial ? 1 : replacer.count(node.nodeValue);
       } else if (node.nodeType === Node.ELEMENT_NODE) {
-        if (!apply && ['IFRAME', 'FRAME', 'WEBVIEW'].includes(node.tagName)) {
+        if (!apply && ['IFRAME', 'FRAME', 'WEBVIEW', 'CANVAS'].includes(node.tagName)) {
           const box = node.getBoundingClientRect();
           if (node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && box.width > 0 && box.height > 0
             && box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight) uncheckedFrames++;
