@@ -62,7 +62,7 @@ import { readRemoteCollectionCache } from '@/device-link/remoteResourceAvailabil
 import type { RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
-import { fontWeight, lineHeight, navigationChrome, radius, spacing, typeScale } from '@/theme/tokens';
+import { fontWeight, iconSize, lineHeight, navigationChrome, radius, spacing, typeScale } from '@/theme/tokens';
 import { goBackGuarded } from '@/utils/backGuard';
 import {
   BOT_GROUP_MESSAGE_AVATAR_SIZE,
@@ -564,7 +564,7 @@ export function BotGroupTimeline({
           accessibilityRole="button" accessibilityLabel={t('message.renderer.reply')}
           testID={`botGroup.reply.${message.id}`} onPress={() => onReply(message)}
           style={[styles.replyAction, message.isSelf === true && styles.ownReplyAction]}>
-          <ChatReplyIcon size={16} color={styles.replyIcon.color} />
+          <ChatReplyIcon size={iconSize.md} color={styles.replyIcon.color} />
         </Pressable> : null}
       </View>;
     })}
