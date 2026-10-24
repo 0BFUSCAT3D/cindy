@@ -52,9 +52,9 @@ describe('remote history preserves original folding', () => {
   // Regression: mobile's companion projection used to flatten away deferred
   // work after history takeover. Verify the production controller's expansion
   // still reads the original thinking/tool rows and never hides a provider final.
-  it('preserves companion replies and lazy work through history takeover and expansion', async () => {
+  it.each(['final_answer', 'commentary'])('preserves companion %s and lazy work through history takeover and expansion', async (assistantPhase) => {
     const rows = [row(0, 'user', 'Work'),
-      { ...row(1, 'assistant', 'First reply'), agentMeta: { assistantPhase: 'final_answer' } },
+      { ...row(1, 'assistant', 'First reply'), agentMeta: { assistantPhase } },
       thought(2), call(3), row(4, 'tool_result', 'Read result', 'tool-3')];
     const { view, render, details } = harness(rows, true, true);
     const raw = companionConversationItems(buildMobileMessageRenderItems(rows, { isSessionStreaming: true }));
