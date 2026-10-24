@@ -381,7 +381,8 @@ describe('冷缓存 hydrate', () => {
     }
   });
 
-  it.each(['prefix', 'collapsed', 'latest'] as const)('never clears the mirror when read ahead exceeds its budget (%s)', async (kind) => {
+  // Oversized gaps must fall back to the original page, not retain the entire gap.
+  it.each(['prefix', 'collapsed', 'latest', 'gap'] as const)('never clears the mirror when read ahead exceeds its budget (%s)', async (kind) => {
     const s = sid();
     const old = dbMessage(s, 'old', 'x'.repeat(400_000), '2026-10-11T00:00:01.000Z');
     const anchor = dbMessage(s, 'anchor', 'anchor', '2026-10-11T00:00:02.000Z');
@@ -406,7 +407,12 @@ describe('冷缓存 hydrate', () => {
     ] as never);
     const reply = dbMessage(s, 'new', 'y'.repeat(kind === 'latest' ? 600_000 : 180_000), '2026-10-11T00:00:09.000Z');
     invoke.mockImplementationOnce((async () => ({ version: 1,
-      items: projectHistoryView([anchor, reply], false), hasMore: true, nextCursor: anchor.id,
+      items: projectHistoryView(kind === 'gap' ? [reply] : [anchor, reply], false), hasMore: true,
+      nextCursor: kind === 'gap' ? reply.id : anchor.id,
+    })) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
+    if (kind === 'gap') invoke.mockImplementationOnce((async () => ({ version: 1,
+      items: projectHistoryView([anchor, dbMessage(s, 'gap', 'z'.repeat(600_000), '2026-10-11T00:00:05.000Z')], false),
+      hasMore: true, nextCursor: anchor.id,
     })) as unknown as Parameters<typeof invoke.mockImplementationOnce>[0]);
     try {
       await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
@@ -427,8 +433,13 @@ describe('冷缓存 hydrate', () => {
         const saved = decodeRemoteHistory(text)!;
         expect(saved.items.at(-1)?.key).toBe(reply.clientId);
         expect(saved.details.size).toBe(0);
-        expect(saved).toMatchObject(kind === 'prefix'
+        expect(saved).toMatchObject(kind === 'gap' ? { hasMore: true, nextCursor: reply.id } : kind === 'prefix'
           ? { hasMore: true, nextCursor: anchor.id } : { hasMore: false, nextCursor: null });
+        if (kind === 'gap') {
+          expect(saved.items.map(item => item.key)).toEqual([reply.clientId]);
+          await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+          expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(2);
+        }
       }
     } finally {
       getMessages.mockReset();

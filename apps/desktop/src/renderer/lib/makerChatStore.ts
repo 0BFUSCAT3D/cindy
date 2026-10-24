@@ -12009,8 +12009,9 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
             }))) };
           };
           let page: HistoryViewPage<HistoryChatMessage> | null;
+          let latestPage: HistoryViewPage<HistoryChatMessage> | null;
           try {
-            page = await readPage();
+            page = latestPage = await readPage();
             if (page) page = await readContinuousHistoryPage(page, previous, readPage,
               () => isCurrent(session.id) && token === sessionCacheInvalidationToken(session.id) && !getRemoteHistoryView(session.id));
           } catch (error) {
@@ -12020,7 +12021,7 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
           }
           if (page == null || !isCurrent(session.id) || getRemoteHistoryView(session.id)) continue;
           const snapshot = historySnapshotForCache(page, previous,
-            (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)));
+            (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)), latestPage ?? page);
           if (!snapshot) continue;
           write({ ...snapshot, readReceipt });
         }

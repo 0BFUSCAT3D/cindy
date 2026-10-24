@@ -176,7 +176,8 @@ export async function readContinuousHistoryPage<T extends HistoryMessageSource>(
   const seen = new Set<string>();
   while (isCurrent() && previous?.items.length && page.hasMore
     && historyPrefixBoundary(page, previous.items) < 0
-    && startedAt(page.items[0]) > startedAt(previous.items[0])) {
+    // Equal timestamps can still contain later rows in the Host's rowid order.
+    && startedAt(page.items[0]) >= startedAt(previous.items[0])) {
     const cursor = page.nextCursor;
     if (!cursor || seen.has(cursor)) throw new Error('History page cursor did not advance');
     seen.add(cursor);

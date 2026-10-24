@@ -15,11 +15,12 @@ function fixture() {
 describe('history read coverage', () => {
   // A latest page can advance beyond the cached tail while the phone is away.
   // The old overlap-only tests never exercised this gap (2026-10-25 shrink).
-  it.each(['join', 'failure', 'blur', 'repeated-cursor'] as const)('keeps the cached reading window until a disconnected refresh settles (%s)', async (outcome) => {
+  // Equal timestamps still have distinct rowid order; time equality is not a boundary.
+  it.each(['join', 'same-time', 'failure', 'blur', 'repeated-cursor'] as const)('keeps the cached reading window until a disconnected refresh settles (%s)', async (outcome) => {
     const makePage = (ids: number[], hasMore = true): HistoryViewPage<HistoryMessageSource> => ({
       version: 1, items: ids.map(id => ({ type: 'messages', key: String(id), messages: [{
         id: String(id), clientId: String(id), role: 'user', content: String(id),
-        createdAt: new Date(1700000000000 + id * 1000).toISOString(),
+        createdAt: new Date(1700000000000 + (outcome === 'same-time' ? 0 : id * 1000)).toISOString(),
       }] })), hasMore, nextCursor: hasMore ? String(ids[0]) : null,
     });
     let finish!: (page: HistoryViewPage<HistoryMessageSource>) => void;
@@ -38,7 +39,7 @@ describe('history read coverage', () => {
     if (outcome === 'failure') fail(new Error('temporary read failure'));
     else finish(outcome === 'repeated-cursor' ? makePage([7, 8]) : makePage([3, 4, 5, 6]));
     await pending;
-    expect(view.getSnapshot().items.map(item => item.key)).toEqual(outcome === 'join'
+    expect(view.getSnapshot().items.map(item => item.key)).toEqual(outcome === 'join' || outcome === 'same-time'
       ? ['1', '2', '3', '4', '5', '6', '7', '8'] : ['1', '2', '3']);
     expect(visible.every(items => items[0] === '1')).toBe(true);
     expect(view.getSnapshot().hasMore).toBe(false);

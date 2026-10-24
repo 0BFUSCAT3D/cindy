@@ -72,8 +72,9 @@ export async function prefetchRemoteHistories(
         if (!historySnapshotCovers(previous, session)) {
           const readReceipt = nextHistoryCacheReceipt();
           let page;
+          let latestPage;
           try {
-            page = await reader.readHistoryView(session.id);
+            page = latestPage = await reader.readHistoryView(session.id);
             if (page) page = await readContinuousHistoryPage(page, previous,
               (before) => reader.readHistoryView(session.id, before),
               () => isCurrent() && authority.current() && !isRemoteHistoryViewMounted(deviceId, session.id));
@@ -83,7 +84,7 @@ export async function prefetchRemoteHistories(
             throw error;
           }
           if (!page || !isCurrent() || isRemoteHistoryViewMounted(deviceId, session.id)) continue;
-          const snapshot = historySnapshotForCache(page, previous, fitsHistoryDisk);
+          const snapshot = historySnapshotForCache(page, previous, fitsHistoryDisk, latestPage);
           if (!snapshot || !await writeHistoryDisk(authority, { ...snapshot, readReceipt })) continue;
           dropDetachedRemoteHistoryView(deviceId, session.id);
         }
