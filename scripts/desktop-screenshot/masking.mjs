@@ -28,18 +28,28 @@ export function createReplacer(entries, keep = []) {
   // occurs inside them (e.g. real nickname A -> 用户 A). Protect the complete
   // placeholder on subsequent observer scans; never exempt the raw name itself.
   const protectedValues = [...new Set(rules.filter(r => r.replacement && !rules.some(other => other.source === r.replacement)).map(r => r.replacement))];
-  const protectedPatterns = [...protectedValues.sort((a, b) => b.length - a.length).map(escape),
-    String.raw`contact-\d+@example\.com`, String.raw`https://example\.com/share/demo`, '<示例目录>'];
-  const regex = new RegExp([...protectedPatterns, ...patterns, ...automatic].map(p => `(${p})`).join('|'), 'gu');
+  // Longest matching text wins across known identities, examples and automatic
+  // candidates. A short example must not hide a longer identity or email address.
+  const alternatives = [
+    ...protectedValues.map(value => ({ pattern: escape(value), length: value.length, index: -1 })),
+    ...patterns.map((pattern, index) => ({ pattern, length: rules[index].source.length, index })),
+  ].sort((a, b) => b.length - a.length);
+  const compile = items => new RegExp(items.map(({ pattern }) => `(${pattern})`).join('|'), 'gu');
+  const regex = compile(alternatives);
+  const automaticRegex = new RegExp(automatic.map(pattern => `(${pattern})`).join('|'), 'gu');
   const dynamic = new Map();
   const transform = (value, audit = false) => {
     let count = 0;
     let boundaries;
-    const result = value.replace(regex, (...args) => {
-      const found = args.slice(1, protectedPatterns.length + rules.length + automatic.length + 1).findIndex(group => group !== undefined);
+    const discovered = [...value.matchAll(automaticRegex)].map(match => ({ pattern: escape(match[0]),
+      length: match[0].length, index: rules.length + match.slice(1).findIndex(group => group !== undefined) }));
+    const candidates = discovered.length ? [...alternatives, ...discovered].sort((a, b) => b.length - a.length) : alternatives;
+    if (!candidates.length) return { value, count: 0 };
+    const result = value.replace(discovered.length ? compile(candidates) : regex, (...args) => {
+      const found = args.slice(1, candidates.length + 1).findIndex(group => group !== undefined);
       const source = args[0];
-      if (found < protectedPatterns.length) return source;
-      const index = found - protectedPatterns.length;
+      const index = candidates[found].index;
+      if (index === -1) return source;
       if (index < rules.length) {
         if ([...rules[index].source].length <= 2) {
           // Unicode letter lookarounds incorrectly skip 移除小王. Word segmentation

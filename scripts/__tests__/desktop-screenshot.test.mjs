@@ -169,4 +169,12 @@ test('explicit example text is stable when it contains the original text', () =>
   assert.equal(r.replace(first), first);
   assert.equal(r.count(first), 0);
   assert.equal(r.count('内部项目'), 1);
+  const prefixed = createReplacer([{ source: '开发电脑', replacement: '电脑 A', category: 'device' },
+    { source: '内部项目', replacement: '开发', category: 'custom' }]);
+  assert.equal(prefixed.replace('开发电脑 / 内部项目'), '电脑 A / 开发');
+  assert.equal(prefixed.count('开发电脑'), 1);
+  const emailPrefix = createReplacer([{ source: '内部项目', replacement: 'contact-1@example.com', category: 'custom' }]);
+  assert.equal(emailPrefix.replace('contact-1@example.com.invalid'), 'contact-1@example.com');
+  assert.equal(emailPrefix.count('contact-1@example.com.invalid'), 1);
+  assert.equal(emailPrefix.count('contact-1@example.com'), 0);
 });
