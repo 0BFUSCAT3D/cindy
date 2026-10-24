@@ -97,6 +97,17 @@ export function readRenderedIdentities(document = globalThis.document) {
     seen.add(fiber);
     const props = fiber.memoizedProps;
     if (props && typeof props === 'object') {
+      // Unsaved profile names and Blob avatar previews have not reached account
+      // APIs yet. Read only rendered host props beneath this development component,
+      // including its portal, rather than inspecting arbitrary hook state.
+      if (fiber.type === 'input' || fiber.type === 'img') {
+        let owner = fiber.return;
+        while (owner && owner.type?.name !== 'ProfileEditDialog') owner = owner.return;
+        if (owner) {
+          if (fiber.type === 'input' && props.type === 'text' && typeof props.value === 'string') person({ displayName: props.value.trim() });
+          if (fiber.type === 'img') person({ displayName: props.alt, avatarUrl: props.src });
+        }
+      }
       if ('avatarUrl' in props && typeof props.displayName === 'string') person(props);
       for (const field of ['account', 'member', 'owner']) {
         if (props[field]?.displayName) person(props[field]);

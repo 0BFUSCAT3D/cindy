@@ -29,8 +29,15 @@ import {history,undoDepth} from ${JSON.stringify(require.resolve('@tiptap/pm/his
 import {flushSync} from ${JSON.stringify(require.resolve('react-dom'))};
 const root=createRoot(document.getElementById('root'));
 window.electronAPI={authListAccounts:async()=>({accounts:[{displayName:'Synthetic Alice',email:'alice@private.test',avatarUrl:'https://example.invalid/avatar.png',isCurrent:true}]}),deviceLink:{listDevices:async()=>({devices:[{name:'Synthetic Laptop'}]})},providerShare:{command:async c=>c.action==='owned'?{shares:[]}:{received:[]}},sharedTask:{account:async()=>[]}};
+window.draftChanges=0;
+const draftAvatar=URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><circle cx="4" cy="4" r="3"/></svg>'],{type:'image/svg+xml'}));
+window.cleanupFixture=()=>URL.revokeObjectURL(draftAvatar);
+function ProfileEditDialog(){return React.createElement('section',null,
+ React.createElement('input',{id:'draft-name',type:'text',value:'Draft Synthetic Name',onChange:()=>window.draftChanges++}),
+ React.createElement('img',{id:'draft-avatar',src:draftAvatar,alt:'Draft Synthetic Name',width:8,height:8}))}
 function SharedPerson(props){return React.createElement('span',{id:'remote-person'},props.displayName)}
 function Page({version}){const [tip,setTip]=React.useState(false);return React.createElement('main',{id:'fixture'},
+ React.createElement(ProfileEditDialog),
  React.createElement('p',{id:'name',title:'Synthetic Alice', 'aria-label':'alice@PRIVATE.test'},'Hello Synthetic Alice '+version),
  React.createElement('input',{id:'number',type:'number',defaultValue:'500'}),
  React.createElement('input',{id:'input',defaultValue:'alice@PRIVATE.test',placeholder:'Synthetic Alice'}),
@@ -85,6 +92,9 @@ try {
   assert.equal(state.input, 'user-1@example.com');
   assert.ok(state.src.startsWith('data:image/svg+xml'));
   assert.equal(state.amount, '60% / 12.50');
+  assert.equal(await client.evaluate("document.getElementById('draft-name').value.includes('Draft Synthetic Name')"), false);
+  assert.equal(await client.evaluate("document.getElementById('draft-avatar').src.startsWith('data:image/svg+xml')"), true);
+  assert.equal(await client.evaluate('window.draftChanges'), 0);
   assert.deepEqual(await client.evaluate('editorState()'), { text: 'Synthetic Alice', changes: 0, undo: 0 });
   assert.equal(await client.evaluate("document.querySelector('.ProseMirror[contenteditable=false]').textContent.includes('Synthetic Alice')"), false);
   assert.deepEqual(await client.evaluate('({focused:document.activeElement===editor.dom,blurs:editorBlurs})'), { focused: true, blurs: 0 });
@@ -109,6 +119,10 @@ try {
   assert.deepEqual(await client.evaluate(`window.${key}.restore()`), { failures: 0 });
   state = await view();
   assert.ok(state.text.includes('Synthetic Alice 2'));
+  assert.equal(await client.evaluate("document.getElementById('draft-name').value"), 'Draft Synthetic Name');
+  assert.equal(await client.evaluate("document.getElementById('draft-avatar').src.startsWith('blob:')"), true);
+  assert.equal(await client.evaluate('window.draftChanges'), 0);
+  console.log('PASS 未保存资料名称与 Blob 头像替换并还原，不触发编辑回调');
   assert.equal(state.title, 'Synthetic Alice');
   assert.equal(state.input, 'new@private.test');
   assert.equal(state.src, 'https://example.invalid/avatar.png');
@@ -182,7 +196,13 @@ try {
   assert.ok((await view()).text.includes('Synthetic Alice'));
   console.log('PASS 收集失败不截图、不改界面');
 } finally {
+  if (client) await client.evaluate('window.cleanupFixture?.()').catch(() => {});
   client?.close();
-  if (child?.pid && child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; }
+  if (child?.pid && child.exitCode === null && child.signalCode === null) {
+    const exited = once(child, 'exit');
+    child.kill();
+    const timeout = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 1000);
+    try { await exited; } finally { clearTimeout(timeout); }
+  }
   await fs.rm(dir, { recursive: true, force: true });
 }
