@@ -83,6 +83,7 @@ vi.mock('../../../security/trustedAppRenderer', () => ({ assertTrustedAppRendere
 
 import {
   addBotImConnection,
+  buildBotImConnectionListPayload,
   configureBotImConnectionRuntime,
   registerBotImConnectionIpc,
   setWechatCompanionBinding,
@@ -555,6 +556,17 @@ describe('bot im connection runtime', () => {
     expect(readWechatChannelSettings()).toEqual({ version: 1, workingDir: before.workingDir, workingDirAvailable: true });
     expect(h.secrets).toEqual(secrets);
     expect(h.sent).toEqual([{ channel: 'wechatBot:channel-settings-changed', payload: readWechatChannelSettings() }]);
+  });
+
+  // Owner recall must discover only the selected teammate's persisted connections,
+  // including disconnected ones, without changing the settings page's all-bot view.
+  it('projects only the requested teammate connections after transports stop', async () => {
+    const a = await addBotImConnection({ botId: 'bot-mia', channel: 'telegram', token: '1:ABCDEFGHIJKLMNOPQRSTUVWXYZ', ownerUserId: '4242' });
+    await addBotImConnection({ botId: 'bot-other', channel: 'telegram', token: '2:ABCDEFGHIJKLMNOPQRSTUVWXYZ', ownerUserId: '4242' });
+    await stopBotImConnections();
+    expect(buildBotImConnectionListPayload('bot-mia').connections.map(r => r.id)).toEqual([a.connection.id]);
+    expect(buildBotImConnectionListPayload('absent').connections).toEqual([]);
+    expect(buildBotImConnectionListPayload().connections).toHaveLength(2);
   });
 
   it('starts recorded connections on login, keeps records across stop, and drops them with the teammate', async () => {
