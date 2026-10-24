@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode, type RefObject } from "react";
 import { StyleSheet, View } from "react-native";
 import {
   PaneViewportProvider,
@@ -10,10 +10,23 @@ import { useSessionPaneLayout } from "./ResidentHomeList";
 import { SessionListDrawer } from "./SessionListDrawer";
 
 /** Keep the form mounted when the window changes between one and two panes. */
-export function NewSessionLayout({ children }: { children: ReactNode }) {
+export function NewSessionLayout({
+  children,
+  creatingRef,
+}: {
+  children: ReactNode;
+  creatingRef: RefObject<boolean>;
+}) {
   const window = useAdaptiveWindow();
   const pane = useSessionPaneLayout();
   const { colors } = useTheme();
+  // Read the submission lock at tap time, including before React renders busy UI.
+  const runNavigation = useCallback(
+    (action: () => void) => {
+      if (!creatingRef.current) action();
+    },
+    [creatingRef],
+  );
   const viewport = useMemo(
     () => ({
       ...pane.detail,
@@ -61,5 +74,4 @@ export function NewSessionLayout({ children }: { children: ReactNode }) {
 }
 
 const ignoreClose = () => undefined;
-const runNavigation = (action: () => void) => action();
 const styles = StyleSheet.create({ root: { flex: 1 } });

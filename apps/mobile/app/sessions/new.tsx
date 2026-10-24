@@ -476,10 +476,11 @@ interface WorktreeBranchCompatibilitySelection {
 }
 
 export default function NewRemoteSessionScreen() {
-  return <NewSessionLayout><NewRemoteSessionContent /></NewSessionLayout>;
+  const creatingRef = useRef(false);
+  return <NewSessionLayout creatingRef={creatingRef}><NewRemoteSessionContent creatingRef={creatingRef} /></NewSessionLayout>;
 }
 
-function NewRemoteSessionContent() {
+function NewRemoteSessionContent({ creatingRef }: { creatingRef: { current: boolean } }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -1001,7 +1002,6 @@ function NewRemoteSessionContent() {
   const voiceStartupSeqRef = useRef(0);
   const voiceControllerSessionRef = useRef<MobileVoiceControllerSession | null>(null);
   const voiceDictionaryLearningTrackerRef = useRef<MobileVoiceDictionaryLearningTracker | null>(null);
-  const creatingRef = useRef(false);
   const [firstMessageInputContentHeight, setFirstMessageInputContentHeight] = useState(MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT);
   const [firstMessageInputFocused, setFirstMessageInputFocused] = useState(visualFocusComposer);
   const [voiceDraftCaretFrame, setVoiceDraftCaretFrame] = useState({ left: 0, top: 0 });
