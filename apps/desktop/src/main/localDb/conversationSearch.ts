@@ -1,4 +1,5 @@
 import { and, count, desc, eq, getTableColumns, gte, inArray, isNull, ne, or } from 'drizzle-orm';
+import { normalizeProjectOrderPath } from '@cindy/maker-shared/project-order-sync';
 
 import type {
   ConversationSearchAgentFilter,
@@ -17,7 +18,7 @@ import { DESKTOP_TASK_LIST_SESSION_SOURCES } from '../../shared/sessionSource.js
 import type { SessionSource } from '../../shared/sessionSource.js';
 import { normalizeWorkingDirForGrouping } from '../../shared/workingDir.js';
 import { getDbClient } from './client/current.js';
-import { botProfiles, botSessionLinks, messages, sessions } from './schema.js';
+import { botProfiles, botSessionLinks, messages, projectAliases, sessions } from './schema.js';
 import { searchChatHistoryHybrid } from './chatHistorySearch.js';
 import { normalizeDbAgentKind } from '../../shared/agentKindConversion.js';
 import { visibleTextMatchesMessagesFtsQuery } from './chatHistorySearch.pure.js';
@@ -96,10 +97,23 @@ export async function searchConversations(
       poolCapped: false,
     };
   }
-  const sessionRows = applyWorkingDirFilter(
-    await listSearchableSessions(filters, hostScope.sessionSources, hostScope.remoteVisibleOnly),
-    filters.workingDirs,
-  );
+  // Remote callers cannot expand alias hits from their bounded home cache.
+  // Read the host's local aliases alongside the full, already-authorized candidate
+  // set, before ranking/limiting. Local renderer search keeps its existing behavior.
+  const [candidates, aliasRows] = await Promise.all([
+    listSearchableSessions(filters, hostScope.sessionSources, hostScope.remoteVisibleOnly),
+    hostScope.remoteVisibleOnly
+      ? getDbClient().drizzle.select().from(projectAliases).orderBy(desc(projectAliases.updatedAt))
+      : Promise.resolve([]),
+  ]);
+  const aliasesByPath = new Map<string, string>();
+  for (const row of aliasRows) {
+    if (!row.projectKey.startsWith('local:') || !row.projectKey.slice(6).trim() || !row.alias.trim()) continue;
+    const path = normalizeProjectOrderPath(row.projectKey.slice(6));
+    // Same newest-first identity resolution as the mobile alias snapshot.
+    if (!aliasesByPath.has(path)) aliasesByPath.set(path, row.alias.trim().toLowerCase());
+  }
+  const sessionRows = applyWorkingDirFilter(candidates, filters.workingDirs);
   if (sessionRows.length === 0) {
     return {
       query,
@@ -121,7 +135,12 @@ export async function searchConversations(
       // 文案,拿原始哨兵匹配会两头错位 —— 搜可见文案一条都搜不到,搜 "New Maker" 反而
       // 命中一堆不显示这个词的行,高亮下标也会落在别的字上(PR #1031 review P1)。
       // renderer 渲染时调同一个 conversationSearchTitle,两端逐字一致。
-      const match = fuzzyTitleMatch(conversationSearchTitle(row.title, request.unnamedLabel), query);
+      let match = fuzzyTitleMatch(conversationSearchTitle(row.title, request.unnamedLabel), query);
+      if (!match && row.workspaceKind === 'project' && !row.remoteHostId && row.workingDir
+        && aliasesByPath.get(normalizeProjectOrderPath(row.workingDir))?.includes(query.toLowerCase())) {
+        // Alias-only hits have no highlight positions in the task's title.
+        match = { score: 0, indices: [] };
+      }
       if (!match) return null;
       const session = sessionSummaries.get(row.id);
       if (!session) return null;
@@ -349,7 +368,9 @@ async function listSearchableSessions(
     ? undefined
     : or(gte(sessions.updatedAt, activityCutoff), gte(sessions.userSendAt, activityCutoff));
   const personalChat = and(
-    inArray(botSessionLinks.role, ['canonical', 'history']),
+    inArray(botSessionLinks.role, remoteVisibleOnly
+      ? ['canonical', 'history']
+      : ['canonical', 'history', 'channel']),
     ne(botProfiles.status, 'deleting'),
   );
   return db
@@ -367,11 +388,16 @@ async function listSearchableSessions(
       sessionSources === undefined
         ? or(inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES), personalChat)
         : sessionSources === null ? undefined : inArray(sessions.source, sessionSources),
-      // Migrated channel/group lanes may have an ordinary task source.
-      or(isNull(botSessionLinks.role), and(
-        ne(botSessionLinks.role, 'group'),
-        ne(botSessionLinks.role, 'channel'),
-      )),
+      // Group lanes remain private to their group. IM lanes are searchable on
+      // their own computer only, including migrated lanes with ordinary sources.
+      or(
+        isNull(botSessionLinks.role),
+        and(ne(botSessionLinks.role, 'group'), ne(botSessionLinks.role, 'channel')),
+        remoteVisibleOnly ? undefined : and(
+          eq(botSessionLinks.role, 'channel'),
+          ne(botProfiles.status, 'deleting'),
+        ),
+      ),
       remoteVisibleOnly ? or(isNull(botProfiles.id), eq(botSessionLinks.role, 'delegation'), and(
         or(isNull(botProfiles.hiddenAt), eq(botProfiles.hiddenAt, 0)),
         ne(botProfiles.status, 'archived'),
@@ -443,12 +469,13 @@ function sessionSummaryFromRow(
     orcaRole: row.orcaRole,
     parentSessionId: row.parentSessionId,
     ...(row.companionId && row.companionName != null
-      && (row.companionRole === 'canonical' || row.companionRole === 'history')
+      && (row.companionRole === 'canonical' || row.companionRole === 'history' || row.companionRole === 'channel')
       ? { companion: {
           id: row.companionId,
           name: row.companionName,
           role: row.companionRole,
-          readOnly: row.companionRole === 'history' || row.status !== 'active' || row.companionStatus !== 'active',
+          readOnly: row.companionRole === 'history' || row.companionRole === 'channel'
+            || row.status !== 'active' || row.companionStatus !== 'active',
         } }
       : {}),
     userSendAt: row.userSendAt === null ? null : new Date(row.userSendAt).toISOString(),

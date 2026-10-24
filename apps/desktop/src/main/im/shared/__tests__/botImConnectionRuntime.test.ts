@@ -12,6 +12,7 @@ import type { BotImConnectionRecord } from '../../../../shared/botImConnection';
 
 const h = vi.hoisted(() => ({
   root: '',
+  ipcHandlers: new Map<string, (event: unknown, payload: unknown) => unknown>(),
   secrets: new Map<string, string>(),
   botStatus: 'active' as string | null,
   archived: [] as string[],
@@ -25,7 +26,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('electron', () => ({
   app: { getPath: () => h.root },
-  ipcMain: { handle: vi.fn() },
+  ipcMain: { handle: vi.fn((name: string, handler: (event: unknown, payload: unknown) => unknown) => h.ipcHandlers.set(name, handler)) },
   BrowserWindow: {
     getAllWindows: () => [
       { isDestroyed: () => false, webContents: { send: (channel: string, payload: unknown) => h.sent.push({ channel, payload }) } },
@@ -82,7 +83,9 @@ vi.mock('../../../security/trustedAppRenderer', () => ({ assertTrustedAppRendere
 
 import {
   addBotImConnection,
+  buildBotImConnectionListPayload,
   configureBotImConnectionRuntime,
+  registerBotImConnectionIpc,
   setWechatCompanionBinding,
   getBotFeishuTransport,
   listBotImConnectionGroups,
@@ -283,6 +286,17 @@ let connectOutcome = true;
 let telegramConflictAfterConnect = false;
 
 describe('bot im connection runtime', () => {
+  // Electron IPC 安全规则 §5：新增归档入口不能绕过 sender/payload 校验；旧测试只覆盖连接生命周期。
+  // unit：注册真实 handler，以非法 sessionId 作为最小输入，拒绝后无归档写入。
+  it('validates archive IPC payload before entering the lane runtime', async () => {
+    registerBotImConnectionIpc();
+    const handler = h.ipcHandlers.get('botImConnection:archive-lane')!;
+    expect(handler).toBeTypeOf('function');
+    expect(() => handler({}, { id: 'a1b2c3d4e5f6', sessionId: '../outside' })).toThrow(/INVALID_PARAMS/);
+    expect(() => handler({}, { id: 'invalid', sessionId: 'session' })).toThrow(/INVALID_PARAMS/);
+    expect(h.archiveCalls).toEqual([]);
+  });
+
   beforeEach(() => {
     h.root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-im-runtime-'));
     h.secrets.clear();
@@ -542,6 +556,17 @@ describe('bot im connection runtime', () => {
     expect(readWechatChannelSettings()).toEqual({ version: 1, workingDir: before.workingDir, workingDirAvailable: true });
     expect(h.secrets).toEqual(secrets);
     expect(h.sent).toEqual([{ channel: 'wechatBot:channel-settings-changed', payload: readWechatChannelSettings() }]);
+  });
+
+  // Owner recall must discover only the selected teammate's persisted connections,
+  // including disconnected ones, without changing the settings page's all-bot view.
+  it('projects only the requested teammate connections after transports stop', async () => {
+    const a = await addBotImConnection({ botId: 'bot-mia', channel: 'telegram', token: '1:ABCDEFGHIJKLMNOPQRSTUVWXYZ', ownerUserId: '4242' });
+    await addBotImConnection({ botId: 'bot-other', channel: 'telegram', token: '2:ABCDEFGHIJKLMNOPQRSTUVWXYZ', ownerUserId: '4242' });
+    await stopBotImConnections();
+    expect(buildBotImConnectionListPayload('bot-mia').connections.map(r => r.id)).toEqual([a.connection.id]);
+    expect(buildBotImConnectionListPayload('absent').connections).toEqual([]);
+    expect(buildBotImConnectionListPayload().connections).toHaveLength(2);
   });
 
   it('starts recorded connections on login, keeps records across stop, and drops them with the teammate', async () => {

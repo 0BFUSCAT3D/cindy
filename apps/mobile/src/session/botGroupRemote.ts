@@ -271,6 +271,10 @@ function parsePlan(value: unknown): BotGroupPlanView | null {
   return {
     id: planId,
     status,
+    kind: record.kind === 'talk' || record.kind === 'work' ? record.kind : undefined,
+    canAdd: typeof record.canAdd === 'boolean' ? record.canAdd : undefined,
+    // The computer's 自动交接 for a 分工 it started; changed only there.
+    autoContinue: typeof record.autoContinue === 'boolean' ? record.autoContinue : undefined,
     organizerBotId: id(record.organizerBotId) ?? '',
     organizerName: text(record.organizerName, MAX_NAME) ?? '',
     steps: steps as BotGroupPlanStepView[],
@@ -362,6 +366,8 @@ export function parseBotGroupChatData(value: unknown): BotGroupRemoteChatData | 
     id: groupId,
     name,
     serverBacked: record.serverBacked === true,
+    singleSpeaker: record.singleSpeaker === true,
+    supportsDivision: record.supportsDivision === true,
     archived: record.archived === true,
     dissolvedAt: text(record.dissolvedAt, 64),
     supportsDissolve: record.supportsDissolve === true,

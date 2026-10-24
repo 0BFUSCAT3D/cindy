@@ -47,6 +47,10 @@ export default {
       about: 'Single-speaker server group, nobody named: the queue card stands on its own, Aster answered and Nova is speaking next by itself',
       data: { ...base, arrangement: 'running' },
     },
+    'work-mentioned': {
+      about: 'Preserved running work plan in mentioned mode: ordinary text has no implicit worker recipient',
+      data: { ...base, arrangement: 'running', workMentioned: true },
+    },
     'arrangement-done': {
       about: 'The same queue once every turn is done: no 继续 row',
       data: { ...base, arrangement: 'done' },
@@ -55,9 +59,23 @@ export default {
       about: 'Seven teammates: the first five answered by themselves, the card folds to three turns around Quill, who waits for 继续',
       data: { ...base, members: QUEUE_CROWD, arrangement: 'long' },
     },
+    'division-waiting': {
+      about: 'A 分工 you started stopped after step 1: the card footer switch is off and 下一步 · 继续 waits',
+      viewport: { width: 1000, height: 760 },
+      data: { ...base, division: 'waiting' },
+    },
+    'division-auto': {
+      about: 'The same 分工 with 做完一步自动交给下一位 on: Nova started step 2 by itself, no 继续 row',
+      viewport: { width: 1000, height: 760 },
+      data: { ...base, division: 'auto' },
+    },
     settings: {
-      about: 'Single-speaker group settings: no 回复方式, 发言方式, 负责人 or project folder',
+      about: 'Single-speaker group settings: reply mode, organizer, project folder and 分工交接 (off) as before; no speaking mode',
       data: { ...base, arrangement: 'running', settings: true },
+    },
+    division: {
+      about: 'Single-speaker group: 「+」→ 安排分工 is offered again; tagged, the composer says steps may be written out',
+      data: { ...base, arrangement: 'done' },
     },
     'thread-unread': {
       about: 'Server read state: unread thread entries (with @you), the in-chat 话题 hint above the composer and its list of this group\'s Threads',
@@ -112,10 +130,35 @@ export default {
 
     if (ui.case === 'settings') {
       const drawer = page.getByRole('dialog');
-      await drawer.getByText('群名称', { exact: true }).waitFor();
-      // Who answers follows @ (everyone queues when nobody is named); no group modes, no organizer.
-      for (const label of ['发言方式', '没有 @ 人的时候', '负责人', '项目文件夹'])
-        assert.equal(await drawer.getByText(label, { exact: true }).count(), 0, label);
+      await drawer.getByText(await ui.t('bots.groupChat.server.settings.name'), { exact: true }).waitFor();
+      const replyMode = drawer.getByRole('combobox', { name: await ui.t('bots.groupChat.settings.replyMode'), exact: true });
+      await replyMode.click();
+      await page.getByRole('option', { name: await ui.t('bots.groupChat.settings.replyModeMentioned'), exact: true }).click();
+      assert.equal(await replyMode.innerText(), await ui.t('bots.groupChat.settings.replyModeMentioned'));
+      // Reply mode and the 分工 settings stay; one teammate at a time leaves no speaking mode (bot-group-chat.md §4.0).
+      assert.equal(await drawer.getByText(await ui.t('bots.groupChat.settings.speakingMode'), { exact: true }).count(), 0, 'speakingMode');
+      for (const key of ['bots.groupChat.organizer', 'bots.groupChat.settings.projectDir', 'bots.groupChat.settings.handoff'])
+        assert.ok(await drawer.getByText(await ui.t(key), { exact: true }).count() > 0, key);
+      return;
+    }
+    if (ui.case === 'division-waiting' || ui.case === 'division-auto') {
+      // You started this 分工: its card footer switches 做完一步自动交给下一位 (bot-group-chat.md §7.4).
+      const auto = ui.case === 'division-auto';
+      const toggle = page.getByTestId('bot-group-plan-auto');
+      await toggle.waitFor();
+      assert.equal(await toggle.getAttribute('aria-checked'), String(auto));
+      assert.equal(await page.getByTestId('bot-group-plan-follow-up').count(), auto ? 0 : 1, '下一步 · 继续');
+      return;
+    }
+    if (ui.case === 'division') {
+      await page.getByRole('button', { name: '更多操作' }).click();
+      await page.getByRole('menuitem', { name: /安排分工/ }).click();
+      await page.waitForFunction(() => document.querySelector('textarea')?.getAttribute('placeholder')?.startsWith('写好谁做什么'));
+      await ui.capture('tagged');
+      return;
+    }
+    if (ui.case === 'work-mentioned') {
+      assert.equal(await input.getAttribute('placeholder'), await ui.t('bots.groupChat.composer.placeholder'));
       return;
     }
     if (ui.case.startsWith('arrangement')) {
