@@ -5,7 +5,7 @@ export interface SummaryQuote {
   unit: string;
   quantity: number;
   tier?: string;
-  priceType?: "exact" | "estimated" | "starting_at";
+  priceType?: "exact" | "estimated";
 }
 
 export type ModelDisplayPricingSummary = Partial<
@@ -79,9 +79,11 @@ function parseSummary(value: unknown): ModelDisplayPricingSummary | undefined {
     for (const quote of quotes) {
       if (!quote || typeof quote !== "object" || Array.isArray(quote))
         return undefined;
-      // Reuse the item's unit, quantity, tier and priceType contract, without retaining labels.
+      // Reuse item validation, then restrict summary qualifiers to exact or estimated.
       const item = parseQuote(quote as Record<string, unknown>);
       if (!item) return undefined;
+      const { priceType, ...fields } = item;
+      if (priceType === "starting_at") return undefined;
       const maxPrice: unknown = quote.maxPrice;
       if (
         maxPrice !== undefined &&
@@ -99,7 +101,11 @@ function parseSummary(value: unknown): ModelDisplayPricingSummary | undefined {
       ) {
         return undefined;
       }
-      result.push({ ...item, ...(maxPrice !== undefined ? { maxPrice } : {}) });
+      result.push({
+        ...fields,
+        ...(priceType !== undefined ? { priceType } : {}),
+        ...(maxPrice !== undefined ? { maxPrice } : {}),
+      });
     }
     summary[role] = result;
   }
@@ -112,10 +118,10 @@ function text(value: unknown, max: number): value is string {
   );
 }
 
-/** Detailed rows and summaries use exactly the same single-quote validation. */
+/** Shared quote fields; summaries additionally reject the item-only starting_at qualifier. */
 function parseQuote(
   row: Record<string, unknown>,
-): Omit<SummaryQuote, "maxPrice"> | undefined {
+): Omit<ModelDisplayPricing["items"][number], "label"> | undefined {
   if (
     !text(row.unit, 128) ||
     (row.tier !== undefined && !text(row.tier, 256)) ||

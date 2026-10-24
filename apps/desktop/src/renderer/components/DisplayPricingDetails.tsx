@@ -20,7 +20,7 @@ export function DisplayPricingQuote({
   currency,
   costDiscount,
 }: {
-  quote: SummaryQuote;
+  quote: SummaryQuote | ModelDisplayPricing['items'][number];
   currency: 'CNY' | 'USD';
   costDiscount?: number;
 }) {

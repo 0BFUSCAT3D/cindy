@@ -36,7 +36,6 @@ const video: ModelDisplayPricing = {
         tier: '480P/720P/1080P',
         unit: 'second',
         quantity: 1,
-        priceType: 'starting_at',
       },
     ],
   },

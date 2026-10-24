@@ -82,7 +82,7 @@ describe("optional primary quote summary", () => {
           unit: "token",
           quantity: 1000000,
           tier: "480P/720P",
-          priceType: "starting_at",
+          priceType: "estimated",
         },
       ],
       cacheRead: [{ ...quote, priceType: "exact" }],
@@ -115,6 +115,9 @@ describe("optional primary quote summary", () => {
       { unit: "x".repeat(129) },
       { tier: "" },
       { priceType: "future" },
+      // Summary-only contract: one unsupported segment invalidates all roles, not the table.
+      { priceType: "starting_at" },
+      { priceType: "starting_at", maxPrice: 2 },
       { maxPrice: 0 },
       { maxPrice: -1 },
       { maxPrice: Infinity },

@@ -3,7 +3,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createInstance } from 'i18next';
 import { I18nextProvider } from 'react-i18next';
-import type { CatalogModel } from '@cindy/model-providers';
+import { parseModelDisplayPricing, type CatalogModel } from '@cindy/model-providers';
 import en from '@/i18n/locales/en/common.json';
 import zhCN from '@/i18n/locales/zh-CN/common.json';
 import zhTW from '@/i18n/locales/zh-TW/common.json';
@@ -28,6 +28,21 @@ async function renderPricing(model: PricingModel, locale: keyof typeof locales =
 afterEach(cleanup);
 
 describe('DisplayPricingDetails', () => {
+  // Unit contract: summary starting_at is invalid, but published item starting_at remains visible.
+  // Previous render cases bypassed parsing; minimum input is the same qualifier on one item and summary.
+  it('preserves and renders item starting prices after discarding an invalid summary', async () => {
+    const displayPricing = parseModelDisplayPricing({
+      items: [{ ...item, priceType: 'starting_at' }],
+      summary: { output: [{ ...item, priceType: 'starting_at' }] },
+    });
+    expect(displayPricing?.summary).toBeUndefined();
+    expect(displayPricing?.items).toEqual([{ ...item, priceType: 'starting_at' }]);
+    await renderPricing({ currency: 'CNY', displayPricing }, 'zh-CN');
+    expect(screen.getByText('Output')).toBeTruthy();
+    expect(screen.getByText('¥0.5 起')).toBeTruthy();
+    expect(screen.getByText('/ 秒')).toBeTruthy();
+  });
+
   it('groups repeated labels in first-seen order and keeps tiers, quote qualifiers and notes', async () => {
     const { container } = await renderPricing({
       currency: 'USD',
@@ -84,13 +99,13 @@ describe('DisplayPricingDetails', () => {
 
     // Summary contract, unit tier: real quote/table rendering with million quantities and range qualifiers.
     // Earlier cases had no summary or localized million denominator; minimal input is one output quote.
-    it.each(['estimated', 'starting_at'] as const)('renders summary range, tier, discount and %s in this locale', async priceType => {
+    it.each(['exact', 'estimated'] as const)('renders summary range, tier, discount and %s in this locale', async priceType => {
       const copy = locales[locale].newChat.modelSelector.displayPricing;
       const { container } = await renderPricing({ currency: 'CNY', costDiscount: 0.2, displayPricing: {
         items: [item], summary: { output: [{ price: 6, maxPrice: 10, tier: '480P/720P', unit: 'token', quantity: 1000000, priceType }] },
       } }, locale, true);
       expect(container.textContent).toContain('480P/720P');
-      expect(container.textContent).toContain((priceType === 'estimated' ? copy.estimated : copy.startingAt).replace('{{price}}', '¥4.8–¥8'));
+      expect(container.textContent).toContain((priceType === 'estimated' ? copy.estimated.replace('{{price}}', '¥4.8–¥8') : '¥4.8–¥8'));
       expect(container.querySelector('s')?.textContent).toBe('¥6–¥10');
       expect(screen.getByText(locales[locale].settings.providers.models.advanced.perMtok)).toBeTruthy();
     });

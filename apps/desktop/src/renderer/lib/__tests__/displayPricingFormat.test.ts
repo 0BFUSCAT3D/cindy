@@ -53,7 +53,7 @@ describe('supplementary price table deduplication', () => {
   it('matches across roles regardless of order, without mutating the summary', () => {
     const pricing: ModelDisplayPricing = {
       items: [{ ...item, price: 2, priceType: 'exact' }, item], notes: [],
-      summary: { input: [quote], output: [{ ...quote, price: 2, priceType: 'starting_at' }] },
+      summary: { input: [quote], output: [{ ...quote, price: 2, priceType: 'exact' }] },
     };
     expect(isDisplayPricingTableRedundant(pricing)).toBe(true);
     expect(pricing.summary!.input).toEqual([quote]);
