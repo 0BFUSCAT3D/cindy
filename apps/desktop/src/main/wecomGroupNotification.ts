@@ -13,7 +13,7 @@ import { assertTrustedAppRendererEvent } from './security/trustedAppRenderer';
 import { WecomGroupNotificationService as SharedService, parseTestMessage } from '@cindy/im-runtime/wecomGroupNotification';
 export { __testing, type WecomGroupNotificationState, type WecomGroupNotificationPublisher } from '@cindy/im-runtime/wecomGroupNotification';
 export class WecomGroupNotificationService extends SharedService {
-  constructor(fetchImpl: ConstructorParameters<typeof SharedService>[0] = (input, init) => net.fetch(input, init), secrets = ownerScopedImSecrets) {
+  constructor(fetchImpl: ConstructorParameters<typeof SharedService>[0] = (input, init) => net.fetch(input, init), secrets: ConstructorParameters<typeof SharedService>[1] = ownerScopedImSecrets) {
     super(fetchImpl, secrets, { account: { captureImAccountGeneration, isImAccountGenerationCurrent }, log: createLogger('wecom-group-notification') });
   }
 }

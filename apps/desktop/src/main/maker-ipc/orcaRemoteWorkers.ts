@@ -17,6 +17,7 @@ import {
   removeWorker,
 } from '../localDb/orcaTeamStore.js';
 
+export type OrcaRemoteWorkers = ReturnType<typeof createOrcaRemoteWorkers>;
 export type OrcaRemoteWorkersDeps = Omit<SharedDeps, 'store' | 'createId'>;
 export function createOrcaRemoteWorkers(deps: OrcaRemoteWorkersDeps) {
   return createShared({ ...deps, createId, store: {

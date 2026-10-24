@@ -525,7 +525,7 @@ export class TerminalService {
     // The new owner initializes while public RPC remains suspended. Generation
     // fences reject the old owner; the suspension gate is lifted only after setup.
     const guardCompanion=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
-    this.companions=new TerminalCompanionHost({worktrees,root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,protectedInput:this.protectedInput,attachments:this.tasks.attachmentHost(),
+    this.companions=new TerminalCompanionHost({worktrees,capabilities:this.tasks.capabilities,knowledge:this.knowledge,root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,protectedInput:this.protectedInput,attachments:this.tasks.attachmentHost(),
       binary:async kind=>(await this.engines.allStatus()).find(status=>status.kind===kind)?.binary??null,
       helper:input=>this.tasks.helperDeps(input),
       emit:(channel,args)=>{guardCompanion();if(this.ownerSuspended)return;this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});

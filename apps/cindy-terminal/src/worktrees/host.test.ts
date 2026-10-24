@@ -169,8 +169,10 @@ it("exposes native occupancy to the existing GUI lease reader and preserves unre
   const f = await fixture();
   const guiRoot = path.join(f.appDataRoot, "CindyGlobal");
   await mkdir(path.join(guiRoot, ".dev-instances"), { recursive: true });
+  const locks = createWorktreeResourceLocks({ withCrossProcessLock });
+  const worktreeKey = await locks.physicalWorktreeKey(f.meta.path);
   const gui = createWorktreeRuntimeLeases({
-    ...createWorktreeResourceLocks({ withCrossProcessLock }),
+    ...locks,
     userDataRoot: () => guiRoot,
     appDataRoot: () => f.appDataRoot,
     readDesktopProcessIdentity,
@@ -179,9 +181,9 @@ it("exposes native occupancy to the existing GUI lease reader and preserves unre
     isGitProcessTreeAlive: async () => false,
   });
   // The retained task remains visible even with no native process running.
-  expect(await gui.readWorktreeRuntimePaths()).toContain(f.meta.path);
+  expect(await gui.readWorktreeRuntimePaths()).toContain(worktreeKey);
   f.host.close();
-  expect(await gui.readWorktreeRuntimePaths()).toContain(f.meta.path);
+  expect(await gui.readWorktreeRuntimePaths()).toContain(worktreeKey);
   const before = await readFile(path.join(f.owner, "worktree-task-references.json"), "utf8");
   await f.create();
   expect(await readFile(path.join(f.owner, "worktree-task-references.json"), "utf8")).toBe(before);
@@ -190,14 +192,14 @@ it("exposes native occupancy to the existing GUI lease reader and preserves unre
     f.meta.path,
   );
   expect(lease).not.toBeNull();
-  expect(await gui.readWorktreeRuntimePaths()).toContain(f.meta.path);
+  expect(await gui.readWorktreeRuntimePaths()).toContain(worktreeKey);
   await f.tasks.update("task", { archived: true });
   await f.host.manager.removeWorktreeForSession("task", {
     canRemove: async () => true,
   });
   await access(f.meta.path);
   await f.host.runtime.releaseWorktreeRuntimeLease(lease!);
-  expect(await gui.readWorktreeRuntimePaths()).not.toContain(f.meta.path);
+  expect(await gui.readWorktreeRuntimePaths()).not.toContain(worktreeKey);
   expect(readTerminalWorktreeReferences(f.appDataRoot).rows).toContainEqual(
     expect.objectContaining({
       id: "task",

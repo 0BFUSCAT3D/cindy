@@ -19,8 +19,14 @@ export class GhostNodeRuntimeBroker extends SharedBroker {
     super({ ...deps, instanceId: installedGhostStoragePart,
       spawnProcess: deps.spawnProcess ?? createUtilityNodeWorkerProcess,
       spawnChildProcess: deps.spawnChildProcess ?? ((entry, cwd, id, args) => createUtilityNodeWorkerProcess(entry, cwd, id, utilityProcess.fork, args)),
-      bindDeviceAuthorizationTarget: (manifest, url) => bindDeviceAuthorizationTarget(manifest as GhostManifest, url),
-      bindPluginAuthorizationTarget: (manifest, request) => bindPluginAuthorizationTarget(manifest as GhostManifest, request),
+      bindDeviceAuthorizationTarget: (manifest, url) => {
+        const check = bindDeviceAuthorizationTarget(manifest as GhostManifest, url);
+        return current => check(current as GhostManifest);
+      },
+      bindPluginAuthorizationTarget: (manifest, request) => {
+        const check = bindPluginAuthorizationTarget(manifest as GhostManifest, request);
+        return current => check(current as GhostManifest);
+      },
     });
   }
 }

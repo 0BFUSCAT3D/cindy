@@ -88,16 +88,17 @@ export class TerminalKnowledge {
     this.guard();
     return [...scopes].sort().map(scope => ({ id: createHash('sha256').update(scope).digest('hex'), scope }));
   }
-  async createRuntime(input: { sessionId: string; workingDir: string; agentKind: AgentKind }) {
+  async createRuntime(input: { sessionId: string; workingDir: string; agentKind: AgentKind }, independent?: { memory: MakerMemoryManager; scopeKey: string; assertCurrent(): Promise<void> }) {
     await this.ready; this.guard();
-    const scopeKey = await resolveMemoryScopeKey(input.workingDir); this.guard();
-    const memory = this.createMemory(); this.runtimes.add(memory);
+    const scopeKey = independent?.scopeKey ?? await resolveMemoryScopeKey(input.workingDir); this.guard();
+    const memory = independent?.memory ?? this.createMemory(); this.runtimes.add(memory);
     let closed = false;
     const guard = () => { this.guard(); if (closed) throw new Error('KNOWLEDGE_RUNTIME_CLOSED'); };
     const context = () => ({ ...input, memoryScopeKey: scopeKey });
     const withAccountDataAccess: import('../../../packages/lizi-mcps/src/account-data-access.js').AccountDataAccess = async (id, operation) => {
       guard(); if (id !== input.sessionId) throw new Error('TASK_SCOPE_MISMATCH');
-      const value = await operation(async () => guard()); guard(); return value;
+      await independent?.assertCurrent();
+      const value = await operation(async () => { guard(); await independent?.assertCurrent(); }); guard(); await independent?.assertCurrent(); return value;
     };
     return {
       memory, scopeKey, contactsEnabled: this.value.contacts,
@@ -105,7 +106,7 @@ export class TerminalKnowledge {
         cindy_memory: () => createCindyMemoryMcpServer({ getManager: () => { guard(); return memory; }, workdir: input.workingDir, getSessionContext: context, withAccountDataAccess, searchSessions: this.options.searchSessions }),
         cindy_contacts: () => createCindyContactsMcpServer({ getManager: () => { guard(); return this.contacts; }, isEnabled: () => { guard(); return this.value.contacts; }, getSessionContext: context, withAccountDataAccess, onMutated: () => this.options.changed('contacts') }),
       },
-      close: async () => { if (closed) return; closed = true; this.runtimes.delete(memory); memory.dispose(); },
+      close: async () => { if (closed) return; closed = true; this.runtimes.delete(memory); if (!independent) memory.dispose(); },
     };
   }
   async close() {

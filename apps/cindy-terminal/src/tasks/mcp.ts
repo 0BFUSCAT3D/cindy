@@ -30,11 +30,19 @@ export async function createTaskTools(options: {
       assertCurrent();
       const result = await options.helper.authorizeCall?.(input);
       if (result && !result.ok) return result;
-      return { ok: true, run: async operation => { assertCurrent(); const value = await operation(); assertCurrent(); return value; } };
+      return { ok: true, run: async operation => {
+        const current = async () => { assertCurrent(); const value = await operation(); assertCurrent(); return value; };
+        return result?.run ? result.run(current) : current();
+      } };
     } }, ctx),
   };
-  if (options.scheduler) factories.cindy_scheduler = ctx => createSchedulerMcpServer({ ...options.scheduler!, authorizeCall: async () => {
-    assertCurrent(); return { ok: true, run: async operation => { assertCurrent(); const value = await operation(); assertCurrent(); return value; } };
+  if (options.scheduler) factories.cindy_scheduler = ctx => createSchedulerMcpServer({ ...options.scheduler!, authorizeCall: async input => {
+    assertCurrent(); const result = await options.scheduler!.authorizeCall?.(input);
+    if (result && !result.ok) return result;
+    return { ok: true, run: async operation => {
+      const current = async () => { assertCurrent(); const value = await operation(); assertCurrent(); return value; };
+      return result?.run ? result.run(current) : current();
+    } };
   } }, ctx);
   const add = (name: string, factory: (ctx: McpProviderContext) => McpServer) => {
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(name) || Object.hasOwn(factories,name)) throw new Error('INVALID_MCP_FACTORY_NAME');

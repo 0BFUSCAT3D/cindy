@@ -22,7 +22,7 @@ export interface GroupHistoryMcpDeps {
   search: SearchGroupHistory;
 }
 
-export function createGroupHistoryMcpServer(deps: GroupHistoryMcpDeps, log: Logger): McpServer {
+export function createGroupHistoryMcpServer(deps: GroupHistoryMcpDeps, log: Pick<Logger, 'warn'>): McpServer {
 const RESULT_TEXT_MAX_CHARS = 1_500;
 /**
  * 单次调用的正文总预算 — 对齐群窗口注入的 4000 字预算(groupWindow.ts):

@@ -39,6 +39,10 @@ export class TerminalCapabilities {
   }
   private within(file:string,root:string){const relative=path.relative(root,path.resolve(file));return relative===''||relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative);}
   private key(id:string){return `terminal:mcp:${id}`;}
+  async mcpEntries(workingDir:string){
+    await this.ready;this.guard();const root=await realpath(workingDir);this.guard();
+    return this.state.mcp.filter(config=>!this.state.mcpScopes[config.id]||this.within(root,this.state.mcpScopes[config.id])).map(config=>({id:config.id,name:config.name,enabled:!this.state.disabledMcp.includes(config.id)}));
+  }
   async listSkills(workingDirs?:string[],kind?:AgentKind){
     await this.ready;this.guard();const dirs=workingDirs??await this.options.workingDirs();
     const scans=await Promise.all((kind?[kind]:['claude-code','codex','pi'] as AgentKind[]).map(engine=>{

@@ -1626,12 +1626,21 @@ export class TerminalTaskHost {
       runtimeCapabilities:async()=>({terminal:true,tasks:true,nativeAgent:input.agentKind,available:['tasks','history','approvals','models',...(this.schedulerDeps?['scheduler']:[]),...(this.knowledge?.snapshot().memory?['memory']:[]),...(this.knowledge?.snapshot().contacts?['contacts']:[])],unavailable:[...(!this.knowledge?.snapshot().contacts?['contacts']:[]),'browser','media-generation']}),
       setCurrentSessionTitle:async({sessionId,title})=>{if(sessionId!==input.sessionId)throw new Error('TASK_SCOPE_MISMATCH');if(input.setTitle)await input.setTitle(title);else await this.patchMeta(sessionId,{title});return {ok:true,sessionId,title};},
       sendToSession:async params=>{
-        if(params.useWorktree)return {ok:false,errorCode:'WORKTREE_UNAVAILABLE',message:'Worktree creation is not configured'};
         let id=params.targetSessionId;const existing=id?await this.storage.get(id):null;
         if(id&&!existing)return {ok:false,errorCode:'NOT_FOUND',message:'Task not found'};
         if(existing?.deleted)return {ok:false,errorCode:'DELETED',message:'Task is deleted'};
         if(existing?.archived)return {ok:false,errorCode:'ARCHIVED',message:'Task is archived'};
-        if(!id){const created=await this.create({workingDir:params.workingDir??input.workingDir,title:params.title,...(params.agentKind?{agentKind:params.agentKind}:{}),...(params.model?{model:params.model}:{}),...(params.effort?{effort:params.effort}:{})},()=>this.guard({source:'local'}));id=created.id;}
+        if(!id){
+          const sessionId=randomUUID();let workingDir=params.workingDir??input.workingDir;
+          if(params.useWorktree){
+            if(!this.worktrees)return {ok:false,errorCode:'WORKTREE_UNAVAILABLE',message:'Worktree creation is not configured'};
+            const source=await this.worktrees.workerProjects.resolveWorkerWorktreeSource(workingDir);
+            const fresh=await this.worktrees.freshBase.resolveFreshSourceBranch(workingDir,source);
+            workingDir=await this.worktrees.workerProjects.createWorkerWorktree(sessionId,workingDir,fresh.sourceBranch);
+          }
+          try{const created=await this.create({id:sessionId,workingDir,title:params.title,...(params.agentKind?{agentKind:params.agentKind}:{}),...(params.model?{model:params.model}:{}),...(params.effort?{effort:params.effort}:{}),...(params.fast!==undefined?{fastMode:params.fast}:{})},()=>this.guard({source:'local'}));id=created.id;}
+          catch(error){if(params.useWorktree&&!await this.storage.get(sessionId))await this.worktrees!.manager.cancelPrecreatedWorktree(sessionId,{path:this.worktrees!.manager.getForSession(sessionId)?.path},{canRemove:async()=>!await this.storage.get(sessionId)});throw error;}
+        }
         const target=await this.storage.get(id);if(!target)throw new Error('TASK_NOT_FOUND');
         const receipt=await this.submit(id,{text:params.message},{},{source:'local',sender:{sessionId:input.sessionId,title:input.title?.()}});
         return {ok:true,targetSessionId:id,agentKind:target.agentKind,wakeKind:existing?'queued':'created',targetTitle:target.title,targetLastUserSendAt:null,queuedMessageId:receipt.requestId,providerId:target.providerId??null,model:target.model};

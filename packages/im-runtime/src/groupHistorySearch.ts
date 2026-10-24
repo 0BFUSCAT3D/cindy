@@ -92,7 +92,7 @@ function mapRows(
   }));
 }
 
-export function createGroupHistorySearch(host: { query<T>(sql: string, params: unknown[]): Promise<T[]>; log: Logger }) {
+export function createGroupHistorySearch(host: { query<T>(sql: string, params: unknown[]): Promise<T[]>; log: Pick<Logger, 'warn'> }) {
 const { log } = host;
 async function searchMatch(
   lane: GroupHistorySearchLane,

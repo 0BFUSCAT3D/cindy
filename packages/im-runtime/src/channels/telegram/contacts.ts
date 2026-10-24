@@ -26,7 +26,7 @@ export function createTelegramSpeakerRegistration(host: {
   enabled(): boolean;
   getStore(): ReturnType<MakerContactsManager['getStore']>;
   changed(): void;
-  log: Logger;
+  log: Pick<Logger, 'info' | 'debug'>;
 }) {
   const log = host.log;
 /** 进程内去重(同一人只探一次); 重启后重探是幂等的(resolve 命中即返)。 */

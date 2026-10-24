@@ -3,7 +3,7 @@ import type { BotGroupAttachment } from '@cindy/maker-shared/botGroupChat';
 export type ChatApi = <T>(route:string,method?:string,data?:unknown,actorId?:string)=>Promise<T>;
 export interface ChatContentBlock {type:string;mediaId?:string;caption?:string}
 export interface ChatMediaDependencies {
- fetch:typeof fetch;
+ fetch(url: string, init?: RequestInit): Promise<Response>;
  read(attachment:BotGroupAttachment,maxSize:number,check:()=>void):Promise<Buffer|null>;
  cache(input:{roomId:string;mediaId:string;name:string;mimeType:string;size:number;buffer:Buffer},check:()=>void):Promise<BotGroupAttachment>;
  retryAfterDeadline(response:Response):number|undefined;

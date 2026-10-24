@@ -79,7 +79,7 @@ export function createChannelGroupWindow(options: {
    * 额度按 provider 命名空间独立计算, 不跨 bot、不跨渠道。
    */
   retention: GroupWindowRetentionPolicy;
-  log: Logger;
+  log: Pick<Logger, 'warn' | 'info'>;
 }, host: {
   core: ReturnType<typeof createGroupWindowCore>;
   listKnownGroups(provider: string): Promise<Array<{ chatId: string; chatName: string | null }>>;

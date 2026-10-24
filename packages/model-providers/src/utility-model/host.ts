@@ -58,7 +58,12 @@ export interface UtilityRuntimeHost {
       body?: string;
       signal?: AbortSignal;
     },
-  ): Promise<Pick<Response, 'ok' | 'status' | 'body' | 'text' | 'json'>>;
+  ): Promise<Pick<Response, 'ok' | 'status' | 'text' | 'json'> & {
+    body: {
+      cancel(): Promise<void>;
+      getReader(): Pick<ReadableStreamDefaultReader<Uint8Array>, 'read' | 'cancel' | 'releaseLock'>;
+    } | null;
+  }>;
   claudeUpstreamEndpoint(): string;
   getActiveCatalog(): Catalog;
   isXdGatewayPaymentRequiredRoute(model: string, agent: AgentKind): boolean;

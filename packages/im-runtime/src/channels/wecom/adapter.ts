@@ -47,7 +47,7 @@ export function buildWecomAdapter(
   wecomIm: WecomIM,
   interactions: WecomTextInteractions,
   config: ImOrchestratorConfig,
-  host: { ensureWorkingDir(botId: string): string; window: ChannelGroupWindow; log: Logger },
+  host: { ensureWorkingDir(botId: string): string; window: ChannelGroupWindow; log: Pick<Logger, 'warn'> },
   options: WecomAdapterOptions = {},
 ): ImChannelAdapter {
   void options;

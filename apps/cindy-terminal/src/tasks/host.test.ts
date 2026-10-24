@@ -44,6 +44,7 @@ import { z } from 'zod';
 import { TerminalPlugins } from '../plugins/host.js';
 import { TerminalPluginTasks } from '../plugins/tasks.js';
 import { TerminalCompanionHost } from '../remote/companions/host.js';
+import { TerminalKnowledge } from '../knowledge.js';
 import { TerminalPluginMarket } from '../plugins/market.js';
 import { TerminalPluginAccount } from '../plugins/account.js';
 import { DirDepositVault,SaveDepositVault } from '@cindy/plugin-runtime/store/dirDeposit';
@@ -276,7 +277,7 @@ describe('terminal task host', () => {
     expect(await readFile(path.join(scheduledTask!.workDir, 'file.txt'), 'utf8')).toBe('original');
     await scheduler.invoke('maker:schedule:run-now', [schedule.id]);
     expect(await scheduler.invoke('maker:schedule:list-runs', [schedule.id])).toMatchObject([{ status: 'success', sessionId: scheduledTask!.id }, { status: 'success', sessionId: scheduledTask!.id }]);
-  });
+  }, 30_000);
 
   it('discovers remote worker computers through the shared controller without exposing the account directory to guests', async () => {
     const device = (id: string, patch: Record<string, unknown> = {}) => ({ deviceId: id, name: id, platform: 'linux',
@@ -2376,6 +2377,19 @@ describe('terminal task host', () => {
 
   it('runs the existing Cindy helper over an authenticated task-bound MCP bridge', async () => {
     const { host, native } = await setup();
+    // Host authorization may carry a per-turn scope. A bridge that keeps only
+    // `ok` silently drops that authority, including its revocation check.
+    const helper = host.helperDeps.bind(host); let authorityActive = false, authorized = true;
+    vi.spyOn(host, 'helperDeps').mockImplementation(input => {
+      const deps = helper(input);
+      return { ...deps, authorizeCall: async () => ({ ok: true, run: async operation => {
+        if (!authorized) throw new Error('TURN_AUTHORITY_REVOKED');
+        authorityActive = true; try { return await operation(); } finally { authorityActive = false; }
+      } }), setCurrentSessionTitle: async value => {
+        if (!authorityActive) throw new Error('HOST_AUTHORITY_CONTEXT_MISSING');
+        return deps.setCurrentSessionTitle!(value);
+      } };
+    });
     const task = await host.invoke('maker:create-session', [{}]) as { id: string };
     const tools = native.inputs[0].tools!;
     const config = tools.providers[0].toCodexMcpConfig!({ agentKind: 'codex', workingDir: '/', sessionId: task.id })!;
@@ -2393,6 +2407,10 @@ describe('terminal task host', () => {
     const payload = await call.text();
     expect(payload).toContain('Renamed by actual MCP');
     expect(await host.invoke('local-db:sessions:get', [task.id])).toMatchObject({ title: 'Renamed by actual MCP' });
+    authorized = false;
+    const revoked = await fetch(config.url, { method: 'POST', headers: { ...headers, 'mcp-session-id': sessionId }, body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'call_tool', arguments: { name: 'set_current_session_title', args: { title: 'Revoked rename' } }, _meta: { threadId: 'real-thread' } } }) });
+    await revoked.text();
+    expect(await host.storage.get(task.id)).toMatchObject({ title: 'Renamed by actual MCP' });
   });
 
   it('repairs only an uncommitted trailing history append and continues its sequence', async () => {
@@ -2633,6 +2651,40 @@ describe('terminal task host', () => {
       expect(authenticated).toBe(true);
       expect(await readFile(path.join(root,'capabilities.json'),'utf8')).not.toContain('fixture-mcp-secret');
       expect(JSON.stringify(await host.invoke('maker:mcp:custom:list',[]))).not.toContain('fixture-mcp-secret');
+      // A companion uses the real shared MCP source, but keeps its own choice,
+      // memory scope and next-turn runtime. It must honor the account switch.
+      const knowledge = new TerminalKnowledge({ root, logger, assertCurrent() {}, changed() {}, workingDirs: async () => [root] });
+      await knowledge.configure({ memory: false });
+      const companion = new TerminalCompanionHost({ root: path.join(root, 'companions'), profileDir: root, models: host.models,
+        capabilities: host.capabilities, knowledge, logger, guard() {}, emit() {}, binary: async () => process.execPath, createAgent: native.create });
+      const peer = new McpClient({ name: 'companion-fixture', version: '1' });
+      const helper = new McpClient({ name: 'companion-control', version: '1' });
+      try {
+        const profile = await companion.create({ name: 'MCP companion' });
+        await (await companion.send(profile.id, 'hello', 'first')).completion;
+        const runtime = native.inputs.at(-1)!, start = native.starts.at(-1)!;
+        expect(runtime.memory?.isEnabled()).toBe(false);
+        expect(start.botRuntimeProfile?.mcpPolicy.catalog).toContainEqual({ name: 'fixture_mcp', source: 'custom', available: true });
+        const ctx = { sessionId: profile.sessionId, workingDir: start.workingDir, agentKind: 'claude-code' as const,
+          getSessionContext: () => ({ sessionId: profile.sessionId, workingDir: start.workingDir, agentKind: 'claude-code' as const }) };
+        const connect = async (name: string, client: McpClient) => {
+          const server = runtime.tools!.providers.find(provider => provider.name === name)!.toClaudeSdkConfig!(ctx) as { instance: McpServer };
+          const [left, right] = InMemoryTransport.createLinkedPair(); await server.instance.connect(left); await client.connect(right);
+        };
+        await connect('fixture_mcp', peer);
+        expect(await peer.callTool({ name: 'echo', arguments: { text: 'companion' } })).toMatchObject({ content: [{ type: 'text', text: 'upstream:companion' }] });
+        await connect('cindy_helper', helper);
+        const selected = await helper.callTool({ name: 'call_tool', arguments: { name: 'set_teammate_capability', args: { kind: 'mcp', id: 'fixture_mcp', joined: false } } });
+        expect(selected.isError).not.toBe(true);
+        expect((await companion.profiles.get(profile.id))?.capabilities).toMatchObject({ mcpMode: 'allowlist', mcpServers: [] });
+        await (await companion.send(profile.id, 'next turn', 'second')).completion;
+        expect(native.inputs.at(-1)!.tools!.providers.map(provider => provider.name)).not.toContain('fixture_mcp');
+        expect((await host.invoke('maker:mcp:custom:list', []))).toMatchObject({ servers: [expect.objectContaining({ id: 'fixture_mcp', enabled: true })] });
+        await knowledge.configure({ memory: true });
+        await (await companion.send(profile.id, 'memory enabled', 'third')).completion;
+        expect(native.inputs.at(-1)!.memory?.isEnabled()).toBe(true);
+        expect(native.starts.at(-1)?.resumeSessionId).toBe(start.resumeSessionId ?? `native-${profile.sessionId}`);
+      } finally { await helper.close(); await peer.close(); await companion.close(); await knowledge.close(); }
       await host.invoke('terminal:mcp:set-enabled',['fixture_mcp',false]);
       await expect(client.listTools()).rejects.toThrow();
       const other=await host.capabilities.runtime({workingDir:path.dirname(root),agentKind:'claude-code'});

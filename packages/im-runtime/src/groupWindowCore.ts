@@ -447,7 +447,7 @@ async function assembleGroupWindowContext(args: {
   triggerMessageId: string | null;
   fallbackThreadFilter?: SQL<unknown>;
   neutralize: (value: string) => string;
-  log: Logger;
+  log: Pick<Logger, 'warn' | 'info'>;
 }): Promise<GroupContextAssembly> {
   const inMemoryCursor = args.cursors.get(args.cursorKey);
   const cursor = inMemoryCursor ?? (await readPersistedCursor(args.provider, args.cursorKey));

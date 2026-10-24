@@ -31,7 +31,7 @@ export function streamTextResult(raw: string): string {
 export async function readUtilityTextStream(
   response: {
     text(): Promise<string>;
-    body?: { getReader(): ReadableStreamDefaultReader<Uint8Array> } | null;
+    body?: { getReader(): Pick<ReadableStreamDefaultReader<Uint8Array>, 'read' | 'cancel' | 'releaseLock'> } | null;
   },
   onText?: (text: string) => void,
 ): Promise<string> {

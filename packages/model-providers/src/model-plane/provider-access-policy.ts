@@ -13,7 +13,7 @@ import {
   type CatalogXdMediaKind,
   type Provider,
 } from '@cindy/model-providers';
-type CindyRegion = 'cn' | 'global';
+import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 
 export interface ProviderAccessContext {
   /** False for account-free local sessions, in every build flavor. */

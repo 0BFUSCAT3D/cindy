@@ -121,6 +121,8 @@ jobs:
       - name: Existing local model lifecycle and headless runtimes
         run: pnpm --filter desktop exec vitest run src/main/local-model-runtime/__tests__/ollamaRuntime.test.ts src/main/local-model-runtime/__tests__/ollamaInstall.test.ts src/main/local-model-runtime/__tests__/ollamaDownload.test.ts src/main/local-model-runtime/__tests__/ollamaSidecar.test.ts src/main/local-model-runtime/__tests__/managedOllamaProvider.test.ts src/main/local-model-runtime/__tests__/managedOllamaMigrate.test.ts src/main/local-model-runtime/__tests__/service.list.test.ts src/main/local-model-runtime/__tests__/service.pull.test.ts src/main/local-model-runtime/__tests__/service.owner.test.ts src/main/local-model-runtime/__tests__/service.delete.test.ts src/main/local-model-runtime/__tests__/ollamaClient.test.ts src/main/local-model-runtime/__tests__/ollamaPurge.test.ts src/main/local-model-runtime/__tests__/ollamaRelease.test.ts src/main/local-model-runtime/__tests__/pausedPullStore.test.ts src/main/local-model-runtime/__tests__/pullProgress.test.ts src/main/local-model-runtime/__tests__/localConnectDetect.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck terminal
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
         run: pnpm --filter cindy-terminal typecheck
       - name: Shared worktree host contracts
         run: pnpm --filter @cindy/worktree-core typecheck

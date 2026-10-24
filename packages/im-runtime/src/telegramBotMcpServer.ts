@@ -43,7 +43,7 @@ export interface TelegramBotMcpDeps {
   getSessionContext(): ChannelToolSessionContext;
 }
 
-export function createTelegramBotMcpServer(deps: TelegramBotMcpDeps, log: Logger): McpServer {
+export function createTelegramBotMcpServer(deps: TelegramBotMcpDeps, log: Pick<Logger, 'warn'>): McpServer {
 const HARD_BLOCKED_METHODS: ReadonlySet<string> = new Set([
   'getUpdates',
   'setWebhook',

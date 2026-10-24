@@ -206,7 +206,7 @@ export interface CindyModelEffortBaseline {
 }
 /** Each host/owner keeps its own discovery, entitlement and override snapshots. */
 export function createActiveCatalog(
-  CURRENT_CINDY_REGION: 'cn' | 'global' = 'global',
+  CURRENT_CINDY_REGION: import('@cindy/maker-shared/brand-identity').CindyRegion = 'global',
 ) {
   /** OSS / bundled 加载来的基础目录;null = 尚未加载(回落 BUNDLED_CATALOG)。 */
   let base: Catalog | null = null;

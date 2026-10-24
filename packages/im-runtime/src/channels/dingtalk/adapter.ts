@@ -42,7 +42,7 @@ export interface DingTalkAdapterOptions {
 export function buildDingTalkAdapter(
   dingtalkIm: DingTalkIM,
   config: ImOrchestratorConfig,
-  host: { ensureWorkingDir(appKey: string): string; window: ChannelGroupWindow; log: Logger },
+  host: { ensureWorkingDir(appKey: string): string; window: ChannelGroupWindow; log: Pick<Logger, 'warn'> },
   options: DingTalkAdapterOptions = {},
 ): ImChannelAdapter {
   const companion = Boolean(options.companionBotId);
