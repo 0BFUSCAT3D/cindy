@@ -88,6 +88,8 @@ export interface IssueConfirmPayload {
 export interface PermissionReviewPresentation {
   sourceDescription?: string;
   autoReviewUnavailable: boolean;
+  /** Why Auto-review asked; null for ordinary Ask-mode prompts. */
+  autoReviewReason: string | null;
   canAlwaysAllow: boolean;
   code: string;
   description: string | null;
@@ -266,6 +268,7 @@ export function buildPermissionReviewPresentation(
 
   return {
     autoReviewUnavailable: permissionAutoReviewUnavailable(request),
+    autoReviewReason: permissionAutoReviewUnavailable(request) ? null : permissionAutoReviewReason(request),
     ...(sourceDescription ? { sourceDescription } : {}),
     canAlwaysAllow,
     code: formatPermissionInput(toolName, input),
@@ -876,28 +879,111 @@ function interactionPositionLabel(index: number, localizer?: PresentationLocaliz
   });
 }
 
-export function formatPermissionInput(toolName: string, input: Record<string, unknown>): string {
-  switch (toolName) {
-    case 'Bash':
-      return typeof input.command === 'string' ? input.command : stringifyCompact(input);
-    case 'Read':
-    case 'Edit':
-    case 'Write':
-      return typeof input.file_path === 'string' ? input.file_path : stringifyCompact(input);
-    case 'Glob':
-    case 'Grep':
-      return typeof input.pattern === 'string' ? input.pattern : stringifyCompact(input);
-    default: {
-      const text = stringifyCompact(input);
-      return text.length > 500 ? `${text.slice(0, 500)}...` : text;
-    }
+/** What a permission card asks about, independent of harness tool naming. */
+export type PermissionActionKind = 'command' | 'file-read' | 'file-write' | 'plugin' | 'browser' | 'tool';
+
+export interface PermissionActionSummary {
+  kind: PermissionActionKind;
+  /** Plugin or MCP server the call goes to, when known. */
+  subject?: string;
+  /** The exact operation in readable form: command line, paths, or arguments. */
+  preview: string;
+}
+
+const COMMAND_TOOLS = new Set(['bash', 'powershell', 'exec', 'shell', 'run_command', 'local_shell']);
+const FILE_READ_TOOLS = new Set(['read', 'glob', 'grep', 'find', 'ls']);
+const FILE_WRITE_TOOLS = new Set(['edit', 'write', 'multiedit', 'notebookedit', 'file_change', 'apply_patch', 'patch']);
+
+function previewOf(value: unknown): string {
+  const text = typeof value === 'string' ? value : stringifyCompact(value);
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+}
+
+/** One-line arguments after the tool name; empty when there are none. */
+function argsPreview(args: Record<string, unknown>): string {
+  if (!Object.keys(args).length) return '';
+  const text = JSON.stringify(args) ?? '';
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+}
+
+function commandText(input: Record<string, unknown>): string | null {
+  const command = input.command ?? input.cmd;
+  if (typeof command === 'string' && command.trim()) return command;
+  if (Array.isArray(command) && command.every((part) => typeof part === 'string')) return command.join(' ');
+  return null;
+}
+
+function filePaths(input: Record<string, unknown>, search: boolean): string | null {
+  const path = readString(input.file_path) ?? readString(input.path) ?? readString(input.notebook_path);
+  const direct = search ? readString(input.pattern) ?? readString(input.query) ?? path : path;
+  if (direct) return direct;
+  const changes = Array.isArray(input.changes) ? input.changes : isRecord(input.changes) ? Object.keys(input.changes) : [];
+  const paths = changes.map((change) => typeof change === 'string' ? change : isRecord(change) ? readString(change.path) : null)
+    .filter((path): path is string => !!path);
+  return paths.length ? paths.join('\n') : null;
+}
+
+function browserStep(args: Record<string, unknown>): string {
+  const action = readString(args.action);
+  const target = readString(args.url) ?? readString(args.selector) ?? readString(args.text) ?? readString(args.targetId);
+  return action ? [action, target].filter(Boolean).join(' ') : previewOf(args);
+}
+
+/**
+ * Classify a permission request so every surface can say in plain words what is
+ * being confirmed. Unknown tools keep their name and compact JSON arguments.
+ */
+export function describePermissionAction(toolName: string, input: Record<string, unknown>): PermissionActionSummary {
+  const name = toolName.toLowerCase();
+  // Progressive MCP dispatchers: mcp__server__call_tool / mcp:server:call_tool → inner tool.
+  const innerName = readString(input.name);
+  const innerArgs = isRecord(input.args) ? input.args : {};
+  if (name.includes('browser') || innerName === 'browser') {
+    return { kind: 'browser', preview: browserStep(innerName === 'browser' ? innerArgs : input) };
   }
+  if (/(^|[_:])ghost_call$/.test(name) && readString(input.ghost_id)) {
+    // ghost_call { tool: 'call_tool', args: { name, args } } dispatches one level deeper.
+    const tool = readString(input.tool);
+    const dispatched = tool === 'call_tool' && readString(innerArgs.name);
+    const call = dispatched || tool;
+    const args = dispatched ? (isRecord(innerArgs.args) ? innerArgs.args : {}) : innerArgs;
+    return { kind: 'plugin', subject: readString(input.ghost_id)!, preview: [call, argsPreview(args)].filter(Boolean).join(' ') || previewOf(input) };
+  }
+  if (COMMAND_TOOLS.has(name)) {
+    const command = commandText(input);
+    if (command) return { kind: 'command', preview: command };
+  }
+  if (FILE_READ_TOOLS.has(name) || FILE_WRITE_TOOLS.has(name)) {
+    const paths = filePaths(input, FILE_READ_TOOLS.has(name) && name !== 'read');
+    if (paths) return { kind: FILE_READ_TOOLS.has(name) ? 'file-read' : 'file-write', preview: paths };
+  }
+  const mcp = /^mcp(?:__|:)([^_:]+(?:[_-][^_:]+)*?)(?:__|:)(.+)$/.exec(toolName);
+  if (mcp) {
+    const dispatched = mcp[2] === 'call_tool' && innerName;
+    const args = dispatched ? innerArgs : input;
+    return { kind: 'plugin', subject: mcp[1]!, preview: [dispatched || mcp[2], argsPreview(args)].filter(Boolean).join(' ') };
+  }
+  return { kind: 'tool', preview: previewOf(input) };
+}
+
+export function formatPermissionInput(toolName: string, input: Record<string, unknown>): string {
+  return describePermissionAction(toolName, input).preview;
 }
 
 export function permissionTitle(
   request: InteractionRequestLike,
   localizer?: PresentationLocalizer,
 ): string {
+  // Harness titles are often English or name an internal tool ("exec"); say what happens instead.
+  const action = describePermissionAction(permissionToolName(request), permissionInput(request));
+  if (action.kind === 'plugin' && action.subject) {
+    return presentationText(localizer, 'interaction.presentation.permission.titlePlugin', `允许使用插件「${action.subject}」？`, { plugin: action.subject });
+  }
+  if (action.kind !== 'tool' && action.kind !== 'plugin') {
+    const key = { command: 'titleCommand', 'file-read': 'titleFileRead', 'file-write': 'titleFileWrite', browser: 'titleBrowser' }[action.kind];
+    const fallback = { command: '允许运行这条命令？', 'file-read': '允许读取文件？', 'file-write': '允许修改文件？', browser: '允许浏览器执行这一步？' }[action.kind];
+    return presentationText(localizer, `interaction.presentation.permission.${key}`, fallback);
+  }
   const explicit = readString(request.title);
   if (explicit) return explicit;
   const displayName = readString(request.displayName);
@@ -917,6 +1003,11 @@ export function permissionDescription(request: InteractionRequestLike): string |
   return readString(request.description);
 }
 
+/** Auto-review's own explanation for asking (metadata.autoReviewReason), shown as the card's "why". */
+export function permissionAutoReviewReason(request: InteractionRequestLike): string | null {
+  return isRecord(request.metadata) ? readString(request.metadata.autoReviewReason) : null;
+}
+
 export function permissionAutoReviewUnavailable(request: InteractionRequestLike): boolean {
   return isRecord(request.metadata) && request.metadata.autoReviewUnavailable === true;
 }
@@ -933,10 +1024,9 @@ export function permissionRiskSummary(
   request: InteractionRequestLike,
   localizer?: PresentationLocalizer,
 ): string | null {
-  const toolName = permissionToolName(request);
-  const input = permissionInput(request);
-  if (toolName !== 'Bash') return null;
-  const command = typeof input.command === 'string' ? input.command.trim() : '';
+  const action = describePermissionAction(permissionToolName(request), permissionInput(request));
+  if (action.kind !== 'command') return null;
+  const command = action.preview.trim();
   if (!command) return null;
   if (!isHighRiskShellCommand(command)) return null;
   return presentationText(localizer, 'interaction.presentation.permission.risk', '这个命令可能修改系统、仓库或外部服务状态。允许前请确认你信任当前任务和命令内容。');

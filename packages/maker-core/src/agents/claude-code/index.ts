@@ -154,7 +154,7 @@ import {
 } from './capability-routing.js';
 import { normalizeBuiltinToolForAutoReview } from './auto-review-policy.js';
 import {
-  annotatePermissionRequestForUnavailableReview,
+  annotatePermissionRequestForAutoReview,
   composeAutoReviewIntentWithApprovedPlan,
   composeAutoReviewIntentWithClarification,
   createAutoReviewConfirmUndeliveredNotice,
@@ -2199,6 +2199,30 @@ export class ClaudeCodeAgent extends BaseAgent {
         })],
       }],
     };
+    // Native Claude Auto skips canUseTool. Hand back only the calls Cindy itself must decide;
+    // everything else stays with the native classifier so no call is reviewed twice.
+    const nativeAutoPolicyHook: HookCallback = async (input) => {
+      if (input.hook_event_name !== 'PreToolUse') return { continue: true };
+      if (
+        mutablePermissionMode !== 'auto' || mutablePlanMode || planTurnActive
+        || !usesNativeClaudeAutoReview()
+      ) return { continue: true };
+      const pre = input as PreToolUseHookInput;
+      const toolName = pre.tool_name;
+      const decide = (permissionDecision: 'allow' | 'ask', reason: string) => ({
+        continue: true,
+        hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision, permissionDecisionReason: reason },
+      });
+      const isMcp = resolveMcpToolTarget(toolName, registeredMcpServerNames) !== null;
+      const mcpPolicy = isMcp ? classifyMcpApprovalPolicy(toolName, pre.tool_input) : null;
+      // Requester authority (owner / group guest) is only known to Cindy.
+      if (activeTurnPermissionPolicy && !isReadOnlyClaudeTool(toolName) && mcpPolicy !== 'auto-approve') {
+        return decide('ask', 'Cindy reviews tool calls in channel turns.');
+      }
+      if (mcpPolicy === 'auto-approve') return decide('allow', 'Trusted Cindy tool.');
+      if (mcpPolicy === 'prompt-each-time') return decide('ask', 'This tool requires Cindy confirmation.');
+      return { continue: true };
+    };
     const localClaudeHooks = reviewMode
       ? mergeClaudeHookSets(
           { PreToolUse: [{ hooks: [reviewReadOnlyHook] }] },
@@ -2239,6 +2263,8 @@ export class ClaudeCodeAgent extends BaseAgent {
           buildClaudeAskUserQuestionCallerProvenanceHooks(),
           nativeCliAuth ? workspaceSettingsConfigChangeHooks : undefined,
           this.deps.claudeHooks,
+          // Last: earlier guards may deny; this only routes what remains.
+          { PreToolUse: [{ hooks: [nativeAutoPolicyHook] }] },
         );
     const deniedCapabilityRoute = (toolName: string) => {
       const route = findClaudeMcpCapabilityRoute(
@@ -2578,6 +2604,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       const mcpApprovalPolicy = classifyMcpApprovalPolicy(toolName, input);
       let forcePrompt = mutablePermissionMode !== 'auto' && turnPolicyForcePrompt;
       let unavailableHandoff = false;
+      let autoReviewAskReason: string | undefined;
       let reviewedWritePath: string | null | undefined;
       let executionInput = input;
       const normalizedAction = normalizeBuiltinToolForAutoReview(toolName, input);
@@ -2659,6 +2686,8 @@ export class ClaudeCodeAgent extends BaseAgent {
           if (autoDecision.unavailable) {
             autoReviewUnavailableNotice.notify();
             unavailableHandoff = true;
+          } else {
+            autoReviewAskReason = autoDecision.reason;
           }
           forcePrompt = true;
         }
@@ -2686,9 +2715,10 @@ export class ClaudeCodeAgent extends BaseAgent {
         },
       };
       const decision = await dispatchInteraction(
-        unavailableHandoff
-          ? annotatePermissionRequestForUnavailableReview(permissionRequest)
-          : permissionRequest,
+        annotatePermissionRequestForAutoReview(permissionRequest, {
+          unavailable: unavailableHandoff,
+          reason: autoReviewAskReason,
+        }),
         { directorySensitive: directorySensitivePermission },
       );
       notifyIfAutoReviewConfirmUndelivered(unavailableHandoff, decision);
@@ -2945,16 +2975,17 @@ export class ClaudeCodeAgent extends BaseAgent {
     let currentAutoReviewAuthority: ReturnType<typeof autoReviewContext>;
     const priorAutoReviewIntent = () => !autoReviewIntentInitialized ? undefined : JSON.stringify(currentAutoReviewAuthority ?? null) === JSON.stringify(autoReviewContext() ?? null) ? currentAutoReviewIntent : '';
     const autoReviewDecisionCache = new Map<string, Promise<AutoReviewDecision>>();
-    // Claude's native OAuth Auto classifier bypasses canUseTool entirely. Once a host MCP
-    // is registered, that would also bypass Cindy's trusted-server and prompt policies,
-    // leaving permission requests with no Cindy interaction surface. Keep native Auto for
-    // MCP-free sessions, but route host-MCP sessions through SDK default so canUseTool owns
-    // the decision.
+    // Claude's native OAuth Auto classifier bypasses canUseTool. Local sessions keep it with
+    // host MCPs attached: nativeAutoPolicyHook (PreToolUse) still runs for every call and
+    // hands Cindy-owned decisions (trusted servers, prompt-each-time, IM turn policies) back
+    // to canUseTool, so each call is reviewed once. Remote and device-hosted sessions cannot
+    // run that local hook and stay on SDK default whenever an MCP is registered.
     const hasRegisteredMcpServers = (): boolean => registeredMcpServerNames.size > 0;
     const usesNativeClaudeAutoReview = (): boolean =>
       !nativeAutoReviewUnavailable
       && mutableAutoReviewCredentialMode === 'oauth-bearer'
-      && !hasRegisteredMcpServers()
+      && !hosted
+      && (!opts.remoteHostId || !hasRegisteredMcpServers())
       // Claude native Auto sees additionalDirectories as one undifferentiated scope and
       // bypasses canUseTool. Use the scope frozen into the active Query: after revoke,
       // that Query still carries its broader directory allowlist.
@@ -4046,6 +4077,7 @@ export class ClaudeCodeAgent extends BaseAgent {
             const remoteMcpPolicy = classifyMcpApprovalPolicy(remoteToolName, params.input ?? {});
             let remoteForcePrompt = mutablePermissionMode !== 'auto' && remoteTurnPolicyForcePrompt;
             let remoteUnavailableHandoff = false;
+            let remoteAutoReviewAskReason: string | undefined;
             const reviewPermissionMode = mutablePermissionMode;
             if (reviewPermissionMode === 'auto' || (remoteMcpPolicy === 'auto-approve' && !remoteTurnPolicyForcePrompt)) {
               const normalizedAction = normalizeBuiltinToolForAutoReview(remoteToolName, params.input ?? {});
@@ -4091,6 +4123,8 @@ export class ClaudeCodeAgent extends BaseAgent {
               if (autoDecision.unavailable) {
                 autoReviewUnavailableNotice.notify();
                 remoteUnavailableHandoff = true;
+              } else {
+                remoteAutoReviewAskReason = autoDecision.reason;
               }
               remoteForcePrompt = true;
             } else {
@@ -4113,9 +4147,10 @@ export class ClaudeCodeAgent extends BaseAgent {
             let decision: InteractionDecision;
             try {
               decision = await dispatchWithTimeout(
-                remoteUnavailableHandoff
-                  ? annotatePermissionRequestForUnavailableReview(remotePermissionRequest)
-                  : remotePermissionRequest,
+                annotatePermissionRequestForAutoReview(remotePermissionRequest, {
+                  unavailable: remoteUnavailableHandoff,
+                  reason: remoteAutoReviewAskReason,
+                }),
               );
             } catch {
               if (remoteUnavailableHandoff) autoReviewConfirmUndeliveredNotice.notify();
@@ -5568,7 +5603,7 @@ export class ClaudeCodeAgent extends BaseAgent {
                 && !mutablePlanMode
                 && !planTurnActive
                 && mutableAutoReviewCredentialMode === 'oauth-bearer'
-                && hasRegisteredMcpServers()
+                && !usesNativeClaudeAutoReview()
                 && nativeAutoQueries.has(currentQ)
               ) {
                 try {
@@ -6361,7 +6396,8 @@ export class ClaudeCodeAgent extends BaseAgent {
     };
     const handle: AgentSessionHandle = {
       disabledSkillPaths: disabledSkillSnapshot,
-      getAutoReviewOwner: () => usesNativeClaudeAutoReview() ? 'native' : 'cindy',
+      // IM turn policies carry requester authority the native classifier cannot see.
+      getAutoReviewOwner: () => usesNativeClaudeAutoReview() && !activeTurnPermissionPolicy ? 'native' : 'cindy',
       reviewAutoPermissionAction: async (action) => {
         const decision = await reviewAutoAction(
           action,

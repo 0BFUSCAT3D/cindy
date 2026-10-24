@@ -420,12 +420,15 @@ export const DEDICATED_AUTO_REVIEW_CANDIDATES = Object.freeze([
     reasoningEffort: undefined,
   },
   {
-    id: 'chatgpt-nano',
+    // Codex's own Auto-review model. ChatGPT accounts can call it although it is not a
+    // selectable catalog model (gpt-5.4-nano is listed but rejected for ChatGPT accounts).
+    id: 'chatgpt-auto-review',
     providerId: 'openai',
     agentKind: 'codex',
-    model: 'gpt-5.4-nano',
+    model: 'codex-auto-review',
     transport: 'codex-responses',
     reasoningEffort: 'low',
+    catalogExempt: true,
   },
   {
     id: 'chatgpt-luna',
@@ -442,6 +445,8 @@ export const DEDICATED_AUTO_REVIEW_CANDIDATES = Object.freeze([
   model: string;
   transport: UtilityModelTransport;
   reasoningEffort: 'low' | undefined;
+  /** Review-only model that is reachable without being a selectable catalog entry. */
+  catalogExempt?: boolean;
 }>);
 
 export type DedicatedAutoReviewCandidate = (typeof DEDICATED_AUTO_REVIEW_CANDIDATES)[number];
@@ -625,7 +630,7 @@ export async function requestDedicatedAutoReviewCandidateText(
   ) {
     return { ok: false, reason: 'no_candidate', attempts: [skippedAttempt(profile, 'agent_unavailable')] };
   }
-  if (!configured.some((model) => model.id === candidate.model)) {
+  if (!('catalogExempt' in candidate && candidate.catalogExempt) && !configured.some((model) => model.id === candidate.model)) {
     return { ok: false, reason: 'no_candidate', attempts: [skippedAttempt(profile, 'model_unavailable')] };
   }
   if (isProviderModelRouteDisabled(candidate.providerId, candidate.model)) {

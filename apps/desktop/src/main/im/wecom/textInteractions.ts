@@ -1,7 +1,7 @@
 import type { InteractionDecision, InteractionRequest } from '@cindy/maker-core';
 import { escapeWecomMarkdown, type IMMessageEvent, type WecomIM } from '@cindy/im';
 
-import { autoReviewUnavailablePromptLine } from '../shared/autoReviewUnavailablePrompt';
+import { autoReviewUnavailablePromptLine, permissionPromptDescription } from '../shared/autoReviewUnavailablePrompt';
 import { isStopCommand } from '../shared/controlCommands';
 import type { SharedPermission } from '../../maker-ipc/sharedPermission';
 import { INTERACTION_CHOICE_RECEIVED_TEXT, permissionOutcomeText } from '../shared/permissionPresentation';
@@ -125,7 +125,7 @@ export function formatWecomInteractionPrompt(request: InteractionRequest): strin
     const toolName = escapeWecomMarkdown(request.displayName ?? request.toolName);
     const unavailable = autoReviewUnavailablePromptLine(request);
     return `需要确认工具“${toolName}”。
-${request.description ?? ''}
+${permissionPromptDescription(request) ?? ''}
 ${unavailable ? `\n${unavailable}\n` : ''}
 参数：
 \`\`\`json

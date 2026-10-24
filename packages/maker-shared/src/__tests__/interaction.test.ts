@@ -266,9 +266,50 @@ describe('interaction shared model', () => {
         title: '高风险授权需要二次确认',
         detail: '先核对命令内容，再点一次确认允许；不确定就拒绝。',
       },
-      title: '允许使用 Bash?',
+      title: '允许运行这条命令？',
       toolName: 'Bash',
     });
+  });
+
+  // 2026-10-24: an Auto ask from Codex showed "Allow Codex to run this command?" with raw JSON
+  // and no reason. The card must say what runs, why Auto asked, and warn on risky exec commands.
+  it('explains Auto asks with the reviewer reason and the readable operation across harness tool names', () => {
+    const exec = buildPermissionReviewPresentation({
+      kind: 'permission',
+      requestId: 'p-ask',
+      toolName: 'exec',
+      title: 'Allow Codex to run this command?',
+      input: { command: 'xcrun simctl delete all', cwd: '/repo' },
+      metadata: { autoReviewReason: '这会删除电脑上的所有 iOS 模拟器，你只让我排查键盘问题。' },
+    });
+    expect(exec).toMatchObject({
+      title: '允许运行这条命令？',
+      code: 'xcrun simctl delete all',
+      autoReviewReason: '这会删除电脑上的所有 iOS 模拟器，你只让我排查键盘问题。',
+    });
+
+    const plugin = buildPermissionReviewPresentation({
+      kind: 'permission',
+      requestId: 'p-plugin',
+      toolName: 'mcp:cindy:ghost_call',
+      input: { ghost_id: 'cindy-github', tool: 'call_tool', args: { name: 'get_user', args: { username: 'octo' } } },
+    });
+    expect(plugin).toMatchObject({ title: '允许使用插件「cindy-github」？', code: 'get_user {"username":"octo"}', autoReviewReason: null });
+
+    expect(buildPermissionReviewPresentation({
+      kind: 'permission',
+      requestId: 'p-browser',
+      toolName: 'mcp:cindy_browser:call_tool',
+      input: { name: 'browser', args: { action: 'navigate', url: 'https://x.com/compose/post' } },
+    })).toMatchObject({ title: '允许浏览器执行这一步？', code: 'navigate https://x.com/compose/post' });
+
+    // A failed review shows its own fixed copy, never a stale model reason.
+    expect(buildPermissionReviewPresentation({
+      kind: 'permission',
+      requestId: 'p-down',
+      toolName: 'Bash',
+      metadata: { autoReviewUnavailable: true, autoReviewReason: 'stale' },
+    }).autoReviewReason).toBeNull();
   });
 
   it('marks auto-review unavailable handoffs so mobile can localize the confirmation copy', () => {
