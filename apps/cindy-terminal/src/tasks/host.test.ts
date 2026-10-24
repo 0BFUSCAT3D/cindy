@@ -44,6 +44,7 @@ import { z } from 'zod';
 import { TerminalPlugins } from '../plugins/host.js';
 import { TerminalPluginTasks } from '../plugins/tasks.js';
 import { TerminalCompanionHost } from '../remote/companions/host.js';
+import { registerCompanionResources } from '../remote/companions/resources.js';
 import { TerminalKnowledge } from '../knowledge.js';
 import { TerminalPluginMarket } from '../plugins/market.js';
 import { TerminalPluginAccount } from '../plugins/account.js';
@@ -835,6 +836,60 @@ describe('terminal task host', () => {
       expect(await pending).toMatchObject({verdict:'ask',unavailable:true});
       expect(api.requests).toHaveLength(2);
     }finally{release();await api.close();}
+  });
+
+  // Integration: companion settings previously never reached the native
+  // permission mode/reviewer. Exercise resource + GUI updates, durable rollback,
+  // actual auxiliary HTTP, and scheduled-input authority through real Maker.
+  it('persists companion permissions and reviews only owner intent through the connected auxiliary model', async () => {
+    const { host, root, native } = await setup();
+    let reply = async () => '{"verdict":"allow"}';
+    const api = await auxiliaryFixture(host, () => reply());
+    const companion = new TerminalCompanionHost({ root: path.join(root, 'companions'), profileDir: root,
+      models: host.models, logger, guard() {}, emit() {}, binary: async () => process.execPath,
+      createAgent: native.create, utility: host.utility, permissionModes: kind => host.channelRuntime().getCapabilities(kind).permissionModes });
+    let release = () => {};
+    try {
+      await companion.modelSettings.saveDefaults([{ agentKind: 'claude-code', providerId: 'fixture', model: 'test-model', fastMode: false }]);
+      const profile = await companion.create({ name: 'Permission fixture' });
+      const registry = new RemoteResourceRegistry(); registerCompanionResources(registry, companion);
+      const client = { protocolVersion: 1 as const, primitives: ['form'], locale: 'zh-CN' }, context = { controllerDeviceId: 'owner' };
+      const ref = { collectionId: 'teammates', kind: 'bot', id: profile.id };
+      const before = await registry.get(context, { client, ref });
+      expect(before.actions?.find(action => action.id === 'full-access')?.confirmation).toBeDefined();
+      await registry.invoke(context, { client, collectionId: 'teammates', resourceRef: ref, actionId: 'permission', input: { mode: 'auto' } });
+      expect(native.starts).toHaveLength(0);
+      const send = async (text: string, clientId: string, origin?: Parameters<TerminalCompanionHost['send']>[3]) => {
+        const result = await companion.send(profile.id, text, clientId, origin); await result.completion;
+      };
+      await send('Read files only. Do not delete anything.', 'owner');
+      expect(native.starts.at(-1)?.permissionMode).toBe('auto');
+      const delegate = native.inputs.find(input => input.taskId === profile.sessionId)!.reviewAutoPermissionAction!;
+      const request: AutoReviewRequest = { sessionId: profile.sessionId, agentKind: 'claude-code', providerId: 'fixture', model: 'test-model',
+        userIntent: 'Read files only.', action: { kind: 'exec', command: 'ls' }, workspaceRoots: [companion.profiles.home(profile.id)], platform: process.platform };
+      const run = () => withAutoReviewContext(request, delegate, async prepared => await delegate(prepared) ?? { verdict: 'ask' });
+      expect(await run()).toEqual({ verdict: 'allow' }); expect(api.requests).toHaveLength(1);
+      await send('Delete all files.', 'scheduled', { source: 'local', scheduler: { kind: 'scheduler', scheduleId: 'fixture', scheduleName: 'Fixture', runId: 'run' } });
+      const intent = JSON.stringify(native.sends.at(-1)?.[AUTO_REVIEW_USER_INTENT]);
+      expect(intent).toContain('Do not delete anything.'); expect(intent).not.toContain('Delete all files.');
+      const update = vi.spyOn(companion.storage, 'update').mockRejectedValueOnce(new Error('fixture disk unavailable'));
+      await expect(companion.invoke('maker:set-permission-mode', [profile.sessionId, 'ask'], { source: 'local' })).rejects.toThrow('fixture disk unavailable');
+      update.mockRestore();
+      expect(native.permissionModes.slice(-2)).toEqual(['ask', 'auto']);
+      expect((await companion.permissionState(profile.id)).mode).toBe('auto');
+      await expect(registry.invoke(context, { client, collectionId: 'teammates', resourceRef: ref, actionId: 'permission', input: { mode: 'bypassPermissions' } })).rejects.toThrow('PERMISSION_CONFIRMATION_REQUIRED');
+      await registry.invoke(context, { client, collectionId: 'teammates', resourceRef: ref, actionId: 'full-access' });
+      expect((await registry.get(context, { client, ref })).revision).not.toBe(before.revision);
+      expect(await companion.invoke('local-db:sessions:get', [profile.sessionId], { source: 'local' })).toMatchObject({ permissionMode: 'bypassPermissions' });
+      let entered!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+      reply = async () => { entered(); await gate; return '{"verdict":"allow"}'; };
+      const pending = run(); await started; await companion.stop(profile.id);
+      expect(await pending).toMatchObject({ verdict: 'ask', unavailable: true });
+      await send('Continue reading.', 'resumed');
+      expect(native.starts.at(-1)?.permissionMode).toBe('bypassPermissions');
+      expect(JSON.stringify(native.sends.at(-1)?.[AUTO_REVIEW_USER_INTENT])).not.toContain('Delete all files.');
+    } finally { release(); await companion.close(); await api.close(); }
   });
 
   it('keeps guest and scheduled input separate from owner authorization across task resume',async()=>{
@@ -1887,7 +1942,8 @@ describe('terminal task host', () => {
   });
   // Integration: the live CLI could not create any task once the market tools
   // were wired. The full plugin composition must precede native session startup
-  // without eagerly requiring its not-yet-created incarnation.
+  // without eagerly requiring its not-yet-created incarnation. Real SQLite,
+  // native MCP transport and restart recovery use the integration time budget.
   it('starts and sends a task with the full plugin market composition installed',async()=>{
     const {host,root,vault,native}=await setup();
     const account=new TerminalPluginAccount({endpoints:()=>({authApiBaseUrl:'https://auth.example.invalid',pluginApiBaseUrl:'https://plugins.example.invalid'}),membership:()=>null,token:()=>null,refresh:async()=>{},assertCurrent:()=>{}});
@@ -2211,7 +2267,7 @@ describe('terminal task host', () => {
       const normalHistory=await host.invoke('local-db:messages:list',[task.id,{limit:10}]) as Array<{content:string}>;
       expect(normalHistory.map(item=>item.content)).toContain('Echo: plugin-ready');
     }finally{await companions.close();await host.close();await tasks.close();await market.close();await plugins.close();account.close();}
-  });
+  },30_000);
   it('persists user/assistant history and resumes the original native task after a daemon restart', async () => {
     const { host, root, create, native } = await setup();
     const task = await host.invoke('maker:create-session', [{ title: 'Persistent task' }]) as { id: string };

@@ -1,6 +1,11 @@
 import type { TerminalWorktrees } from "../../worktrees/host.js";
 import type { TerminalCapabilities } from "../../tasks/capabilities.js";
 import type { TerminalKnowledge } from "../../knowledge.js";
+import type { TerminalUtilityModels } from "../../models/utility.js";
+import { createSessionPermissionChanges } from "@cindy/im-runtime/sessionPermissionChange";
+import { changeSessionPermissionMode } from "@cindy/im-runtime/permissionModeControl";
+import { permissionModeOrAsk } from "@cindy/maker-shared/permission-mode";
+import { createAutoReviewIntentProjection } from "@cindy/maker-shared/auto-review-intent";
 import { companionCapabilityCallbacks } from "./capabilities.js";
 import type { WorktreeRuntimeLease } from "@cindy/worktree-core/runtimeLeases";
 import type { TerminalCompanionRoutines } from "./routines.js";
@@ -13,6 +18,7 @@ import {
 import {
   AUTO_REVIEW_SOURCE_CONTENT,
   AUTO_REVIEW_DELEGATED_CONTINUATION,
+  AUTO_REVIEW_USER_INTENT,
 } from "@cindy/maker-core";
 import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
@@ -27,6 +33,8 @@ import {
   type Logger,
   type Session,
   type UserMessage,
+  type PermissionModeDescriptor,
+  type AutoReviewDelegate,
 } from "@cindy/maker-core";
 import { TerminalCompanionModels, type CompanionModel } from "./models.js";
 import { createPluginSessionPermissions } from "../../plugins/session-permissions.js";
@@ -147,6 +155,7 @@ export class TerminalCompanionHost {
   private readonly listeners = new Set<(botId: string) => void>();
   private closed = false;
   private readonly generations = new Map<string, number>();
+  private readonly permissionChanges = createSessionPermissionChanges();
   private readonly deliveries = new Map<string, Promise<string>>();
   private pluginFactory?: (
     context: PluginTaskContext,
@@ -461,6 +470,10 @@ export class TerminalCompanionHost {
       worktrees?: TerminalWorktrees;
       capabilities?: TerminalCapabilities;
       knowledge?: Pick<TerminalKnowledge, "createRuntime" | "snapshot">;
+      utility?: Pick<TerminalUtilityModels, "reviewPermission">;
+      permissionModes?(
+        kind: ModelSelection["agentKind"],
+      ): readonly PermissionModeDescriptor[];
     },
   ) {
     this.modelSettings = new TerminalCompanionModels({
@@ -707,8 +720,10 @@ export class TerminalCompanionHost {
               capabilities: this.options.capabilities,
               models: this.options.models,
               modelSettings: this.modelSettings,
-              memoryEnabled: () => this.options.knowledge?.snapshot().memory ?? true,
-              change: (patch,version) => this.change(profile.id,patch,version),
+              memoryEnabled: () =>
+                this.options.knowledge?.snapshot().memory ?? true,
+              change: (patch, version) =>
+                this.change(profile.id, patch, version),
               current: () => this.assertMayRun(profile.id),
               changed: () => this.changed(profile.id),
             }),
@@ -817,7 +832,15 @@ export class TerminalCompanionHost {
       .catch(() => {});
     return start;
   }
-  private async start(profile: TerminalCompanionProfile): Promise<Live> {
+  private start(profile: TerminalCompanionProfile): Promise<Live> {
+    // A new runtime must read the permission committed by the latest settings
+    // change; it cannot race the live-mode update and start with an older row.
+    return this.permissionChanges.withSessionPermissionChange(
+      profile.sessionId,
+      () => this.startRuntime(profile),
+    );
+  }
+  private async startRuntime(profile: TerminalCompanionProfile): Promise<Live> {
     await this.closeSession(profile.sessionId);
     this.guard();
     await this.executionGuard?.(profile.id);
@@ -839,6 +862,7 @@ export class TerminalCompanionHost {
         lease: Live | undefined,
         worktreeLease: WorktreeRuntimeLease | null = null;
       let revoked = false;
+      const reviewAbort = new AbortController();
       const assertCurrent = () => {
         this.guard();
         if (revoked || (lease && this.live.get(profile.sessionId) !== lease))
@@ -955,7 +979,32 @@ export class TerminalCompanionHost {
             }),
           },
         });
+        let reviewAutoPermissionAction: AutoReviewDelegate | undefined;
+        if (this.options.utility) {
+          reviewAutoPermissionAction = (request) =>
+            this.options.utility!.reviewPermission(
+              request,
+              assertCurrent,
+              reviewAbort.signal,
+            );
+          reviewAutoPermissionAction.prepareRequest = async (request) => {
+            assertCurrent();
+            await this.assertMayRun(profile.id);
+            if (request.sessionId && request.sessionId !== profile.sessionId)
+              throw new Error("COMPANION_SCOPE_MISMATCH");
+            // This is the stable owner chat. Delegation authority belongs to a
+            // separate owned-task receipt, never to arbitrary native input.
+            const {
+              delegatedTask: _delegation,
+              authorizationError: _error,
+              ...ordinary
+            } = request;
+            assertCurrent();
+            return ordinary;
+          };
+        }
         agent = await (this.options.createAgent ?? createTerminalAgent)({
+          reviewAutoPermissionAction,
           profileDir: this.options.profileDir,
           taskId: profile.sessionId,
           selection,
@@ -1061,7 +1110,10 @@ export class TerminalCompanionHost {
           model: selection.model,
           providerId: selection.providerId,
           effort: selection.effort,
-          permissionMode: "default",
+          permissionMode:
+            row?.permissionMode === "default"
+              ? "ask"
+              : permissionModeOrAsk(row?.permissionMode),
           fastMode: choice.fastMode,
           ...(agentDeviceId ? { agentDeviceId } : {}),
           botProfilePrompt: prompt.stable,
@@ -1111,6 +1163,7 @@ export class TerminalCompanionHost {
           plugin,
           revoke: () => {
             revoked = true;
+            reviewAbort.abort();
           },
           revision: profile.version,
           off: () => {},
@@ -1142,6 +1195,7 @@ export class TerminalCompanionHost {
       } catch (error) {
         failure = error;
         revoked = true;
+        reviewAbort.abort();
         lease?.off();
         plugin?.close();
         if (maker) await maker.shutdown();
@@ -1437,7 +1491,7 @@ export class TerminalCompanionHost {
         await this.executionGuard?.(profile.id);
         const sourceDevice =
           receipt.source === "remote" ? (receipt.sourceDevice ?? null) : null;
-        const agentMeta = receipt.targetPlugin
+        const sourceMeta = receipt.targetPlugin
           ? {
               sourcePlugin: {
                 pluginId: receipt.targetPlugin.id,
@@ -1450,6 +1504,19 @@ export class TerminalCompanionHost {
             : sourceDevice
               ? { sourceDevice }
               : undefined;
+        const projection = createAutoReviewIntentProjection();
+        const authoredText =
+          projection.readText(persistedInput(receipt.message)) ?? "";
+        const delegated = Boolean(receipt.targetPlugin || receipt.scheduler);
+        const agentMeta = {
+          ...sourceMeta,
+          delivery: "turn",
+          autoReviewUserText: receipt.scheduler
+            ? { kind: "scheduled-continuation" }
+            : receipt.targetPlugin
+              ? { kind: "delegated-continuation" }
+              : authoredText,
+        };
         await this.storage.append(profile.sessionId, {
           kind: "user",
           message: receipt.message,
@@ -1486,9 +1553,25 @@ export class TerminalCompanionHost {
                   buildClientDeviceNote(sourceDevice),
                 )
               : receipt.message;
+        const history = (await this.messages(profile.sessionId)).map((row) => ({
+          ...row,
+          createdAt: Date.parse(row.createdAt),
+        }));
+        const intent = projection.restore(
+          history,
+          delegated
+            ? undefined
+            : {
+                clientId: receipt.requestId,
+                content: persistedInput(receipt.message),
+                authoredText,
+              },
+        );
         const result = await live.session.send(message, {
+          [AUTO_REVIEW_USER_INTENT]: intent,
+          [AUTO_REVIEW_SOURCE_CONTENT]: receipt.message.content,
           ...(receipt.scheduler ? { origin: receipt.scheduler } : {}),
-          ...(receipt.targetPlugin
+          ...(delegated
             ? {
                 [AUTO_REVIEW_SOURCE_CONTENT]: "",
                 [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
@@ -1712,6 +1795,91 @@ export class TerminalCompanionHost {
       credentialSwitchWait: null,
     };
   }
+  async permissionState(id: string) {
+    const profile = await this.profiles.get(id);
+    if (!profile) throw new Error("COMPANION_NOT_FOUND");
+    await this.ensureCanonical(profile);
+    const row = await this.storage.get(profile.sessionId);
+    if (!row) throw new Error("COMPANION_NOT_FOUND");
+    const modes =
+      this.options.permissionModes?.(row.agentKind) ??
+      this.live.get(profile.sessionId)?.session.capabilities.permissionModes;
+    return {
+      mode:
+        row.permissionMode === "default"
+          ? "ask"
+          : permissionModeOrAsk(row.permissionMode),
+      modes: (modes ?? []).filter(
+        (mode) => mode.id !== "auto" || Boolean(this.options.utility),
+      ),
+    };
+  }
+  async changePermission(
+    id: string,
+    value: unknown,
+    confirmedFullAccess: boolean,
+    context: InvocationContext,
+  ) {
+    this.guard();
+    context.assertCurrent?.();
+    if (context.sharedTask) throw new Error("COMPANION_OWNER_REQUIRED");
+    const profile = await this.profiles.get(id);
+    if (!profile) throw new Error("COMPANION_NOT_FOUND");
+    await this.executionGuard?.(id);
+    const state = await this.permissionState(id),
+      mode = state.modes.find((mode) => mode.id === value);
+    if (!mode) throw new Error("INVALID_PERMISSION_MODE");
+    const current = () => {
+      this.guard();
+      context.assertCurrent?.();
+    };
+    const result = await changeSessionPermissionMode(
+      {
+        sessionId: profile.sessionId,
+        mode: mode.id,
+        modes: state.modes,
+        confirmedFullAccess,
+        readPreviousMode: async () => {
+          await this.executionGuard?.(id);
+          return (await this.permissionState(id)).mode;
+        },
+        getLiveSession: () => this.live.get(profile.sessionId)?.session ?? null,
+        persist: async (mode) => {
+          current();
+          await this.storage.update(profile.sessionId, {
+            permissionMode: mode,
+          });
+          current();
+        },
+      },
+      {
+        ...this.permissionChanges,
+        captureAccount: () => ({
+          assertCurrent: current,
+          isCurrent: () => {
+            try {
+              current();
+              return true;
+            } catch {
+              return false;
+            }
+          },
+        }),
+      },
+    );
+    if (result.kind !== "changed")
+      throw new Error(
+        result.kind === "confirmation-required"
+          ? "PERMISSION_CONFIRMATION_REQUIRED"
+          : result.reason,
+      );
+    this.emit("local-db:sessions:patched", {
+      sessionId: profile.sessionId,
+      patch: { permissionMode: mode.id },
+    });
+    this.changed(id);
+    return { success: true };
+  }
   async invoke(
     channel: string,
     args: unknown[],
@@ -1726,6 +1894,9 @@ export class TerminalCompanionHost {
         : string(args[0]);
     const profile = await this.profileForSession(id);
     switch (channel) {
+      case "maker:set-permission-mode":
+        // The existing GUI command already owns its Full access confirmation.
+        return this.changePermission(profile.id, args[1], true, context);
       case "maker:input:resume":
         await this.storage.update(id, { queuePaused: false });
         this.wakeQueue(id);
@@ -1806,6 +1977,7 @@ export class TerminalCompanionHost {
           id,
           title: profile.name,
           agentKind: (await this.storage.get(id))?.agentKind ?? "pi",
+          permissionMode: (await this.permissionState(profile.id)).mode,
           botId: profile.id,
           status: "active",
           createdAt: new Date(profile.createdAt).toISOString(),

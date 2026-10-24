@@ -1,5 +1,11 @@
 import { resolveRemoteText, type RemoteLocalizedText } from '@cindy/device-link';
 const rows:Record<string,readonly string[]> = {
+  "Permissions": ["权限", "權限", "権限", "권한"],
+  "Ask": ["询问", "詢問", "確認する", "확인"],
+  "Auto-review": ["自动审批", "自動審批", "自動承認", "자동 승인"],
+  "Auto accept edits": ["自动接受编辑", "自動接受編輯", "編集を自動承認", "편집 자동 승인"],
+  "Full access": ["完全访问", "完全存取", "フルアクセス", "전체 액세스"],
+  "Allow this teammate to run tools without asking for permission?": ["允许此伙伴执行工具时不再询问权限？", "允許此夥伴執行工具時不再詢問權限？", "この仲間が権限の確認なしでツールを実行することを許可しますか？", "이 팀원이 권한을 묻지 않고 도구를 실행하도록 허용할까요?"],
 "order":["按优先顺序","依優先順序","優先順位順","우선순위 순"],"weight":["按权重分配","依權重分配","重み付き割り当て","가중치 분배"],"usage":["按用量分配","依用量分配","使用量に応じて割り当て","사용량별 분배"],"available":["可用","可用","利用可能","사용 가능"],"full":["已满","已滿","上限に到達","가득 참"],"unknown":["未知","未知","不明","알 수 없음"],
   "Disable remote access": [
     "关闭远程调用",

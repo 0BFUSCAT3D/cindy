@@ -6,6 +6,7 @@ import type {
 import type { TerminalCompanionCloud } from "./cloud.js";
 import type { TerminalCompanionHost } from "./host.js";
 import { remoteText as text } from "../text.js";
+import { resolveRemoteText } from "@cindy/device-link";
 import { parseCompanionModel } from "./models.js";
 import {
   registerCompanionModelResources,
@@ -17,6 +18,18 @@ const string = (value: unknown) => {
     throw new Error("INVALID_ARGUMENT");
   return value;
 };
+const permissionLabel = (id: string, fallback = id) =>
+  text(
+    id === "auto"
+      ? "Auto-review"
+      : id === "ask"
+        ? "Ask"
+        : id === "bypassPermissions"
+          ? "Full access"
+          : id === "acceptEdits"
+            ? "Auto accept edits"
+            : fallback,
+  );
 export function registerCompanionResources(
   registry: RemoteResourceRegistry,
   host: TerminalCompanionHost,
@@ -56,9 +69,10 @@ export function registerCompanionResources(
         ],
       };
     }
+    const permissions = await host.permissionState(id);
     return {
       ref: { collectionId: "teammates", kind: "bot", id },
-      revision: String(profile.version),
+      revision: `${profile.version}:${permissions.mode}`,
       display: {
         title: profile.name,
         subtitle: profile.description,
@@ -77,6 +91,43 @@ export function registerCompanionResources(
       actions: [
         { id: "open", label: text("Open conversation") },
         { id: "model-settings", label: text("Models") },
+        ...(permissions.modes.length
+          ? [
+              {
+                id: "permission",
+                label: text("Permissions"),
+                fields: [
+                  {
+                    id: "mode",
+                    label: text("Permissions"),
+                    kind: "select",
+                    required: true,
+                    options: permissions.modes
+                      .filter((mode) => mode.id !== "bypassPermissions")
+                      .map((mode) => ({
+                        value: mode.id,
+                        label: permissionLabel(mode.id, mode.displayName),
+                      })),
+                  },
+                ],
+              },
+            ]
+          : []),
+        ...(permissions.modes.some((mode) => mode.id === "bypassPermissions")
+          ? [
+              {
+                id: "full-access",
+                label: text("Full access"),
+                confirmation: {
+                  title: text("Full access"),
+                  body: text(
+                    "Allow this teammate to run tools without asking for permission?",
+                  ),
+                  confirmLabel: text("Full access"),
+                },
+              },
+            ]
+          : []),
         {
           id: "edit",
           label: text("Edit profile"),
@@ -126,17 +177,22 @@ export function registerCompanionResources(
             .toLowerCase()
             .includes(query),
       );
+      const items = await Promise.all(
+        rows.slice(0, request.limit ?? 200).map((row) => item(row.id)),
+      );
       return {
         collectionId: "teammates",
-        revision: rows.map((row) => row.id + ":" + row.version).join("|"),
-        items: await Promise.all(
-          rows.slice(0, request.limit ?? 200).map((row) => item(row.id)),
-        ),
+        revision: items.map((row) => row.ref.id + ":" + row.revision).join("|"),
+        items,
       };
     },
     get: async (_context, request) => {
       const result = await item(request.ref.id);
       const profile = await host.profiles.get(request.ref.id);
+      const permission =
+        profile && result.actions?.some((action) => action.id === "permission")
+          ? await host.permissionState(profile.id)
+          : null;
       let description = profile?.description ?? "";
       if (!profile && cloud) {
         const page = (await cloud.invoke("maker:companion-cloud:transcript", [
@@ -150,6 +206,23 @@ export function registerCompanionResources(
         ...result,
         blocks: [
           { id: "profile", primitive: "text", fallbackMarkdown: description },
+          ...(permission
+            ? [
+                {
+                  id: "permissions",
+                  primitive: "form",
+                  title: text("Permissions"),
+                  fallbackMarkdown: resolveRemoteText(
+                    permissionLabel(permission.mode),
+                    request.client.locale,
+                  ),
+                  data: {
+                    actionId: "permission",
+                    values: { mode: permission.mode },
+                  },
+                },
+              ]
+            : []),
         ],
       };
     },
@@ -232,12 +305,30 @@ export function registerCompanionResources(
           ],
         };
       }
-      if (request.actionId === "edit") {
+      if (
+        request.actionId === "permission" ||
+        request.actionId === "full-access"
+      ) {
+        const profile = await host.profiles.get(id);
+        if (!profile) throw new Error("COMPANION_NOT_FOUND");
+        await host.changePermission(
+          id,
+          request.actionId === "full-access" ? "bypassPermissions" : input.mode,
+          request.actionId === "full-access",
+          {
+            source: "remote",
+            deviceId: context.controllerDeviceId,
+            assertCurrent: context.assertCurrent,
+          },
+        );
+      } else if (request.actionId === "edit") {
         await host.change(id, {
           name: string(input.name),
           description:
             typeof input.description === "string" ? input.description : "",
-          ...(typeof input.soul === 'string' ? {identitySource: input.soul} : {}),
+          ...(typeof input.soul === "string"
+            ? { identitySource: input.soul }
+            : {}),
         });
       } else if (request.actionId === "pause" || request.actionId === "resume")
         await host.change(id, {

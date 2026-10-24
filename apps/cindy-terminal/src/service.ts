@@ -526,6 +526,7 @@ export class TerminalService {
     // fences reject the old owner; the suspension gate is lifted only after setup.
     const guardCompanion=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
     this.companions=new TerminalCompanionHost({
+      utility:this.tasks.utility,permissionModes:kind=>this.tasks.channelRuntime().getCapabilities(kind).permissionModes,
       modelLocations:async()=>[
         ...(await this.remote.listDevices()).filter(device=>device.deviceId!==this.settings.deviceId&&device.online).map(device=>({agentDeviceId:device.deviceId,name:device.name})),
         ...this.membership.receivedShares().filter(share=>share.status==='active').map(share=>({agentDeviceId:`share:${share.shareId}`,name:`${share.deviceName} · ${share.providerLabel}`})),
