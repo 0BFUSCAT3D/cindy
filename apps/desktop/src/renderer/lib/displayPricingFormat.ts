@@ -23,8 +23,22 @@ export function displayPricingAmount(
   const symbol = currency === 'CNY' ? '¥' : '$';
   const money = (value: number) => `${symbol}${number.format(value)}`;
   const upper = item.maxPrice ?? item.price;
-  const range = (low: number, high: number) =>
-    low === high ? money(low) : `${money(low)}–${money(high)}`;
+  const range = (low: number, high: number) => {
+    if (low === high) return money(low);
+    let lowText = number.format(low);
+    let highText = number.format(high);
+    // Raise precision only when rounding would hide a distinct upper bound.
+    // Seventeen significant digits distinguish all finite JavaScript numbers.
+    for (let digits = 9; lowText === highText && digits <= 17; digits++) {
+      const precise = new Intl.NumberFormat(locale, {
+        maximumSignificantDigits: digits,
+        useGrouping: false,
+      });
+      lowText = precise.format(low);
+      highText = precise.format(high);
+    }
+    return `${symbol}${lowText}–${symbol}${highText}`;
+  };
   return {
     current: range(amount, upper * (1 - discount)),
     ...(discount > 0 && upper > 0 ? { original: range(item.price, upper) } : {}),

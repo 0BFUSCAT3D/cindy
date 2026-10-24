@@ -37,6 +37,17 @@ it('discounts both range endpoints without marking a zero lower bound as free', 
   expect(displayPricingAmount({ price: 0, maxPrice: 10 }, 'USD', 1, 'en'))
     .toEqual({ current: '$0', original: '$0–$10', free: true });
 });
+// Unit regression: distinct range endpoints rounded to the same visible amount ($1–$1).
+// Existing ranges differed within eight significant digits; exercise close and adjacent doubles
+// through displayPricingAmount, for both discounted and original prices.
+it.each([
+  [1.000000002, '$0.5–$0.500000001', '$1–$1.000000002'],
+  [1 + Number.EPSILON, '$0.5–$0.5000000000000001', '$1–$1.0000000000000002'],
+])('keeps the upper bound %s distinguishable after rounding', (maxPrice, current, original) => {
+  expect(displayPricingAmount({ price: 1, maxPrice: maxPrice as number }, 'USD', 0.5, 'en'))
+    .toEqual({ current, original, free: false });
+});
+
 // Unit contract: quantity 1 is omitted; million is localized; arbitrary values retain their basis.
 it.each([
   [1, 'en', '1M', ''], [1000000, 'zh-CN', '百万', '百万'],
