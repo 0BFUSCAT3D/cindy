@@ -1002,6 +1002,7 @@ type AskUserQuestionCardProps = {
 function AskCardVoiceButton({ listening, starting, disabled, onPress }: { listening: boolean; starting: boolean; disabled?: boolean; onPress: () => void }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  const styles = useInteractionStyles();
   return (
     <Pressable
       accessibilityLabel={listening || starting ? t('session.common.voiceStopRecording') : t('session.screen.voiceStartInput')}
@@ -1010,7 +1011,7 @@ function AskCardVoiceButton({ listening, starting, disabled, onPress }: { listen
       disabled={disabled}
       hitSlop={8}
       onPress={onPress}
-      style={{ alignItems: 'center', height: 44, justifyContent: 'center', width: 44 }}
+      style={[styles.iconControl, listening && { backgroundColor: colors.cta }]}
       testID="interaction.ask.voice"
     >
       {starting ? <ActivityIndicator color={colors.textSecondary} size="small" /> : <Mic color={listening ? colors.ctaText : colors.textSecondary} size={iconSize.md} />}

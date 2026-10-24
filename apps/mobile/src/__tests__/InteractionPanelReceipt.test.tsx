@@ -14,8 +14,10 @@ import { QuestionReferenceText } from '@/session/QuestionReferenceText';
 import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
 import { i18n } from '@/i18n';
 import { AskCardAuthContext } from '@/session/askCardAuth';
+import { darkColors, lightColors, radius } from '@/theme/tokens';
 
 const voiceStarter = vi.hoisted(() => ({ start: vi.fn() }));
+const theme = vi.hoisted(() => ({ mode: 'light' as 'light' | 'dark' }));
 vi.mock('@/session/askCardVoiceStart', () => ({ startAskCardDictation: voiceStarter.start }));
 
 const evidence = vi.hoisted(() => ({ openURL: vi.fn() }));
@@ -48,9 +50,9 @@ vi.mock('@/inputHandoff/InputHandoffCard', () => ({ InputHandoffCard: () => null
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) }));
 vi.mock('react-native', async () => {
   const { createElement } = await import('react');
-  const view = (tag: string) => ({ children, onPress, disabled, testID, accessibilityState, accessibilityLabel }: {
-    children?: ReactNode; onPress?: () => void; disabled?: boolean; testID?: string; accessibilityState?: { busy?: boolean }; accessibilityLabel?: string;
-  }) => createElement(tag, { onClick: onPress, disabled, 'data-testid': testID, 'aria-busy': accessibilityState?.busy, 'aria-label': accessibilityLabel }, children);
+  const view = (tag: string) => ({ children, onPress, disabled, testID, accessibilityState, accessibilityLabel, style }: {
+    children?: ReactNode; onPress?: () => void; disabled?: boolean; testID?: string; accessibilityState?: { busy?: boolean }; accessibilityLabel?: string; style?: unknown;
+  }) => createElement(tag, { onClick: onPress, disabled, 'data-testid': testID, 'data-native-style': JSON.stringify(style), 'aria-busy': accessibilityState?.busy, 'aria-label': accessibilityLabel }, children);
   // Text keeps its onTextLayout so a test can report how many lines a label took.
   const Text = ({ children, onTextLayout, onPress, testID }: { children?: ReactNode; onTextLayout?: (event: { nativeEvent: { lines: unknown[] } }) => void; onPress?: () => void; testID?: string }) => {
     if (onTextLayout) textLayouts.set(String(children), onTextLayout);
@@ -71,16 +73,20 @@ vi.mock('@/components/AppText', async () => {
       readOnly: editable === false }),
   };
 });
-vi.mock('lucide-react-native', () => ({ ShieldCheck: () => null, MessageCircle: () => null, ChevronDown: () => null, ChevronUp: () => null, Check: () => null, CornerDownLeft: () => null,
-  Maximize2: () => null, Minimize2: () => null, Minus: () => null, Mic: () => null, Pencil: () => null, Plus: () => null }));
+vi.mock('lucide-react-native', async () => {
+  const { createElement } = await import('react');
+  return { ShieldCheck: () => null, MessageCircle: () => null, ChevronDown: () => null, ChevronUp: () => null, Check: () => null, CornerDownLeft: () => null,
+    Maximize2: () => null, Minimize2: () => null, Minus: () => null, Mic: ({ color }: { color: string }) => createElement('span', { 'data-mic-color': color }), Pencil: () => null, Plus: () => null };
+});
 vi.mock('react-i18next', async (importOriginal) => ({
   ...await importOriginal<typeof import('react-i18next')>(),
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
 }));
 vi.mock('@/theme', async () => {
   const tokens = await import('@/theme/tokens');
-  return { ...tokens, monoFont: 'monospace', useTheme: () => ({ colors: tokens.lightColors }),
-    useThemedStyles: (make: (colors: typeof tokens.lightColors) => unknown) => make(tokens.lightColors) };
+  const colors = () => theme.mode === 'dark' ? tokens.darkColors : tokens.lightColors;
+  return { ...tokens, monoFont: 'monospace', useTheme: () => ({ colors: colors() }),
+    useThemedStyles: (make: (colors: typeof tokens.lightColors) => unknown) => make(colors()) };
 });
 
 let root: Root;
@@ -100,6 +106,7 @@ function CollapsibleHarness() {
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.resetAllMocks();
+  theme.mode = 'light';
   _clearRemotePathVerdictCache();
   evidence.openURL.mockResolvedValue(undefined);
   routeParams.deviceId = 'd1'; routeParams.sessionId = 's1';
@@ -123,6 +130,45 @@ async function type(id: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+// #6778, unit: render the real card/hook and start/stop dictation. Earlier tests
+// only checked labels and clicks, missing the invisible inverse-colour mic.
+// Minimal input: one question in each answer layout, in either theme.
+it.each(['light', 'dark'] as const)('keeps the recording mic visible in %s answer layouts', async (mode) => {
+  theme.mode = mode;
+  const colors = mode === 'dark' ? darkColors : lightColors;
+  const stop = vi.fn(async () => undefined);
+  voiceStarter.start.mockImplementation(async (input) => {
+    input.onListening();
+    return { stop, cancel: vi.fn(async () => undefined) };
+  });
+  const button = () => host.querySelector<HTMLButtonElement>('[data-testid="interaction.ask.voice"]')!;
+  const style = () => Object.assign({}, ...[JSON.parse(button().getAttribute('data-native-style')!)].flat(Infinity));
+  const micColor = () => button().querySelector('[data-mic-color]')!.getAttribute('data-mic-color');
+  for (const layout of ['free', 'custom-closed', 'custom-open']) {
+    await act(async () => remoteSessionStore.setPendingInteractions('s1', [{ request: {
+      kind: 'ask_user_question', requestId: requestId + ':' + layout,
+      questions: [{ question: 'Answer?', ...(layout === 'free' ? {} : { options: [{ label: 'A' }] }) }],
+    } }]));
+    await act(async () => root.render(<AskCardAuthContext.Provider value={{
+      getAccessToken: async () => null, refreshAccessToken: async () => null, apiFetch: async () => null,
+    }}><Harness /></AskCardAuthContext.Provider>));
+    if (layout === 'custom-open') await click('interaction.ask.showCustomButton');
+    expect(micColor()).toBe(colors.textSecondary);
+    expect(style().backgroundColor).not.toBe(colors.cta);
+    await click('interaction.ask.voice');
+    expect(button().getAttribute('aria-label')).toBe('session.common.voiceStopRecording');
+    expect(style().backgroundColor).toBe(colors.cta);
+    expect(style().borderRadius).toBe(radius.pill);
+    expect(micColor()).toBe(colors.ctaText);
+    await click('interaction.ask.voice');
+    expect(button().getAttribute('aria-label')).toBe('session.screen.voiceStartInput');
+    expect(style().backgroundColor).not.toBe(colors.cta);
+    expect(micColor()).toBe(colors.textSecondary);
+  }
+  expect(stop).toHaveBeenCalledTimes(3);
+  expect(resolveInteraction).not.toHaveBeenCalled();
+});
 
 // #6785, unit: real card + hook; only native/cloud startup is faked.
 // Existing cases never submitted while listening. The final text arrives at stop.
