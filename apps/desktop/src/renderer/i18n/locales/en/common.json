@@ -11371,7 +11371,7 @@
       "changed": "The branch state changed. Please retry.",
       "action": "Pull the latest commits from {{remote}}/{{remoteBranch}}",
       "remoteAction": "Pull the latest commits from {{remote}}/{{remoteBranch}}",
-      "checkedOut": "Also updates files in {{directory}}",
+      "checkedOut": "Also updates files in {{directory}}; uncommitted changes are kept",
       "fetching": "Pulling…",
       "updated": "Updated by {{count}} commits",
       "current": "Already up to date",
