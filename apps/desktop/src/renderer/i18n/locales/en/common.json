@@ -11367,6 +11367,8 @@
       }
     },
     "branchSync": {
+      "multiple-checkouts": "{{branch}} is checked out in multiple directories and cannot be updated safely",
+      "changed": "The branch state changed. Please retry.",
       "action": "Fetch the latest commits for {{remoteBranch}} from {{remote}} and update local {{branch}}",
       "remoteAction": "Fetch the latest commits for {{remoteBranch}} from {{remote}}",
       "checkedOut": "{{branch}} is checked out in “{{directory}}”. Its files will also update; your uncommitted changes will be preserved.",

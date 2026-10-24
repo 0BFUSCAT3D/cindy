@@ -11332,6 +11332,8 @@
       }
     },
     "branchSync": {
+      "multiple-checkouts": "{{branch}} 同時在多個目錄中開啟，無法安全更新",
+      "changed": "分支狀態已變更，請重試",
       "action": "從 {{remote}} 取得 {{remoteBranch}} 的最新提交，並更新本機 {{branch}}",
       "remoteAction": "從 {{remote}} 取得 {{remoteBranch}} 的最新提交",
       "checkedOut": "{{branch}} 正在「{{directory}}」中使用，那裡的檔案會一起更新，你尚未提交的變更不受影響",

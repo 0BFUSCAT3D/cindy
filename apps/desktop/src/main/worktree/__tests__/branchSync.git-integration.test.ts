@@ -214,3 +214,72 @@ it('disables a branch with no upstream when only a non-origin remote is configur
   git(f.repo, 'remote', 'rename', 'origin', 'upstream');
   expect((await readBranchSyncStatus(f.req)).blocked).toBe('no-remote');
 });
+
+// PR #7059 regressions, git-integration tier: preflight checks alone cannot
+// protect duplicate checkouts, ignored local files, or a checkout before writing.
+// Existing clean/dirty fast-forward cases do not exercise these Git behaviors.
+it('refuses a branch forced into multiple worktrees without changing either checkout', async () => {
+  const f = fixture();
+  const checkout = path.join(root, 'duplicate-checkout');
+  git(f.repo, 'worktree', 'add', '--force', checkout, f.branch);
+  f.advance();
+  const snapshot = (cwd: string) => ({
+    head: git(cwd, 'rev-parse', 'HEAD'),
+    index: git(cwd, 'ls-files', '--stage'),
+    bytes: fs.readFileSync(path.join(cwd, 'base'), 'utf8'),
+  });
+  const before = [snapshot(f.repo), snapshot(checkout)];
+  expect((await readBranchSyncStatus(f.req)).blocked).toBe('multiple-checkouts');
+  expect(await syncBranch(f.req)).toMatchObject({
+    updated: 0,
+    status: { blocked: 'multiple-checkouts' },
+  });
+  expect([snapshot(f.repo), snapshot(checkout)]).toEqual(before);
+  expect(git(f.repo, 'rev-parse', f.branch)).toBe(before[0].head);
+});
+
+it('refuses to overwrite an ignored file with a remotely tracked file', async () => {
+  const f = fixture();
+  f.advance('config.json');
+  fs.appendFileSync(
+    path.resolve(f.repo, git(f.repo, 'rev-parse', '--git-path', 'info/exclude')),
+    '\nconfig.json\n',
+  );
+  fs.writeFileSync(path.join(f.repo, 'config.json'), 'local ignored configuration');
+  const before = git(f.repo, 'rev-parse', 'HEAD');
+  const index = git(f.repo, 'ls-files', '--stage');
+  expect(git(f.repo, 'status', '--porcelain')).toBe('');
+  expect(await syncBranch(f.req)).toMatchObject({ updated: 0, status: { blocked: 'conflict' } });
+  expect(git(f.repo, 'rev-parse', 'HEAD')).toBe(before);
+  expect(git(f.repo, 'ls-files', '--stage')).toBe(index);
+  expect(fs.readFileSync(path.join(f.repo, 'config.json'), 'utf8')).toBe(
+    'local ignored configuration',
+  );
+});
+
+it('refuses an unchecked-branch write if another worktree checks it out after preflight', async () => {
+  const f = fixture();
+  f.advance();
+  const before = git(f.repo, 'rev-parse', f.branch);
+  git(f.repo, 'checkout', 'main');
+  const checkout = path.join(root, 'late-checkout');
+  let index: string | undefined;
+  const realGit = gitModule.gitExec;
+  const spy = vi.spyOn(gitModule, 'gitExec').mockImplementation(async (args, cwd, opts) => {
+    if (args[0] === 'fetch' && args.includes('.')) {
+      git(f.repo, 'worktree', 'add', checkout, f.branch);
+      index = git(checkout, 'ls-files', '--stage');
+    }
+    return realGit(args, cwd, opts);
+  });
+  try {
+    expect(await syncBranch(f.req)).toMatchObject({ updated: 0, status: { blocked: 'changed' } });
+    expect(index).toBeDefined();
+    expect(git(f.repo, 'rev-parse', f.branch)).toBe(before);
+    expect(git(checkout, 'rev-parse', 'HEAD')).toBe(before);
+    expect(git(checkout, 'ls-files', '--stage')).toBe(index);
+    expect(fs.readFileSync(path.join(checkout, 'base'), 'utf8')).toBe('base');
+  } finally {
+    spy.mockRestore();
+  }
+});

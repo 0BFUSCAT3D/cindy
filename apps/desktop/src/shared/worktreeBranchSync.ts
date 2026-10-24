@@ -13,7 +13,14 @@ export interface BranchSyncStatus {
   behind: number;
   dirtyFiles: number;
   checkoutPath?: string;
-  blocked?: 'no-remote' | 'missing-remote' | 'diverged' | 'conflict' | 'not-local';
+  blocked?:
+    | 'no-remote'
+    | 'missing-remote'
+    | 'diverged'
+    | 'conflict'
+    | 'not-local'
+    | 'multiple-checkouts'
+    | 'changed';
 }
 export interface BranchSyncResult {
   status: BranchSyncStatus;

@@ -92,13 +92,16 @@ export async function readBranchSyncStatus(req: BranchSyncRequest): Promise<Bran
     const worktrees = (
       await gitExec(['worktree', 'list', '--porcelain', '-z'], baseRepo, localOpts)
     ).stdout;
+    const checkouts: string[] = [];
     for (const block of worktrees.split('\0\0')) {
       const fields = block.split('\0');
       if (fields.includes(`branch ${localRef}`)) {
-        status.checkoutPath = fields.find((s) => s.startsWith('worktree '))?.slice(9);
-        break;
+        const checkout = fields.find((s) => s.startsWith('worktree '))?.slice(9);
+        if (checkout) checkouts.push(checkout);
       }
     }
+    if (checkouts.length > 1) return { ...status, blocked: 'multiple-checkouts' };
+    status.checkoutPath = checkouts[0];
   }
   const dirty = status.checkoutPath
     ? dirtyPaths(
@@ -207,7 +210,14 @@ async function syncBranchOnce(req: BranchSyncRequest): Promise<BranchSyncResult>
     if ((await git(status.checkoutPath, 'symbolic-ref', 'HEAD')) !== `refs/heads/${req.branch}`)
       throw new Error('The checked-out branch changed; retry');
     try {
-      await git(status.checkoutPath, 'merge', '--ff-only', '--no-autostash', next);
+      await git(
+        status.checkoutPath,
+        'merge',
+        '--ff-only',
+        '--no-autostash',
+        '--no-overwrite-ignore',
+        next,
+      );
     } catch (error) {
       const refreshed = await readBranchSyncStatus(req);
       if (refreshed.blocked) return { status: refreshed, updated: 0 };
@@ -216,7 +226,24 @@ async function syncBranchOnce(req: BranchSyncRequest): Promise<BranchSyncResult>
       throw error;
     }
   } else {
-    await git(req.baseRepo, 'update-ref', `refs/heads/${req.branch}`, next, old);
+    try {
+      // Local fetch refuses non-fast-forwards and branches checked out in any
+      // worktree at write time. update-ref has no checkout guard.
+      await git(
+        req.baseRepo,
+        'fetch',
+        '--no-tags',
+        '--recurse-submodules=no',
+        '.',
+        `${next}:refs/heads/${req.branch}`,
+      );
+    } catch (error) {
+      const refreshed = await readBranchSyncStatus(req);
+      if (refreshed.blocked) return { status: refreshed, updated: 0 };
+      if (refreshed.checkoutPath)
+        return { status: { ...refreshed, blocked: 'changed' }, updated: 0 };
+      throw error;
+    }
   }
   return { status: await readBranchSyncStatus(req), updated };
 }

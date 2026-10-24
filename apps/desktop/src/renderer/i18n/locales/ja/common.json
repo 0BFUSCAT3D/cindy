@@ -11332,6 +11332,8 @@
       }
     },
     "branchSync": {
+      "multiple-checkouts": "{{branch}} は複数のディレクトリで開かれているため、安全に更新できません",
+      "changed": "ブランチの状態が変わりました。再試行してください",
       "action": "{{remote}} から {{remoteBranch}} の最新コミットを取得し、ローカルの {{branch}} を更新",
       "remoteAction": "{{remote}} から {{remoteBranch}} の最新コミットを取得",
       "checkedOut": "{{branch}} は「{{directory}}」で使用中です。そのファイルも更新されます。未コミットの変更は保持されます。",
