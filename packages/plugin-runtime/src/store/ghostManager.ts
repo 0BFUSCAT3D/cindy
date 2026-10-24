@@ -407,6 +407,8 @@ export type UninstallResult = { ok: true } | { rejection: UninstallRejection };
 
 export interface GhostUninstallOptions {
   notify?: boolean;
+  /** Recheck the owner/controller after acquiring the manager mutation lock. */
+  assertCurrent?: () => void;
   /**
    * User-initiated removal records a builtin tombstone by default. Host
    * reconciliation may explicitly skip it when removing a currently ineligible
@@ -4937,7 +4939,7 @@ export class GhostManager {
    * 已安装 + 可恢复相互一致的快照。notify=false 只延后广播，不改变卸载语义。
    */
   async uninstall(id: string, options: GhostUninstallOptions = {}) {
-    return this.runExclusiveMutation(() => this.uninstallUnlocked(id, options));
+    return this.runExclusiveMutation(() => { options.assertCurrent?.(); return this.uninstallUnlocked(id, options); });
   }
 
 

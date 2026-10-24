@@ -7,6 +7,7 @@ import { installedGhostStoragePart } from '@cindy/plugin-runtime/shared/pluginId
 import { ghostInstallApprovalToken, type InstalledGhost } from '@cindy/plugin-runtime/shared/ghost';
 import type { RemoteResourceHostContext, RemoteResourceProvider, PluginPageFetchResult } from '@cindy/device-link';
 import type { TerminalPlugins } from './host.js';
+import { RemotePluginManagement, type RemotePluginManagementDeps } from '@cindy/plugin-runtime/remotePluginManagement';
 
 /** Reuses the desktop page leases and encrypted settings protocol. No window
  * or browser is needed to open a form or save a credential. */
@@ -14,9 +15,15 @@ export class TerminalPluginPages {
   readonly pages: MobilePluginPages;
   readonly provider: RemoteResourceProvider;
   private closed = false;
+  private readonly management?:RemotePluginManagement;
   private readonly context = new AsyncLocalStorage<RemoteResourceHostContext>();
-  constructor(host: TerminalPlugins, options: {assertCurrent():void; translate(key:string,locale?:string):string}) {
+  constructor(host: TerminalPlugins, options: {assertCurrent():void; translate(key:string,locale?:string):string;management?:Omit<RemotePluginManagementDeps,'capture'|'captureReceipt'>;receiptAvailable?(peer:string):boolean;refreshPreferences?():Promise<void>}) {
     const current = () => { try { options.assertCurrent(); return !this.closed; } catch { return false; } };
+    const capture=(controller:string)=>{
+      const context=this.context.getStore();
+      return ()=>{try{if(!context||context.controllerDeviceId!==controller)return false;context.assertCurrent?.();return current();}catch{return false;}};
+    };
+    if(options.management)this.management=new RemotePluginManagement({...options.management,capture,captureReceipt:peer=>()=>current()&&(peer==='local'||options.receiptAvailable?.(peer)===true)});
     const relay = async (ghost: InstalledGhost, operation: MobileRelayOperation) => {
       if (!current()) throw new Error('PLUGIN_PAGE_UNAVAILABLE');
       const id = installedGhostStoragePart(ghost);
@@ -33,7 +40,7 @@ export class TerminalPluginPages {
       return response ? {status:response.status,mime:response.headers.get('content-type')??'application/octet-stream',base64:Buffer.from(await response.arrayBuffer()).toString('base64')} : {status:404,mime:'application/json',base64:''};
     };
     this.pages = new MobilePluginPages({
-      translate:options.translate,formSettings:true,list:()=>host.native.list(),
+      translate:options.translate,formSettings:true,list:()=>host.native.list(),management:this.management,
       revision:ghost=>JSON.stringify([ghost.dir,ghostInstallApprovalToken(ghost.approval)]),
       captureOwner:()=>current,captureController:controller=>{
         const context=this.context.getStore();
@@ -54,7 +61,7 @@ export class TerminalPluginPages {
       },
     });
     const provider=this.pages.provider();
-    this.provider={...provider,invoke:(context,request)=>this.context.run(context,()=>provider.invoke!(context,request))};
+    this.provider={...provider,invoke:async(context,request)=>{if(request.actionId.startsWith('management:'))await options.refreshPreferences?.();context.assertCurrent?.();return this.context.run(context,()=>provider.invoke!(context,request));}};
   }
-  close(){this.closed=true;this.pages.invalidate();}
+  close(){this.closed=true;this.management?.invalidate();this.pages.invalidate();}
 }

@@ -54,6 +54,12 @@ model. Lowering a plugin's default permission prevents its existing higher-permi
 tasks from accepting further plugin input. Uninstalling a plugin reveals its hidden
 tasks while preserving their history.
 
+GUI clients use the same host preferences, including reasoning effort and Fast
+mode where the selected model supports them. Remote plugin management supports
+market and uploaded `.cindy` installations, confirmation and cancellation,
+global and per-project enablement, sidebar visibility, and uninstall receipts.
+An outdated settings page must be refreshed before it can overwrite a newer edit.
+
 After declining a plugin's write request, open its task locally and choose
 “Confirm plugin write permission again” from the task command menu. Over SSH,
 run `cindy attach <id>` on that server. The matching CLI inspection command is

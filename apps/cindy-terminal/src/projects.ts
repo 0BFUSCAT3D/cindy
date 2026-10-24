@@ -24,6 +24,7 @@ export class TerminalProjects {
     const work=this.writes.then(async()=>{this.guard();guard();const next=schema.parse(update(this.rows));await atomicPrivateWrite(path.join(this.root,'projects.json'),JSON.stringify(next));this.guard();guard();this.rows=next;});
     this.writes=work.catch(()=>{});return work;
   }
+  async directories(){await this.ready;this.guard();return this.rows.map(row=>row.directory);}
   register(registry:RemoteResourceRegistry){
     const item=(row:Project):RemoteCollectionItem=>({ref:{collectionId:'projects',kind:'project',id:row.id},display:{title:row.name,subtitle:row.directory},links:[],revision:String(row.updatedAt),actions:[{id:'open',label:t('open')},{id:'rename',label:t('edit'),fields:[{id:'name',kind:'text',label:t('name'),required:true}]},{id:'remove',label:t('remove')}]});
     registry.register({collection:{id:'projects',resourceKind:'project',title:t('projects'),placement:'settings',actions:[{id:'add',label:t('add'),fields:[{id:'directory',label:t('folder'),kind:'text',required:true},{id:'name',label:t('name'),kind:'text'}]}]},

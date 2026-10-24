@@ -1,10 +1,11 @@
 import {
-  RemoteResourceRegistry, parseRemoteActionInvokeRequest, parseRemoteCollectionListRequest,
+  RemoteResourceRegistry, RemoteResourceRegistryError, parseRemoteActionInvokeRequest, parseRemoteCollectionListRequest,
   parseRemoteResourceGetRequest, parseRemoteResourceManifestRequest,
   type RemoteCollectionItem, type RemoteResource,
 } from '@cindy/device-link';
 import type { InvocationContext } from './contracts.js';
 import type { TerminalTaskHost } from './tasks/index.js';
+import { TerminalRemoteError } from './remote/types.js';
 import { modelResourceId } from './client-operations.js';
 
 /** Existing remote resource protocol, also used by the local TUI. */
@@ -67,12 +68,19 @@ export class TerminalResources {
       context.assertCurrent?.();
     }};
     const raw=args[0];
-    switch(channel){
-      case 'maker:remote-resources:manifest':{const request=parseRemoteResourceManifestRequest(raw);if(!request)throw new Error('INVALID_PARAMS');return this.registry.manifest(host,request);}
-      case 'maker:remote-resources:list':{const request=parseRemoteCollectionListRequest(raw);if(!request)throw new Error('INVALID_PARAMS');return this.registry.list(host,request);}
-      case 'maker:remote-resources:get':{const request=parseRemoteResourceGetRequest(raw);if(!request)throw new Error('INVALID_PARAMS');return this.registry.get(host,request);}
-      case 'maker:remote-resources:invoke':{const request=parseRemoteActionInvokeRequest(raw);if(!request)throw new Error('INVALID_PARAMS');return this.registry.invoke(host,request);}
+    try { switch(channel){
+      case 'maker:remote-resources:manifest':{const request=parseRemoteResourceManifestRequest(raw);if(!request)throw new Error('INVALID_PARAMS');return await this.registry.manifest(host,request);}
+      case 'maker:remote-resources:list':{const request=parseRemoteCollectionListRequest(raw);if(!request)throw new Error('INVALID_PARAMS');return await this.registry.list(host,request);}
+      case 'maker:remote-resources:get':{const request=parseRemoteResourceGetRequest(raw);if(!request)throw new Error('INVALID_PARAMS');return await this.registry.get(host,request);}
+      case 'maker:remote-resources:invoke':{const request=parseRemoteActionInvokeRequest(raw);if(!request)throw new Error('INVALID_PARAMS');return await this.registry.invoke(host,request);}
       default:throw new Error('CHANNEL_NOT_ALLOWED');
+    }}catch(error){
+      // Forward declared protocol failures only; never filesystem paths, native
+      // exception messages or arbitrary plugin text through the remote channel.
+      if(error instanceof RemoteResourceRegistryError)throw new TerminalRemoteError(error.code,error.code);
+      const code=error instanceof Error?error.message:'';
+      if(['PLUGIN_SETTINGS_CHANGED','PLUGIN_SETTINGS_INVALID','PLUGIN_CHANGED','INVALID_PARAMS'].includes(code))throw new TerminalRemoteError(code,code);
+      throw error;
     }
   }
   close(){this.active=false;this.selections.clear();}

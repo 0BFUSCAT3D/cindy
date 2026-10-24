@@ -15,6 +15,7 @@ import { createTerminalPluginTask } from './mcp.js';
 import { createTerminalPluginForge } from './forge.js';
 import type { TerminalPluginMarket } from './market.js';
 import translations from './translations.json';
+import { pluginManagementDependencies } from './management.js';
 
 /** Owner-scoped wiring; no process-global Desktop singleton is borrowed. */
 export class TerminalPluginTasks {
@@ -31,6 +32,8 @@ export class TerminalPluginTasks {
     owner():import('@cindy/plugin-runtime/owner').PluginOwner;
     signedIn():boolean;remoteAvailable(peer:string):boolean;locale():string;assertCurrent():void;
     emit(channel:string,payload:unknown):void;
+    mediaTransfer?:Pick<import('../media-transfer.js').TerminalMediaTransfer,'resolve'>;
+    projectDirectories?():Promise<string[]>;
   }){
     const guard=()=>{if(this.closed)throw new Error('PLUGIN_TASKS_CLOSED');options.assertCurrent();};
     const translate=(key:string)=>((translations as Record<string,Record<string,string>>)[options.locale()]??translations.en)[key]??(translations.en as Record<string,string>)[key]??key;
@@ -41,7 +44,8 @@ export class TerminalPluginTasks {
       isAvailableForActiveSession:id=>{guard();const ghost=options.host.installed(id);return !!ghost&&(!isCindyAccountGhostId(ghost.manifest.id)||options.signedIn());},
       isDisabledForWorkdir:(id,dir)=>this.preferences.disabled(id,dir),
     };
-    this.pages=new TerminalPluginPages(options.host,{assertCurrent:guard,translate:(key,locale)=>((translations as Record<string,Record<string,string>>)[locale??options.locale()]??translations.en)[key]??(translations.en as Record<string,string>)[key]??key});
+    this.pages=new TerminalPluginPages(options.host,{assertCurrent:guard,translate:(key,locale)=>((translations as Record<string,Record<string,string>>)[locale??options.locale()]??translations.en)[key]??(translations.en as Record<string,string>)[key]??key,
+      management:pluginManagementDependencies({host:options.host,market:options.market,preferences:this.preferences,projects:options.projectDirectories??(async()=>[]),media:options.mediaTransfer}),receiptAvailable:options.remoteAvailable,refreshPreferences:()=>this.preferences.refresh()});
     const pages=this.pages.pages;
     this.setup=new TerminalPluginSetup(options.host,{visibility,owner:()=>JSON.stringify(options.owner()),remoteAvailable:options.remoteAvailable,translate,assertCurrent:guard,emit:options.emit,
       settings:{bind:action=>pages.settingsBinding(action),bindAuthorization:action=>pages.settingsAuthorizationBinding(action),runAuthorization:action=>pages.runSettingsAuthorization(action),request:(peer,request)=>pages.settingsRequest(peer,request)},

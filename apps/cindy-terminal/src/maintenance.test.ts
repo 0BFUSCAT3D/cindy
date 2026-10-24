@@ -50,6 +50,7 @@ describe('terminal offline maintenance', () => {
       'library-staging/example/pending/blob': 'uncommitted original',
       'plugin-market/ledger.v1.json': '{"version":1}',
       'ghost-workdir-prefs.json': '{"version":1}',
+      'ghost-sidebar-prefs.json': '["_root__fixture"]',
       'ghost-errand-prefs.json': '{"errand":{"example":{"model":"retained-model"}},"sessions":{}}',
     };
     for (const [relative, body] of Object.entries(pluginData)) {
@@ -75,7 +76,7 @@ describe('terminal offline maintenance', () => {
     expect((await fs.readdir(restored)).sort()).toEqual(['owners', 'settings.json']);
     const restoredOwner = path.join(restored, 'owners', 'a'.repeat(32));
     expect((await fs.readdir(restoredOwner)).sort()).toEqual(['capabilities.json', 'cindy-media', 'companions', 'knowledge-settings.json', 'maker-memory', 'managed-agent-skills', 'tasks',
-      'plugins','plugin-approvals','plugin-kv','libraries','library-staging','plugin-market','ghost-workdir-prefs.json','plugin-tasks','ghost-errand-prefs.json'].sort());
+      'plugins','plugin-approvals','plugin-kv','libraries','library-staging','plugin-market','ghost-workdir-prefs.json','ghost-sidebar-prefs.json','plugin-tasks','ghost-errand-prefs.json'].sort());
     for (const [relative, body] of Object.entries(pluginData)) expect(await fs.readFile(path.join(restoredOwner, relative), 'utf8')).toBe(body);
     expect(await fs.readdir(path.join(restoredOwner, 'plugin-market'))).toEqual(['ledger.v1.json']);
     expect(await fs.readdir(path.join(restoredOwner, 'companions', 'cloud'))).toEqual(['a'.repeat(64)+'.json']);

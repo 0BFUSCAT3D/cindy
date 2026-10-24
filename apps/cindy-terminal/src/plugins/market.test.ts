@@ -7,12 +7,17 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import JSZip from 'jszip';
-import { RemoteResourceRegistry } from '@cindy/device-link';
+import { TerminalMediaTransfer } from '../media-transfer.js';
+import { buildPeerAttachmentRef, RemoteResourceRegistry } from '@cindy/device-link';
 import { installedGhostStoragePart } from '@cindy/plugin-runtime/shared/pluginIdentity';
 import { TerminalSecretStore } from '../secrets.js';
 import { TerminalPlugins } from './host.js';
 import { TerminalPluginAccount } from './account.js';
 import { TerminalPluginMarket } from './market.js';
+import { TerminalPluginPages } from './pages.js';
+import { TerminalPluginPreferences } from './preferences.js';
+import { pluginManagementDependencies } from './management.js';
+import { ghostInstallApprovalToken } from '@cindy/plugin-runtime/shared/ghost';
 import { registerPluginResources } from './resources.js';
 
 it('pins market downloads, recovers the approved package after ledger interruption, and binds organization credentials',async()=>{
@@ -39,9 +44,11 @@ it('pins market downloads, recovers the approved package after ledger interrupti
   });
   const options={root:path.join(directory,'owner'),runtimeDirectory:directory,executablePath:'unused',account,secrets:vault,assertCurrent:()=>{},locale:()=> 'en',changed:()=>{},receive:async()=>({}),cards:{persist:async()=>{},broadcast:()=>{}},fs:{getSessionSnapshot:async()=>null,requestWriteConfirm:async()=>({confirmed:false as const,reason:'cancelled' as const}),writeSaveDeposit:async()=>null}};
   host=new TerminalPlugins(options);
-  const market=new TerminalPluginMarket({root:options.root,host,account,assertCurrent:()=>{},download:async input=>{
+  const createMarket=()=>new TerminalPluginMarket({root:options.root,host,account,assertCurrent:()=>{},download:async input=>{
     expect(input.init?.headers).toBeUndefined();await input.beforeDispatch?.();return {response:new Response(new Uint8Array(substitute?Buffer.alloc(bytes.length):bytes)),finalUrl:input.url,release:async()=>{}};
   }});
+  let market=createMarket();
+  let pages:TerminalPluginPages|undefined;
   try{
     await host.ready;
     await expect(market.prepare(plugin.id,plugin.currentRelease.id,'controller')).rejects.toThrow('PLUGIN_MARKET_PACKAGE_MISMATCH');
@@ -56,7 +63,7 @@ it('pins market downloads, recovers the approved package after ledger interrupti
     await expect(registry.invoke(context,{client,collectionId:'plugins',resourceRef:navigation.target.ref,actionId:'confirm-install'})).rejects.toThrow('Synthetic ledger interruption');write.mockRestore();
     const installed=(await host.list())[0],id=installedGhostStoragePart(installed);
     expect(host.identity.brokerAllowed(id)).toBe(false);
-    await host.close();host=new TerminalPlugins(options);await host.ready;
+    await market.close();await host.close();host=new TerminalPlugins(options);await host.ready;market=createMarket();
     const restored=(await host.list())[0];expect(restored.manifest.id).toBe(plugin.ghostId);
     expect(host.identity.record(restored)).toMatchObject({installed:true,releaseId:plugin.currentRelease.id,sha256:plugin.currentRelease.sha256});
     expect(host.identity.brokerAllowed(id)).toBe(true);expect(host.identity.hostAllowed(id)).toBe(false);
@@ -65,6 +72,60 @@ it('pins market downloads, recovers the approved package after ledger interrupti
     expect(await account.broker.refresh('jira',{refreshToken:'synthetic-refresh'})).toMatchObject({ok:true,bundle:{accessToken:'synthetic-broker-access'}});
     const prepared=host.pendingFor('controller');expect(prepared).toEqual([]);expect(organizations.length).toBeGreaterThan(0);
     const savedOrg=member.orgId;member.orgId='foreign-org';expect(host.identity.brokerAllowed(id)).toBe(false);expect(host.identity.connection(id)).toBeNull();member.orgId=savedOrg;
-    await host.uninstall(id);expect(host.identity.ledger.isDefaultInstallSuppressed(member.id,plugin.id)).toBe(true);
-  }finally{await market.close();await host!.close();account.close();vault.lock();await rm(directory,{recursive:true,force:true});}
+    // Integration: the GUI uses receipt-driven operations rather than TUI
+    // install resources. Confirm/cancel must mutate the same native package.
+    const preferences=new TerminalPluginPreferences(options.root,()=>{});await preferences.refresh();
+    const media=new TerminalMediaTransfer({ownerDir:options.root,getOwnerScope:()=> 'test-owner',getToken:async()=>null,getApiBaseUrl:()=> 'https://unused.invalid'});
+    const management=pluginManagementDependencies({host,market,preferences,projects:async()=>[],media});
+    const installFile=management.installFile!;let fileFailure:unknown;
+    management.installFile=async(...args)=>{try{return await installFile(...args);}catch(error){fileFailure=error;throw error;}};
+    pages=new TerminalPluginPages(host,{assertCurrent:()=>{},translate:key=>key,receiptAvailable:()=>true,management});
+    const gui=new RemoteResourceRegistry();registerPluginResources(gui,host,pages);
+    const managed=async(action:string,input:Record<string,unknown>={},target=true)=>(await gui.invoke(context,{client,collectionId:'plugins',...(target?{resourceRef:{collectionId:'plugins',kind:'plugin',id}}:{}),actionId:`management:${action}`,input})).result;
+    expect(await managed('snapshot',{},false)).toMatchObject({market:{items:[{installState:'installed'}]}});
+    expect(await managed('market-detail',{pluginId:plugin.id},false)).toMatchObject({manifest:{id:plugin.ghostId},installState:'installed'});
+    let approval=ghostInstallApprovalToken(restored.approval);
+    await managed('begin',{operationId:'disable',kind:'disable',expectedInstalledApproval:approval});
+    await vi.waitFor(async()=>expect(await managed('operation',{operationId:'disable'})).toMatchObject({phase:'succeeded'}));
+    expect(host.installed(id)?.enabled).toBe(false);
+    await managed('begin',{operationId:'enable',kind:'enable',expectedInstalledApproval:approval});
+    await vi.waitFor(async()=>expect(await managed('operation',{operationId:'enable'})).toMatchObject({phase:'succeeded'}));
+    expect(host.installed(id)?.enabled).toBe(true);
+    for(const confirmed of [false,true]){
+      const operationId=confirmed?'install-confirmed':'install-cancelled';
+      await managed('begin',{operationId,kind:'install',pluginId:plugin.id,expectedReleaseId:plugin.currentRelease.id,expectedInstalledApproval:approval});
+      await vi.waitFor(async()=>expect(await managed('operation',{operationId})).toMatchObject({phase:'confirmation'}));
+      const receipt=await managed('operation',{operationId}) as {consent:{requestId:string}};
+      await managed('answer',{operationId,requestId:receipt.consent.requestId,confirmed});
+      await vi.waitFor(async()=>expect(await managed('operation',{operationId})).toMatchObject({phase:confirmed?'succeeded':'cancelled'}));
+      const next=ghostInstallApprovalToken(host.installed(id)!.approval);
+      if(!confirmed)expect(next).toBe(approval);else expect(next).not.toBe(approval);
+      approval=next;
+    }
+    // Lose controller authority after host cleanup preparation but before the
+    // manager lock. The installed plugin and its authorization must survive.
+    const stop=host.native.node.stopAndWait.bind(host.native.node);let authorized=true;
+    const stopping=vi.spyOn(host.native.node,'stopAndWait').mockImplementation(async key=>{await stop(key);authorized=false;});
+    await expect(host.uninstall(id,()=>{if(!authorized)throw new Error('CONTROLLER_GONE');})).rejects.toThrow('CONTROLLER_GONE');stopping.mockRestore();
+    expect(host.installed(id)).toBeDefined();expect(host.identity.brokerAllowed(id)).toBe(true);
+    await managed('begin',{operationId:'uninstall',kind:'uninstall',expectedInstalledApproval:approval});
+    await vi.waitFor(async()=>expect(await managed('operation',{operationId:'uninstall'})).toMatchObject({phase:'succeeded'}));
+    expect(host.installed(id)).toBeNull();expect(host.identity.ledger.isDefaultInstallSuppressed(member.id,plugin.id)).toBe(true);
+    const localZip=new JSZip();localZip.file('ghost.json',JSON.stringify({schemaVersion:2,id:'fixture-file',name:'File fixture',version:'1.0.0',kind:'chip',entry:'main.js',slots:[]}));localZip.file('main.js','cindy.onHostMessage(() => {});');
+    const fileBytes=await localZip.generateAsync({type:'nodebuffer'}),fileHash=createHash('sha256').update(fileBytes).digest('hex');
+    const metadata={size:fileBytes.length,sha256:fileHash,mimeType:'application/octet-stream',originalName:'fixture.cindy'};
+    const upload=await media.inbox.handlePeerAttachment('controller',{op:'begin',...metadata}) as {ticket:string};
+    await media.inbox.handlePeerAttachment('controller',{op:'write',ticket:upload.ticket,offset:0,data:new Uint8Array(fileBytes)});
+    await media.inbox.handlePeerAttachment('controller',{op:'finish',ticket:upload.ticket});
+    const attachment=buildPeerAttachmentRef({...metadata,ticket:upload.ticket});
+    // A different owner device cannot consume this controller's upload ticket.
+    await expect(media.resolve(attachment,{source:'remote',deviceId:'other-controller'})).rejects.toThrow('FILE_PEER_DENIED');
+    await managed('begin',{operationId:'install-file',kind:'install-file',attachment},false);
+    await vi.waitFor(async()=>{if(fileFailure)throw new Error(String(fileFailure)+' '+JSON.stringify((fileFailure as Error).cause));expect(await managed('operation',{operationId:'install-file'},false)).toMatchObject({phase:'confirmation'});});
+    const fileConsent=await managed('operation',{operationId:'install-file'},false) as {consent:{requestId:string}};
+    await managed('answer',{operationId:'install-file',requestId:fileConsent.consent.requestId,confirmed:true},false);
+    await vi.waitFor(async()=>expect(await managed('operation',{operationId:'install-file'},false)).toMatchObject({phase:'succeeded'}));
+    expect((await host.list()).find(ghost=>ghost.manifest.id==='fixture-file')).toMatchObject({enabled:true,approval:{state:'approved'}});
+
+  }finally{pages?.close();await market.close();await host!.close();account.close();vault.lock();await rm(directory,{recursive:true,force:true});}
 });

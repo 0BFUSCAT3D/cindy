@@ -385,7 +385,15 @@
     "terminal.plugin.permission.plan": "Plan mode",
     "terminal.plugin.permission.ask": "Default permissions",
     "terminal.plugin.permission.acceptEdits": "Auto accept edits",
-    "terminal.plugin.permission.auto": "Auto-review"
+    "terminal.plugin.permission.auto": "Auto-review",
+    "effortLevels.off": "Off",
+    "effortLevels.minimal": "Minimal",
+    "effortLevels.low": "Low",
+    "effortLevels.medium": "Medium",
+    "effortLevels.high": "High",
+    "effortLevels.xhigh": "Extra High",
+    "effortLevels.max": "Maximum",
+    "effortLevels.ultra": "Ultra"
   },
   "zh-CN": {
     "settings.ghosts.installConsent.installTitle": "安装插件「{{name}}」？",
@@ -773,7 +781,15 @@
     "terminal.plugin.permission.plan": "计划模式",
     "terminal.plugin.permission.ask": "默认权限",
     "terminal.plugin.permission.acceptEdits": "允许编辑",
-    "terminal.plugin.permission.auto": "自动审批"
+    "terminal.plugin.permission.auto": "自动审批",
+    "effortLevels.off": "关闭",
+    "effortLevels.minimal": "最小",
+    "effortLevels.low": "低",
+    "effortLevels.medium": "中",
+    "effortLevels.high": "高",
+    "effortLevels.xhigh": "超高",
+    "effortLevels.max": "最高",
+    "effortLevels.ultra": "极致"
   },
   "zh-TW": {
     "settings.ghosts.installConsent.installTitle": "安裝插件「{{name}}」？",
@@ -1161,7 +1177,15 @@
     "terminal.plugin.permission.plan": "計劃模式",
     "terminal.plugin.permission.ask": "預設權限",
     "terminal.plugin.permission.acceptEdits": "允許編輯",
-    "terminal.plugin.permission.auto": "自動審批"
+    "terminal.plugin.permission.auto": "自動審批",
+    "effortLevels.off": "關閉",
+    "effortLevels.minimal": "最小",
+    "effortLevels.low": "低",
+    "effortLevels.medium": "中",
+    "effortLevels.high": "高",
+    "effortLevels.xhigh": "超高",
+    "effortLevels.max": "最高",
+    "effortLevels.ultra": "極致"
   },
   "ja": {
     "settings.ghosts.installConsent.installTitle": "プラグイン「{{name}}」をインストールしますか？",
@@ -1549,7 +1573,15 @@
     "terminal.plugin.permission.plan": "計画モード",
     "terminal.plugin.permission.ask": "デフォルト権限",
     "terminal.plugin.permission.acceptEdits": "編集を自動承認",
-    "terminal.plugin.permission.auto": "自動レビュー"
+    "terminal.plugin.permission.auto": "自動レビュー",
+    "effortLevels.off": "オフ",
+    "effortLevels.minimal": "最小",
+    "effortLevels.low": "低",
+    "effortLevels.medium": "中",
+    "effortLevels.high": "高",
+    "effortLevels.xhigh": "超高",
+    "effortLevels.max": "最高",
+    "effortLevels.ultra": "究極"
   },
   "ko": {
     "settings.ghosts.installConsent.installTitle": "플러그인 \"{{name}}\"을(를) 설치할까요?",
@@ -1937,6 +1969,14 @@
     "terminal.plugin.permission.plan": "계획 모드",
     "terminal.plugin.permission.ask": "기본 권한",
     "terminal.plugin.permission.acceptEdits": "편집 자동 승인",
-    "terminal.plugin.permission.auto": "자동 리뷰"
+    "terminal.plugin.permission.auto": "자동 리뷰",
+    "effortLevels.off": "끄기",
+    "effortLevels.minimal": "최소",
+    "effortLevels.low": "낮음",
+    "effortLevels.medium": "보통",
+    "effortLevels.high": "높음",
+    "effortLevels.xhigh": "초고",
+    "effortLevels.max": "최고",
+    "effortLevels.ultra": "극한"
   }
 }

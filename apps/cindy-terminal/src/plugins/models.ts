@@ -1,4 +1,6 @@
 import path from "node:path";
+import { RemotePluginPreferences } from "@cindy/plugin-runtime/remotePluginPreferences";
+import type { TerminalPluginPreferences } from "./preferences.js";
 import { MobileTaskSettings } from "@cindy/plugin-runtime/mobileTaskSettings";
 import type { TerminalPluginSessions } from "./sessions.js";
 import { createOneshotTextHandler } from "@cindy/plugin-runtime/oneshotText";
@@ -176,43 +178,81 @@ export class TerminalPluginModels {
   ) {
     return this.queue(async () => {
       const { prefs, file } = await this.read();
-      const service = new MobileTaskSettings({
-        read: (key) => structuredClone(prefs.errand[key] ?? {}),
-        write: (key, value) => {
-          this.guard();
-          current();
-          const previous = JSON.stringify(prefs);
-          prefs.errand[key] = normalizeConfig(value);
-          try {
-            atomicPrivateWriteSync(file, JSON.stringify(prefs));
-          } catch (error) {
-            atomicPrivateWriteSync(file, previous);
-            throw error;
-          }
-          this.configs = structuredClone(prefs.errand);
-          this.options.changed();
-          return prefs.errand[key]!;
-        },
-        validate: async () => {
-          this.guard();
-          current();
-        },
-        providers: () => this.options.models.views(),
-        agents: async () => [
-          ...new Set(
-            ((await this.options.taskModels?.()) ?? []).map((option) =>
-              option.route.agentKind === "cc"
-                ? "claude-code"
-                : option.route.agentKind,
-            ),
-          ),
-        ],
-      });
+      const service = this.settingsService(prefs, file, current);
       this.guard();
       current();
       return input === undefined
         ? service.read(id, revision)
         : service.update(id, revision, input, current);
+    });
+  }
+  private settingsService(
+    prefs: ReturnType<typeof normalize>,
+    file: string,
+    current: () => void,
+  ) {
+    return new MobileTaskSettings({
+      read: (key) => structuredClone(prefs.errand[key] ?? {}),
+      write: (key, value) => {
+        this.guard();
+        current();
+        const previous = JSON.stringify(prefs);
+        prefs.errand[key] = normalizeConfig(value);
+        try {
+          atomicPrivateWriteSync(file, JSON.stringify(prefs));
+        } catch (error) {
+          atomicPrivateWriteSync(file, previous);
+          throw error;
+        }
+        this.configs = structuredClone(prefs.errand);
+        this.options.changed();
+        return prefs.errand[key]!;
+      },
+      validate: async () => {
+        this.guard();
+        current();
+      },
+      providers: () => this.options.models.views(),
+      agents: async () => [
+        ...new Set(
+          ((await this.options.taskModels?.()) ?? []).map((option) =>
+            option.route.agentKind === "cc"
+              ? "claude-code"
+              : option.route.agentKind,
+          ),
+        ),
+      ],
+    });
+  }
+  async preferences(
+    id: string,
+    ghost: InstalledGhost,
+    sidebar: TerminalPluginPreferences,
+    input?: Record<string, unknown>,
+    current: () => void = () => {},
+  ) {
+    return this.queue(async () => {
+      const { prefs, file } = await this.read();
+      const utility = await this.options.utility.state();
+      this.guard();
+      current();
+      const selected = utility.effective.refs[0];
+      const service = new RemotePluginPreferences({
+        tasks: this.settingsService(prefs, file, current),
+        auxiliaryModelLabel: () =>
+          selected
+            ? (utility.options.find((option) => option.id === selected)
+                ?.label ?? null)
+            : null,
+        sidebar: {
+          read: (key) => sidebar.sidebarVisible(key),
+          write: (key, visible, check) =>
+            sidebar.setSidebarVisible(key, visible, check),
+        },
+      });
+      return input === undefined
+        ? service.read(id, ghost)
+        : service.update(id, ghost, input, current);
     });
   }
   async setPermission(

@@ -479,3 +479,21 @@ it('recovers the selected host progress view after a transient refresh failure',
     expect(vi.mocked(host.client.invoke).mock.calls.some(([channel])=>channel.endsWith(':invoke'))).toBe(false);
   } finally { vi.useRealTimers(); }
 });
+
+// Unit: another controller can change preferences while a detail stays open.
+// Reload at form entry; preserve the revision and values once editing begins.
+it('loads the latest resource before editing and keeps an active draft revision',async()=>{
+  const host=fakeClient(),ref={collectionId:'plugins',kind:'plugin',id:'fixture'};
+  let revision=1,submitted:unknown;
+  host.handle((channel,args)=>{
+    if(channel==='maker:remote-resources:manifest')return {collections:[{id:'plugins',resourceKind:'plugin',title:'Plugins'}]};
+    if(channel==='maker:remote-resources:list')return {items:[{ref,display:{title:'Fixture'},links:[]}]};
+    if(channel==='maker:remote-resources:get')return {ref,revision:String(revision),display:{title:'Fixture'},links:[],actions:[{id:'edit',label:'Edit',fields:[{id:'name',label:'Name',kind:'text'}]}],blocks:[{id:'form',primitive:'form',data:{actionId:'edit',values:{name:`Value ${revision}`,expectedRevision:revision}}}]};
+    if(channel==='maker:remote-resources:invoke'){submitted=(args[0] as {input:unknown}).input;throw new Error('PLUGIN_SETTINGS_CHANGED');}
+  });
+  const screen=await mount(host.client,{node:<Resources client={host.client} locale="en" initialCollection="plugins" onTask={()=>{}}/>});
+  await screen.press('\r');revision=2;await screen.press('\r');expect(screen.latest()).toContain('Value 2');
+  revision=3;await screen.press(' draft');await screen.press('\r');
+  expect(submitted).toEqual({name:'Value 2 draft',expectedRevision:2});expect(screen.latest()).toContain('PLUGIN_SETTINGS_CHANGED');
+  await screen.press('\x1b[27u');await screen.press('\r');expect(screen.latest()).toContain('Value 3');
+});

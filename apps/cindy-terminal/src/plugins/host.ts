@@ -213,6 +213,17 @@ export class TerminalPlugins {
     };
     return input===undefined?run():this.mutate(run);
   }
+  preferences(id:string,ghost:InstalledGhost,sidebar:import('./preferences.js').TerminalPluginPreferences,input?:Record<string,unknown>,current:()=>void=()=>{}){
+    const run=()=>{
+      const check=()=>{this.guard();current();const next=this.installed(id);if(!next||this.removing.has(id)||next.dir!==ghost.dir||ghostInstallApprovalToken(next.approval)!==ghostInstallApprovalToken(ghost.approval))throw new Error('PLUGIN_CHANGED');};
+      check();if(!this.models)throw new Error('PLUGIN_CHANGED');
+      return this.models.preferences(id,ghost,sidebar,input,check);
+    };
+    return input===undefined?run():this.mutate(run);
+  }
+  setWorkdirDisabled(preferences:import('./preferences.js').TerminalPluginPreferences,workdir:string,id:string,disabled:boolean,current:()=>void){
+    return this.mutate(async()=>{current();await preferences.set(workdir,id,disabled,current);});
+  }
   setTaskPermission(id:string,mode:unknown,current:()=>void=()=>{}){
     return this.mutate(async()=>{
       const ghost=this.installed(id);
@@ -306,6 +317,8 @@ export class TerminalPlugins {
     }
     const file=path.join(this.options.root,'ghost-workdir-prefs.json'),bytes=await readPrivateFile(file);this.guard();
     if(bytes){const prefs=normalizeGhostWorkdirPrefs(JSON.parse(bytes.toString()));for(const key of Object.keys(prefs.disabledByWorkdir))prefs.disabledByWorkdir[key]=[...new Set(prefs.disabledByWorkdir[key].map(id=>id===from?to:id))];await atomicPrivateWrite(file,JSON.stringify(prefs));}
+    const sidebarFile=path.join(this.options.root,'ghost-sidebar-prefs.json'),sidebar=await readPrivateFile(sidebarFile);this.guard();
+    if(sidebar){const hidden:unknown=JSON.parse(sidebar.toString());if(!Array.isArray(hidden)||hidden.some(id=>typeof id!=='string'))throw new Error('PLUGIN_PREFERENCES_INVALID');await atomicPrivateWrite(sidebarFile,JSON.stringify([...new Set(hidden.map(id=>id===from?to:id))]));}
     this.guard();await this.cards.relocateGhost(from,to);this.guard();await this.models?.relocate(from,to);this.guard();await this.taskSessions?.relocate(from,to);this.guard();await this.options.archiveUserState?.(from,to);this.guard();
   }
   pendingFor(controller:string){this.guard();return [...this.pending].filter(([,p])=>p.controller===controller&&p.expiresAt>=Date.now()).map(([id,p])=>({id,facts:p.facts}));}
@@ -347,8 +360,8 @@ export class TerminalPlugins {
       finally{await this.native.refresh();}
     });
   }
-  async setEnabled(id:string,enabled:boolean) {
-    return this.mutate(async()=>{const ghost=await this.get(id);const result=await this.native.manager.setEnabled(installedGhostPhysicalRelId(ghost),enabled,ghostInstallApprovalToken(ghost.approval),()=>this.guard());if('rejection' in result)throw new Error('PLUGIN_CHANGE_REJECTED');if(!enabled){await this.downloads.cancelPlugin(id);await this.library.slot.invalidateGhost(id);}await this.native.refresh();});
+  async setEnabled(id:string,enabled:boolean,approval?:string,current:()=>void=()=>{}) {
+    return this.mutate(async()=>{const ghost=await this.get(id);current();const result=await this.native.manager.setEnabled(installedGhostPhysicalRelId(ghost),enabled,approval??ghostInstallApprovalToken(ghost.approval),()=>{this.guard();current();});if('rejection' in result)throw new Error('PLUGIN_CHANGE_REJECTED');if(!enabled){await this.downloads.cancelPlugin(id);await this.library.slot.invalidateGhost(id);}await this.native.refresh();});
   }
   private secretIndex(id:string){return `plugin-key-index:${id}`;}
   private storedSecretKeys(id:string):string[] {
@@ -392,20 +405,22 @@ export class TerminalPlugins {
       try{await this.persistCleanup();}catch(error){this.cleanup.set(id,keys);throw error;}
     }
   }
-  async uninstall(id:string) {
-    if(this.taskSessions)return this.taskSessions.withUninstall(id,async()=>{await this.removeInstalled(id);});
-    return this.removeInstalled(id);
+  async uninstall(id:string,current:()=>void=()=>{}) {
+    if(this.taskSessions)return this.taskSessions.withUninstall(id,async()=>{current();await this.removeInstalled(id,current);});
+    return this.removeInstalled(id,current);
   }
-  private async removeInstalled(id:string) {
+  private async removeInstalled(id:string,current:()=>void) {
     return this.mutate(async()=>{
-      const ghost=await this.get(id);this.removing.add(id);
+      const ghost=await this.get(id);current();this.removing.add(id);
       this.credentials.oauth.invalidateGhost(id);
       try{
       this.native.runtime?.stop(id);await this.native.node.stopAndWait(id);this.guard();
       await this.library.slot.invalidateGhost(id);
       const keys=new Set([...this.storedSecretKeys(id),...(ghost.manifest.node?.secretBindings??[]).map(binding=>binding.key),...(ghost.manifest.network?.secrets??[]).map(secret=>secret.key)]);
       this.cleanup.set(id,[...keys]);await this.persistCleanup();this.guard();
-      const result=await this.native.manager.uninstall(installedGhostPhysicalRelId(ghost));
+      let result:Awaited<ReturnType<typeof this.native.manager.uninstall>>;
+      try{result=await this.native.manager.uninstall(installedGhostPhysicalRelId(ghost),{assertCurrent:()=>{this.guard();current();}});}
+      catch(error){this.cleanup.delete(id);await this.persistCleanup();await this.native.refresh();throw error;}
       if('rejection' in result){this.cleanup.delete(id);await this.persistCleanup();throw new Error('PLUGIN_REMOVE_REJECTED');}
       await this.downloads.removePlugin(id);
       try{await this.library.orphan(id,ghost.manifest.name);}catch{this.options.log?.warn('Plugin library orphan marker remains unchanged');}

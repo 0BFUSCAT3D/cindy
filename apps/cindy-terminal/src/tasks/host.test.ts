@@ -1253,8 +1253,8 @@ describe('terminal task host', () => {
       await plugins.ready;await tasks.ready;
       // Integration tier: task ownership, durable replay, terminal input source
       // and cancellation were previously unavailable behind the plugin pipe.
-      const installed = {dir:path.join(root,'_root__fixture-plugin'),enabled:true,approval:{state:'approved',revision:'fixture-approved'},taskCapabilityApproved:true,
-        instanceKey:'_root__fixture-plugin',namespace:null,manifest:{id:'fixture-plugin',name:'Task fixture',version:'1.0.0',agent:{tasks:true,hiddenTasks:true}}} as unknown as import('@cindy/plugin-runtime/shared/ghost').InstalledGhost;
+      const installed = {dir:path.join(root,'_root__fixture-plugin'),enabled:true,approval:{state:'approved',revision:'00000000-0000-4000-8000-000000000001'},taskCapabilityApproved:true,
+        instanceKey:'_root__fixture-plugin',namespace:null,manifest:{id:'fixture-plugin',name:'Task fixture',version:'1.0.0',mainView:{html:'main.html'},agent:{tasks:true,hiddenTasks:true}}} as unknown as import('@cindy/plugin-runtime/shared/ghost').InstalledGhost;
       const lookup=vi.spyOn(plugins.native,'list').mockReturnValue([installed]);
       const call=async(kind:string,args:Record<string,unknown>={})=>{
         const result=await plugins.receive('_root__fixture-plugin',{type:'tasks-request',kind,...args}) as {ok:boolean;data:any;error?:{code:string;message?:string}};
@@ -1322,6 +1322,34 @@ describe('terminal task host', () => {
       await expect(registry.invoke(owner,{...request,actionId:'task-settings:set',input:{expectedRevision:before.revision,permissionMode:'auto'}})).rejects.toThrow('PLUGIN_SETTINGS_CHANGED');
       const updated=saved.result as typeof before;
       await registry.invoke(owner,{...request,actionId:'task-settings:set',input:{expectedRevision:updated.revision,model:null}});
+      // Current GUI management is a separate released action family. Exercise
+      // the real resource dispatcher, durable preferences and stale-page CAS.
+      const managementOwner={controllerDeviceId:'local'};
+      const manage=async(action:string,input:Record<string,unknown>={})=>(await registry.invoke(managementOwner,{...request,actionId:`management:${action}`,input})).result;
+      const snapshot=await manage('snapshot') as import('@cindy/plugin-runtime/shared/pluginManagement').PluginManagementSnapshot;
+      expect(snapshot).toMatchObject({hostPreferences:true,settingsPage:true,projectBrowse:true});
+      expect(snapshot.ghosts[0]?.instanceKey).toBe(installed.instanceKey);
+      const approval='approved:00000000-0000-4000-8000-000000000001';
+      const guiBefore=await manage('preferences',{expectedInstalledApproval:approval}) as import('@cindy/plugin-runtime/shared/pluginPreferences').RemotePluginPreferenceSnapshot;
+      expect(guiBefore.sidebarVisible).toBe(true);
+      const guiSaved=await manage('preferences-set',{expectedInstalledApproval:approval,expectedRevision:guiBefore.revision,kind:'tasks',patch:{model:{agentKind:'cc',providerId:'fixture',model:'test-second',effort:'high',fastMode:false}}}) as typeof guiBefore;
+      expect(guiSaved.tasks?.config).toMatchObject({model:'test-second',effort:'high'});
+      await expect(manage('preferences-set',{expectedInstalledApproval:approval,expectedRevision:guiBefore.revision,kind:'sidebar',visible:false})).rejects.toThrow('PLUGIN_SETTINGS_CHANGED');
+      const guiHidden=await manage('preferences-set',{expectedInstalledApproval:approval,expectedRevision:guiSaved.revision,kind:'sidebar',visible:false}) as typeof guiBefore;
+      await tasks.preferences.refresh();expect(tasks.preferences.sidebarVisible(installed.instanceKey!)).toBe(false);
+      await manage('preferences-set',{expectedInstalledApproval:approval,expectedRevision:guiHidden.revision,kind:'tasks',patch:{model:null}});
+      const project=await manage('project-select',{path:root}) as {id:string};
+      const projectBefore=await manage('project-state',{projectId:project.id}) as {revision:string};
+      await manage('begin',{operationId:'project-disable',kind:'disable',expectedInstalledApproval:approval,projectId:project.id,expectedProjectRevision:projectBefore.revision});
+      await vi.waitFor(async()=>expect(await manage('operation',{operationId:'project-disable'})).toMatchObject({phase:'succeeded'}));
+      await tasks.preferences.refresh();expect(tasks.preferences.disabled(installed.instanceKey!,root)).toBe(true);
+      await manage('begin',{operationId:'project-stale',kind:'enable',expectedInstalledApproval:approval,projectId:project.id,expectedProjectRevision:projectBefore.revision});
+      await vi.waitFor(async()=>expect(await manage('operation',{operationId:'project-stale'})).toMatchObject({phase:'failed'}));
+      expect(tasks.preferences.disabled(installed.instanceKey!,root)).toBe(true);
+      const projectAfter=await manage('project-state',{projectId:project.id}) as {revision:string};
+      await manage('begin',{operationId:'project-enable',kind:'enable',expectedInstalledApproval:approval,projectId:project.id,expectedProjectRevision:projectAfter.revision});
+      await vi.waitFor(async()=>expect(await manage('operation',{operationId:'project-enable'})).toMatchObject({phase:'succeeded'}));
+      expect(tasks.preferences.disabled(installed.instanceKey!,root)).toBe(false);
       const previous=created;
       created=(await call('setModel',{taskId:created.taskId,expectedRevision:created.revision,route:{...created.resolvedConfig,model:'test-second'}})).task;
       expect(created.resolvedConfig.model).toBe('test-second');

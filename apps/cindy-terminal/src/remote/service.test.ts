@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PROTOCOL_VERSION, SHARED_TASK_RELAY_CAPABILITY, type Envelope, type WsLike } from '@cindy/device-link';
+import { TerminalResources } from '../resources.js';
+import type { TerminalTaskHost } from '../tasks/host.js';
 import { TerminalDeviceService } from './service.js';
 import { TerminalMembershipService } from './membership.js';
 import type { TerminalRemoteAccountService } from './account.js';
@@ -63,6 +65,19 @@ function deferred<T>() {
 }
 
 describe('terminal bidirectional remote service', () => {
+  // Integration: resource CAS failures must survive the real relay boundary;
+  // unrelated native exceptions must still redact paths and credentials.
+  it('preserves declared resource conflicts without forwarding native exception text',async()=>{
+    const relay=new Relay(),resources=new TerminalResources({} as TerminalTaskHost);let conflict=true;
+    resources.registry.register({collection:{id:'plugins',resourceKind:'plugin',title:'Plugins'},list:async()=>({collectionId:'plugins',items:[],revision:'1'}),invoke:async()=>{throw new Error(conflict?'PLUGIN_SETTINGS_CHANGED':'private /owner/path secret-value');}});
+    const host=make(relay,'host',{invokeLocal:(channel,args,context)=>resources.invoke(channel,args,{source:'remote',deviceId:context.sourceDeviceId,assertCurrent:context.assertCurrent})});
+    const controller=make(relay,'controller');await online(host,controller);
+    const request={client:{protocolVersion:1,primitives:['actions']},collectionId:'plugins',actionId:'management:preferences-set'};
+    await expect(controller.invoke('host','maker:remote-resources:invoke',[request])).rejects.toThrow('PLUGIN_SETTINGS_CHANGED');
+    conflict=false;await expect(controller.invoke('host','maker:remote-resources:invoke',[request])).rejects.toThrow('Remote operation failed');
+    expect(JSON.stringify(relay.frames.filter(frame=>frame.kind==='invoke-result'))).not.toContain('secret-value');resources.close();
+  });
+
   it('executes at the authenticated source, supports mutual control and refcounted subscriptions', async () => {
     const relay = new Relay();
     const pushes = vi.fn();

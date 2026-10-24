@@ -79,13 +79,23 @@ export function Resources({ client, device, locale, initialCollection, initialRe
       }
     }
   }
-  function begin(chosen:RemoteActionDescriptor){
+  async function begin(chosen:RemoteActionDescriptor){
+    let source=resource;
+    if(source){
+      const at=epoch.current;
+      const fresh=await call<RemoteResource>('get',{ref:source.ref});
+      if(epoch.current!==at)return;
+      source=fresh;setResource(fresh);
+      const action=fresh.actions?.find(action=>action.id===chosen.id);
+      if(!action)throw new Error('ACTION_NOT_AVAILABLE_ON_TARGET');
+      chosen=action;
+    }
     if(chosen.disabled)return;
     if(chosen.fields?.some(item=>!['text','multiline','secret','toggle','select'].includes(item.kind))){setError(t.notImplemented);return;}
-    const block=resource?.blocks?.find(block=>block.primitive==='form'&&(block.data as {actionId?:string}|undefined)?.actionId===chosen.id);
+    const block=source?.blocks?.find(block=>block.primitive==='form'&&(block.data as {actionId?:string}|undefined)?.actionId===chosen.id);
     const defaults=(block?.data as {values?:Record<string,unknown>}|undefined)?.values??{};
     setAction(chosen);setConfirmed(!chosen.confirmation);setField(0);setValues(defaults);prepareField(chosen.fields?.[0],defaults);if(chosen.confirmation)setSelected(0);
-    if(!chosen.confirmation&&!chosen.fields?.length)void run(()=>submit(chosen,defaults));
+    if(!chosen.confirmation&&!chosen.fields?.length)await submit(chosen,defaults);
   }
   useEffect(()=>{
     epoch.current++;const at=epoch.current;setCollection(undefined);setResource(undefined);setAction(undefined);setRegistration(undefined);setSelected(0);
@@ -117,14 +127,14 @@ export function Resources({ client, device, locale, initialCollection, initialRe
   const choices=action&&!confirmed?[t.cancel,txt(action.confirmation?.confirmLabel)||t.yes]
     :fieldDescriptor?.kind==='toggle'?[t.no,t.yes]
     :fieldDescriptor?.kind==='select'?filteredOptions.map(option=>txt(option.label)):[];
-  const actions=resource?.actions??collection?.actions??[];
+  const actions=(resource?.actions??collection?.actions??[]).filter(action=>!action.id.startsWith('management:'));
   const links=resource?.links??[];
   const lines=resource?[
     ...links.map(link=>({id:link.rel,title:txt(link.label)||t.history,run:()=>{const target=link.target;return target.kind==='session'?onTask(target.sessionId):void run(()=>open(target.ref));}})),
-    ...actions.map(item=>({id:item.id,title:txt(item.label)+(item.disabled?' · —':''),run:()=>begin(item)})),
+    ...actions.map(item=>({id:item.id,title:txt(item.label)+(item.disabled?' · —':''),run:()=>void run(()=>begin(item))})),
   ]:collection?[
     ...items.map(item=>({id:item.ref.id,title:txt(item.display.title)+(item.display.status?` · ${txt(item.display.status.label)}`:''),run:()=>void run(()=>open(item.ref))})),
-    ...actions.map(item=>({id:item.id,title:`+ ${txt(item.label)}`,run:()=>begin(item)})),
+    ...actions.map(item=>({id:item.id,title:`+ ${txt(item.label)}`,run:()=>void run(()=>begin(item))})),
     ...(cursor?[{id:'more',title:t.next,run:()=>void run(()=>list(collection,cursor))}]:[]),
   ]:collections.map(item=>({id:item.id,title:txt(item.title),run:()=>void run(()=>list(item))}));
   useEffect(() => { if (!action) setSelected(value => Math.min(value, Math.max(0, lines.length - 1))); }, [lines.length, action]);

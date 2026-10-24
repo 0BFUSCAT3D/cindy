@@ -143,6 +143,10 @@ const taskPermissionLabel = (key: string): RemoteLocalizedText => ({
     ]),
   ),
 });
+const effortLabel = (key:string):RemoteLocalizedText => ({
+  fallback:(translations.en as Record<string,string>)[`effortLevels.${key}`]??key,
+  translations:Object.fromEntries(Object.entries(translations).map(([locale,values])=>[locale,(values as Record<string,string>)[`effortLevels.${key}`]??key])),
+});
 function permissionText(items: GhostPermissionItem[], locale = "en") {
   const dictionary =
     (permissions as Record<string, Record<string, string>>)[locale] ??
@@ -278,6 +282,7 @@ export function registerPluginResources(
       title: label("plugins"),
       placement: "settings",
       actions: [
+        ...(pages?.provider.collection.actions ?? []),
         {
           id: "install",
           label: label("install"),
@@ -482,7 +487,7 @@ export function registerPluginResources(
               label: label("effort"),
               options: [
                 { value: "", label: label("automatic") },
-                ...selected.efforts.map((value) => ({ value, label: value })),
+                ...selected.efforts.map((value) => ({ value, label: effortLabel(value) })),
               ],
             });
           if (selected.supportsFastMode)
@@ -584,6 +589,8 @@ export function registerPluginResources(
     },
     invoke: async (context, request) => {
       context.assertCurrent?.();
+      if (pages && request.actionId.startsWith("management:"))
+        return pages.provider.invoke!(context, request);
       const id = request.resourceRef?.id;
       if (request.actionId === "install") {
         const file = request.input?.file;

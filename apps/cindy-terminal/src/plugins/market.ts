@@ -12,6 +12,12 @@ import type { TerminalPlugins } from './host.js';
 import type { TerminalPluginAccount } from './account.js';
 import type { PluginTaskContext } from './permissions.js';
 import { privateDirectory } from '../platform.js';
+import { ghostInstallApprovalToken, validateNormalizedGhostManifest } from '@cindy/plugin-runtime/shared/ghost';
+import type { PluginMarketItem, PluginMarketSnapshot, PluginMarketDetail, PluginMarketInstallOptions } from '@cindy/plugin-runtime/shared/pluginMarket';
+import type { GhostInstallConsentPrompt } from '@cindy/plugin-runtime/ghostInstallConsent';
+import { readInstalledGhostManifestSnapshot } from '@cindy/plugin-runtime/store/installedGhostManifest';
+import { installedMarketManifestIdentity } from '@cindy/plugin-runtime/market/installedManifestIdentity';
+import { verifyInstalledMarketManifest } from '@cindy/plugin-runtime/market/installedManifestIdentity';
 
 const words={title:['Plugin market','插件市场','外掛市場','プラグインマーケット','플러그인 마켓'],install:['Install','安装','安裝','インストール','설치'],update:['Update','更新','更新','更新','업데이트']} as const;
 const label=(key:keyof typeof words):RemoteLocalizedText=>{const [en,cn,tw,ja,ko]=words[key];return {fallback:en,translations:{en,'zh-CN':cn,'zh-TW':tw,ja,ko}};};
@@ -28,6 +34,29 @@ export class TerminalPluginMarket {
   }
   private guard(){this.abort.signal.throwIfAborted();this.options.assertCurrent();}
   async list(query?:string){this.guard();const catalog=await this.options.account.catalog(query);this.guard();return catalog;}
+  private item(plugin:Awaited<ReturnType<TerminalPluginAccount['catalog']>>['plugins'][number]):PluginMarketItem {
+    const ghost=this.options.host.native.list().find(item=>item.manifest.id===plugin.ghostId&&(item.namespace??null)===(plugin.namespace??null));
+    const record=ghost?this.options.host.identity.record(ghost):null;
+    const snapshot=ghost?readInstalledGhostManifestSnapshot(ghost.dir,512*1024):null;
+    const matches=!!record?.installed&&(record.source==='market'||record.source==='legacy-adopted')&&record.pluginId===plugin.id&&record.ghostId===plugin.ghostId&&record.scope===plugin.scope&&record.organizationId===plugin.organizationId&&(record.namespace??null)===(plugin.namespace??null)&&!!snapshot?.ok&&verifyInstalledMarketManifest(record,installedMarketManifestIdentity(snapshot.snapshot),{allowLegacyRecordWithoutDigest:true});
+    return {pluginId:plugin.id,ghostId:plugin.ghostId,namespace:plugin.namespace??null,name:plugin.name,description:plugin.description,author:plugin.author,scope:plugin.scope,organizationId:plugin.organizationId,defaultInstall:plugin.defaultInstall,releaseId:plugin.currentRelease.id,version:plugin.currentRelease.version,publishedAt:plugin.currentRelease.publishedAt,icon:plugin.currentRelease.icon,installState:ghost&&!matches?'conflict':!matches?'not-installed':record?.releaseId===plugin.currentRelease.id?'installed':'update-available',enabled:matches?ghost?.enabled??null:null,sourceType:'server',sourceMarketName:null,...(plugin.usageStatistics?{usageStatistics:plugin.usageStatistics}:{}),...(plugin.downloadStatistics?{downloadStatistics:plugin.downloadStatistics}:{})};
+  }
+  async snapshot():Promise<PluginMarketSnapshot>{
+    try{const catalog=await this.list();return {items:catalog.plugins.map(plugin=>this.item(plugin)),unavailableReason:null,customSourceNames:[],unavailableCustomSourceNames:[],organizationAccessError:catalog.organizationAccessError?.code??null};}
+    catch{this.guard();return {items:[],unavailableReason:this.options.account.membership()?'PLUGIN_API_ERROR':'not-configured',customSourceNames:[],unavailableCustomSourceNames:[]};}
+  }
+  async detail(id:string):Promise<PluginMarketDetail>{this.guard();const plugin=await this.options.account.market.detail(id);this.guard();const parsed=validateNormalizedGhostManifest(plugin.currentRelease.manifest);if(!parsed.ok)throw Object.assign(new Error('GHOST_FILE_INVALID'),{code:'GHOST_FILE_INVALID'});return {...this.item(plugin),manifest:parsed.manifest};}
+  async install(id:string,options:PluginMarketInstallOptions,prompt:GhostInstallConsentPrompt,current:()=>void,scope:()=>void){
+    const controller=`management:${randomUUID()}`;let pending:string|undefined;
+    try{
+      current();const prepared=await this.prepare(id,options.expectedReleaseId,controller);pending=prepared.id;current();
+      const entry=this.options.host.pendingInstall(prepared.id,controller);
+      const receiver=entry.receiver?this.options.host.installed(entry.receiver):null;
+      if((receiver?ghostInstallApprovalToken(receiver.approval):undefined)!==options.expectedInstalledApproval||entry.sourceChanged&&!options.allowSourceReplacement)throw new Error('PLUGIN_CHANGED');
+      if(!await prompt({facts:prepared.facts,initiator:'user',origin:'market',target:prepared.target}))throw Object.assign(new Error('MUTATION_CANCELLED'),{code:'MUTATION_CANCELLED'});
+      current();await this.options.host.confirmInstall(prepared.id,controller,scope);
+    }finally{if(pending)await this.discard(pending,controller);}
+  }
   private async prune(){
     await privateDirectory(this.directory);this.guard();
     for(const name of await readdir(this.directory)){

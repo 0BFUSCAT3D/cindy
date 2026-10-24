@@ -490,7 +490,7 @@ export class TerminalService {
     await this.plugins.ready;
     this.pluginMarket=new TerminalPluginMarket({root:ownerDir,host:this.plugins,account:this.pluginAccount,assertCurrent:guardPlugin});
     this.pluginMarket.register(this.resources.registry);
-    this.pluginTasks=new TerminalPluginTasks({root:ownerDir,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),host:this.plugins,account:this.pluginAccount,market:this.pluginMarket,tasks:this.tasks,protectedInput:this.protectedInput,deposits,saves,
+    this.pluginTasks=new TerminalPluginTasks({root:ownerDir,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),host:this.plugins,account:this.pluginAccount,market:this.pluginMarket,tasks:this.tasks,protectedInput:this.protectedInput,deposits,saves,mediaTransfer:this.media,projectDirectories:()=>this.projects?.directories()??Promise.resolve([]),
       owner:()=>({mode:this.auth.snapshot().session?'cloud':'local',dataOwnerId:owner,generation}),signedIn:()=>Boolean(this.auth.snapshot().session),remoteAvailable:()=>Boolean(this.auth.snapshot().session)&&this.settings.snapshot().effective.remoteEnabled,locale:()=>this.settings.snapshot().effective.language,assertCurrent:guardPlugin,
       emit:(channel,payload)=>{guardPlugin();if(this.ownerSuspended)return;this.transport.publish(channel,[payload]);void this.remote.publish(channel,payload).catch(()=>{});},
     });
