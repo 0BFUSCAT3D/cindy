@@ -9103,6 +9103,7 @@
       "descriptionOn": "{{name}}がセッションの変化に応じて要約を確認し、お知らせします。",
       "movedFrom": "{{name}}からここに移しました",
       "heldBy": "現在は{{name}}が担当しています。オンにするとここに移ります。",
+      "routineScopeHint": "あなたが作成したセッションも担当します。下の標準フォローが、担当セッションの変化に対応します。",
       "heldByNobody": "未設定",
       "restoreDefault": "デフォルトに戻す（{{name}}）",
       "saveFailed": "保存できませんでした。もう一度お試しください",
@@ -14001,6 +14002,13 @@
     },
     "builtinTemplates": {
       "schedule": {
+        "everyMinute": "毎分",
+        "hourlyAt": "毎時 {{minutes}} 分",
+        "atTimes": "{{times}}",
+        "atHoursMinutes": "{{hours}} 時の {{minutes}} 分",
+        "monthDays": "毎月 {{days}} 日",
+        "daysOrWeekdays": "{{days}} または毎週 {{weekdays}}",
+        "inMonths": "{{months}}",
         "daily": "毎日 {{time}}",
         "weekdays": "平日 {{time}}",
         "weekly": "{{weekday}} {{time}}",
@@ -16071,6 +16079,9 @@
     "compression": "長い内容を短くまとめるために。"
   },
   "routines": {
+    "onEvent": "イベント：{{source}} · {{event}}",
+    "triggerDetails": "実行条件を表示（{{count}} 件・いずれかで実行）",
+    "noTriggers": "実行条件は未設定",
     "unsavedTitle": "未保存の変更があります",
     "unsavedDescription": "戻ると、このルーチンへの変更が破棄されます。",
     "discard": "変更を破棄",
@@ -16142,8 +16153,8 @@
     "timeoutMs": "確認のタイムアウト（ミリ秒、空欄は無制限）",
     "advancedSettings": "詳細設定",
     "builtinFollowUp": {
-      "name": "フォロー（組み込み）",
-      "hint": "セッションが止まったとき、返信待ちになったとき、エラーになったとき、使用量の上限に達したとき、完了したときに起こします。組み込みのため、一時停止と再開のみできます。"
+      "name": "担当セッションのフォロー（標準）",
+      "hint": "担当セッションの停滞、返答待ち、エラー、利用上限、完了を受けてフォローします。"
     },
     "builtinTodoCheck": {
       "name": "毎日の Todo 確認（組み込み）",
