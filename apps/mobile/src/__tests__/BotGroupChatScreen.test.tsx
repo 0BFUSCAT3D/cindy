@@ -62,10 +62,14 @@ vi.mock('react-native', () => {
 });
 vi.mock('expo-router', () => ({
   useIsFocused: () => h.focused,
-  Stack: { Screen: () => null },
+  Stack: {
+    Screen: ({ options }: any) => typeof options.headerTitle === 'function' ? options.headerTitle() : null,
+    Toolbar: Object.assign(({ children }: any) => children, { View: ({ children }: any) => children }),
+  },
   useRouter: () => ({ back: vi.fn(), replace: vi.fn() }),
   useFocusEffect: (effect: () => void) => useEffect(effect, [effect]),
 }));
+vi.mock('expo-router/react-navigation', () => ({ useHeaderHeight: () => 72 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children }: any) => el('main', null, children), useSafeAreaInsets: () => ({ top: 59, bottom: 34, left: 0, right: 0 }) }));
 vi.mock('@/session/SessionHeaderNativeControls', () => ({ SessionHeaderNativeBlur: ({ height, fadeInside }: any) => { h.headerBlur.push(height); h.headerFade.push(fadeInside); return null; } }));
 vi.mock('react-i18next', async (importOriginal) => ({
@@ -390,8 +394,8 @@ describe('group timeline', () => {
 
   it('floats the iOS header on the task header blur instead of an opaque band', async () => {
     await render();
-    // Before the header is measured the blur still covers the status bar plus one bar row.
-    expect(h.headerBlur.at(-1)).toBe(59 + 44);
+    // Duo's native measurement already includes its shared status row; do not add another 44pt.
+    expect(h.headerBlur.at(-1)).toBe(72);
     // The two-line identity stays over solid blur; the feather starts at the header's lower edge.
     expect(h.headerFade.at(-1)).toBe(0);
   });
