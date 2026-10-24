@@ -45,6 +45,32 @@ it('shows sender and recipient avatars and falls back without requesting public 
   expect(screen.getByText('P')).toBeTruthy();
   expect(screen.getByText('O')).toBeTruthy();
 });
+// The real reader must bound all header positions, not just unique addresses
+// or each recipient field separately; every surplus address stays visible.
+it.each(['body', 'summary'])('bounds avatar lookups across all headers and duplicates, with sender from %s', async source => {
+  const digest = vi.fn(async (_algorithm: string, bytes: Uint8Array) => Uint8Array.from(createHash('sha256').update(bytes).digest()).buffer);
+  vi.stubGlobal('crypto', { subtle: { digest } });
+  const recipients = Array.from({ length: 50 }, () => 'Repeated <repeat@company.example.com>').join(', ');
+  h.read.mockResolvedValue({ message: { ...mail('Many recipients'), from: source === 'body' ? 'Owner <owner@company.example.com>' : '',
+    to: recipients, cc: 'CC <cc@company.example.com>', bcc: 'BCC <bcc@company.example.com>',
+    participantPhotos: [{ email: 'cc@company.example.com', url: 'https://lh3.googleusercontent.com/budget-exceeded' }],
+    ...(source === 'summary' ? { conversation: { threadId: 'thread', messages: [{ messageId: 'Many recipients',
+      url: 'https://mail.example/a', from: 'Owner <owner@company.example.com>', date: '', subject: '', snippet: '' }] } } : {}) } });
+  const view = render(<MailPreviewBody state={{ url: 'https://mail.example/a' }} ctx={ctx} />);
+  await act(async () => {});
+  expect(digest).toHaveBeenCalledTimes(12);
+  expect(view.container.querySelectorAll('img')).toHaveLength(12);
+  expect(screen.getAllByText('Repeated <repeat@company.example.com>')).toHaveLength(50);
+  expect(screen.getByText('CC <cc@company.example.com>')).toBeTruthy();
+  expect(screen.getByText('BCC <bcc@company.example.com>')).toBeTruthy();
+  await act(async () => { view.container.querySelectorAll('img').forEach(image => fireEvent.error(image)); });
+  expect(view.container.querySelectorAll('img')).toHaveLength(12);
+  expect([...view.container.querySelectorAll('img')].every(image => image.src.includes('icons.duckduckgo.com'))).toBe(true);
+  await act(async () => { view.container.querySelectorAll('img').forEach(image => fireEvent.error(image)); });
+  expect(view.container.querySelectorAll('img')).toHaveLength(0);
+  expect(digest).toHaveBeenCalledTimes(12);
+});
+
 // Unit: plain-text mail previously had no clickable URLs. Only web URLs may
 // become actions; local paths and task deep links from senders remain text.
 it('makes plain-text mail URLs clickable without interpreting other content', async () => {

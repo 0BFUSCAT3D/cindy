@@ -3187,6 +3187,9 @@ It travels in the existing message response/resource with no new IPC or permissi
 Desktop uses it before Gravatar (SHA-256 normalized email), a fixed DuckDuckGo domain
 favicon endpoint for non-public mailbox domains, and initials. External avatars use
 no referrer and bounded load fallbacks; they do not enable remote images in the body.
+Desktop loads avatar sources for at most the first 12 participant positions per
+message, shared across from/to/cc/bcc; duplicates also consume a position. Remaining
+participants use initials and retain their complete addresses, without photo or hash lookups.
 Domain icons are presentation, not authenticated sender identity. Other clients may
 continue displaying addresses alone. Provider contact enrichment must remain optional
 when new contact scopes are missing; Gmail bounds its lookup budget and account cache.
