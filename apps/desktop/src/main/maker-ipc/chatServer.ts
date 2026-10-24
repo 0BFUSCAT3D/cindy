@@ -1,3 +1,5 @@
+import { prepareChatReplyFiles } from './chatServerReplyFiles.js';
+import type { ChatUploadAttachment } from './chatServerMedia.js';
 import { createConversationListState } from '@cindy/maker-shared/chatConversationList';
 /** Production chat transport. The server owns messages and execution leases;
  * local group rows only supply Agent lane metadata and the upgrade source. */
@@ -17,6 +19,7 @@ import { request as httpsRequest } from 'node:https';
 import { migrateLocalGroups, type ChatContentBlock } from './chatServerMigration.js';
 import { chatErrorDiagnostic, chatGroupFailure, missingGroupCode } from './chatServerErrors.js';
 import { createChatMedia } from './chatServerMedia.js';
+import { mergeChatReplyAttachments } from './chatServerReplyAttachments.js';
 import { prepareChatReplyImages } from './chatServerReplyImages.js';
 import { chatServerWorkspaces } from './chatServerWorkspaces.js';
 import { buildPlanStepBrief, draftPlanSteps, type PlanStepDraft } from './botGroupDivision.js';
@@ -93,7 +96,7 @@ interface Running {
   lane?: string;
   laneLookup?: Promise<void>;
   context?: ExecutionContext;
-  settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; reply?: { sourceText: string; text: string; attachments: BotGroupAttachment[] }; retryAt: number; keepLease?: boolean };
+  settlement?: { terminal: BotGroupLaneTerminal; payload?: Record<string, unknown>; reply?: { sourceText: string; text: string; attachments: ChatUploadAttachment[] }; fileReply?: Awaited<ReturnType<typeof prepareChatReplyFiles>>; retryAt: number; keepLease?: boolean };
   delivery?: Promise<void>;
   plan?: ServerPlan;
   workspace?: { workDir: string; branch: string | null; ownerSessionId: string | null };
@@ -1531,6 +1534,31 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       executorId, epoch: run.execution.epoch, action, ...extra,
     }, run.execution.bot_id);
   }
+  async function validateExecutionAuthority(run: Running): Promise<void> {
+    const execution = run.execution;
+    const assertCurrent = () => {
+      if (!current() || running.get(execution.id) !== run) throw new GroupToolAuthorizationError();
+    };
+    assertCurrent();
+    // Recheck metadata and the execution lease at the tool or file-delivery boundary.
+    // Group administrators cannot grant access to someone else's companion.
+    try {
+      const members = await api<Member[]>(`/conversations/${execution.conversation_id}/members`);
+      assertCurrent();
+      const companion = members.find(m => m.id === execution.bot_id && m.kind === 'bot' && m.state === 'joined');
+      const requester = members.find(m => m.id === execution.requester_id && m.state === 'joined');
+      if (execution.access_mode === 'chat' || !companion || companion.ownerActorId !== selfId || !requester
+        || companion.accessRevision !== execution.access_revision
+        || (execution.access_mode === 'owner' ? requester.ownerActorId !== selfId : companion.guestAccess !== 'tools'))
+        throw new GroupToolAuthorizationError();
+      await updateExecution(run, 'heartbeat');
+    } catch (error) {
+      if (error instanceof ChatResponseError && !recoverableAuth(error) && [401, 403, 404, 409, 410].includes(error.status))
+        throw new GroupToolAuthorizationError();
+      throw error;
+    }
+    assertCurrent();
+  }
   // Compatibility cache for servers which do not yet return failure_code.
   // The server execution status still owns whether a notice is displayed.
   const failureCodes = new Map<string, BotGroupRuntimeFailureCode>();
@@ -1584,7 +1612,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           let terminal = pending.terminal;
           let text = pending.reply?.sourceText ?? terminal.resultText;
           if (!pending.reply && !text.trim() && terminal.resultMessageClientId) text = (await readPersistedReplyText(terminal.sessionId, terminal.resultMessageClientId)) ?? '';
-          const produced: BotGroupAttachment[] = [];
+          const produced: ChatUploadAttachment[] = [];
           if (terminal.outcome !== 'error' && run.workspace && run.beforeFiles && deps.workDir) {
             const files = await deps.workDir.changedFiles(run.workspace.workDir, run.beforeFiles);
             for (const name of files) {
@@ -1600,15 +1628,38 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           let contentText = text;
           let files: ChatContentBlock[] = [];
           const ordinaryReply = !run.plan || run.plan.kind === 'talk';
+          const validateUpload = async () => {
+            assertCurrent();
+            if (pending.fileReply?.attachments.length) {
+              try { await validateExecutionAuthority(run); }
+              catch (error) {
+                // Definitive revocation ends delivery; transport failures retain
+                // the same result for retry without running the Agent again.
+                if (error instanceof GroupToolAuthorizationError) throw new ChatResponseError('PERMISSION_DENIED', 403);
+                throw error;
+              }
+            }
+            assertCurrent();
+          };
           try {
             if (terminal.outcome !== 'error') {
               if (ordinaryReply) {
-                pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(text, run.sessionId, assertCurrent) };
+                pending.fileReply ??= await prepareChatReplyFiles(text, run.sessionId, () => {
+                  assertCurrent();
+                  if (run.execution.access_mode === 'chat') throw new Error('ATTACHMENT_UNAVAILABLE');
+                }, !terminal.resultText.trim() ? terminal.resultMessageClientId : undefined);
+                // Shared reference classification reads file bytes before image import.
+                // Retain the later upload/seal checks and authorize this read as well.
+                if (!pending.reply && pending.fileReply.attachments.length) await validateUpload();
+                pending.reply ??= { sourceText: text, ...await prepareChatReplyImages(pending.fileReply.text, run.sessionId, assertCurrent,
+                  pending.fileReply.attachments) };
                 contentText = pending.reply.text;
-                produced.push(...pending.reply.attachments);
+                produced.push(...mergeChatReplyAttachments(pending.reply.attachments, pending.fileReply.attachments));
+                if (produced.length > BOT_GROUP_ATTACHMENTS_MAX) throw new Error('ATTACHMENT_UNAVAILABLE');
               }
+              if (ordinaryReply) await validateUpload();
               files = await media.upload(run.execution.conversation_id, `step:${run.execution.id}:${run.execution.epoch}`,
-                produced, run.execution.bot_id, ordinaryReply ? assertCurrent : undefined);
+                produced, run.execution.bot_id, ordinaryReply ? validateUpload : undefined);
               assertCurrent();
             }
           } catch (error) {
@@ -1783,24 +1834,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           botId: bot.id, mode: execution.access_mode,
           sourceGroup: { groupId: s.room.id, name: s.room.name },
           isCurrent: () => current() && running.get(execution.id) === run && !run.settlement,
-          validate: async () => {
-            // Recheck metadata and the execution lease at the actual tool boundary.
-            // Group administrators cannot grant access to someone else's companion.
-            try {
-              const members = await api<Member[]>(`/conversations/${s.room.id}/members`);
-              const companion = members.find(m => m.id === execution.bot_id && m.kind === 'bot' && m.state === 'joined');
-              const requester = members.find(m => m.id === execution.requester_id && m.state === 'joined');
-              if (!companion || companion.ownerActorId !== selfId || !requester
-                || companion.accessRevision !== execution.access_revision
-                || (execution.access_mode === 'owner' ? requester.ownerActorId !== selfId : companion.guestAccess !== 'tools'))
-                throw new GroupToolAuthorizationError();
-              await updateExecution(run, 'heartbeat');
-            } catch (error) {
-              if (error instanceof ChatResponseError && [401, 403, 404, 409, 410].includes(error.status))
-                throw new GroupToolAuthorizationError();
-              throw error;
-            }
-          },
+          validate: () => validateExecutionAuthority(run),
         });
         if (run.plan && run.workspace?.ownerSessionId) {
           const settings = workspaces().read(s.room.id)!;
