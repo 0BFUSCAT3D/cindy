@@ -833,6 +833,7 @@ it.each([false, true])('omits only a fully redundant supplementary table (notes=
 // Unit regression: the real drawer hid the discount row for displayPricing models.
 // Existing summary tests checked discounted amounts but not the separate discount row.
 // Minimal failure: one video quote with costDiscount=0.4 and no token price presentation.
+// Discount-order regression: the row must follow summary quotes and precede supplementary items.
 it.each([
   { costDiscount: 0.4, pricing: 'summary', expected: '↓40%' },
   { costDiscount: 0.4, pricing: 'table', expected: '↓40%' },
@@ -848,8 +849,16 @@ it.each([
     } }),
   });
   const label = screen.queryByText('settings.providers.models.advanced.discount');
-  if (expected) expect(label?.parentElement?.textContent).toContain(expected);
-  else expect(label).toBeNull();
+  if (expected) {
+    expect(label?.parentElement?.textContent).toContain(expected);
+    if (pricing !== 'chat') {
+      expect(label!.compareDocumentPosition(screen.getByText('Generated video')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    if (pricing === 'summary') {
+      const outputRow = screen.getByText('settings.providers.models.advanced.price.output').parentElement!;
+      expect(outputRow.nextElementSibling).toBe(label!.parentElement);
+    }
+  } else expect(label).toBeNull();
 });
 
 // Unit regression found during review: ordinary Gateway chat projections carry effective cost,
@@ -866,4 +875,6 @@ it('retains the chat discount inferred from standard and effective prices', () =
     }, primary.cost)}
   />);
   expect(screen.getByText('settings.providers.models.advanced.discount').parentElement?.textContent).toContain('↓40%');
+  const outputRow = screen.getByText('settings.providers.models.advanced.price.output').parentElement!;
+  expect(outputRow.nextElementSibling).toBe(screen.getByText('settings.providers.models.advanced.discount').parentElement);
 });

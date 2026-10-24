@@ -1024,12 +1024,6 @@ export function ModelAdvancedDrawer({
                             </Row>
                           );
                         })}
-                        {/* Keep conditions and notes; omit a plain table fully covered by the summary. */}
-                        {!isDisplayPricingTableRedundant(primaryModel.displayPricing) && (
-                          <div className={primaryModel.displayPricing.summary ? 'pt-3' : undefined}>
-                            <DisplayPricingDetails model={primaryModel} />
-                          </div>
-                        )}
                       </>
                     ) : price === null ? (
                       <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>
@@ -1076,6 +1070,13 @@ export function ModelAdvancedDrawer({
                         </span>
                       </Row>
                     )}
+                    {/* Keep conditions and notes after the primary quotes and their discount. */}
+                    {primaryModel.displayPricing && primaryModel.currency &&
+                      !isDisplayPricingTableRedundant(primaryModel.displayPricing) && (
+                        <div className={primaryModel.displayPricing.summary ? 'pt-3' : undefined}>
+                          <DisplayPricingDetails model={primaryModel} />
+                        </div>
+                      )}
                     {/* 自定义报价:原「⋯」菜单的一项,搬到它真正相关的段落里。
                     XD 网关的价格由服务端定,不给覆盖入口(与 IPC 侧的拒绝一致)。 */}
                     {provider.id !== 'xd' && !isOrganizationManagedProvider(provider) && !paymentRequired && (
