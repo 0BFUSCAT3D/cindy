@@ -25,13 +25,14 @@ export function useAskCardVoice(input: {
   listening: boolean;
   error: string | null;
   toggle: () => void;
+  stop: () => Promise<string | null>;
 } {
   const auth = useAskCardAuth();
   const [listening, setListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const runRef = useRef<VoiceRun | null>(null);
   const startingRef = useRef(false);
-  const stoppingRef = useRef<Promise<void> | null>(null);
+  const stoppingRef = useRef<Promise<string | null> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
   const inputRef = useRef(input);
   inputRef.current = input;
@@ -39,19 +40,32 @@ export function useAskCardVoice(input: {
   authRef.current = auth;
 
   const stop = useCallback(() => {
+    if (stoppingRef.current) return stoppingRef.current;
+    const wasStarting = startingRef.current;
     startingRef.current = false;
     // Abort the startup so the microphone closes now instead of waiting for a
     // slow voice-service handshake to finish.
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     const run = runRef.current;
-    runRef.current = null;
-    setListening(false);
-    if (!run) return;
-    const stopping = run.stop().catch(() => undefined).finally(() => {
+    if (!run) {
+      setListening(false);
+      return Promise.resolve(wasStarting ? null : inputRef.current.getText());
+    }
+    // Keep the run owned until final ASR/refinement settles. Unmount can then
+    // cancel it, and another Send joins this same stop instead of using a draft.
+    const stopping = run.stop().then(() => (
+      runRef.current === run ? inputRef.current.getText() : null
+    )).catch((error: unknown) => {
+      setError(error instanceof Error ? error.message : String(error));
+      return null;
+    }).finally(() => {
+      if (runRef.current === run) runRef.current = null;
+      setListening(false);
       if (stoppingRef.current === stopping) stoppingRef.current = null;
     });
     stoppingRef.current = stopping;
+    return stopping;
   }, []);
 
   // The card unmounts when the answer is submitted, skipped or the request
@@ -126,5 +140,5 @@ export function useAskCardVoice(input: {
     })();
   }, [stop]);
 
-  return { listening, error, toggle };
+  return { listening, error, toggle, stop };
 }

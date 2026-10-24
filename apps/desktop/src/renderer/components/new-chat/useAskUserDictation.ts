@@ -391,8 +391,12 @@ export function useAskUserDictation(
       }
       try {
         const result = await window.electronAPI.voiceInput.stop();
-        if (!result.ok) reportError(formatError(result.error));
+        if (!result.ok) {
+          setVoiceState('error');
+          reportError(formatError(result.error));
+        }
       } catch (error) {
+        setVoiceState('error');
         reportError(formatError(error instanceof Error ? error.message : String(error)));
       } finally {
         await restoreMute();
@@ -403,7 +407,7 @@ export function useAskUserDictation(
       stopInFlightRef.current = null;
     });
     return stopInFlightRef.current;
-  }, [formatError, reportError, restoreMute, stopEngine]);
+  }, [formatError, reportError, restoreMute, setVoiceState, stopEngine]);
 
   useEffect(() => () => {
     attemptRef.current += 1;

@@ -1043,6 +1043,7 @@ function AskUserQuestionForm({
   const [showCustomInput, setShowCustomInput] = useState(() => initialDraft?.showCustomInput ?? false);
   const answerTextRef = useRef(customInput);
   answerTextRef.current = customInput;
+  const voiceSubmitPendingRef = useRef(false);
   const selectionRef = useRef({ start: customInput.length, end: customInput.length });
   const voice = useAskCardVoice({
     deviceId,
@@ -1173,14 +1174,22 @@ function AskUserQuestionForm({
     });
   };
 
-  const submitMulti = () => {
-    if (!canSubmitMulti) return;
-    advance(encodeMultiSelectAnswer(options, selectedLabels, customInput));
-  };
-
-  const submitSingle = () => {
-    if (!canSubmitSingle || singleAnswer === undefined) return;
-    advance(singleAnswer);
+  const submitAnswer = async () => {
+    if (voiceSubmitPendingRef.current) return;
+    voiceSubmitPendingRef.current = true;
+    try {
+      const text = await voice.stop();
+      if (text === null) return;
+      if (isMulti) {
+        if (selectedLabels.size === 0 && !text.trim()) return;
+        advance(encodeMultiSelectAnswer(options, selectedLabels, text));
+      } else {
+        const answer = customModeActive ? text.trim() : existingAnswer;
+        if (answer?.trim()) advance(answer);
+      }
+    } finally {
+      voiceSubmitPendingRef.current = false;
+    }
   };
 
   const toggleLabel = (label: string) => {
@@ -1392,10 +1401,9 @@ function AskUserQuestionForm({
           <ResolveButton
             accessibilityLabel={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
             busy={busy}
-            disabled={voice.listening}
-            invalidReason={!canSubmitMulti ? t('interaction.panel.answerRequired') : null}
+            invalidReason={!canSubmitMulti && !voice.listening ? t('interaction.panel.answerRequired') : null}
             label={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
-            onPress={submitMulti}
+            onPress={submitAnswer}
             requestId={requestId}
             touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary', companion)}
             testID="interaction.ask.submitButton"
@@ -1405,10 +1413,9 @@ function AskUserQuestionForm({
           <ResolveButton
             accessibilityLabel={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submitAnswerAccessibility') : t('interaction.panel.next')}
             busy={busy}
-            disabled={voice.listening}
-            invalidReason={!canSubmitSingle ? t('interaction.panel.answerRequired') : null}
+            invalidReason={!canSubmitSingle && !voice.listening ? t('interaction.panel.answerRequired') : null}
             label={isLast ? t(resumeOnSubmit ? 'interaction.panel.sendAndContinue' : 'interaction.panel.submit') : t('interaction.panel.next')}
-            onPress={submitSingle}
+            onPress={submitAnswer}
             requestId={requestId}
             touchStyle={resolveButtonLayoutStyle(touchLayout, 'primary', companion)}
             testID="interaction.ask.submitButton"
