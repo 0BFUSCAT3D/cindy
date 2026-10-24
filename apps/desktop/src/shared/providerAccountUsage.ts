@@ -15,6 +15,12 @@ export interface ProviderAccountUsageRequest {
   providerId: string;
   /** 手动刷新（设置页刷新按钮）。绕过 TTL 缓存但仍受最小间隔节流。 */
   forceRefresh?: boolean;
+  /**
+   * 会话所在引擎（输入框 chip 传入）：同一供应商各引擎可用独立密钥（不同账户），
+   * 传入后只读该引擎路由的 key，余额/配额才能对准当前会话用的账户。缺省
+   * （设置页供应商级视图）按 claude-code → codex → pi 取第一个指向官方端点的密钥。
+   */
+  agent?: AgentKind;
 }
 
 export interface DeepSeekBalanceLine {
@@ -81,6 +87,8 @@ export type ProviderAccountUsageResult =
       stale: boolean;
       error?: ProviderAccountUsageError;
       retryAt?: number;
+      /** 本次查询实际使用的 runtime；设置页用它标注余额来自哪个引擎的密钥。 */
+      agent?: AgentKind;
     };
 
 /**

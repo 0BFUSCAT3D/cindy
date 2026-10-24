@@ -38,6 +38,15 @@ export function ProviderAccountUsageModule({ provider }: { provider?: ProviderVi
     ? buildDeepSeekUsageCard(snapshot?.kind === 'deepseek-balance' ? snapshot : null, t, locale)
     : buildZhipuUsageCard(snapshot?.kind === 'zhipu-coding-plan-quota' ? snapshot : null, t);
   if (errorText && !snapshot) account.emptyText = errorText;
+  // 余额来自哪个引擎的密钥：同一供应商各引擎可用不同账户，标注免得用户误读。
+  if (usage.result?.status === 'ready' && usage.result.agent) {
+    account.identity ??=
+      usage.result.agent === 'claude-code'
+        ? 'Claude Code'
+        : usage.result.agent === 'codex'
+          ? 'Codex'
+          : 'Pi';
+  }
 
   return (
     <div

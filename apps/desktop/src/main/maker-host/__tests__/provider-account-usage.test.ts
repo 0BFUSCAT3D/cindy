@@ -330,6 +330,7 @@ describe('readProviderAccountUsage', () => {
     expect(result).toEqual({
       status: 'ready',
       stale: false,
+      agent: 'claude-code',
       snapshot: {
         kind: 'deepseek-balance',
         isAvailable: true,
@@ -339,6 +340,51 @@ describe('readProviderAccountUsage', () => {
         fetchedAt: nowMs,
       },
     });
+  });
+
+  it('pins the requested agent and never falls back to another engine key', async () => {
+    setAccountUsageProviderReader(() => mkProvider());
+    const seen: AgentKind[] = [];
+    setAccountUsageKeyReader((_id, agent) => {
+      seen.push(agent);
+      return agent === 'codex' ? 'sk-codex' : null;
+    });
+    // Pi 会话指定 pi：即使 claude-code/codex 有密钥也不借用，查不到就是 no-credentials。
+    const resolution = resolveProviderAccountUsage('deepseek', 'pi');
+    expect(resolution).toBeNull();
+    expect(seen).toEqual(['pi']);
+    await expect(
+      readProviderAccountUsage({ providerId: 'deepseek', agent: 'pi' }),
+    ).resolves.toEqual({ status: 'unavailable', error: 'no-credentials' });
+  });
+
+  it('treats a swapped key as a different account (cache key includes key fingerprint)', async () => {
+    const fetchMock = vi.fn(async () => jsonRes(DEEPSEEK_BALANCE));
+    setAccountUsageFetch(fetchMock as unknown as typeof fetch);
+    await readProviderAccountUsage({ providerId: 'deepseek' });
+    setAccountUsageKeyReader(() => 'sk-other-account');
+    await readProviderAccountUsage({ providerId: 'deepseek' });
+    // 换 key = 换账户：不得命中旧账户缓存。
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('serves stale snapshot without network while inside the Retry-After window', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return jsonRes(DEEPSEEK_BALANCE);
+      return jsonRes({}, 429, { 'retry-after': '60' });
+    });
+    setAccountUsageFetch(fetchMock as unknown as typeof fetch);
+    await readProviderAccountUsage({ providerId: 'deepseek' });
+    expect(calls).toBe(1);
+    nowMs += 6 * 60_000; // TTL 过期，触发第二次拉取 → 429 + Retry-After。
+    await readProviderAccountUsage({ providerId: 'deepseek' });
+    expect(calls).toBe(2);
+    // 429 失败后重置时间未到：不再发请求，回 stale 快照。
+    const third = await readProviderAccountUsage({ providerId: 'deepseek' });
+    expect(calls).toBe(2);
+    expect(third).toMatchObject({ status: 'ready', stale: true, error: 'rate-limited' });
   });
 
   it('serves the cached snapshot inside the TTL and refetches after expiry', async () => {

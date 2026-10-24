@@ -498,7 +498,17 @@ function parseAccountUsageInput(input: unknown): ProviderAccountUsageRequest | n
   const i = input as Record<string, unknown>;
   if (typeof i.providerId !== 'string' || i.providerId.length === 0) return null;
   if (i.forceRefresh !== undefined && typeof i.forceRefresh !== 'boolean') return null;
-  return { providerId: i.providerId, forceRefresh: i.forceRefresh ?? undefined };
+  if (
+    i.agent !== undefined
+    && (typeof i.agent !== 'string' || !(VALID_AGENTS as readonly string[]).includes(i.agent))
+  ) {
+    return null;
+  }
+  return {
+    providerId: i.providerId,
+    forceRefresh: i.forceRefresh ?? undefined,
+    agent: i.agent as AgentKind | undefined,
+  };
 }
 
 /** 校验 PROVIDER_TEST_CONNECTION 入参形状（确定性代码校验，非法直接 INVALID_PARAMS）。 */

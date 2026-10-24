@@ -150,14 +150,6 @@ export function buildDeepSeekUsageCard(
   locale?: string,
 ): UsageCardAccount {
   if (!snapshot) return { title: 'DeepSeek', windows: [], emptyText: t('quotaCard.waiting') };
-  if (!snapshot.isAvailable || snapshot.balances.length === 0) {
-    return {
-      title: 'DeepSeek',
-      windows: [],
-      updatedAt: snapshot.fetchedAt,
-      emptyText: t('quotaCard.noWindows'),
-    };
-  }
   const format = (value: string, currency: string): string => {
     try {
       const fractionLength = value.split('.')[1]?.replace(/0+$/, '').length ?? 0;
@@ -175,16 +167,31 @@ export function buildDeepSeekUsageCard(
       return `${value} ${currency}`;
     }
   };
+  // isAvailable=false 时上游仍会返回余额明细：保留展示，另用警示条说明账户状态，
+  // 不能与输入框积分条（同源数据仍显示余额）互相矛盾。
+  const details = snapshot.balances.map((balance) =>
+    t('providerAccountUsage.deepSeek.balanceLine', {
+      total: format(balance.totalBalance, balance.currency),
+      granted: format(balance.grantedBalance, balance.currency),
+      toppedUp: format(balance.toppedUpBalance, balance.currency),
+    }),
+  );
+  if (!snapshot.isAvailable || snapshot.balances.length === 0) {
+    return {
+      title: 'DeepSeek',
+      windows: [],
+      details: snapshot.balances.length > 0 ? details : undefined,
+      notices: snapshot.balances.length > 0
+        ? [{ text: t('providerAccountUsage.deepSeek.unavailable'), tone: 'warn' }]
+        : undefined,
+      updatedAt: snapshot.fetchedAt,
+      emptyText: snapshot.balances.length > 0 ? undefined : t('quotaCard.noWindows'),
+    };
+  }
   return {
     title: 'DeepSeek',
     windows: [],
-    details: snapshot.balances.map((balance) =>
-      t('providerAccountUsage.deepSeek.balanceLine', {
-        total: format(balance.totalBalance, balance.currency),
-        granted: format(balance.grantedBalance, balance.currency),
-        toppedUp: format(balance.toppedUpBalance, balance.currency),
-      }),
-    ),
+    details,
     updatedAt: snapshot.fetchedAt,
   };
 }

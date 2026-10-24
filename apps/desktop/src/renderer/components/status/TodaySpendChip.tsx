@@ -5,7 +5,7 @@ import {
   formatCompactTimeUntilReset,
   WEEKLY_WINDOW_MINUTES,
 } from '@/lib/compactQuotaCountdown';
-import { isCodexGatewayWireModel, isOpenAiSubscriptionProvider } from '@cindy/model-providers';
+import { isCodexGatewayWireModel, isOpenAiSubscriptionProvider, type AgentKind } from '@cindy/model-providers';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { useProviders } from '@/hooks/useProviders';
 /**
@@ -1004,8 +1004,19 @@ export function TodaySpendChip({
   const usesZhipuCodingPlanForm =
     !isAnyRemoteSession && Boolean(isZhipuCodingPlanProviderView(selectedQuotaProvider));
   const usesProviderAccountUsageForm = usesDeepSeekAccountForm || usesZhipuCodingPlanForm;
+  // 会话所在引擎 → 查询用 runtime：同一供应商各引擎可用不同账户的独立密钥，
+  // 余额/配额必须对准当前会话实际路由的账户（vendorKey 缺省 = 默认路由，不传）。
+  const providerAccountAgent: AgentKind | undefined =
+    vendorKey === 'cc'
+      ? 'claude-code'
+      : vendorKey === 'codex'
+        ? 'codex'
+        : vendorKey === 'pi'
+          ? 'pi'
+          : undefined;
   const providerAccountUsage = useProviderAccountUsage(
-    usesProviderAccountUsageForm ? selectedQuotaProvider : undefined,
+    usesProviderAccountUsageForm && providerAccountAgent ? selectedQuotaProvider : undefined,
+    providerAccountAgent,
   );
   const providerAccountSnapshot =
     providerAccountUsage.result?.status === 'ready' ? providerAccountUsage.result.snapshot : null;
@@ -1508,11 +1519,18 @@ export function TodaySpendChip({
   );
 
   React.useEffect(() => {
-    // 订阅形态 (codex-oauth / cc+chatgpt bridge / claude 订阅) 的 reset 倒计时文案
-    // 需要随时间走动: 常态分钟级 tick 足够; 任一窗口进入最后一分钟切秒级 tick,
-    // 让「59秒 → 1秒」逐秒跳动。setTimeout 链每次 tick 后按最新窗口重估下一次延迟。
-    if (!usesCodexQuotaForm && !usesXaiQuotaForm && !isClaudeSubscription && !quotaPopoverOpen)
+    // 订阅形态 (codex-oauth / cc+chatgpt bridge / claude 订阅 / 智谱 Coding Plan) 的
+    // reset 倒计时文案需要随时间走动: 常态分钟级 tick 足够; 任一窗口进入最后一分钟切秒级
+    // tick, 让「59秒 → 1秒」逐秒跳动。setTimeout 链每次 tick 后按最新窗口重估下一次延迟。
+    if (
+      !usesCodexQuotaForm
+      && !usesXaiQuotaForm
+      && !isClaudeSubscription
+      && !usesZhipuCodingPlanForm
+      && !quotaPopoverOpen
+    ) {
       return undefined;
+    }
     const delay = computeCountdownTickDelayMs(chipResetsAtMsList, Date.now());
     const timer = window.setTimeout(() => {
       setWindowLabelNowMs(Date.now());
@@ -1522,6 +1540,7 @@ export function TodaySpendChip({
     usesCodexQuotaForm,
     usesXaiQuotaForm,
     isClaudeSubscription,
+    usesZhipuCodingPlanForm,
     quotaPopoverOpen,
     windowLabelNowMs,
     chipResetsAtMsList,

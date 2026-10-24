@@ -15,6 +15,8 @@
  *     整体失效。缓存键含 providerId + agent，换 runtime 配置不串数据。
  */
 
+import { createHash } from 'node:crypto';
+
 import type { AgentKind, Provider } from '@cindy/model-providers';
 
 import {
@@ -69,13 +71,13 @@ type IntegrationView = {
 /** 该供应商是否命中智谱 GLM Coding Plan 的官方接入端点（设置页给「查看套餐用量」入口用）。 */
 export function isZhipuCodingPlanProvider(provider: Provider | undefined | null): boolean {
   if (!provider) return false;
-  if (provider.id === 'zhipu-coding-plan-cn') return true;
+  if (provider.id === 'zhipu-coding-plan-cn' || provider.id === 'zai-coding-plan-global') return true;
   return Object.values(provider.routing).some((route) => {
     const upstream = route?.upstream;
     if (!upstream) return false;
     return (
-      upstream === 'https://open.bigmodel.cn/api/anthropic'
-      || upstream.startsWith('https://open.bigmodel.cn/api/coding/')
+      upstream === 'https://open.bigmodel.cn/api/anthropic' || upstream === 'https://api.z.ai/api/anthropic'
+      || upstream.startsWith('https://open.bigmodel.cn/api/coding/') || upstream.startsWith('https://api.z.ai/api/coding/')
     );
   });
 }
@@ -189,10 +191,14 @@ export function parseDeepSeekAccountUsage(
  */
 export function resolveProviderAccountUsage(
   providerId: string,
+  agent?: AgentKind,
 ): ProviderAccountUsageResolution | null {
   const provider = providerReader(providerId);
   if (!provider || provider.auth.method !== 'apiKey') return null;
-  for (const agent of PROVIDER_ACCOUNT_USAGE_AGENTS) {
+  // 指定 agent 时只认领该 runtime：同一供应商各引擎可用不同账户的独立密钥，
+  // 会话查询必须对准当前会话实际路由的账户。
+  const agents = agent ? [agent] : PROVIDER_ACCOUNT_USAGE_AGENTS;
+  for (const agent of agents) {
     const upstream = provider.routing[agent]?.upstream;
     if (!upstream) continue;
     let url: URL;
@@ -399,7 +405,7 @@ export async function readProviderAccountUsage(
   request: ProviderAccountUsageRequest,
 ): Promise<ProviderAccountUsageResult> {
   const ownerStamp = ownerStampReader();
-  const resolution = resolveProviderAccountUsage(request.providerId);
+  const resolution = resolveProviderAccountUsage(request.providerId, request.agent);
   if (!resolution) {
     // 没认领到官方端点，或 key 读不到。区分「本来就没有接口」与「有接口但 key 缺失」。
     if (providerAccountUsageSupported(request.providerId)) {
@@ -407,7 +413,9 @@ export async function readProviderAccountUsage(
     }
     return { status: 'unsupported' };
   }
-  const cacheKey = `${ownerStamp.dataOwnerId ?? 'local'}:${ownerStamp.generation}:${request.providerId}:${resolution.integrationId}`;
+  // 缓存键含凭证指纹：同一供应商下换 key（不同账户）后旧账户快照绝不复用。
+  const keyFingerprint = createHash('sha256').update(resolution.key).digest('hex').slice(0, 12);
+  const cacheKey = `${ownerStamp.dataOwnerId ?? 'local'}:${ownerStamp.generation}:${request.providerId}:${resolution.integrationId}:${resolution.agent}:${keyFingerprint}`;
   const now = accountUsageNow();
   const record = cache.get(cacheKey);
   const manualRefreshBlocked =
@@ -415,7 +423,21 @@ export async function readProviderAccountUsage(
     && record !== undefined
     && now - record.lastAttemptAt < MIN_MANUAL_REFRESH_INTERVAL_MS;
   if (manualRefreshBlocked && record.snapshot && record.expiresAt > now) {
-    return { status: 'ready', snapshot: record.snapshot, stale: false };
+    return { status: 'ready', snapshot: record.snapshot, stale: false, agent: resolution.agent };
+  }
+  // 限流窗口内不发起请求：有旧快照就回 stale，否则报 throttled（Retry-After 生效）。
+  if (record?.retryAt && now < record.retryAt) {
+    if (record.snapshot) {
+      return {
+        status: 'ready',
+        snapshot: record.snapshot,
+        stale: true,
+        error: 'rate-limited',
+        retryAt: record.retryAt,
+        agent: resolution.agent,
+      };
+    }
+    return { status: 'unavailable', error: 'throttled', retryAt: record.retryAt };
   }
   if (
     !request.forceRefresh
@@ -423,7 +445,7 @@ export async function readProviderAccountUsage(
     && record.expiresAt > now
     && record.lastError === undefined
   ) {
-    return { status: 'ready', snapshot: record.snapshot, stale: false };
+    return { status: 'ready', snapshot: record.snapshot, stale: false, agent: resolution.agent };
   }
   try {
     const snapshot =
@@ -436,7 +458,7 @@ export async function readProviderAccountUsage(
       lastAttemptAt: accountUsageNow(),
       retryAt: 0,
     });
-    return { status: 'ready', snapshot, stale: false };
+    return { status: 'ready', snapshot, stale: false, agent: resolution.agent };
   } catch (err) {
     const code = err instanceof AccountUsageRequestError ? err.code : 'unknown';
     log.warn(
@@ -469,7 +491,7 @@ export async function readProviderAccountUsage(
     }
     const fallback = record?.snapshot;
     if (fallback) {
-      return { status: 'ready', snapshot: fallback, stale: true, error: code };
+      return { status: 'ready', snapshot: fallback, stale: true, error: code, agent: resolution.agent };
     }
     return { status: 'unavailable', error: code };
   }

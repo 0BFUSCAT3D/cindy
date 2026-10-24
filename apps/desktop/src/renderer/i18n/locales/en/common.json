@@ -3,7 +3,8 @@
     "openDashboard": "Open DeepSeek usage dashboard",
     "deepSeek": {
       "balanceLine": "Balance {{total}} (topped up {{toppedUp}} / granted {{granted}})",
-      "chipBalance": "Balance {{balance}}"
+      "chipBalance": "Balance {{balance}}",
+      "unavailable": "This DeepSeek account is currently not available for spending. Open the usage dashboard to check the account."
     },
     "zhipuCodingPlan": {
       "usage": "View Zhipu plan usage",
@@ -1104,7 +1105,8 @@
     "REMOTE_AGENT_SHARE_PAUSED": "Model not changed: the owner has paused this share for you. Pick another model.",
     "REMOTE_AGENT_SHARE_REMOVED": "Model not changed: this share is no longer available (the owner removed it or you left). Pick another model.",
     "REMOTE_AGENT_SHARE_UNAVAILABLE": "Model not changed: the shared provider is temporarily unavailable (the owner's computer is offline or sharing is turned off for now). Try again later or pick another model.",
-    "SSH_HOST_KEY_MISMATCH": "SSH Host Key Changed"
+    "SSH_HOST_KEY_MISMATCH": "SSH Host Key Changed",
+    "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy cannot read the source attachment; the message was not sent. Save a copy to Downloads or another accessible folder, remove the original attachment, and add the copy using the attachment button before sending again."
   },
   "providerError": {
     "AUTH_INVALID": "Invalid or expired API key (401). Check the key and try again",
@@ -3351,7 +3353,12 @@
           "testing": "Testing…",
           "ok": "Connected ({{ms}} ms)",
           "needFields": "Fill in the base URL and at least one model ID first",
-          "unsupportedProtocol": "This model protocol is not supported by connection testing"
+          "unsupportedProtocol": "This model protocol is not supported by connection testing",
+          "inconclusive": "Connection could not be confirmed. Check the address or network before retrying; the previous request may have run.",
+          "exhausted": "All candidate interfaces were tried. No working connection was found.",
+          "costHint": "Testing sends short generation requests and may incur a small charge.",
+          "details": "View attempts",
+          "stop": "Stop test"
         },
         "fetch": {
           "button": "Fetch model list",
@@ -3594,7 +3601,8 @@
             "compatibility": "Compatibility mode",
             "compatibilityHint": "Compatibility mode may be unstable or behave unexpectedly. Recommended for experienced users.",
             "matching": "Native support",
-            "unknown": "Protocol unconfirmed"
+            "unknown": "Protocol unconfirmed",
+            "automatic": "Automatic"
           },
           "lifecycle": {
             "alpha": "Early access",
@@ -3943,7 +3951,11 @@
         "manualModel": "Model IDs (if discovery is unavailable)",
         "modelTypeAutomatic": "Detect Automatically",
         "manualModelTypeHint": "Use the same ID to update its type. Automatic detection restores the catalog type.",
-        "mediaOnlyTestHint": "This connection has only non-chat models. Fetch the model list to check catalog access; model execution is not tested here."
+        "mediaOnlyTestHint": "This connection has only non-chat models. Fetch the model list to check catalog access; model execution is not tested here.",
+        "manualAdd": "Add a model manually",
+        "manualId": "Model ID",
+        "saveProvider": "Save provider",
+        "removeModel": "Remove model"
       },
       "byok": {
         "managed": "Managed by your organization",
@@ -3971,6 +3983,17 @@
         "saveFailed": "Could not add models. Reopen this page and try again.",
         "manualSource": "Manual",
         "manualHint": "Enter the speech model ID provided by your supplier."
+      },
+      "detection": {
+        "keyRequired": "Enter your API key to continue.",
+        "authRejected": "Authentication failed. Check the URL and API key; we’ll retry when you update them.",
+        "hint": "Enter the URL and API key to identify the provider. Protocol settings remain available when editing the saved connection.",
+        "pending": "Identifying provider…",
+        "matched": "Identified as {{name}}",
+        "ambiguous": "Multiple configurations match. Continue with custom settings or choose a provider.",
+        "custom": "Continue with custom settings. You can fetch models or add them manually.",
+        "configure": "Configure provider",
+        "keepCustom": "Continue with custom settings"
       }
     },
     "experimental": {
@@ -8917,7 +8940,8 @@
       "terminateConfirmTitle": "Stop {{name}} process?",
       "terminateConfirmDescription": "This force-stops the Agent process. Every task using this process will be interrupted; send another message in an affected task to start an Agent again.",
       "terminated": "Stopped the {{name}} process",
-      "terminateFailed": "Couldn't stop this process — it may have already exited. The list updates with the next sample."
+      "terminateFailed": "Couldn't stop this process — it may have already exited. The list updates with the next sample.",
+      "sessionDetail": "Task: {{title}}"
     }
   },
   "update": {
@@ -11773,7 +11797,9 @@
       "piTransportClosed": "Remote Pi connection interrupted (SSH channel closed). The remote task is still running — reconnect to continue.",
       "piManagerUnavailable": "Remote Pi manager is not ready. Retry shortly; if it keeps failing, reinstall Pi under Settings → Remote Machines.",
       "piBundledNodeMissing": "The remote host is missing its runtime (Node.js). Expand the host under Settings → Remote Machines and click Install on Claude Code or Codex first (they bundle Node.js), then start a Pi task.",
-      "contextOverflow": "This message itself exceeds the model's context window, so Cindy cannot continue it in a fresh agent session. Shorten the input or remove a large attachment, then try again."
+      "contextOverflow": "This message itself exceeds the model's context window, so Cindy cannot continue it in a fresh agent session. Shorten the input or remove a large attachment, then try again.",
+      "attachmentAccessDeniedTitle": "Cindy cannot read the source attachment; the message was not sent.",
+      "attachmentAccessDeniedRecovery": "Save a copy to Downloads or another accessible folder, remove the original attachment, and add the copy using the attachment button before sending again."
     },
     "backgroundActivity": {
       "status": "Background subtasks running, still consuming model usage…",
@@ -12470,7 +12496,8 @@
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "No computer in the provider group can run this task right now. They may be offline, paused, cooling down, or missing this model. Check the group on this provider’s Remote & Sharing page.",
       "REMOTE_AGENT_DEVICE_LIMIT": "This device has reached its remote session limit. Archive unused sessions or ask the provider owner to raise the limit in Remote & sharing.",
       "REMOTE_AGENT_TOTAL_LIMIT": "The provider computer has reached its total remote session limit. Ask the owner to release unused sessions or raise the limit in Remote & sharing.",
-      "REMOTE_AGENT_RESUME_LOST": "The earlier conversation on the other computer could not be reconnected, so the agent continues without that context."
+      "REMOTE_AGENT_RESUME_LOST": "The earlier conversation on the other computer could not be reconnected, so the agent continues without that context.",
+      "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy cannot read the source attachment; the message was not sent. Save a copy to Downloads or another accessible folder, remove the original attachment, and add the copy using the attachment button before sending again."
     },
     "generatedFiles": {
       "title": "Files created this message",
@@ -13355,7 +13382,10 @@
       "treeLoading": "Loading files…",
       "treeAction": {
         "collapseAll": "Collapse all",
-        "refresh": "Refresh"
+        "refresh": "Refresh",
+        "showIgnoredDirs": "Show ignored directories",
+        "hideIgnoredDirs": "Hide ignored directories",
+        "showIgnoredDirsUnsupported": "The remote device is running an older {{appName}} version that cannot show ignored directories"
       },
       "treeMenu": {
         "newFile": "New File",
@@ -15474,7 +15504,8 @@
       "executionDevice": "Runs on {{device}}",
       "deviceUnreachable": "Status unavailable",
       "unknownDevice": "Another computer",
-      "archiveRemoteWorkerConfirmDesc": "Removes it from this collaboration and stops the current round on {{device}}. The task, history and files on {{device}} are kept and marked “Collaboration ended”, so you can keep viewing them there."
+      "archiveRemoteWorkerConfirmDesc": "Removes it from this collaboration and stops the current round on {{device}}. The task, history and files on {{device}} are kept and marked “Collaboration ended”, so you can keep viewing them there.",
+      "editWorkerAria": "Edit worker {{name}}"
     },
     "split": {
       "leadLabel": "Lead ({{agent}})",
@@ -15505,6 +15536,19 @@
       "detachedHead": "Detached HEAD · {{sha}}",
       "directDetached": "Changes will be made directly in {{project}} at {{branch}}",
       "loadFailed": "Could not read the project directory."
+    },
+    "editWorker": {
+      "title": "Edit worker",
+      "submit": "Save",
+      "closeAria": "Close edit worker dialog",
+      "labelLabel": "Label",
+      "labelHint": "The label uniquely identifies this worker inside the team. Use letters, numbers, hyphens and underscores only; after saving, the Lead and other references locate the worker by the new label.",
+      "labelHintAria": "About worker label",
+      "labelPlaceholder": "Worker label (leave empty to keep)",
+      "labelInvalid": "Label may only contain letters, numbers, hyphens and underscores",
+      "duplicateLabel": "Label {{label}} is already used by another worker in this team",
+      "saveFailed": "Failed to save. Please try again.",
+      "labelLocked": "This worker's label is referenced by an active plugin team plan and can't be changed until the plan finishes. Change the role name, or release the worker first."
     }
   },
   "splitGroup": {
@@ -17304,5 +17348,10 @@
     "groupHint": "When off, all tasks routed through this group use standard speed, including Ultrafast.",
     "pending": "Some computers have not confirmed the setting. Keep them connected and update group computers that do not support this setting.",
     "saveFailed": "The setting may be saved, but some running tasks have not confirmed standard speed. Check the connection and retry."
+  },
+  "attachmentAccessConfirmation": {
+    "title": "Confirm Attachment Access",
+    "message": "Cindy cannot read this attachment. Select the original file to continue sending this message. Cancelling keeps your draft.",
+    "button": "Use Original File"
   }
 }

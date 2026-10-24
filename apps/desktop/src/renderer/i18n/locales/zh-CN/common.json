@@ -3,7 +3,8 @@
     "openDashboard": "打开 DeepSeek 用量页",
     "deepSeek": {
       "balanceLine": "余额 {{total}}（充值 {{toppedUp}} / 赠送 {{granted}}）",
-      "chipBalance": "余额 {{balance}}"
+      "chipBalance": "余额 {{balance}}",
+      "unavailable": "DeepSeek 账户当前不可用于充值消耗，请打开用量页确认账户状态。"
     },
     "zhipuCodingPlan": {
       "usage": "查看智谱套餐用量",
@@ -1092,7 +1093,8 @@
     "REMOTE_AGENT_SHARE_PAUSED": "模型未切换：对方已暂停对你的分享。请换一个模型。",
     "REMOTE_AGENT_SHARE_REMOVED": "模型未切换：这个分享已不可用（对方删除了分享或你已退出）。请换一个模型。",
     "REMOTE_AGENT_SHARE_UNAVAILABLE": "模型未切换：分享的供应商暂时不可用（对方电脑不在线，或对方暂时关闭了分享）。请稍后再试或换一个模型。",
-    "SSH_HOST_KEY_MISMATCH": "SSH 主机密钥已变化"
+    "SSH_HOST_KEY_MISMATCH": "SSH 主机密钥已变化",
+    "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy 无法读取源附件，消息未发送。请将文件另存到“下载”或其他可访问的文件夹，移除原附件，再用附件按钮添加副本后发送。"
   },
   "providerError": {
     "AUTH_INVALID": "API 密钥无效或已过期（401），请检查密钥后重试",
@@ -3322,7 +3324,12 @@
           "testing": "测试中…",
           "ok": "连接成功（{{ms}}ms）",
           "needFields": "请先填写基础 URL 和至少一个模型 ID",
-          "unsupportedProtocol": "测试连接暂不支持该模型协议"
+          "unsupportedProtocol": "测试连接暂不支持该模型协议",
+          "inconclusive": "暂时无法确认连接。请检查地址或网络后重试；上一条请求可能已执行。",
+          "exhausted": "已尝试所有候选接口，暂未找到可用连接。",
+          "costHint": "测试会发送简短生成请求，可能产生少量费用。",
+          "details": "查看尝试结果",
+          "stop": "停止测试"
         },
         "fetch": {
           "button": "获取模型列表",
@@ -3564,7 +3571,8 @@
             "compatibility": "兼容模式",
             "compatibilityHint": "兼容模式可能出现运行不稳定或功能异常，建议有经验的用户使用。",
             "matching": "原生支持",
-            "unknown": "协议待确认"
+            "unknown": "协议待确认",
+            "automatic": "自动选择"
           },
           "lifecycle": {
             "alpha": "试用版",
@@ -3912,7 +3920,11 @@
         "manualModel": "模型 ID（无法自动获取时填写）",
         "modelTypeAutomatic": "自动识别",
         "manualModelTypeHint": "同一 ID 可更新类型；自动识别会恢复目录中的类型。",
-        "mediaOnlyTestHint": "此连接仅含非对话模型。可获取模型列表检查目录访问，此处不验证模型调用。"
+        "mediaOnlyTestHint": "此连接仅含非对话模型。可获取模型列表检查目录访问，此处不验证模型调用。",
+        "manualAdd": "手动添加模型",
+        "manualId": "模型 ID",
+        "saveProvider": "保存供应商",
+        "removeModel": "移除模型"
       },
       "byok": {
         "managed": "由企业管理连接与模型",
@@ -3940,6 +3952,17 @@
         "saveFailed": "添加失败，请重新打开此页面后重试。",
         "manualSource": "手动添加",
         "manualHint": "输入供应商提供的语音模型 ID。"
+      },
+      "detection": {
+        "keyRequired": "填写 API 密钥后继续。",
+        "authRejected": "认证未通过，请检查地址和 API 密钥，修改后会自动重试。",
+        "hint": "填写地址和 API 密钥后自动识别供应商。保存后可在编辑连接中调整协议。",
+        "pending": "正在识别供应商…",
+        "matched": "已识别为 {{name}}",
+        "ambiguous": "匹配到多个配置，请继续自定义或选择供应商。",
+        "custom": "继续自定义配置，可获取模型列表或手动添加。",
+        "configure": "前往配置",
+        "keepCustom": "继续自定义"
       }
     },
     "experimental": {
@@ -8885,7 +8908,8 @@
       "terminateConfirmTitle": "终止 {{name}} 进程？",
       "terminateConfirmDescription": "将强制终止该 Agent 进程，使用该进程的所有任务都会中断；之后在任一受影响任务里继续发消息，即可按需重新启动 Agent。",
       "terminated": "已终止 {{name}} 进程",
-      "terminateFailed": "无法终止该进程，它可能已自行退出；列表会随下一次采样自动更新"
+      "terminateFailed": "无法终止该进程，它可能已自行退出；列表会随下一次采样自动更新",
+      "sessionDetail": "任务：{{title}}"
     }
   },
   "update": {
@@ -11734,7 +11758,9 @@
       "piTransportClosed": "远端 Pi 连接已中断（SSH 通道关闭）。远端任务仍在运行，重新连接后可以继续。",
       "piManagerUnavailable": "远端 Pi 管理器未就绪，请稍后重试；若持续失败请到「设置 → 远端机器」重新安装 Pi。",
       "piBundledNodeMissing": "远端缺少运行环境（Node.js）。请到「设置 → 远端机器」展开该主机，先在 Claude Code 或 Codex 行点击「安装」（会附带 Node.js），再创建 Pi 任务。",
-      "contextOverflow": "这条消息本身已经超过模型上下文上限，没法在当前 Agent 里自动换窗继续。请缩短输入或去掉超大附件后再试。"
+      "contextOverflow": "这条消息本身已经超过模型上下文上限，没法在当前 Agent 里自动换窗继续。请缩短输入或去掉超大附件后再试。",
+      "attachmentAccessDeniedTitle": "Cindy 无法读取源附件，消息未发送。",
+      "attachmentAccessDeniedRecovery": "请将文件另存到“下载”或其他可访问的文件夹，移除原附件，再用附件按钮添加副本后发送。"
     },
     "backgroundActivity": {
       "status": "后台子任务运行中，模型用量仍在消耗…",
@@ -12431,7 +12457,8 @@
       "REMOTE_AGENT_GROUP_UNAVAILABLE": "供应商组里的电脑现在都不能运行这个任务：可能都不在线、已暂停分配、正在冷却，或没有这个模型。可以到这个供应商的「远程与分享」页查看组内电脑。",
       "REMOTE_AGENT_DEVICE_LIMIT": "这台设备保留的远程任务数已达上限。可归档暂时不用的任务，或请远程电脑的主人在“远程与分享”中提高上限。",
       "REMOTE_AGENT_TOTAL_LIMIT": "远程电脑保留的任务总数已达上限。请那台电脑的主人释放暂时不用的任务，或在“远程与分享”中提高上限。",
-      "REMOTE_AGENT_RESUME_LOST": "之前在那台电脑上的对话没能接上，Agent 会在没有之前上下文的情况下继续。"
+      "REMOTE_AGENT_RESUME_LOST": "之前在那台电脑上的对话没能接上，Agent 会在没有之前上下文的情况下继续。",
+      "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy 无法读取源附件，消息未发送。请将文件另存到“下载”或其他可访问的文件夹，移除原附件，再用附件按钮添加副本后发送。"
     },
     "generatedFiles": {
       "title": "本条消息生成的文件",
@@ -13307,7 +13334,10 @@
       "treeLoading": "正在加载文件…",
       "treeAction": {
         "collapseAll": "收起所有",
-        "refresh": "刷新"
+        "refresh": "刷新",
+        "showIgnoredDirs": "显示被忽略的目录",
+        "hideIgnoredDirs": "隐藏被忽略的目录",
+        "showIgnoredDirsUnsupported": "对方设备的 {{appName}} 版本过旧，暂不支持显示被忽略的目录"
       },
       "treeMenu": {
         "newFile": "新建文件",
@@ -15424,7 +15454,8 @@
       "executionDevice": "在 {{device}} 运行",
       "deviceUnreachable": "暂时无法获取状态",
       "unknownDevice": "另一台电脑",
-      "archiveRemoteWorkerConfirmDesc": "它会从这个协同里移除，并停止 {{device}} 上正在进行的这一轮。{{device}} 上的任务、记录和文件都会保留，标注「协同已结束」，可以在那台继续查看。"
+      "archiveRemoteWorkerConfirmDesc": "它会从这个协同里移除，并停止 {{device}} 上正在进行的这一轮。{{device}} 上的任务、记录和文件都会保留，标注「协同已结束」，可以在那台继续查看。",
+      "editWorkerAria": "编辑 Worker {{name}}"
     },
     "split": {
       "leadLabel": "Lead ({{agent}})",
@@ -15455,6 +15486,19 @@
       "detachedHead": "分离 HEAD · {{sha}}",
       "directDetached": "将直接在 {{project}} 的 {{branch}} 上修改",
       "loadFailed": "未能读取项目目录。"
+    },
+    "editWorker": {
+      "title": "编辑 Worker",
+      "submit": "保存",
+      "closeAria": "关闭编辑 Worker 弹窗",
+      "labelLabel": "标识",
+      "labelHint": "标识用于在团队内唯一识别这个 Worker，只能包含字母、数字、连字符和下划线；改动后 Lead 与各处引用按新标识定位。",
+      "labelHintAria": "标识说明",
+      "labelPlaceholder": "Worker 标识（留空表示不变）",
+      "labelInvalid": "标识只能包含字母、数字、连字符和下划线",
+      "duplicateLabel": "标识 {{label}} 已被本团队其他 Worker 使用",
+      "saveFailed": "保存失败，请重试",
+      "labelLocked": "该 Worker 的标识已被活跃的插件团队计划引用，计划结束前不能修改；可改角色名，或先释放该 Worker。"
     }
   },
   "splitGroup": {
@@ -17250,5 +17294,10 @@
     "groupHint": "关闭后，经此组运行的任务使用普通模式，也适用于 Ultrafast。",
     "pending": "部分电脑尚未确认设置。请保持连接，并更新不支持此设置的组内电脑。",
     "saveFailed": "设置可能已保存，但运行中的任务尚未全部确认切换为普通模式。请检查连接后重试。"
+  },
+  "attachmentAccessConfirmation": {
+    "title": "确认附件访问",
+    "message": "Cindy 无法读取这个附件。请选择原文件，确认后继续发送这条消息；取消会保留草稿。",
+    "button": "使用原文件"
   }
 }
