@@ -6522,6 +6522,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const latestBudget = await readStoredSessionContextWindowBudget(sessionId);
     if (appliedContextWindowBudgets.has(sessionId)
       && appliedContextWindowBudgets.get(sessionId) === latestBudget) {
+      pendingSessionContextWindowBudgetReconciles.delete(sessionId);
       log.debug('session context window budget already applied', {
         sessionId, budget: latestBudget,
       });
@@ -6549,6 +6550,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       catalog, agent, providerId, modelId: row.model,
       previous, next: latestBudget,
     })) {
+      pendingSessionContextWindowBudgetReconciles.delete(sessionId);
       log.debug('session context window budget does not change the effective window', {
         sessionId, previous, next: latestBudget,
       });
@@ -6567,6 +6569,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         ...pendingTarget,
         forceSessionRebuild: true,
       });
+      // 意图必须一起登记：那条 pending 随时可能被「重选当前模型」清掉（SET_MODEL 成功
+      // 路径 agentSwitchPending.clear），清掉之后没人再应用预算（Greptile P1，2026-10-24）。
+      pendingSessionContextWindowBudgetReconciles.add(sessionId);
       log.info('session context window budget merged into the pending route switch', {
         sessionId, previous,
         next: latestBudget, targetModel: pendingTarget.model,

@@ -30,7 +30,7 @@ const goalStorageSource = readFileSync(goalStorageSourcePath, 'utf8').replace(/\
  */
 function loadBudgetReconciler() {
   const start = source.indexOf('  const reconcileSessionContextWindowBudgetUnderLock = async (');
-  const end = source.indexOf('  sessionContextWindowBudgetApplier = async (sessionId, change) => {', start);
+  const end = source.indexOf('  setModelContextRuntimeRefreshListener(', start);
   if (start < 0 || end < 0) throw new Error('budget reconciler source changed');
   const code = source.slice(start, end);
   const js = transpileModule(code, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
@@ -1270,6 +1270,50 @@ describe('session context window budget reconciler', () => {
     // 意图集合才是重放的唯一开关：deferred 留下，applied 清掉。
     if (recorded) expect(pending.has('task-1')).toBe(false);
     else expect(pending.has('task-1')).toBe(true);
+  });
+
+  it('keeps the budget intent when it merges into an already pending route switch', async () => {
+    // 已有待处理的模型/来源切换时，改预算只补 forceSessionRebuild 后返回。用户随后重选
+    // 当前模型 → SET_MODEL 清掉那条 pending → 没人再应用预算（Greptile P1，2026-10-24）。
+    const { js } = loadBudgetReconciler();
+    const applied = new Map<string, number | null>();
+    const pending = new Set<string>();
+    const registerPendingCredentialSwitchForSession = vi.fn(async () => {});
+    const deps = {
+      getMakerIfReady: () => ({ getSession: () => ({ model: 'grok-4.6' }) }),
+      getDbClient: () => ({
+        drizzle: {
+          select: () => ({
+            from: () => ({ where: () => ({ limit: async () => [{ agentKind: 'cc', model: 'grok-4.6', providerId: 'xd' }] }) }),
+          }),
+        },
+      }),
+      sessions: { agentKind: 'agentKind', model: 'model', providerId: 'providerId', id: 'id' },
+      eq: () => ({}),
+      dbToMakerAgentKind: () => 'claude-code',
+      getSessionProvider: () => 'xd',
+      getActiveCatalog: () => ({}),
+      readStoredSessionContextWindowBudget: async () => 300_000,
+      appliedContextWindowBudgets: applied,
+      pendingSessionContextWindowBudgetReconciles: pending,
+      contextWindowBudgetChangesEffectiveWindow: () => true,
+      getPendingCredentialSwitchTarget: () => ({ model: 'grok-4.6', providerId: 'xd' }),
+      registerPendingCredentialSwitchForSession,
+      applyRuntimeSetModelChange: vi.fn(),
+      runtimeMutationDeps: () => ({}),
+      withSendToSessionLock: (_id: string, fn: () => Promise<void>) => fn(),
+      log: { debug: vi.fn(), info: vi.fn() },
+    };
+    const applier = new Function(
+      ...Object.keys(deps),
+      `${js}; return sessionContextWindowBudgetApplier;`,
+    )(...Object.values(deps)) as (sessionId: string, change: { previous: number | null }) => Promise<void>;
+
+    await applier('task-1', { previous: null });
+    // 合并不重建：不记 dedup，但意图必须留下，等发送边界重放。
+    expect(registerPendingCredentialSwitchForSession).toHaveBeenCalledOnce();
+    expect(applied.has('task-1')).toBe(false);
+    expect(pending.has('task-1')).toBe(true);
   });
 
   it('replays a budget at the send boundary only when a rebuild is still pending', () => {
