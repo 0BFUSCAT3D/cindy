@@ -234,7 +234,7 @@ export function buildRemoteSessionSections(
     sections.push({ key: 'pinned', title: '置顶', data: pinned });
   }
 
-  sections.push(...buildProjectSections(rest, now, groupAutomations, options.localizer, options));
+  sections.push(...buildProjectSections(rest, now, groupAutomations, options.localizer, options, sessions));
 
   return sections;
 }
@@ -395,10 +395,23 @@ function remoteSessionListHint(statusFilter: RemoteSessionStatusFilter, searchQu
 function buildProjectSections(
   items: readonly RemoteSessionListItem[],
   now: number,
-  groupAutomations = true,
-  localizer?: PresentationLocalizer,
-  options: RemoteSessionListOptions = {},
+  groupAutomations: boolean,
+  localizer: PresentationLocalizer | undefined,
+  options: RemoteSessionListOptions,
+  allSessions: readonly RemoteSession[],
 ): RemoteSessionSection[] {
+  // Use the same group key as displayed rows, but retain membership before any
+  // search/status/pinning filter so a mixed local/SSH project cannot change names.
+  const projectMembers = new Map<string, RemoteSession[]>();
+  if (options.projectAliases) {
+    for (const session of allSessions) {
+      if (session.status === 'deleted' || isDialogueSession(session)) continue;
+      const key = session.workingDir ? collapseWorktreeDirForGrouping(session.workingDir) : 'unknown';
+      const members = projectMembers.get(key) ?? [];
+      members.push(session);
+      projectMembers.set(key, members);
+    }
+  }
   const dialogue = groupAutomationListItems(items.filter((item) => isDialogueSession(item.session)), now, groupAutomations, undefined, localizer);
   const sections: RemoteSessionSection[] = [];
   if (dialogue.length > 0) {
@@ -418,7 +431,7 @@ function buildProjectSections(
   for (const [workingDir, data] of [...projectGroups].sort(([a], [b]) => compareSessionListStrings(a, b))) {
     sections.push({
       key: `project:${workingDir}`,
-      title: resolveProjectAliasForSessions(data.map((item) => item.session), options.projectAliases, options.projectAliasDeviceId)
+      title: resolveProjectAliasForSessions(projectMembers.get(workingDir) ?? [], options.projectAliases, options.projectAliasDeviceId)
         ?? projectTitle(workingDir),
       data: groupAutomationListItems(data, now, groupAutomations, undefined, localizer),
     });

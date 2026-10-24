@@ -74,6 +74,43 @@ describe('project aliases in controller presentations', () => {
     })[0].title).toBe('Project');
   });
 
+  it('keeps a single-identity alias when a deleted foreign member remains in the source', () => {
+    const projectAliases = new Map([['computer-a', snapshot('Local')]]);
+    const sessions = [session('one'), session('gone', { remoteHostId: 'ssh-a', status: 'deleted' })];
+    expect(buildMobileHomePresentation({ sessions, projectAliases, searchQuery: 'Task one' }).projects[0].title)
+      .toBe('Local');
+    expect(buildRemoteSessionSections(sessions, 0, { projectAliases, searchQuery: 'Task one' })[0].title)
+      .toBe('Local');
+  });
+
+  // A project's identity comes from every member, before search/status/pinning hide rows.
+  it.each(['search', 'status', 'pinned', 'worktree'] as const)(
+    'keeps a mixed local/SSH project title stable when %s hides its other member',
+    (filter) => {
+      const projectAliases = new Map([['computer-a', {
+        platform: 'darwin', aliases: [
+          { projectKey: 'local:/repo/Slack对话', alias: 'Local' },
+          { projectKey: 'remote:ssh-a:/repo/Slack对话', alias: 'Remote' },
+        ],
+      }]]);
+      const sessions = [session('one'), session('two', {
+        remoteHostId: 'ssh-a',
+        ...(filter === 'status' ? { status: 'archived' } : {}),
+        ...(filter === 'pinned' ? { pinnedAt: '2026-10-23T00:00:00.000Z' } : {}),
+        ...(filter === 'worktree' ? { workingDir: '/repo/Slack对话/.cindy-worktrees/example' } : {}),
+      })];
+      const options = filter === 'status' ? { statusFilter: 'active' as const }
+        : filter === 'pinned' ? {} : { searchQuery: 'Task one' };
+      const home = buildMobileHomePresentation({ sessions, projectAliases, ...options });
+      const detail = buildRemoteSessionSections(sessions, 0, { projectAliases, ...options })
+        .find(section => section.key.startsWith('project:'))!;
+      expect(home.projects[0].title).toBe('Slack对话');
+      expect(detail.title).toBe('Slack对话');
+      expect(home.projects[0].sessions.map(item => item.session.id)).toEqual(['one']);
+      expect(detail.data.map(item => item.session.id)).toEqual(['one']);
+    },
+  );
+
   it.each([false, true])('never assigns a local name to an existing mixed local/SSH group (reversed=%s)', (reverse) => {
     const projectAliases = new Map([['computer-a', {
       platform: 'darwin', aliases: [

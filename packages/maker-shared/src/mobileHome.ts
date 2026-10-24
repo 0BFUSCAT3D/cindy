@@ -217,6 +217,7 @@ export function buildMobileHomePresentation({
       localizer,
     ),
     devices,
+    normalizedSessions,
     projectAliases,
   );
   const overview = summarizeHomeOverview(normalizedSessions, projects, pendingInteractionIndex, normalizedSelectedDeviceId);
@@ -338,8 +339,21 @@ function pickPrimaryDevice(
 function buildProjectGroups(
   items: readonly RemoteSessionListItem[],
   devices: readonly MobileHomeDeviceLike[],
+  allSessions: readonly MobileHomeSessionLike[],
   projectAliases?: ProjectAliasesByDevice,
 ): MobileHomeProjectGroup[] {
+  // Hidden and pinned members still define the project's identity. Filtering only
+  // changes the displayed rows, never which host/local-or-SSH name belongs to it.
+  const projectMembers = new Map<string, MobileHomeSessionLike[]>();
+  if (projectAliases) {
+    for (const session of allSessions) {
+      if (session.status === 'deleted' || isDialogueSession(session)) continue;
+      const key = projectGroupKey(session);
+      const members = projectMembers.get(key) ?? [];
+      members.push(session);
+      projectMembers.set(key, members);
+    }
+  }
   const deviceNames = new Map(devices.map((device) => [device.deviceId, device.name]));
   const grouped = new Map<string, RemoteSessionListItem[]>();
   for (const item of items) {
@@ -375,7 +389,7 @@ function buildProjectGroups(
         sessions: group,
         subtitle: [deviceName, workingDir].filter(Boolean).join(' · '),
         title: cindyMake ? 'Cindy Make' : resolveProjectAliasForSessions(
-          group.flatMap((item) => item.automationGroup?.items.map((member) => member.session) ?? [item.session]),
+          projectMembers.get(key) ?? [],
           projectAliases,
         ) ?? projectTitle(workingDir),
         workingDir,
