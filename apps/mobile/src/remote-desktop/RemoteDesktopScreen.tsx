@@ -4,7 +4,6 @@ import { controlRegion } from "@/platform/windowGeometry";
 import { FoldTouchpad } from "./FoldTouchpad";
 import {
   FoldDesktopBezel,
-  FoldDesktopBackdrop,
   FoldDesktopDeck,
   FoldDesktopKeycap,
   FoldDesktopSkinSwitch,
@@ -537,13 +536,13 @@ export function RemoteDesktopSession({
   const [backControlHeight, setBackControlHeight] = useState(44);
   // On a wide iOS window the status reservation can occupy only the trailing
   // corner. Share that row, with the native toolbar's bottom spacing, when the
-  // complete back button fits in its unobstructed leading corner.
+  // complete back button fits in its unobstructed leading corner, including
+  // tabletop posture: the fold below does not obstruct this status row.
   const sharedBackTop = insets.top - backControlHeight - spacing.md;
   const portraitBackLeft = edgePadding.paddingLeft + spacing.lg;
   const sharedStatusRow =
     Platform.OS === "ios" &&
     !landscape &&
-    !tableRegion &&
     geometry.reservedRegionsSupported &&
     geometry.regularWidth &&
     statusReservation.length > 0 &&
@@ -575,9 +574,29 @@ export function RemoteDesktopSession({
     frameReady &&
     !keyboard &&
     !operations;
+  // Artwork covers both physical halves, including the division and system
+  // reservations. Only interactive content is constrained to the safe regions.
+  const foldSeam = tableRegion
+    ? (tableRegion.first.y + tableRegion.first.height + tableRegion.second.y) /
+      2
+    : 0;
+  const hardwareMedia = { x: 0, y: 0, width: geometry.width, height: foldSeam };
+  const hardwareControls = {
+    x: 0,
+    y: foldSeam,
+    width: geometry.width,
+    height: geometry.height - foldSeam,
+  };
   const retroViewport =
     retroDesktop && foldLayout
-      ? retroDesktopViewport(foldLayout.media, foldSkin)
+      ? retroDesktopViewport(
+          hardwareMedia,
+          foldSkin,
+          foldLayout.media,
+          lease && lease.display.height > 0
+            ? lease.display.width / lease.display.height
+            : undefined,
+        )
       : null;
   const fullScreenFoldBackground = Boolean(foldLayout);
   const foldControls = foldLayout?.controls ?? controlRegion(geometry);
@@ -3189,7 +3208,7 @@ export function RemoteDesktopSession({
         if (!comboMode) setModifiers([]);
       }}
     >
-      {retro && <FoldDesktopKeycap skin={foldSkin} />}
+      {retro && <FoldDesktopKeycap skin={foldSkin} wide={code === "Space"} />}
       <Text
         numberOfLines={1}
         adjustsFontSizeToFit
@@ -3200,10 +3219,19 @@ export function RemoteDesktopSession({
           retro && {
             color: foldDesktopSkinColors(foldSkin).textPrimary,
             fontWeight: fontWeight.medium,
+            maxWidth: "100%",
+            flexShrink: 1,
+            textAlign: "center",
           },
         ]}
       >
-        {keyLabel(code)}
+        {retro && code === "MetaLeft" && caps?.platform === "darwin"
+          ? "⌘"
+          : retro && code === "ControlLeft"
+            ? "Ctrl"
+            : retro && code === "Backspace"
+              ? "⌫"
+              : keyLabel(code)}
       </Text>
     </Pressable>
   );
@@ -3229,7 +3257,6 @@ export function RemoteDesktopSession({
       style={styles.root}
     >
       {Platform.OS === "android" && focused && <StatusBar hidden />}
-      {retroDesktop && focused && <FoldDesktopBackdrop skin={foldSkin} />}
       <View style={[styles.body, landscape && styles.landscape]}>
         <View
           style={[
@@ -3261,7 +3288,11 @@ export function RemoteDesktopSession({
           ]}
         >
           {retroDesktop && focused && foldLayout ? (
-            <FoldDesktopBezel region={foldLayout.media} skin={foldSkin} />
+            <FoldDesktopBezel
+              region={hardwareMedia}
+              skin={foldSkin}
+              viewport={retroViewport}
+            />
           ) : null}
           <Animated.View
             testID="remoteDesktop.media"
@@ -3650,11 +3681,15 @@ export function RemoteDesktopSession({
             testID="remoteDesktop.foldControls"
             style={{
               position: "absolute",
-              left: foldControls.x,
-              top: foldControls.y,
-              width: foldControls.width,
-              height: foldControls.height,
-              paddingBottom: toolbarSize.height + (showMouseButtons ? 80 : 0),
+              left: retroDesktop ? hardwareControls.x : foldControls.x,
+              top: retroDesktop ? hardwareControls.y : foldControls.y,
+              width: retroDesktop ? hardwareControls.width : foldControls.width,
+              height: retroDesktop
+                ? hardwareControls.height
+                : foldControls.height,
+              paddingBottom: retroDesktop
+                ? 0
+                : toolbarSize.height + (showMouseButtons ? 80 : 0),
             }}
           >
             {retroDesktop ? (
@@ -3664,6 +3699,19 @@ export function RemoteDesktopSession({
                 enabled={canInput}
                 skin={foldSkin}
                 onChange={setFoldSkin}
+                safeInsets={{
+                  top: Math.max(0, foldControls.y - hardwareControls.y),
+                  bottom: Math.max(
+                    0,
+                    geometry.height - foldControls.y - foldControls.height,
+                  ),
+                  left: foldControls.x,
+                  right: Math.max(
+                    0,
+                    geometry.width - foldControls.x - foldControls.width,
+                  ),
+                }}
+                bottomReserve={toolbarSize.height + (showMouseButtons ? 80 : 0)}
               />
             ) : (
               <>
@@ -4385,6 +4433,8 @@ const makeStyles = (colors: ThemeColors) =>
     retroKey: {
       backgroundColor: "transparent",
       borderBottomWidth: 0,
+      paddingHorizontal: spacing.sm,
       paddingBottom: spacing.xs,
+      overflow: "hidden",
     },
   });

@@ -5381,6 +5381,50 @@ describe("remote desktop controls", () => {
       }),
     );
   });
+  // Unit: Duo tabletop must retain the earlier shared-status-row Back position;
+  // existing fold coverage only checked viewer/lease continuity, not this corner.
+  it("keeps tabletop Back beside the status region unless its corner is occluded", () => {
+    fixture.size = { width: 669, height: 951 };
+    fixture.safe = { top: 82, bottom: 34, left: 0, right: 0 };
+    const geometry: WindowGeometry = {
+      ...fixture.size,
+      insets: fixture.safe,
+      regularWidth: true,
+      regularHeight: true,
+      barEdge: "none",
+      reservedRegionsSupported: true,
+      regions: [
+        { kind: "occlusion", x: 539, y: 0, width: 130, height: 82 },
+        { kind: "division", x: 0, y: 455, width: 669, height: 40 },
+      ],
+    };
+    const render = (value: WindowGeometry) => {
+      act(() =>
+        root.render(
+          <GeometryContext.Provider value={value}>
+            <RemoteDesktopScreen />
+          </GeometryContext.Provider>,
+        ),
+      );
+      return Object.assign(
+        {},
+        ...fixture.views["remoteDesktop.backPosition"].style
+          .flat(Infinity)
+          .filter(Boolean),
+      );
+    };
+    expect(render(geometry)).toMatchObject({ top: 26, left: 16 });
+    expect(
+      render({
+        ...geometry,
+        regions: [
+          ...geometry.regions,
+          { kind: "occlusion", x: 0, y: 0, width: 80, height: 82 },
+        ],
+      }).top,
+    ).toBeGreaterThanOrEqual(82);
+    expect(render(geometry)).toMatchObject({ top: 26, left: 16 });
+  });
   it("folding and unfolding preserve the viewer and control lease", async () => {
     const geometry: WindowGeometry = {
       width: 900,
@@ -5541,7 +5585,23 @@ describe("remote desktop controls", () => {
       events: [{ kind: "key", code: "KeyA", down: true }],
     });
     const initialFrame = fixture.views["remoteDesktop.media"].style;
+    // Unit: a physical skin must fit the host's actual aspect, not the Duo
+    // half-screen aspect; switching hardware must not stretch the desktop.
+    const expectHostAspect = () => {
+      const frame = Object.assign(
+        {},
+        ...fixture.views["remoteDesktop.media"].style
+          .flat(Infinity)
+          .filter(Boolean),
+      );
+      expect(
+        (fixture.size.width - frame.left - frame.right) /
+          (fixture.size.height - frame.top - frame.bottom),
+      ).toBeCloseTo(display.width / display.height, 6);
+    };
+    expectHostAspect();
     swipe(-100); // Macintosh II → PowerBook: release keys even between retro variants.
+    expectHostAspect();
     expect(fixture.views["remoteDesktop.media"].style).not.toEqual(
       initialFrame,
     );
@@ -5550,6 +5610,7 @@ describe("remote desktop controls", () => {
     ).not.toBeNull();
     expect(sent()).toContainEqual({ type: "releaseInput" });
     swipe(-100); // PowerBook → ThinkPad, both retain real input.
+    expectHostAspect();
     expect(
       host.querySelector('[data-testid="remoteDesktop.retroKeys"]'),
     ).not.toBeNull();
@@ -5578,11 +5639,14 @@ describe("remote desktop controls", () => {
     swipe(100); // PowerBook → Macintosh II restores the same viewport.
     expect(fixture.views["remoteDesktop.media"].style).toEqual(initialFrame);
     swipe(100); // Macintosh II → edge.
+    expectHostAspect();
     expect(fixture.views["remoteDesktop.media"].style).not.toEqual(
       initialFrame,
     );
     swipe(100); // Edge → compact.
+    expectHostAspect();
     swipe(100); // Compact → classic.
+    expectHostAspect();
     swipe(100); // Classic wraps to modern.
     expect(
       host.querySelector('[data-testid="remoteDesktop.retroKeys"]'),
