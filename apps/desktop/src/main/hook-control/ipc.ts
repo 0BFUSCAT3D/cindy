@@ -1295,6 +1295,12 @@ export function registerHookControlIpc(): void {
   log.info('hook-control ipc registered');
 }
 
+/** Read the current owner's already-loaded assignment without starting a transport. */
+export function readXCompanionAssignment(): { botId: string; enabled: boolean } | null {
+  const config = store?.get();
+  return config?.xCompanionBotId ? { botId: config.xCompanionBotId, enabled: config.xEnabled } : null;
+}
+
 /** Called after the current account DB is ready; app:ready-for-bot may retry it. */
 export function startHookControlAccount(): void {
   if (!hookControlAvailable()) return;

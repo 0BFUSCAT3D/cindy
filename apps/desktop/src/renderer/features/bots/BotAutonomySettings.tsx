@@ -90,7 +90,7 @@ export function BotAutonomySettings({
         <div className="min-w-0 flex-1">
           <p className={TITLE_CLASS}>{t('bots.autonomy.title')}</p>
           <p className={HINT_CLASS} role="status">{status}</p>
-          <p className={HINT_CLASS}>{t('bots.autonomy.consent')}</p>
+          <p className={HINT_CLASS}>{t('bots.autonomy.routineScopeHint')}</p>
           {settings.isCustomized ? (
             <Button
               variant="secondary"

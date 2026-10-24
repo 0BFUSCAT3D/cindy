@@ -119,6 +119,7 @@ describe('REMOTE_INVOKE_ALLOWLIST', () => {
       'maker:schedule:get-runtime-state',
       'maker:worker:create',
       'maker:worker:dispatch-ui-assignment',
+      'maker:worker:update',
       'maker:session:enable-orca',
       'maker:rewind:commit',
       'maker:fork',
@@ -210,9 +211,21 @@ describe('REMOTE_INVOKE_ALLOWLIST', () => {
   });
 
   it('放行被控端项目顺序读写(显示偏好,真相在被控端)', () => {
+    // #6916: only the host display-name read is remotely callable; local preferences stay local.
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:list')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:set')).toBe(false);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:delete')).toBe(false);
     expect(REMOTE_INVOKE_ALLOWLIST.has('sidebar-settings:get-project-order')).toBe(true);
     expect(REMOTE_INVOKE_ALLOWLIST.has('sidebar-settings:apply-project-order')).toBe(true);
     expect(REMOTE_INVOKE_ALLOWLIST.has('sidebar-settings:set-project-order')).toBe(false);
+  });
+
+  it('exposes host project aliases as a read-only snapshot and forwards invalidations', () => {
+    expect(REMOTE_INVOKE_ALLOWLIST.has('sidebar-settings:get-project-aliases')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:list')).toBe(true);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:set')).toBe(false);
+    expect(REMOTE_INVOKE_ALLOWLIST.has('local-db:project-aliases:delete')).toBe(false);
+    expect(PUSH_FORWARD_ALLOWLIST.has('local-db:project-aliases:changed')).toBe(true);
   });
 
   it('放行 Git safety 只读查询(远程 Codex Rewind 按被控端 snapshot 设置 gate)', () => {
@@ -432,6 +445,7 @@ describe('PUSH_FORWARD_ALLOWLIST', () => {
       'local-db:messages:deleted',
       'local-db:session:error-persisted',
       'sidebar-settings:project-order-changed',
+      'local-db:project-aliases:changed',
       SESSION_ACTIVITY_CHANNEL,
     ]) {
       expect(PUSH_FORWARD_ALLOWLIST.has(ch)).toBe(true);

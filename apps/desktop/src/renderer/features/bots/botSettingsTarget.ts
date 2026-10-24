@@ -20,7 +20,8 @@ export type BotCapabilityEntry = {
 };
 
 type Bots = NonNullable<Window['electronAPI']['localDb']>['bots'];
-export type BotRoutinesApi = Window['electronAPI']['routines'];
+// The nightly review is read on this computer only (BotNightlyLearning); a target never carries it.
+export type BotRoutinesApi = Omit<Window['electronAPI']['routines'], 'nightlyLearning'>;
 type VoiceApi = Window['electronAPI']['voiceConversation'];
 type ImConnectionApi = Window['electronAPI']['botImConnection'];
 type WechatApi = Window['electronAPI']['wechatBot'];

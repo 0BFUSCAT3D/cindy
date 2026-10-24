@@ -11,9 +11,11 @@ const h = vi.hoisted(() => ({
 vi.mock('react-native', async () => {
   const { createElement: el } = await import('react');
   const view = ({ children, testID, style }: any) => el('div', { 'data-testid': testID, 'data-style': JSON.stringify(style ?? null) }, children);
-  return { View: view, ScrollView: view, ActivityIndicator: view, StyleSheet: { create: (s: any) => s, hairlineWidth: 1 } };
+  return { View: view, ScrollView: view, ActivityIndicator: view, Platform: { OS: 'ios', select: (o: any) => o.ios ?? o.default },
+    StyleSheet: { create: (s: any) => s, hairlineWidth: 1 } };
 });
 vi.mock('expo-router', () => ({ Stack: { Screen: () => null }, useRouter: () => ({}) }));
+vi.mock('expo-router/react-navigation', () => ({ useHeaderHeight: () => 0 }));
 vi.mock('react-native-safe-area-context', async () => ({ SafeAreaView: (await import('react-native')).View }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ user: { id: 'u' } }) }));

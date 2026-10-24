@@ -404,6 +404,11 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   不登记阻塞交互或人工续跑。回答只走原执行的 steer，结束／Stop／关闭／替换后作废，
   发送失败不重投新 turn。Claude 会把已排队的答案合并为下一 SDK 段：仅在答案已被接收
   时复用现有 continuation claim 保留产品边界，避免提前完成或重复完成；未回答不建 claim。
+  Claude 前台已结束、仍等待后台任务的 continuation 也接受用户插话，送入原 SDK 输入队列；
+  已接收的补充归当前等待段，不能额外制造一个后继 claim，后台任务停止也不能丢弃补充。
+  插话被拒绝不等于产品结束，宿主必须复核实际运行态后才能合成结束边界。
+  回归见 `abort-stops-background-tasks.test.ts`、`background-steer.native.test.ts` 与 Desktop
+  `agent-input-coordinator.test.ts`；原生测试使用真实 CLI 和本地模型端点，不消耗订阅额度。
   Pi 在原生 RPC 排队后再核对执行代次与取消信号，防止答案串到
   下一次执行。Claude 的本机 hook 与远端 root-only guard 禁止原生子代理直接提问；工具
   入口只接受宿主标明 `mcpCallerKind=root` 且 `mcpCallerAttested=true` 的请求，身份未知、
@@ -493,10 +498,24 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
 
 ### Desktop Auto 审核的模型回退
 
+2026-10-24 用户确认的分工：模型订阅自带自动审核时优先用它（Claude 订阅用 Claude 原生 Auto，
+ChatGPT 订阅用 Codex Guardian），Cindy 审核只在原生不可用、故障或必须由 Cindy 判断时保底，
+同一次调用不审两次；安全上接受适当放宽换取效率。
+
 Auto 优先效率，定位是防止严重后果，不是第二次任务规划或逐步骤索要授权。
+Cindy 审核向 Codex／Claude 原生审核看齐：先判动作本身的风险（low／medium／high／critical），
+低、中风险直接放行（只受明确限制、访客身份与无关的不可信指令约束），低风险只回
+`{"verdict":"allow"}` 以缩短耗时；只有高风险才看授权，未授权但与任务相关才 `ask`，
+越界或有更安全做法则 `block`；critical 一律 `block`。没有任何用户原话也没有委派时只放行读取。
 相关、有限、可恢复的操作以及同任务截图/文档交付、临时输出路径按完成任务所需步骤判断；
 重点拦重大不可逆损失、凭据泄露、私密数据外发、大额资金、生产破坏与长期安全削弱。
-明确禁止、撤权、访客身份、只读授权和委派范围仍严格生效。共用规则在
+明确禁止、撤权、访客身份、只读授权和委派范围仍严格生效。审阅器只看到用户原话，看不到
+Agent 的计划与结果：报问题或要求改动即覆盖排查、修改、探针、构建、测试、版本／验证记录和清理
+本任务创建之物等未被点名的步骤，「无法确认这一步在范围内」不构成 ask 或 block 的理由；审阅器
+不判断代码或记录内容的真伪（2026-10-24 真实误判案例见 eval 脚本 `real-*`）。
+模型给出的 `reason` 面向用户：用用户消息的语言写一两句白话、不出现字段名；`ask` 时 harness 用
+`annotatePermissionRequestForAutoReview` 把它写进确认请求 `metadata.autoReviewReason`，桌面、手机、
+IM 与官方 Hook 确认卡统一显示为「自动审批需要你决定：…」，故障降级仍只显示固定文案。共用规则在
 `agents/shared/continuation-policy.ts`，真实模型配对比较入口为 `scripts/eval-auto-approval.mts`
 的 `--baseline-bundle`（隔离打包的旧审核器）；只审核合成操作，不执行副作用。
 
@@ -504,7 +523,13 @@ Auto 优先效率，定位是防止严重后果，不是第二次任务规划或
 `getAutoReviewOwner()` 为准；Codex Guardian 故障切换后恢复 Cindy 负责。
 路径解析暴露不同目标时，由 Cindy 审核 canonical 路径；只有 canonical 路径、
 无法核对原始参数的 Host 回调不享受免复审。
-Claude MCP/额外目录等现有回退路径仍由 Cindy 审批，不因有订阅而免审。
+Claude 订阅的本地会话即使挂了 Host MCP 也保持原生 Auto：原生会跳过 `canUseTool`，由
+`nativeAutoPolicyHook`（PreToolUse，排在其他守卫之后）只把 Cindy 必须判断的调用交回
+`canUseTool`——可信 MCP（由 Host 快捷放行、不调用模型，但插件委派任务仍先复核实时委派范围）、逐次确认的 MCP 与 IM 轮次（原生看不到发起者身份，
+此时 `getAutoReviewOwner()` 返回 `cindy`）一律返回 `ask`，其余只由原生 classifier 判断。
+远程 SSH 与设备托管会话无法在本机执行该 hook，挂 MCP 时仍回落 Cindy；额外目录授权仍回落 Cindy。
+插件委派任务与 Codex 现状一致交给原生审核，不再额外套用 Cindy 的委派范围。
+Codex 的 IM 轮次继续由 Cindy 审核（策略轮次需要 Host 观察每次执行）。
 原生明确拒绝不触发第二次模型判断。独立 Host 操作继续使用自身审批入口。
 
 Browser 的 `action=recipe` 调用复用现有逐次会话审批，不继承整个第一方 server 的静默放行；
@@ -514,7 +539,8 @@ Full Access、Auto、Ask 的含义保持不变。不以配方自报的 read/writ
 不新增配方确认 token 或独立授权状态。回归见 `mcpToolApprovalPolicy.test.ts`。
 
 由 Cindy 负责的 Auto 审核先按固定顺序尝试 `cindy/auto-review`、内置 OpenAI 订阅的
-`gpt-5.4-nano`、`gpt-6-luna`。只有这些候选全部不可用、请求失败或输出无效时，才使用
+`codex-auto-review`（Codex 原生审核模型，ChatGPT 账号可调用但不是可选目录模型，候选标
+`catalogExempt`；原 `gpt-5.4-nano` 已不支持 ChatGPT 账号）、`gpt-6-luna`。只有这些候选全部不可用、请求失败或输出无效时，才使用
 系统设置中用户明确自定义的辅助模型链，按已选顺序尝试最多 3 个模型；自动辅助链和
 环境变量辅助链不参与。任一候选返回有效的 `allow`、`block` 或 `ask` 后立即结束，
 不能为了争取放行而继续换模型。全部失败继续交回人工确认。
@@ -575,7 +601,7 @@ Cindy reviewer 与 Codex native reviewer 使用同一份范围语义，但接入
 Agent developer 指令不会进入原生审批摘要，因此通过线程级 `auto_review.policy` 内联
 Markdown 接入；在创建或恢复线程时预装，不依赖初始权限模式，后续切到 Auto 即可使用。
 不修改用户配置文件，不改 sandbox／审批者，不覆盖用户或项目自定义策略，
-管理员策略仍由原生优先处理。当前覆盖已验证的 Codex 0.145.0、0.153.4 与 0.156.0（后两者默认租户策略一致），完整保留其默认租户
+管理员策略仍由原生优先处理。当前覆盖已验证的 Codex 0.145.0、0.153.4、0.156.0 与 0.159.2（后三者默认租户策略一致），完整保留其默认租户
 策略；未知版本保留原生策略，不能拿旧版本策略覆盖新默认。原生行为验证见
 `agents/codex/native-auto-review-policy.native.test.ts`（`packages/maker-core/src/` 下），
 需显式指定 `CINDY_CODEX_TEST_BINARY`；它使用假模型与假 MCP 验证配置传递和默认策略
