@@ -108,6 +108,36 @@ describe('host project alias display', () => {
     expect(groups.projects[0]).toMatchObject({ projectKey: 'device:a:C:/Repo', displayName: 'Windows project' });
   });
 
+  // Regression: pinning or filtering must not change a mixed remote project's identity.
+  it.each(['local', 'ssh'])('keeps a mixed host directory name when %s is pinned', (kind) => {
+    const local = s({ workingDir: '/repo', deviceLinkDeviceId: 'a', pinnedAt: kind === 'local' ? '2026-10-01' : null });
+    const ssh = s({ workingDir: '/repo', deviceLinkDeviceId: 'a', remoteHostId: 'ssh-a', pinnedAt: kind === 'ssh' ? '2026-10-01' : null });
+    const remoteProjectAliases = new Map([['a', { platform: 'darwin', aliases: [
+      { projectKey: 'local:/repo', alias: 'Local alias' },
+      { projectKey: 'remote:ssh-a:/repo', alias: 'SSH alias' },
+    ] }]]);
+    const result = groupSessions([local, ssh], { remoteProjectAliases });
+    expect(result.projects[0].displayName).toBe('repo');
+    expect(result.projects[0].sessions).toHaveLength(1);
+    expect(result.pinned).toHaveLength(1);
+  });
+
+  it.each(['local', 'ssh'])('uses full members when status/activity filters leave only %s', (kind) => {
+    const local = s({ workingDir: '/repo', deviceLinkDeviceId: 'a' });
+    const ssh = s({ workingDir: '/repo/.worktrees/branch', deviceLinkDeviceId: 'a', remoteHostId: 'ssh-a' });
+    const options = { projectAliasMembers: [local, ssh], remoteProjectAliases: new Map([['a', { platform: 'darwin', aliases: [
+      { projectKey: 'local:/repo', alias: 'Local alias' },
+      { projectKey: 'remote:ssh-a:/repo', alias: 'SSH alias' },
+    ] }]]) };
+    const visible = [kind === 'local' ? local : ssh];
+    const result = groupSessions(visible, options);
+    expect(result.projects[0].displayName).toBe('repo');
+    expect(result.projects[0].sessions).toEqual(visible);
+    const deleted: Session = { ...ssh, status: 'deleted' };
+    expect(groupSessions([local], { ...options, projectAliasMembers: [local, deleted] }).projects[0].displayName).toBe('Local alias');
+    expect(groupSessions([local], { ...options, projectAliases: new Map([['device:a:/repo', 'Override']]) }).projects[0].displayName).toBe('Override');
+  });
+
   it('resolves unique SSH identities and does not borrow a name for a mixed local/SSH group', () => {
     const ssh = s({ workingDir: '/repo', deviceLinkDeviceId: 'a', remoteHostId: 'ssh-a' });
     const local = s({ workingDir: '/repo', deviceLinkDeviceId: 'a' });

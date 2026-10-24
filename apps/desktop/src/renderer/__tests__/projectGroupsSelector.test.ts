@@ -271,6 +271,18 @@ describe('project grouping projection', () => {
     expect(select(rows, { remoteProjectAliases: new Map() }).projects[0].displayName).toBe('repo');
   });
 
+  it('invalidates names when only complete project membership changes', () => {
+    const local = session('local', { deviceLinkDeviceId: 'device', workingDir: '/repo' });
+    const ssh = session('ssh', { ...local, id: 'ssh', remoteHostId: 'ssh-a' });
+    const rows = [local];
+    const remoteProjectAliases = new Map([['device', { platform: 'darwin', aliases: [{ projectKey: 'local:/repo', alias: 'Local alias' }] }]]);
+    const select = createProjectGroupsSelector();
+    expect(select(rows, { remoteProjectAliases, projectAliasMembers: rows }).projects[0].displayName).toBe('Local alias');
+    const members = [local, ssh];
+    expect(select(rows, { remoteProjectAliases, projectAliasMembers: members }).projects[0].displayName).toBe('repo');
+    expect(select(rows, { remoteProjectAliases, projectAliasMembers: rows }).projects[0].displayName).toBe('Local alias');
+  });
+
   it('reuses equal persistent catalogues but refreshes changed project metadata', () => {
     const rows = [session('a')];
     const projects = [

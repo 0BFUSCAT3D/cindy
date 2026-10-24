@@ -33,6 +33,7 @@ export function useProjectGroups(
   localPlatform: string = '',
   /** Reuse an earlier call when the activity filter did not change its inputs. */
   equivalentResult?: ProjectGroupsResult,
+  projectAliasMembers?: readonly Session[],
 ): ProjectGroupsResult {
   const sshHosts = useRemoteSshHosts();
   const hostProjectAliases = useSyncExternalStore(remoteProjectAliases.subscribe, remoteProjectAliases.getSnapshot);
@@ -50,6 +51,7 @@ export function useProjectGroups(
     return selectGroups(sessions, {
       projectAliases,
       remoteProjectAliases: hostProjectAliases,
+      projectAliasMembers,
       includePinnedInProjects,
       botOwnerBySessionId,
       persistentLocalProjects,
@@ -62,6 +64,7 @@ export function useProjectGroups(
     sessions,
     projectAliases,
     hostProjectAliases,
+    projectAliasMembers,
     includePinnedInProjects,
     persistentLocalProjects,
     localPlatform,

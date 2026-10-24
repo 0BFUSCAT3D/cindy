@@ -59,6 +59,7 @@ function sameOptions(a: GroupSessionsOptions, b: GroupSessionsOptions): boolean 
   return (
     a.projectAliases === b.projectAliases &&
     a.remoteProjectAliases === b.remoteProjectAliases &&
+    a.projectAliasMembers === b.projectAliasMembers &&
     a.includePinnedInProjects === b.includePinnedInProjects &&
     a.includeDraftsInProjects === b.includeDraftsInProjects &&
     a.provisionalDraftTaskId === b.provisionalDraftTaskId &&
