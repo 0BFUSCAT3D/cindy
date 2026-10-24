@@ -71,6 +71,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useAuth } from '@/auth/AuthContext';
+import { HomeTeammatesSection } from './HomeTeammatesSection';
 import { createDisclosureListCell, DisclosureGroupView, DisclosureItem, ListDisclosureScope, useDisclosurePrepare, useListDisclosureTransition } from './listDisclosureTransition';
 import { useGuardedPush } from '@/utils/useGuardedPush';
 import { useHomeMenuFadeTiming } from '@/session/homeMenuFadeTiming';
@@ -2959,7 +2960,13 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
           restoreListPosition();
         }}
         sections={sections}
-        ListHeaderComponent={sharedRows.length > 0 ? <DisclosureItem clip style={styles.projectGroup} testID="home.sharedGroup">
+        ListHeaderComponent={<>
+        {embedded ? null : <HomeTeammatesSection active={active}
+          visible={!searchQuery.trim() && indexedSearch.activeFilterCount === 0 && statusFilter !== 'archived' && !showRemoteGuide}
+          // Shared group and project blocks draw their own full-width top line.
+          showFooter={sharedRows.length === 0 && !isBlockHomeRow(sections[0]?.data[0])}
+          runDisclosure={runDisclosure} prepareDisclosure={prepareListDisclosure} />}
+        {sharedRows.length > 0 ? <DisclosureItem clip style={styles.projectGroup} testID="home.sharedGroup">
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t('sharedTask.title')}
@@ -3021,6 +3028,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
             </View>
           </Pressable>; })}</DisclosureItem>}
         </DisclosureItem> : null}
+        </>}
         style={styles.homeList}
         keyExtractor={(item) => item.key}
         // A grouped row contains its preview children. Twelve such rows can

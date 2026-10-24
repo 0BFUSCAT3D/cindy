@@ -247,6 +247,8 @@ export interface LastTeammateIdentity {
 export interface HomeNavigationPreferences {
   mode?: HomeMode;
   lastTeammate?: LastTeammateIdentity;
+  /** The task home's teammate section: rows (false/absent) or the avatar strip (true). */
+  teammatesCollapsed?: boolean;
 }
 const NAVIGATION_PREFIX = 'cindy.mobile.home.navigation.v1.';
 
@@ -259,6 +261,7 @@ export function normalizeHomeNavigationPreferences(value: unknown): HomeNavigati
     typeof last[field] === 'string' && last[field].trim().length > 0 && last[field].length <= 256);
   return {
     ...(record.mode === 'tasks' || record.mode === 'teammates' ? { mode: record.mode } : {}),
+    ...(typeof record.teammatesCollapsed === 'boolean' ? { teammatesCollapsed: record.teammatesCollapsed } : {}),
     ...(validLast ? { lastTeammate: {
       deviceId: last!.deviceId as string,
       collectionId: last!.collectionId as string,
@@ -278,7 +281,7 @@ export async function readHomeNavigationPreferences(owner: string): Promise<Home
 
 export function saveHomeNavigationPreferences(
   owner: string,
-  patch: { mode?: HomeMode; lastTeammate?: LastTeammateIdentity | null },
+  patch: { mode?: HomeMode; lastTeammate?: LastTeammateIdentity | null; teammatesCollapsed?: boolean },
 ): Promise<void> {
   if (!owner) return Promise.resolve();
   // Share the existing serialized writer; each operation captures its own owner.

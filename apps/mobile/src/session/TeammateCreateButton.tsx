@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Alert } from 'react-native';
 import { Stack } from 'expo-router';
 import { nativeToolbarMenuItems } from '@/platform/chrome/nativeToolbarMenuItems';
@@ -25,8 +25,10 @@ type Choice = { kind: CreateKind; host: RemoteResourceHostTarget };
  * 伙伴页顶栏的「+」。支持群聊时是一个菜单：新建伙伴 / 新建群聊（多台电脑时再选电脑）；
  * 旧版电脑不支持群聊时保持原来的直接新建伙伴。表单关闭后才回报创建结果，避免两个 Modal 叠加。
  */
-export function TeammateCreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance = 'glass' }: {
+export function TeammateCreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance = 'glass', trigger }: {
   targets: readonly RemoteResourceHostTarget[];
+  /** Replaces the glass button (the task home's teammate section); menus and sheets stay the same. */
+  trigger?(press: () => void, label: string): ReactElement;
   /** `cta`: the empty list's primary button; it only creates a teammate. */
   appearance?: 'glass' | 'cta' | 'toolbar';
   /** Online computers that support group chats; empty keeps the single-purpose button. */
@@ -37,10 +39,10 @@ export function TeammateCreateButton({ targets, groupTargets = [], preferredDevi
 }) {
   const { accountGeneration } = useAuth();
   // Account changes discard both native menu selections and dismissal receipts.
-  return <CreateButton key={accountGeneration} {...{ targets, groupTargets, preferredDeviceId, onCreated, onGroupCreated, appearance }} account={accountGeneration} />;
+  return <CreateButton key={accountGeneration} {...{ targets, groupTargets, preferredDeviceId, onCreated, onGroupCreated, appearance, trigger }} account={accountGeneration} />;
 }
 
-function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance, account }: Parameters<typeof TeammateCreateButton>[0] & { account: number }) {
+function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance, trigger: customTrigger, account }: Parameters<typeof TeammateCreateButton>[0] & { account: number }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const { accountGeneration } = useAuth();
@@ -88,7 +90,7 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
     else if (!needsMenu) start('bot', targets[0]!.deviceId);
     else if (cta || !usesNativePullDownMenu()) setChoosing(true);
   };
-  const button = cta
+  const button = customTrigger && !cta ? customTrigger(press, label) : cta
     ? <MainWindowActionButton action={{ label: botLabel, tone: 'primary', onPress: press, testID: 'teammates.emptyCreate' }} />
     : <HomeHeaderGlassButton accessibilityLabel={label} testID="teammates.create" onPress={press}>
       <Plus color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />

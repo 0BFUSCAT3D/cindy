@@ -49,15 +49,18 @@ export function useTeammateNavigation() {
       }
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
   }, [accountGeneration, navigation, preferences.setMode, router]);
-  /** `replace` swaps the current screen (the cloud view handing over to the new main computer). */
-  const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem, options?: { replace?: boolean }) => {
+  /**
+   * `replace` swaps the current screen (the cloud view handing over to the new main computer).
+   * `keepMode`: opened from the task home's teammate section, so back returns to the tasks.
+   */
+  const openTeammate = useCallback(async (hosted: HostedRemoteCollectionItem, options?: { replace?: boolean; keepMode?: boolean }) => {
     const identity = teammateIdentity(hosted);
     if (!identity || pendingAccount.current === accountGeneration) return;
     // Fence rapid taps before the async preference write, not only at router.push.
     pendingAccount.current = accountGeneration;
     Keyboard.dismiss();
     try {
-      await preferences.selectTeammate(identity);
+      await preferences.selectTeammate(identity, { keepMode: options?.keepMode });
       if (mounted.current && current.current === accountGeneration) {
         const owner = `${user?.id ?? ''}:${accountGeneration}`;
         const cached = readRemoteCollectionCache(owner, identity.collectionId);
@@ -76,13 +79,14 @@ export function useTeammateNavigation() {
       }
     } finally { if (pendingAccount.current === accountGeneration) pendingAccount.current = null; }
   }, [accountGeneration, i18n.language, preferences.selectTeammate, push, router, user?.id]);
-  const openCreatedTeammate = useCallback(async (host: RemoteResourceHostTarget, ref: RemoteResourceRef) => {
+  const openCreatedTeammate = useCallback(async (host: RemoteResourceHostTarget, ref: RemoteResourceRef, options?: { keepMode?: boolean }) => {
     if (!mounted.current || current.current !== accountGeneration || !host.deviceId || !ref.id || !ref.collectionId
       || ref.kind !== 'bot' || pendingAccount.current === accountGeneration) return;
     pendingAccount.current = accountGeneration;
     Keyboard.dismiss();
     try {
-      await preferences.selectTeammate({ deviceId: host.deviceId, collectionId: ref.collectionId, resourceKind: 'bot', resourceId: ref.id });
+      await preferences.selectTeammate({ deviceId: host.deviceId, collectionId: ref.collectionId, resourceKind: 'bot', resourceId: ref.id },
+        { keepMode: options?.keepMode });
       if (mounted.current && current.current === accountGeneration) push({
         pathname: '/resources/[collectionId]/[resourceId]',
         params: { deviceId: host.deviceId, deviceName: host.deviceName, collectionId: ref.collectionId, resourceKind: ref.kind, resourceId: ref.id },

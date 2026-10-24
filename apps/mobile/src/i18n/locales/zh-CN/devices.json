@@ -588,6 +588,11 @@
     "viewAllRuns": "查看全部 {{count}} 次运行"
   },
   "companions": {
+    "section": {
+      "showAll": "显示全部",
+      "showAllA11y": "显示全部 {{count}} 位",
+      "showLess": "收起"
+    },
     "noCreateHosts": "当前没有可用的兼容电脑。在电脑上打开 Cindy 并登录同一账号后即可新建伙伴。",
     "taskAttentionCount": "{{count}} 个任务待关注",
     "unreadChatCount": "{{count}} 段对话未读",

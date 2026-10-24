@@ -588,6 +588,11 @@
     "viewAllRuns": "すべての実行 {{count}} 回を表示"
   },
   "companions": {
+    "section": {
+      "showAll": "すべて表示",
+      "showAllA11y": "すべて表示（{{count}}）",
+      "showLess": "閉じる"
+    },
     "noCreateHosts": "対応するコンピュータを利用できません。パソコンで Cindy を開き、同じアカウントでログインするとチームメイトを新規作成できます。",
     "taskAttentionCount": "確認が必要なタスク：{{count}}",
     "unreadChatCount": "未読のチャット：{{count}}",

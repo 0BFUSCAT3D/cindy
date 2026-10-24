@@ -57,6 +57,17 @@ describe('header/home shared navigation', () => {
     });
     expect(h.set).toHaveBeenCalledTimes(1);
   });
+  it('opening from the task home keeps the task mode, and the section layout survives later selections', async () => {
+    await render(); await act(async () => result.setTeammatesCollapsed(true));
+    await act(async () => result.openTeammate(teammate, { keepMode: true }));
+    expect(h.push).toHaveBeenCalledTimes(1);
+    expect(result.mode).toBe('tasks'); // Back from the chat must land on the tasks, not the teammate home.
+    expect(await readHomeNavigationPreferences(result.owner)).toEqual({ teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate) });
+    await act(async () => result.openTeammate(teammate));
+    expect(await readHomeNavigationPreferences(result.owner)).toEqual({
+      mode: 'teammates', teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate),
+    });
+  });
   it('opens a creation receipt through the canonical resolver with one atomic preference update', async () => {
     await render(); await act(async () => result.openCreatedTeammate(teammate.host, teammate.item.ref));
     expect(h.push).toHaveBeenCalledExactlyOnceWith({ pathname: '/resources/[collectionId]/[resourceId]', params: {

@@ -588,6 +588,11 @@
     "viewAllRuns": "View all {{count}} runs"
   },
   "companions": {
+    "section": {
+      "showAll": "Show all",
+      "showAllA11y": "Show all {{count}}",
+      "showLess": "Show less"
+    },
     "noCreateHosts": "No compatible computer is available. Open Cindy on a computer and sign in with the same account to create a teammate.",
     "taskAttentionCount": "Tasks needing attention: {{count}}",
     "unreadChatCount": "Unread chats: {{count}}",
