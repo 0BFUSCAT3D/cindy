@@ -8,7 +8,9 @@ import { AcceptedCallbackDispatchCancelled, runAcceptedCallback } from '../accep
 
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
 import {
+  captureOrcaDeliveryBaselines,
   createOrcaTeamService,
+  evaluateOrcaDeliveryScope,
   findFocusTargetWorker,
   type DispatchWorkerMessageResult,
   type OrcaTeamServiceDeps,
@@ -3797,144 +3799,78 @@ it('release closes under its own send fence and fails closed on close error',asy
  expect(deps.archiveWorkerSession).not.toHaveBeenCalled();
 });
 
-describe('Orca delivery authority', () => {
-  // The delivery gate lives in register.ts. Slice it the same way the cleanup-authority
-  // suite does: real source, fake host bindings.
-  const source = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
-  const start = source.indexOf('  const captureOrcaDeliveryAuthority = async (');
-  const end = source.indexOf('  async function discardWorkerWorktree(', start);
-
-  type Row = { status: string; clearedAt: number | null; permissionMode: string; planModeEnabled: boolean };
-
-  function compile(initialLine: Row | null) {
-    let line = initialLine;
-    let live: unknown = null;
-    const epoch = {
-      client: {
-        drizzle: {
-          select: () => ({
-            from: () => ({
-              where: () => ({ limit: async () => (line ? [line] : []) }),
-            }),
-          }),
-        },
-      },
-    };
-    const bindings = {
-      PluginTaskError,
-      getCurrentDbClientSnapshot: () => epoch,
-      createPluginTaskStore: () => ({ get: async () => undefined }),
-      hasRevokedPluginTaskOwnership: () => false,
-      sessions: {},
-      eq: () => ({}),
-      isAppSessionBoundaryPending: () => false,
-      maker: { getSession: () => live },
-      pluginTaskServiceForCurrentOwner: () => ({
-        get: async () => ({ status: 'active', permissionMode: 'auto' }),
-      }),
-      assertPluginWorkerAutoAuthorized: () => undefined,
-    };
-    const factory = new Function(
-      ...Object.keys(bindings),
-      ts.transpileModule(`${source.slice(start, end)}
-return captureOrcaDeliveryAuthority;`, {
-        compilerOptions: { target: ts.ScriptTarget.ES2022 },
-      }).outputText,
-    )(...Object.values(bindings)) as (leadSessionId: string) => Promise<() => Promise<void>>;
-    return {
-      setLive: (session: unknown) => {
-        live = session;
-      },
-      setLine: (next: Row | null) => {
-        line = next;
-      },
-      authorize: () => factory('lead-1'),
-    };
-  }
-
-  const permission = (mode: string, generation: number, plan = false) => ({
-    stablePermissionModeState: { mode, generation },
-    stablePlanModeState: { enabled: plan, generation },
-  });
-  const row = (overrides: Partial<Row> = {}): Row => ({
+describe('Orca delivery scope', () => {
+  const permission = (mode: string, planEnabled = false) => ({ mode, planEnabled });
+  const row = (overrides: Partial<{
+    status: string; clearedAt: number | null; permissionMode: string; planModeEnabled: boolean;
+  }> = {}) => ({
     status: 'active',
     clearedAt: 100,
     permissionMode: 'bypassPermissions',
     planModeEnabled: false,
     ...overrides,
   });
-
-  it('accepts a rehydrated runtime whose permission counters restarted', async () => {
-    const h = compile(row());
-    h.setLive(permission('bypassPermissions', 3));
-    const assertDelivery = await h.authorize();
-
-    // Idle release + rehydrate: a new Session instance restarts its in-memory generations.
-    h.setLive(permission('bypassPermissions', 0));
-    await expect(assertDelivery()).resolves.toBeUndefined();
-
-    // A released runtime is not a revocation on its own: the persisted mode still matches.
-    h.setLive(null);
-    await expect(assertDelivery()).resolves.toBeUndefined();
+  const live = (mode: string, planEnabled = false) => ({
+    stablePermissionModeState: { mode },
+    stablePlanModeState: { enabled: planEnabled },
+  });
+  const evaluate = (
+    overrides: Partial<Parameters<typeof evaluateOrcaDeliveryScope>[0]> = {},
+  ) => evaluateOrcaDeliveryScope({
+    clearedAtAtCapture: 100,
+    persistedAtCapture: permission('bypassPermissions'),
+    liveAtCapture: permission('bypassPermissions'),
+    row: row(),
+    live: live('bypassPermissions'),
+    ...overrides,
   });
 
-  it('keeps a resumed runtime mode that the persisted row does not carry', async () => {
-    // A cold resume can run a stricter/looser mode than the row without rewriting it.
-    const h = compile(row({ permissionMode: 'ask' }));
-    h.setLive(permission('bypassPermissions', 1));
-    const assertDelivery = await h.authorize();
-
-    // Idle release: the row still says ask, and the user changed nothing.
-    h.setLive(null);
-    await expect(assertDelivery()).resolves.toBeUndefined();
+  it('accepts a rehydrated runtime and a released one', () => {
+    // Idle release + rehydrate keeps the same semantics; in-memory generation counters are
+    // intentionally not part of the comparison.
+    expect(evaluate({ live: live('bypassPermissions') })).toBe('ok');
+    expect(evaluate({ live: null })).toBe('ok');
   });
 
-  it('rejects delivery while the owner is switching permissions or when the mode changed', async () => {
-    const h = compile(row());
-    h.setLive(permission('bypassPermissions', 3));
-    const assertDelivery = await h.authorize();
-
-    // Mid-switch: the stable snapshots disappear. Work must not start on the old snapshot.
-    h.setLive({
-      stablePermissionModeState: null,
-      stablePlanModeState: { enabled: false, generation: 0 },
+  it('captures the two permission baselines from their own sources', () => {
+    expect(captureOrcaDeliveryBaselines({
+      row: row({ permissionMode: 'ask' }),
+      live: live('bypassPermissions'),
+    })).toEqual({
+      clearedAtAtCapture: 100,
+      persistedAtCapture: { mode: 'ask', planEnabled: false },
+      liveAtCapture: { mode: 'bypassPermissions', planEnabled: false },
     });
-    await expect(assertDelivery()).rejects.toThrow('Task permissions are changing');
-
-    h.setLive(permission('ask', 0));
-    await expect(assertDelivery()).rejects.toThrow('Task permissions changed before delivery');
-
-    h.setLive(permission('bypassPermissions', 0, true));
-    await expect(assertDelivery()).rejects.toThrow('Task permissions changed before delivery');
   });
 
-  it('compares the persisted mode when the runtime is gone', async () => {
-    const h = compile(row());
-    h.setLive(permission('bypassPermissions', 3));
-    const assertDelivery = await h.authorize();
-    h.setLive(null);
-
-    h.setLine(row({ permissionMode: 'ask' }));
-    await expect(assertDelivery()).rejects.toThrow('Task permissions changed before delivery');
-
-    h.setLine(row({ planModeEnabled: true }));
-    await expect(assertDelivery()).rejects.toThrow('Task permissions changed before delivery');
+  it('keeps a resumed runtime mode that the persisted row does not carry', () => {
+    // Cold resume can run a mode the row never recorded; releasing the runtime must not turn
+    // that into a revocation.
+    expect(evaluate({
+      row: row({ permissionMode: 'ask' }),
+      persistedAtCapture: permission('ask'),
+      liveAtCapture: permission('bypassPermissions'),
+      live: null,
+    })).toBe('ok');
   });
 
-  it('rejects delivery when the task really changed', async () => {
-    const h = compile(row());
-    h.setLive(permission('bypassPermissions', 3));
-    const assertDelivery = await h.authorize();
-
-    h.setLive(permission('bypassPermissions', 0));
-    h.setLine(row({ clearedAt: 200 }));
-    await expect(assertDelivery()).rejects.toThrow('Orca task is no longer deliverable');
-
-    h.setLine(null);
-    await expect(assertDelivery()).rejects.toThrow('Orca task is no longer deliverable');
+  it('rejects a switch in flight or a changed permission', () => {
+    expect(evaluate({
+      live: { stablePermissionModeState: null, stablePlanModeState: { enabled: false } },
+    })).toBe('permissions-changing');
+    expect(evaluate({ live: live('ask') })).toBe('permissions-changed');
+    expect(evaluate({ live: live('bypassPermissions', true) })).toBe('permissions-changed');
   });
 
-  it('is wired into the Orca team service', () => {
-    expect(source).toMatch(/captureDeliveryAuthority:\s*\(leadSessionId\)\s*=>/);
+  it('compares the persisted mode when the runtime is gone', () => {
+    expect(evaluate({ live: null, row: row({ permissionMode: 'ask' }) })).toBe('permissions-changed');
+    expect(evaluate({ live: null, row: row({ planModeEnabled: true }) })).toBe('permissions-changed');
+    expect(evaluate({ live: null, persistedAtCapture: null })).toBe('permissions-changed');
+  });
+
+  it('rejects a task that was cleared, deleted or removed', () => {
+    expect(evaluate({ row: row({ clearedAt: 200 }) })).toBe('task-gone');
+    expect(evaluate({ row: row({ status: 'deleted' }) })).toBe('task-gone');
+    expect(evaluate({ row: null })).toBe('task-gone');
   });
 });

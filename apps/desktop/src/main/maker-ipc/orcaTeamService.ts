@@ -268,6 +268,82 @@ export interface WorkerTerminalTurnCapture {
   autoBridgeIdentity: object | null;
 }
 
+export interface OrcaDeliveryPermissionBaseline {
+  mode: string;
+  planEnabled: boolean;
+}
+
+export interface OrcaDeliverySessionRowSnapshot {
+  status: string;
+  clearedAt: number | null;
+  permissionMode: string;
+  planModeEnabled: boolean;
+}
+
+export interface OrcaDeliveryLiveSnapshot {
+  stablePermissionModeState: { mode: string | null } | null;
+  stablePlanModeState: { enabled: boolean } | null;
+}
+
+export type OrcaDeliveryVerdict = 'ok' | 'task-gone' | 'permissions-changing' | 'permissions-changed';
+
+/**
+ * Baselines captured at admission, each tagged with the source it belongs to: a resumed runtime
+ * can run a permission mode the persisted row does not carry, so they must never be shared.
+ */
+export function captureOrcaDeliveryBaselines(input: {
+  row: OrcaDeliverySessionRowSnapshot | null;
+  live: OrcaDeliveryLiveSnapshot | null;
+}): {
+  clearedAtAtCapture: number | null;
+  persistedAtCapture: OrcaDeliveryPermissionBaseline | null;
+  liveAtCapture: OrcaDeliveryPermissionBaseline | null;
+} {
+  const livePermission = input.live?.stablePermissionModeState;
+  const livePlan = input.live?.stablePlanModeState;
+  return {
+    clearedAtAtCapture: input.row?.clearedAt ?? null,
+    persistedAtCapture: input.row
+      ? { mode: input.row.permissionMode, planEnabled: input.row.planModeEnabled }
+      : null,
+    liveAtCapture: livePermission?.mode && livePlan
+      ? { mode: livePermission.mode, planEnabled: livePlan.enabled }
+      : null,
+  };
+}
+
+/**
+ * Delivery-scope decision for a dispatch accepted after the caller's turn ended.
+ * Durable facts only, and each permission baseline is compared against its own source: a resumed
+ * runtime may run a mode the persisted row does not carry, so mixing baselines cancels valid work.
+ */
+export function evaluateOrcaDeliveryScope(input: {
+  /** Cleared boundary captured at admission (`null` when the row was already missing). */
+  clearedAtAtCapture: number | null;
+  persistedAtCapture: OrcaDeliveryPermissionBaseline | null;
+  liveAtCapture: OrcaDeliveryPermissionBaseline | null;
+  row: OrcaDeliverySessionRowSnapshot | null;
+  live: OrcaDeliveryLiveSnapshot | null;
+}): OrcaDeliveryVerdict {
+  const { row, live } = input;
+  if (!row || row.status === 'deleted' || row.clearedAt !== input.clearedAtAtCapture) return 'task-gone';
+  if (live) {
+    const permission = live.stablePermissionModeState;
+    const plan = live.stablePlanModeState;
+    // A permission/Plan switch in flight is a live revocation: never start work on the old one.
+    if (!permission?.mode || !plan) return 'permissions-changing';
+    if (!input.liveAtCapture
+      || permission.mode !== input.liveAtCapture.mode
+      || plan.enabled !== input.liveAtCapture.planEnabled) return 'permissions-changed';
+    return 'ok';
+  }
+  // A released runtime is not a revocation by itself, but the row is then the only authority.
+  if (!input.persistedAtCapture
+    || row.permissionMode !== input.persistedAtCapture.mode
+    || row.planModeEnabled !== input.persistedAtCapture.planEnabled) return 'permissions-changed';
+  return 'ok';
+}
+
 /** service 的 I/O 边界。register.ts 只负责把 DB、Maker、IPC broadcast 作为依赖组合进来。 */
 export interface OrcaTeamServiceDeps {
   captureControlAuthority?(leadSessionId: string): Promise<() => Promise<void>>;

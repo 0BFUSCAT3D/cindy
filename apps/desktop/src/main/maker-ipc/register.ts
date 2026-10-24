@@ -991,7 +991,9 @@ import {
 } from './orcaUiAssignmentHistoryGate.js';
 import { orcaModelDiscoveryFailure, throwOrcaServiceFailure } from './orcaServiceFailure.js';
 import {
+  captureOrcaDeliveryBaselines,
   createOrcaTeamService,
+  evaluateOrcaDeliveryScope,
   findFocusTargetWorker,
   type InterruptWorkerResult,
   type ListWorkerQueuedMessagesResult,
@@ -15505,20 +15507,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return row ?? null;
     };
     const sessionAtCapture = await readSessionRow();
-    const liveAtCapture = maker.getSession(leadSessionId);
-    // Two baselines, each compared against its own source: a resumed runtime can run a
-    // permission mode the row does not carry (and the row is not rewritten for it), so mixing
-    // them would cancel a valid dispatch after the runtime is released. Instance generation
-    // counters restart on rehydrate, so only the semantics are ever compared.
-    const livePermissionAtCapture = liveAtCapture?.stablePermissionModeState && liveAtCapture.stablePlanModeState
-      ? {
-          mode: liveAtCapture.stablePermissionModeState.mode,
-          planEnabled: liveAtCapture.stablePlanModeState.enabled,
-        }
-      : null;
-    const persistedPermissionAtCapture = sessionAtCapture
-      ? { mode: sessionAtCapture.permissionMode, planEnabled: sessionAtCapture.planModeEnabled }
-      : null;
+    const baselines = captureOrcaDeliveryBaselines({
+      row: sessionAtCapture,
+      live: maker.getSession(leadSessionId) ?? null,
+    });
     return async () => {
       if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED', 'Account changed');
       if (isAppSessionBoundaryPending()) throw new PluginTaskError('HOST_NOT_READY', 'Account is switching');
@@ -15526,27 +15518,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const currentPluginId = current?.operation === 'create' && !hasRevokedPluginTaskOwnership(current) ? current.pluginId : null;
       if (epoch !== getCurrentDbClientSnapshot() || currentPluginId !== pluginId) throw new PluginTaskError('PERMISSION_DENIED', 'Orca task ownership changed');
       const row = await readSessionRow();
-      if (!row || row.status === 'deleted' || row.clearedAt !== (sessionAtCapture?.clearedAt ?? null))
+      const verdict = evaluateOrcaDeliveryScope({
+        ...baselines,
+        row,
+        live: maker.getSession(leadSessionId) ?? null,
+      });
+      if (verdict === 'task-gone')
         throw new PluginTaskError('PERMISSION_DENIED', 'Orca task is no longer deliverable');
-      const live = maker.getSession(leadSessionId);
-      if (live) {
-        const permission = live.stablePermissionModeState;
-        const plan = live.stablePlanModeState;
-        // A permission/Plan switch in flight is a live revocation: never start work on the old
-        // snapshot while the owner is changing it.
-        if (!permission || !plan)
-          throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions are changing');
-        if (!livePermissionAtCapture
-          || permission.mode !== livePermissionAtCapture.mode
-          || plan.enabled !== livePermissionAtCapture.planEnabled)
-          throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions changed before delivery');
-      } else if (!persistedPermissionAtCapture
-        || row.permissionMode !== persistedPermissionAtCapture.mode
-        || row.planModeEnabled !== persistedPermissionAtCapture.planEnabled) {
-        // An absent runtime is released or not rehydrated yet, not a revocation by itself —
-        // but the persisted row is then the only authority left to compare against.
+      if (verdict === 'permissions-changing')
+        throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions are changing');
+      if (verdict === 'permissions-changed')
         throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions changed before delivery');
-      }
       if (pluginId === null) return;
       const task = await pluginTaskServiceForCurrentOwner!().get(pluginId, leadSessionId);
       if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED', 'Account changed');
