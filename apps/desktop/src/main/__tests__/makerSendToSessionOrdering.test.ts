@@ -285,7 +285,10 @@ describe('sendToSession ordering', () => {
     expect(serviceDispatchBlock).toContain('onAcceptedCommit: commitAccepted,');
     expect(serviceDispatchBlock).toContain('const currentWorkers = await deps.listWorkersByLead(link.leadSessionId);');
     expect(serviceDispatchBlock).toContain('const currentWorker = currentWorkers.find((worker) => worker.id === target.id);');
-    expect(serviceDispatchBlock).toContain('previousStatus: currentWorker?.status ?? target.status,');
+    // A worker missing from the active-team list at acceptance is a revocation, not a stale turn;
+    // the snapshot then always carries the live row status.
+    expect(serviceDispatchBlock).toContain("if (!currentWorker) throw new Error('worker no longer belongs to an active team');");
+    expect(serviceDispatchBlock).toContain('previousStatus: currentWorker.status,');
     expect(serviceDispatchBlock).toContain('onAcceptedRollback: rollbackAccepted,');
     expectOrder(serviceDispatchBlock, 'const currentWorkers = await deps.listWorkersByLead(link.leadSessionId);', "await deps.updateWorkerStatus(target.id, 'running');");
     expectOrder(serviceDispatchBlock, 'acceptedSnapshot = {', "await deps.updateWorkerStatus(target.id, 'running');");
@@ -796,6 +799,19 @@ describe('sendToSession ordering', () => {
       'const opts = buildCreateOptsWithStderr({',
     );
     expectOrder(resumeBranch, '...directoryGrantsForRuntime(storedExtraDirs),', 'await bootstrapSession(opts);');
+    // 任务级窗口预算：worker 唤醒自己拼 opts，不经 createSession 的 prepareStartOptions 钩子。
+    // 缺这一步，预算会在引擎进程重启时丢失（2026-09-30 实测：档位卡仍显示 50%，而 Pi 的
+    // compaction.reserveTokens 被写成无预算值 → 阈值退回满窗，跑到预算窗口 100% 以上也不压缩）。
+    expectOrder(
+      resumeBranch,
+      '...directoryGrantsForRuntime(storedExtraDirs),',
+      'await applySessionContextWindowBudgetToCreateOpts(target.sessionId, opts, getActiveCatalog());',
+    );
+    expectOrder(
+      resumeBranch,
+      'await applySessionContextWindowBudgetToCreateOpts(target.sessionId, opts, getActiveCatalog());',
+      'await bootstrapSession(opts);',
+    );
     expect(serviceDepsBlock).toContain('resumeWorkerSession: async (target) => {');
 expect(serviceDepsBlock).toContain('await orcaWorkerResumeScheduler.request(target);');
     // focus 切换是纯 UI 操作：resume 只能后台调度，不能在 IPC / MCP handler 里同步 await

@@ -209,8 +209,9 @@ function toView(record: BotImConnectionRecord): BotImConnectionView {
   return { ...record, status: statusOf(transport), identity: identityOf(transport) };
 }
 
-export function buildBotImConnectionListPayload(): BotImConnectionListPayload {
-  return { connections: listBotImConnections().map(toView) };
+export function buildBotImConnectionListPayload(botId?: string): BotImConnectionListPayload {
+  const records = botId === undefined ? listBotImConnections() : listBotImConnectionsForBot(botId);
+  return { connections: records.map(toView) };
 }
 
 function broadcastChanged(): void {
@@ -735,6 +736,12 @@ export function parseBotImConnectionAddInput(payload: unknown): BotImConnectionA
   return { botId, channel: 'discord', token, ownerUserId };
 }
 
+/** 隐藏任务小节(本机设置页与远程桌面的设置页共用): 群名沿用「群聊」小节同一份已知群。 */
+const laneOptions = () => ({ knownGroups: (record: BotImConnectionRecord) => requireDeps().listKnownGroups(record) });
+export const listBotImConnectionLanesForSettings = (id: string) => listBotImConnectionLanes(id, laneOptions());
+export const resetBotImConnectionLaneForSettings = (id: string, sessionId: string) =>
+  resetBotImConnectionLane(id, sessionId, laneOptions());
+
 export function registerBotImConnectionIpc(): void {
   if (ipcRegistered) return;
   ipcRegistered = true;
@@ -769,12 +776,11 @@ export function registerBotImConnectionIpc(): void {
     return setBotImConnectionGroupMode(p.id, p.chatId, mode);
   });
   // 隐藏任务小节: 群名沿用「群聊」小节同一份已知群(deps.listKnownGroups)。
-  const laneOptions = { knownGroups: (record: BotImConnectionRecord) => requireDeps().listKnownGroups(record) };
   ipcMain.handle('botImConnection:list-lanes', (e, payload) => {
     assertTrustedAppRendererEvent(e);
     const id = (payload as { id?: unknown } | null)?.id;
     if (!isBotImConnectionId(id)) throwIpcError('INVALID_PARAMS', 'id is invalid');
-    return listBotImConnectionLanes(id, laneOptions);
+    return listBotImConnectionLanesForSettings(id);
   });
   ipcMain.handle('botImConnection:reset-lane', (e, payload) => {
     assertTrustedAppRendererEvent(e);
@@ -783,7 +789,7 @@ export function registerBotImConnectionIpc(): void {
     if (typeof p.sessionId !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(p.sessionId)) {
       throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
     }
-    return resetBotImConnectionLane(p.id, p.sessionId, laneOptions);
+    return resetBotImConnectionLaneForSettings(p.id, p.sessionId);
   });
   ipcMain.handle('botImConnection:archive-lane', (e, payload) => {
     assertTrustedAppRendererEvent(e);
@@ -792,7 +798,7 @@ export function registerBotImConnectionIpc(): void {
     if (typeof p.sessionId !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(p.sessionId)) {
       throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
     }
-    return archiveBotImConnectionLane(p.id, p.sessionId, laneOptions).catch((error: unknown) => {
+    return archiveBotImConnectionLane(p.id, p.sessionId, laneOptions()).catch((error: unknown) => {
       if (isIpcError(error)) throw error;
       if (error instanceof Error && (error.message === 'ARCHIVE_CAPACITY_REACHED' || error.message === 'OWNER_CHANGED')) {
         throwIpcError('PRECONDITION_FAILED', error.message);
