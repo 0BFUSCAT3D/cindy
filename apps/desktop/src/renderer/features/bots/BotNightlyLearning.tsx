@@ -31,9 +31,11 @@ import type {
 const ACTION_BUTTON_CLASS =
   'shrink-0 rounded-full px-2 min-h-6 text-12 text-[var(--text-secondary)] outline-none transition-colors duration-[var(--motion-instant)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-40';
 
-export function useNightlyLearningView(botId: string) {
+/** `enabled: false` (a teammate on another computer) reads nothing: the review lives on that computer. */
+export function useNightlyLearningView(botId: string, enabled = true) {
   const [view, setView] = useState<NightlyLearningView | null>(null);
   const load = useCallback(async () => {
+    if (!enabled) return;
     const owner = getDataOwnerGeneration();
     try {
       const next = await window.electronAPI.routines.nightlyLearning.get(botId);
@@ -41,11 +43,12 @@ export function useNightlyLearningView(botId: string) {
     } catch {
       if (isDataOwnerGenerationCurrent(owner)) setView(null);
     }
-  }, [botId]);
+  }, [botId, enabled]);
   useEffect(() => {
+    if (!enabled) return undefined;
     void load();
     return window.electronAPI.routines.onChanged(() => void load());
-  }, [load]);
+  }, [enabled, load]);
   return { view, setView, reload: load };
 }
 
