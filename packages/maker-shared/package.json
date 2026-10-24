@@ -32,6 +32,7 @@
     "./file-browser-grid": "./src/fileBrowserGrid.ts",
     "./file-preview": "./src/filePreview.ts",
     "./fixtures": "./src/fixtures.ts",
+    "./ui-mock": "./src/uiMock.ts",
     "./ghost-command": "./src/ghostCommand.ts",
     "./ghost-card-form": "./src/ghostCardForm.ts",
     "./mail-text-edit": "./src/mailTextEdit.ts",

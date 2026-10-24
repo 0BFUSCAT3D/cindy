@@ -63,18 +63,25 @@ function broadcastProjectAliasesChanged(scope: DataOwnerBroadcastScope): void {
 }
 
 export async function listProjectAliases(client: DbClient = getDbClient()): Promise<ProjectAlias[]> {
+  const scope = captureDataOwnerBroadcastScope();
   const db = client.drizzle;
   const rows = await db
     .select()
     .from(projectAliases)
     .orderBy(desc(projectAliases.updatedAt));
+  if (!isDataOwnerBroadcastScopeCurrent(scope)) throwIpcError('NOT_FOUND', 'Owner changed');
   return rows.map(aliasToCamel);
 }
 
 /** Read-only host projection; controller-local overrides never propagate to a third device. */
 export async function readHostProjectAliasesSnapshot(): Promise<HostProjectAliasesSnapshot> {
   const scope = captureDataOwnerBroadcastScope();
-  const rows = await listProjectAliases();
+  const rows = await listProjectAliases().catch((error: unknown) => {
+    if (!isDataOwnerBroadcastScopeCurrent(scope)) {
+      throwIpcError('PRECONDITION_FAILED', 'active account changed during project alias read');
+    }
+    throw error;
+  });
   if (!isDataOwnerBroadcastScopeCurrent(scope)) {
     throwIpcError('PRECONDITION_FAILED', 'active account changed during project alias read');
   }
@@ -134,7 +141,12 @@ export function registerProjectAliasesIpc(): void {
     if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
     return readHostProjectAliasesSnapshot();
   });
-  ipcMain.handle('local-db:project-aliases:list', async () => listProjectAliases());
+  ipcMain.handle('local-db:project-aliases:list', async () => {
+    const rows = await listProjectAliases();
+    return isDeviceLinkInvoke()
+      ? rows.filter(row => row.projectKey.startsWith('local:') || row.projectKey.startsWith('remote:'))
+      : rows;
+  });
 
   ipcMain.handle('local-db:project-aliases:set', async (_event, input: unknown) => {
     const body = requireObject(input, 'input');

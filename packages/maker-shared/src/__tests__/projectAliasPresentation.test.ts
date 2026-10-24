@@ -74,6 +74,20 @@ describe('project aliases in controller presentations', () => {
     })[0].title).toBe('Project');
   });
 
+  it('accepts the existing local-name projection without borrowing it for SSH members', () => {
+    const projectAliases = new Map([['device:computer-a:/repo/Slack对话', 'Local']]);
+    const local = session('one');
+    const ssh = session('two', { remoteHostId: 'ssh-a' });
+    expect(buildMobileHomePresentation({ sessions: [local], projectAliases }).projects[0].title).toBe('Local');
+    expect(buildRemoteSessionSections([local], 0, { projectAliases })[0].title).toBe('Local');
+    for (const sessions of [[local, ssh], [ssh, local]]) {
+      expect(buildMobileHomePresentation({ sessions, projectAliases, searchQuery: 'Task one' }).projects[0].title)
+        .toBe('Slack对话');
+      expect(buildRemoteSessionSections(sessions, 0, { projectAliases })[0].title).toBe('Slack对话');
+    }
+    expect(buildMobileHomePresentation({ sessions: [ssh], projectAliases }).projects[0].title).toBe('Slack对话');
+  });
+
   it('keeps a single-identity alias when a deleted foreign member remains in the source', () => {
     const projectAliases = new Map([['computer-a', snapshot('Local')]]);
     const sessions = [session('one'), session('gone', { remoteHostId: 'ssh-a', status: 'deleted' })];

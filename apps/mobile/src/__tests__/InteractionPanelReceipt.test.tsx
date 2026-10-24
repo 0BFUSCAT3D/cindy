@@ -13,6 +13,10 @@ import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/ch
 import { QuestionReferenceText } from '@/session/QuestionReferenceText';
 import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
 import { i18n } from '@/i18n';
+import { AskCardAuthContext } from '@/session/askCardAuth';
+
+const { startDictation } = vi.hoisted(() => ({ startDictation: vi.fn() }));
+vi.mock('@/session/askCardVoiceStart', () => ({ startAskCardDictation: startDictation }));
 
 const evidence = vi.hoisted(() => ({ openURL: vi.fn() }));
 // As in LegendList, setters are inert outside a list item. The composer card
@@ -60,11 +64,11 @@ vi.mock('react-native', async () => {
 vi.mock('@/components/AppText', async () => {
   const { createElement } = await import('react');
   return { Text: (await import('react-native')).Text,
-    TextInput: ({ value, onChangeText, testID, multiline }: {
-      value: string; onChangeText: (value: string) => void; testID: string; multiline?: boolean;
+    TextInput: ({ value, onChangeText, testID, multiline, editable }: {
+      value: string; onChangeText: (value: string) => void; testID: string; multiline?: boolean; editable?: boolean;
     }) => createElement(multiline ? 'textarea' : 'input', { value, 'data-testid': testID,
       onInput: (event: { currentTarget: HTMLInputElement }) => onChangeText(event.currentTarget.value),
-      readOnly: true }),
+      readOnly: editable === false }),
   };
 });
 vi.mock('lucide-react-native', () => ({ ShieldCheck: () => null, MessageCircle: () => null, ChevronDown: () => null, ChevronUp: () => null, Check: () => null, CornerDownLeft: () => null,
@@ -119,6 +123,141 @@ async function type(id: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+// Unit regression: the real card/hook disabled submit during recording. Existing
+// voice coverage only exercised signed-out errors, never final text or failures.
+it.each(['free', 'custom', 'multi', 'failed', 'removed', 'connecting', 'connecting-failed', 'connecting-removed', 'connecting-cancelled'])(
+  'submits final voice text once and preserves failed/cancelled answers: %s', async (mode) => {
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    let connect!: () => void;
+    let failConnection!: (error: Error) => void;
+    let signal: AbortSignal | undefined;
+    const stop = vi.fn();
+    const cancel = vi.fn(async () => undefined);
+    startDictation.mockImplementation(async (input: { signal?: AbortSignal; onListening: () => void; setText: (text: string) => void }) => {
+      signal = input.signal;
+      input.onListening();
+      stop.mockImplementation(() => new Promise<void>((resolve, reject) => {
+        finish = () => { input.setText('Final answer'); resolve(); };
+        fail = reject;
+      }));
+      const run = { stop, cancel };
+      // PR #7017 review: listening can precede the ASR handshake. The previous
+      // fixture always resolved startup immediately and missed lost recordings.
+      if (mode.startsWith('connecting')) {
+        await new Promise<void>((resolve, reject) => { connect = resolve; failConnection = reject; });
+      }
+      return run;
+    });
+    remoteSessionStore.setPendingInteractions('s1', [{ request: {
+      kind: 'ask_user_question', requestId, questions: [{ question: 'Question?',
+        ...(mode === 'custom' || mode === 'multi' ? { options: [{ label: 'A' }] } : {}),
+        multiSelect: mode === 'multi',
+      }],
+    } }]);
+    resolveInteraction.mockResolvedValue({ accepted: true });
+    await act(async () => root.render(
+      <AskCardAuthContext.Provider value={{ getAccessToken: async () => 'test', refreshAccessToken: async () => 'test', apiFetch: async () => ({}) }}>
+        <Harness />
+      </AskCardAuthContext.Provider>,
+    ));
+    if (mode === 'multi') await click('interaction.ask.option.1');
+    if (mode === 'failed' || mode === 'connecting-failed') await type('interaction.ask.textInput', 'Saved draft');
+    await click('interaction.ask.voice');
+    const send = host.querySelector<HTMLButtonElement>('[data-testid="interaction.ask.submitButton"]')!;
+    expect(send.disabled).toBe(false);
+    if (mode === 'connecting-cancelled') {
+      await click('interaction.ask.voice');
+      expect(signal?.aborted).toBe(true);
+      await act(async () => connect());
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(stop).not.toHaveBeenCalled();
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      return;
+    }
+    await click('interaction.ask.submitButton');
+    await click('interaction.ask.submitButton');
+    if (mode.startsWith('connecting')) {
+      expect(signal?.aborted).toBe(false);
+      expect(stop).not.toHaveBeenCalled();
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      if (mode === 'connecting-removed') {
+        await act(async () => remoteSessionStore.setPendingInteractions('s1', []));
+        expect(signal?.aborted).toBe(true);
+      }
+      await act(async () => mode === 'connecting-failed' ? failConnection(new Error('Connection failed')) : connect());
+      if (mode !== 'connecting') {
+        expect(resolveInteraction).not.toHaveBeenCalled();
+        expect(stop).not.toHaveBeenCalled();
+        if (mode === 'connecting-failed') expect(readAskUserDraft(requestId)?.customInput).toBe('Saved draft');
+        else expect(cancel).toHaveBeenCalledOnce();
+        return;
+      }
+    }
+    expect(stop).toHaveBeenCalledOnce();
+    expect(resolveInteraction).not.toHaveBeenCalled();
+    if (mode === 'removed') await act(async () => remoteSessionStore.setPendingInteractions('s1', []));
+    await act(async () => mode === 'failed' ? fail(new Error('Voice failed')) : finish());
+    if (mode === 'failed' || mode === 'removed') {
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      if (mode === 'failed') expect(readAskUserDraft(requestId)?.customInput).toBe('Saved draft');
+    } else {
+      expect(resolveInteraction).toHaveBeenCalledExactlyOnceWith(requestId, {
+        kind: 'ask_user_question', answers: { 'Question?': mode === 'multi' ? '["A","Final answer"]' : 'Final answer' },
+      });
+    }
+  },
+);
+
+// PR #7017 review: no PCM has arrived yet, so the old hook left editing and
+// navigation enabled while Send awaited startup. Exercise actual card actions,
+// then resolve startup and verify the original answer/question is submitted.
+it.each(['options', 'previous'])('protects the answer while submitting before the first audio chunk: %s', async (action) => {
+  let connect!: () => void;
+  const stop = vi.fn();
+  startDictation.mockImplementation(async (input: { setText: (text: string) => void }) => {
+    stop.mockImplementation(async () => input.setText('Final answer'));
+    await new Promise<void>((resolve) => { connect = resolve; });
+    return { stop, cancel: vi.fn(async () => undefined) };
+  });
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId, questions: [
+      ...(action === 'previous' ? [{ question: 'First?', multiSelect: true, options: [{ label: 'X' }, { label: 'Y' }] }] : []),
+      { question: 'Current?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] },
+    ],
+  } }]);
+  resolveInteraction.mockResolvedValue({ accepted: true });
+  await act(async () => root.render(
+    <AskCardAuthContext.Provider value={{ getAccessToken: async () => 'test', refreshAccessToken: async () => 'test', apiFetch: async () => ({}) }}>
+      <Harness />
+    </AskCardAuthContext.Provider>,
+  ));
+  if (action === 'previous') {
+    await click('interaction.ask.option.1');
+    await click('interaction.ask.submitButton');
+  }
+  await click('interaction.ask.option.1');
+  await click('interaction.ask.voice');
+  await click('interaction.ask.submitButton');
+  expect(resolveInteraction).not.toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
+  expect(host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]')!.readOnly).toBe(true);
+  for (const id of ['interaction.ask.option.2', 'interaction.ask.skipButton',
+    ...(action === 'previous' ? ['interaction.ask.previousButton'] : [])]) {
+    expect(host.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)!.disabled).toBe(true);
+    await click(id);
+  }
+  expect(host.querySelector('[data-testid="interaction.ask.question"]')!.textContent).toBe('Current?');
+  expect(readAskUserDraft(requestId)?.selectedLabels).toEqual(['A']);
+  await act(async () => connect());
+  expect(resolveInteraction).toHaveBeenCalledExactlyOnceWith(requestId, {
+    kind: 'ask_user_question', answers: {
+      ...(action === 'previous' ? { 'First?': '["X"]' } : {}),
+      'Current?': '["A","Final answer"]',
+    },
+  });
+});
 
 // Unit regression for PR #6306 review: a signed-out microphone tap used to
 // render hardcoded Chinese. Existing receipt tests never tapped this entry.

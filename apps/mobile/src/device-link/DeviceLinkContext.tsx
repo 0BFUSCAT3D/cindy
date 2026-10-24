@@ -270,6 +270,11 @@ export function subscribeRemoteTaskTagsChanged(
   };
 }
 const remoteFavoritesChangedListeners = new Set<(deviceId: string) => void>();
+const remoteProjectAliasesChangedListeners = new Set<(deviceId: string) => void>();
+export function subscribeRemoteProjectAliasesChanged(listener: (deviceId: string) => void): () => void {
+  remoteProjectAliasesChangedListeners.add(listener);
+  return () => { remoteProjectAliasesChangedListeners.delete(listener); };
+}
 export function subscribeRemoteFavoritesChanged(listener: (deviceId: string) => void): () => void {
   remoteFavoritesChangedListeners.add(listener);
   return () => { remoteFavoritesChangedListeners.delete(listener); };
@@ -1787,6 +1792,7 @@ export function routeFrame(env: Envelope, handlers: RouteFrameHandlers = {}): vo
   }
   if (push.channel === PROJECT_ALIASES_CHANGED_CHANNEL) {
     handlers.onProjectAliasesChanged?.(env.src, push.ownerStamp);
+    for (const listener of remoteProjectAliasesChangedListeners) listener(env.src);
     return;
   }
   if (push.channel === 'maker:provider:changed') {

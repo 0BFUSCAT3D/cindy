@@ -339,6 +339,8 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   // 控制端吞错,仅靠已加载消息 + 实时 turn-cost 推送呈现部分值。
   'local-db:messages:estimatedSessionValue',
   'local-db:recent-workdirs:list',
+  // Host-owned project display names. No remote mutation of viewer preferences.
+  'local-db:project-aliases:list',
   // 窄口径写:从被控端「最近项目」列表移除一条(专用 handler,path 归一后按主键删,
   // 幂等,不动 sessions / 磁盘)。控制端项目选择器的删除入口与本机语义对等;
   // 老被控端无此 handler → CHANNEL_NOT_ALLOWED → 控制端隐藏/忽略删除能力即可。
@@ -439,6 +441,7 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   'maker:worker:idle',
   'maker:worker:acknowledge-done',
   'maker:worker:archive',
+  'maker:worker:update',
   'maker:team:end',
   'maker:session:enable-orca',
   'maker:session:disable-orca',

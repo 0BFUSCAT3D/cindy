@@ -227,9 +227,14 @@ describe('task info and retained Home behavior', () => {
       workspaceKind: 'project', status: 'active', deviceLinkDeviceId: 'd', deviceLinkDeviceName: 'Computer' }));
     // Keep the existing production-expression fixture complete when aliases become an optional Home input.
     const result = surfaceValue('projectFilterUniverse', { useMemo, buildMobileHomePresentation,
-      projectAliases: new Map(), deviceModels: [], scheduleIndex: new Map(), selectedDeviceId: null, homeSessions: sessions,
+      deviceModels: [], scheduleIndex: new Map(), selectedDeviceId: null, homeSessions: sessions,
+      projectAliases: new Map([['device:d:/A', 'Customer Portal']]),
       t: (key: string) => key, searchQuery: 'no match', statusFilter: 'running' });
     expect(result.projects.map((project: { workingDir: string }) => project.workingDir).sort()).toEqual(['/A', '/B']);
+    // #7026: the production initializer consumes host aliases; keep that input
+    // in this unit fixture and verify its visible title without filtering candidates.
+    expect(result.projects.find((project: { workingDir: string }) => project.workingDir === '/A')?.title)
+      .toBe('Customer Portal');
   });
 
   it('expires active-time rows using the actual clock input while Home stays open', () => {

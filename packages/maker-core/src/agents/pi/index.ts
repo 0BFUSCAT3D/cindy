@@ -142,7 +142,7 @@ import {
   type PiSubagentRunStatus,
 } from './pi-subagent-runs.js';
 import {
-  annotatePermissionRequestForUnavailableReview,
+  annotatePermissionRequestForAutoReview,
   createAutoReviewConfirmUndeliveredNotice,
   createAutoReviewUnavailableNotice,
   extractAutoReviewUserIntent,
@@ -2702,8 +2702,11 @@ export class PiAgent extends BaseAgent {
     const guestOmitsGateway = guestProviderId !== undefined && !piGuestUsesGateway(guestProviderId);
     const sessionNativeProviderResolver = (): AgentDeps['resolvePiNativeProviders'] => {
       const resolve = this.deps.resolvePiNativeProviders;
-      if (!resolve || !guestProviderId) return resolve?.bind(this.deps);
-      return async (input) => restrictPiGuestNativeProviders(await resolve.call(this.deps, input), guestProviderId, hosted?.guestProvider?.modelIds);
+      if (!resolve) return undefined;
+      return async (input) => {
+        const result = await resolve.call(this.deps, { ...input, sessionId: opts.sessionId });
+        return guestProviderId ? restrictPiGuestNativeProviders(result, guestProviderId, hosted?.guestProvider?.modelIds) : result;
+      };
     };
     const resolvePiNativeProviders = sessionNativeProviderResolver();
     const sessionPiAutoCompactPct = this.deps.runtimeConfig.piAutoCompactThresholdPct;
@@ -4747,7 +4750,7 @@ export class PiAgent extends BaseAgent {
         }
       })();
       const requestUserDecision = async (
-        options: { forcePrompt: boolean; unavailableHandoff?: boolean },
+        options: { forcePrompt: boolean; unavailableHandoff?: boolean; autoReviewReason?: string },
       ): Promise<PiPermissionResolution | null> => {
         if (
           permissionMode === 'bypassPermissions'
@@ -4795,9 +4798,10 @@ export class PiAgent extends BaseAgent {
             },
           };
           Promise.resolve().then(() => interactionResolver!(
-            options.unavailableHandoff
-              ? annotatePermissionRequestForUnavailableReview(permissionRequest)
-              : permissionRequest,
+            annotatePermissionRequestForAutoReview(permissionRequest, {
+              unavailable: options.unavailableHandoff,
+              reason: options.autoReviewReason,
+            }),
           )).then((decision) => {
             if (decision.kind !== 'permission') {
               if (options.unavailableHandoff) autoReviewConfirmUndeliveredNotice.notify();
@@ -4912,7 +4916,7 @@ export class PiAgent extends BaseAgent {
           if (decision.unavailable) autoReviewUnavailableNotice.notify();
           return requestUserDecision({
             forcePrompt: true,
-            ...(decision.unavailable ? { unavailableHandoff: true } : {}),
+            ...(decision.unavailable ? { unavailableHandoff: true } : { autoReviewReason: decision.reason }),
           });
         } catch (error) {
           this.deps.logger.warn('PI Subagent auto-review failed; denying', {
@@ -5665,6 +5669,7 @@ export class PiAgent extends BaseAgent {
             pid,
             kind: 'pi',
             role: 'task-host',
+            sessionId: opts.sessionId ?? null,
           });
         },
         opts.remoteHostId,
@@ -9114,13 +9119,10 @@ export class PiAgent extends BaseAgent {
             });
             Promise.resolve()
               .then(() =>
-                context.resolver!(autoDecision?.unavailable
-                  ? annotatePermissionRequestForUnavailableReview({
-                    kind: 'permission', requestId: `${id}:pi-extension-mutation`,
-                    toolName, input: toolInput,
-                  })
-                  : { kind: 'permission', requestId: `${id}:pi-extension-mutation`,
-                    toolName, input: toolInput }),
+                context.resolver!(annotatePermissionRequestForAutoReview(
+                  { kind: 'permission', requestId: `${id}:pi-extension-mutation`, toolName, input: toolInput },
+                  autoDecision?.verdict === 'ask' ? autoDecision : undefined,
+                )),
               )
               .then((decision) => {
                 if (settled) return;
@@ -9396,7 +9398,7 @@ export class PiAgent extends BaseAgent {
        * 不能把用户的明确拒绝也一并翻转。
        */
       const requestUserDecision = async (
-        opts: { forcePrompt: boolean; unavailableHandoff?: boolean },
+        opts: { forcePrompt: boolean; unavailableHandoff?: boolean; autoReviewReason?: string },
       ): Promise<{ decided: boolean; resolution: PiPermissionResolution }> => {
         if (!resolver) {
           this.deps.logger.warn('pi permission request has no interaction resolver', { toolName });
@@ -9437,9 +9439,10 @@ export class PiAgent extends BaseAgent {
             input,
           };
           Promise.resolve().then(() => resolver(
-            opts.unavailableHandoff
-              ? annotatePermissionRequestForUnavailableReview(permissionRequest)
-              : permissionRequest,
+            annotatePermissionRequestForAutoReview(permissionRequest, {
+              unavailable: opts.unavailableHandoff,
+              reason: opts.autoReviewReason,
+            }),
           )).then((decision) => {
             if (decision.kind !== 'permission') {
               this.deps.logger.warn('pi permission got mismatched decision kind', {
@@ -9487,6 +9490,7 @@ export class PiAgent extends BaseAgent {
         opts?: {
           forcePrompt?: boolean;
           unavailableHandoff?: boolean;
+          autoReviewReason?: string;
           requireExplicitDecision?: boolean;
         },
       ): Promise<PiPermissionResolution> => {
@@ -9497,6 +9501,7 @@ export class PiAgent extends BaseAgent {
         const outcome = await requestUserDecision({
           forcePrompt: opts?.requireExplicitDecision === true,
           ...(opts?.unavailableHandoff ? { unavailableHandoff: true } : {}),
+          ...(opts?.autoReviewReason ? { autoReviewReason: opts.autoReviewReason } : {}),
         });
         // 已有决策(用户明确表态,或切档时代为 settle)→ 以它为准,不再被档位二次翻转。
         if (outcome.decided) return outcome.resolution;
@@ -9602,6 +9607,7 @@ export class PiAgent extends BaseAgent {
             sendPermissionResolution(await requestUserConfirmation({
               forcePrompt: true,
               unavailableHandoff: decision.unavailable === true,
+              ...(decision.verdict === 'ask' ? { autoReviewReason: decision.reason } : {}),
             }));
             return;
           }

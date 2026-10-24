@@ -86,6 +86,20 @@ describe('project alias remote snapshot and owner boundary', () => {
     });
   });
 
+  it.each([false, true])('keeps the legacy list contract while filtering remote viewer overrides (remote=%s)', async (remote) => {
+    const rows = [
+      { projectKey: 'local:/repo', alias: 'Local', updatedAt: 1 },
+      { projectKey: 'remote:ssh:/repo', alias: 'SSH', updatedAt: 2 },
+      { projectKey: 'device:viewer:/repo', alias: 'Private', updatedAt: 3 },
+    ];
+    h.read.mockResolvedValue(rows);
+    h.remoteInvoke = remote;
+    registerProjectAliasesIpc();
+    const handler = h.handle.mock.calls.find(([channel]) => channel === 'local-db:project-aliases:list')![1];
+    expect(await handler({})).toEqual((remote ? rows.slice(0, 2) : rows)
+      .map(row => ({ ...row, updatedAt: new Date(row.updatedAt).toISOString() })));
+  });
+
   it('broadcasts persisted rename and deletion invalidations with the captured owner stamp', async () => {
     await upsertProjectAlias('local:/repo', 'New name');
     await upsertProjectAlias('local:/repo', '');

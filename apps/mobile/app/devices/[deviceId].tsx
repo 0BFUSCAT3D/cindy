@@ -241,13 +241,14 @@ function DeviceDetailScreenContent() {
   }] : []), [deviceId, deviceName, deviceUnresponsive]);
   const searchProjects = useMemo(
     () => listConversationSearchProjects(sessions, deviceId ? new Set([deviceId]) : undefined, projectAliases),
-    [deviceId, projectAliases, sessions],
+    [deviceId, sessions, projectAliases],
   );
   const indexedSearch = useConversationSearch({
     enabled: !automationScopeKey && !!deviceId,
     lockedWorkingDirs: projectWorkingDir ? [projectWorkingDir] : null,
     origins: searchOrigins,
     projects: searchProjects,
+    projectAliases,
   });
   const searchQuery = indexedSearch.query;
   const setSearchQuery = indexedSearch.setQuery;
@@ -1389,6 +1390,7 @@ function DeviceDetailSessionRow({
       onArchive={swipe.onArchive}
       onShowOptions={swipe.onShowOptions}
       onTogglePin={swipe.onTogglePin}
+      onMarkRead={swipe.onMarkRead}
       registry={swipe.registry}
       session={item.session as RemoteSession}
       testID={`${testID}.swipe`}

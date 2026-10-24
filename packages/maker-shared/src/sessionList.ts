@@ -9,7 +9,7 @@ import { sessionCollaborationLabel, sessionWorktreeLabel } from './sessionIdenti
 import { isDefaultDraftSessionTitle } from './sessionTitle.js';
 import { getSessionListCollapseView } from './sessionListCollapse.js';
 import { collapseWorktreeDirForGrouping } from './worktreePaths.js';
-import { resolveProjectAliasForSessions, type ProjectAliasesByDevice } from './projectAliasSync.js';
+import { resolveProjectAliasForSessions, type ProjectAliasDisplayIndex } from './projectAliasSync.js';
 
 let sessionListCollator: Intl.Collator | undefined;
 /** Call when the host resumes after system locale/region preferences may change. */
@@ -173,7 +173,7 @@ export interface RemoteSessionListContext {
 export type RemoteSessionStatusFilter = 'active' | 'waiting' | 'automation' | 'archived' | 'all';
 
 export interface RemoteSessionListOptions {
-  projectAliases?: ProjectAliasesByDevice;
+  projectAliases?: ProjectAliasDisplayIndex;
   /** A single-device detail view may have rows without controller-local device metadata. */
   projectAliasDeviceId?: string;
   statusFilter?: RemoteSessionStatusFilter;
