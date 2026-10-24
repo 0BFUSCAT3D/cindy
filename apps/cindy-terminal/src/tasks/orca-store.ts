@@ -5,6 +5,7 @@ import type { OrcaWorkerStatus } from '@cindy/orca-workflow/host/orcaTeamService
 import type { OrcaRemotePendingReport, OrcaRemoteWorkerProxySessionSeed } from '@cindy/maker-shared/orca-remote-worker';
 import { atomicPrivateWrite, privateDirectory, readPrivateFile } from '../platform.js';
 import type { NewTerminalTaskMeta, TerminalTaskMeta, TerminalTaskStorage } from './storage.js';
+import { DEFAULT_ORCA_WORKER_PERMISSION_MODE, ORCA_WORKER_PERMISSION_MODES } from '@cindy/maker-shared/orca-worker-permission-mode';
 
 const identifier = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const timestamp = z.number().finite().nonnegative();
@@ -23,10 +24,13 @@ const proxySeedSchema = z.object({ title: z.string(), agentKind: z.enum(['cc', '
   model: z.string(), effort: z.string().nullable(), permissionMode: z.string(),
   fastMode: z.union([z.boolean(), z.literal('ultrafast')]), agentDeviceId: z.string().nullable().optional() });
 const journalSchema = z.object({ id: identifier, patch: taskPatchSchema, create: proxySeedSchema.optional() });
+const settingsSchema = z.object({ workerSoftLimit: z.number().int().min(1).max(20), workerHardLimit: z.number().int().min(1).max(20),
+  workerPermissionMode: z.enum(ORCA_WORKER_PERMISSION_MODES), workerIdleReleaseMinutes: z.number().int().min(0).max(120).default(0) }).refine(value => value.workerSoftLimit <= value.workerHardLimit);
+const defaultSettings = { workerSoftLimit: 5, workerHardLimit: 8, workerIdleReleaseMinutes: 0, workerPermissionMode: DEFAULT_ORCA_WORKER_PERMISSION_MODE };
 const stateSchema = z.object({ version: z.literal(1), teams: z.array(teamSchema), workers: z.array(workerSchema),
   reservations: z.array(z.object({ id: identifier, teamId: identifier, label: z.string(), createdAt: timestamp, expiresAt: timestamp })),
   remoteOpens: z.array(z.object({ deviceId: z.string(), remoteSessionId: identifier, createdAt: timestamp })),
-  taskJournal: z.array(journalSchema) });
+  taskJournal: z.array(journalSchema), settings: settingsSchema.default(defaultSettings) });
 type State = z.infer<typeof stateSchema>;
 type Team = z.infer<typeof teamSchema>;
 type Worker = z.infer<typeof workerSchema>;
@@ -34,7 +38,7 @@ type TaskPatch = z.infer<typeof taskPatchSchema>;
 export type TerminalOrcaTeam = Omit<Team, 'completedAt' | 'createdAt' | 'updatedAt'> & {
   completedAt: string | null; createdAt: string; updatedAt: string;
 };
-export type TerminalOrcaWorker = Omit<Worker, 'idleSince' | 'createdAt' | 'updatedAt'> & {
+export type TerminalOrcaWorker = Omit<Worker, 'idleSince' | 'createdAt' | 'updatedAt' | 'executionDeviceId' | 'remoteSessionId' | 'pendingReport' | 'lastBridgedMessageId' | 'remoteStopConfirmedAt' | 'remoteReleasedAt'> & {
   leadSessionId: string; idleSince: string | null; createdAt: string; updatedAt: string;
   session: { id: string; title: string; agentKind: TerminalTaskMeta['agentKind']; workingDir: string;
     model: string; effort: string; permissionMode: string; fastMode: boolean | 'ultrafast'; sdkSessionId?: string; agentDeviceId: string | null };
@@ -59,12 +63,12 @@ const teamRecord = (row: Team): TerminalOrcaTeam => ({ ...row, completedAt: iso(
  * No second collaboration lifecycle lives here: the shared Orca services own it. */
 export class TerminalOrcaStore {
   readonly ready: Promise<void>;
-  private state: State = { version: 1, teams: [], workers: [], reservations: [], remoteOpens: [], taskJournal: [] };
+  private state: State = { version: 1, teams: [], workers: [], reservations: [], remoteOpens: [], taskJournal: [], settings: { ...defaultSettings } };
   private tail: Promise<unknown>;
   private fault: unknown;
   private closed = false;
   private readonly file: string;
-  private remoteStatus?: (sessionId: string, deviceId: string) => { deviceName: string; reachable: boolean; workingDir?: string };
+  private remoteStatus?: (sessionId: string, deviceId: string) => { deviceName: string; reachable: boolean; workingDir?: string } | undefined;
   constructor(private readonly options: { root: string; tasks: TerminalTaskStorage; guard(): void; beforeOpen?: Promise<void>;
     onTaskPatch?(id: string, patch: TaskPatch): void; now?: () => number }) {
     this.file = path.join(options.root, 'orca', 'state.json');
@@ -130,9 +134,15 @@ export class TerminalOrcaStore {
       const value = operation(state, tasks);
       if (write) {
         stateSchema.parse(state); this.validate(state); this.guard();
-        await atomicPrivateWrite(this.file, JSON.stringify(state));
-        this.state = state;
-        try { await this.materialize(state); } catch (error) { this.fault = error; throw error; }
+        try {
+          await atomicPrivateWrite(this.file, JSON.stringify(state));
+          this.state = state;
+          await this.materialize(state);
+        } catch (error) {
+          // A failed acknowledgement may follow the atomic rename. Never let
+          // a later write replace that committed receipt with our old snapshot.
+          this.fault = error; throw error;
+        }
       }
       return structuredClone(value);
     });
@@ -141,7 +151,9 @@ export class TerminalOrcaStore {
   }
   private patch(state: State, id: string, patch: TaskPatch) { state.taskJournal.push({ id, patch }); }
   private workerRecord(row: Worker, team: Team, task: TerminalTaskMeta): TerminalOrcaWorker {
-    return { ...row, leadSessionId: team.leadSessionId, idleSince: iso(row.idleSince),
+    const { executionDeviceId: _device, remoteSessionId: _remote, pendingReport: _pending,
+      lastBridgedMessageId: _message, remoteStopConfirmedAt: _stopped, remoteReleasedAt: _released, ...visible } = row;
+    return { ...visible, leadSessionId: team.leadSessionId, idleSince: iso(row.idleSince),
       createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)!,
       session: { id: task.id, title: task.title ?? '', agentKind: task.agentKind, workingDir: task.workDir,
         model: task.model, effort: task.effort ?? '', permissionMode: task.permissionMode ?? 'ask', fastMode: task.fastMode ?? false,
@@ -150,6 +162,22 @@ export class TerminalOrcaStore {
         remoteSessionId: row.remoteSessionId, ...this.remoteStatus?.(row.sessionId, row.executionDeviceId) } } : {}) };
   }
   setRemoteWorkerStatusProvider(provider: typeof this.remoteStatus) { this.remoteStatus = provider; }
+  settings() { this.guard(); return { ...this.state.settings }; }
+  idleCandidates(before: number) { return this.run((state, tasks) => state.workers.flatMap(worker => {
+    const team = state.teams.find(team => team.id === worker.teamId && team.status === 'active');
+    return team && active(tasks.get(worker.sessionId)) && !worker.executionDeviceId && worker.idleSince === null && worker.updatedAt < before
+      ? [{ id: worker.id, sessionId: worker.sessionId, leadSessionId: team.leadSessionId, status: worker.status, idleSince: worker.idleSince, updatedAt: worker.updatedAt }] : [];
+  })); }
+  markIdleReleased(expected: { id: string; status: string; updatedAt: number }, at: number) { return this.run(state => {
+    const row = state.workers.find(worker => worker.id === expected.id && worker.idleSince === null && worker.status === expected.status && worker.updatedAt === expected.updatedAt);
+    if (!row) return false;
+    row.status = 'idle'; row.idleSince = at; row.updatedAt = at; return true;
+  }, true); }
+  touchWorker(id: string, at: number) { return this.run(state => { const row = state.workers.find(worker => worker.id === id); if (row) row.updatedAt = at; }, true); }
+  updateSettings(patch: Partial<z.infer<typeof settingsSchema>>) { return this.run(state => {
+    state.settings = settingsSchema.parse({ ...state.settings, ...patch });
+    return { ...state.settings };
+  }, true); }
   getTeamByLeadSession(lead: string) { return this.run(state => { const row = state.teams.find(team => team.leadSessionId === lead); return row ? teamRecord(row) : null; }); }
   getActiveTeamByLead(lead: string) { return this.run(state => { const row = state.teams.find(team => team.leadSessionId === lead && team.status === 'active'); return row ? teamRecord(row) : null; }); }
   getTeamByWorkerSession(id: string) { return this.run(state => { const worker = state.workers.find(row => row.sessionId === id), team = state.teams.find(row => row.id === worker?.teamId); return team ? teamRecord(team) : null; }); }
@@ -211,10 +239,24 @@ export class TerminalOrcaStore {
       return this.workerRecord(row, state.teams.find(team => team.id === row.teamId)!, tasks.get(row.sessionId)!); });
     return worker;
   }
-  listWorkersByLead(lead: string) { return this.run((state, tasks) => state.workers.flatMap(row => {
-    const team = state.teams.find(team => team.id === row.teamId && team.leadSessionId === lead && team.status === 'active'), task = tasks.get(row.sessionId);
-    return team && active(task) ? [this.workerRecord(row, team, task!)] : [];
-  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt))); }
+  async listWorkersByLead(lead: string) { return (await this.listWorkersByLeads([lead]))[lead] ?? []; }
+  workerForLead(leadId: string, workerId: string) { return this.run((state, tasks) => {
+    const worker = state.workers.find(row => row.id === workerId), team = state.teams.find(row => row.id === worker?.teamId && row.leadSessionId === leadId);
+    const task = worker && tasks.get(worker.sessionId);
+    return worker && team && task && !task.deleted ? this.workerRecord(worker, team, task) : null;
+  }); }
+  occupiedSlots(teamId: string) { return this.run((state, tasks) =>
+    state.workers.filter(row => row.teamId === teamId && active(tasks.get(row.sessionId))).length
+    + state.reservations.filter(row => row.teamId === teamId && row.expiresAt > this.now()).length); }
+  listWorkersByLeads(leads: readonly string[]) { return this.run((state, tasks) => {
+    const result: Record<string, TerminalOrcaWorker[]> = Object.fromEntries([...new Set(leads)].map(id => [id, []]));
+    for (const row of state.workers) {
+      const team = state.teams.find(team => team.id === row.teamId && team.status === 'active'), task = tasks.get(row.sessionId);
+      if (team && Object.hasOwn(result, team.leadSessionId) && active(task)) result[team.leadSessionId]!.push(this.workerRecord(row, team, task!));
+    }
+    for (const workers of Object.values(result)) workers.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return result;
+  }); }
   getWorkerLink(input: { workerId?: string; workerSessionId?: string }) { return this.run((state, tasks) => {
     if (!input.workerId && !input.workerSessionId) return null;
     const worker = state.workers.find(row => (!input.workerId || row.id === input.workerId) && (!input.workerSessionId || row.sessionId === input.workerSessionId));
@@ -231,6 +273,10 @@ export class TerminalOrcaStore {
   markWorkerIdleIfStatus(id: string, expected: OrcaWorkerStatus) { return this.run(state => {
     const row = state.workers.find(row => row.id === id && row.status === expected); if (!row) return false;
     Object.assign(row, { status: 'idle', idleSince: this.now(), updatedAt: this.now() }); return true;
+  }, true); }
+  markWorkerIdle(id: string) { return this.run(state => {
+    const row = state.workers.find(row => row.id === id);
+    if (row) Object.assign(row, { status: 'idle', idleSince: this.now(), updatedAt: this.now() });
   }, true); }
   restoreWorkerDoneIfIdle(id: string) { return this.run(state => { const row = state.workers.find(row => row.id === id && row.status === 'idle');
     if (!row) return false; Object.assign(row, { status: 'done', idleSince: null, updatedAt: this.now() }); return true;
@@ -271,7 +317,7 @@ export class TerminalOrcaStore {
   }
   saveWorkerRemoteReport(id: string, pending: OrcaRemotePendingReport | null, messageId?: string, markDone = false) { return this.run(state => {
     const row = state.workers.find(row => row.id === id); if (!row) return;
-    row.pendingReport = pending; if (messageId) row.lastBridgedMessageId = messageId;
+    row.pendingReport = structuredClone(pending); if (messageId) row.lastBridgedMessageId = messageId;
     if (markDone) { row.status = 'done'; row.updatedAt = this.now(); }
   }, true); }
   saveRemoteWorkerOpen(deviceId: string, remoteSessionId: string) { return this.run(state => { state.remoteOpens.push({ deviceId, remoteSessionId, createdAt: this.now() }); }, true); }

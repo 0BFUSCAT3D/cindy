@@ -9,6 +9,7 @@ import path from 'node:path';
 import { TerminalTaskStorage } from './storage.js';
 import { TerminalOrcaStore } from './orca-store.js';
 import { atomicPrivateWrite, privateDirectory } from '../platform.js';
+import * as platform from '../platform.js';
 
 const roots: string[] = [], stores: TerminalOrcaStore[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const store of stores.splice(0)) await store.close();
@@ -95,4 +96,17 @@ it('retains a failed startup as a permanent barrier instead of replacing corrupt
   await expect(store.createActiveTeam({ leadSessionId: 'lead' })).rejects.toThrow();
   await expect(store.createActiveTeam({ leadSessionId: 'lead' })).rejects.toThrow();
   expect(await readFile(file, 'utf8')).toBe('{interrupted');
+});
+it('blocks subsequent writes when the durable commit succeeds but its acknowledgement is lost', async () => {
+  const { root, store, tasks, team } = await fixture();
+  const write = platform.atomicPrivateWrite;
+  vi.spyOn(platform, 'atomicPrivateWrite').mockImplementationOnce(async (...args) => {
+    await write(...args); throw new Error('fixture commit acknowledgement lost');
+  });
+  await expect(store.markTeamEnded(team.id, 'completed')).rejects.toThrow('acknowledgement lost');
+  await expect(store.saveRemoteWorkerOpen('device', 'new-worker')).rejects.toThrow('acknowledgement lost');
+  await store.close();
+  const reopened = new TerminalOrcaStore({ root, tasks, guard() {} }); stores.push(reopened); await reopened.ready;
+  expect(await reopened.getTeamByLeadSession('lead')).toMatchObject({ status: 'completed' });
+  expect(await reopened.listOrphanRemoteWorkerOpens()).toEqual([]);
 });

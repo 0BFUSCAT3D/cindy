@@ -240,6 +240,13 @@ export interface WorkerTerminalTurnParams {
   capture?: WorkerTerminalTurnCapture;
 }
 
+/** Shared visible report text, also used when a host replays a durable outbox. */
+export function formatOrcaWorkerCompletion(turn: Pick<WorkerTerminalTurnParams, 'status' | 'finalText' | 'diagnostic'>, capturedText = ''): string {
+  const finalText = turn.finalText.trim() || capturedText.trim() || turn.diagnostic?.trim() || '(no output captured)';
+  const header = turn.status === 'error' ? '[Auto-bridged: worker 异常终止]' : '[Auto-bridged: worker 已完成，系统自动回传结果]';
+  return `${header}\n\n${finalText}`;
+}
+
 /** INPUT_STOP / ABORT_SESSION 记录的手动中断快照，用来让 terminal handler 静默收尾。 */
 export interface OrcaManualInterruptSnapshot {
   markedAt: number;
@@ -270,7 +277,7 @@ export interface OrcaTeamServiceDeps {
   markWorkerIdle(workerId: string): Promise<void>;
   markWorkerIdleIfStatus(workerId: string, expectedStatus: 'done'): Promise<boolean>;
   restoreWorkerDoneIfIdle(workerId: string): Promise<boolean>;
-  closeWorkerSession(sessionId: string, beforeClose?: () => Promise<void>): Promise<void>;
+  closeWorkerSession(sessionId: string, beforeClose?: () => Promise<void>, sendLockHeld?: boolean): Promise<void>;
   /** 与 Session.send reservation 原子互斥；false 表示 direct send/turn 已先取得会话。 */
   closeWorkerSessionIfIdle(sessionId: string, sendLockHeld?: boolean): Promise<boolean>;
   /** pending / dispatch-boundary / recovery 输入任一存在时返回 true。 */
@@ -341,18 +348,18 @@ export interface OrcaTeamServiceDeps {
   /** Strict restore gate for atomic merge; false means no mutation is allowed. */
   ensureWorkerQueueRestored(sessionId: string): Promise<boolean>;
   /** 从队列移除一条排队消息;实现方必须走 coordinator.remove(带 discard settle)。返回是否真的移除。 */
-  removeQueuedMessage(sessionId: string, clientId: string, expected?: AgentInputQueuedMessage): boolean;
+  removeQueuedMessage(sessionId: string, clientId: string, expected?: AgentInputQueuedMessage): boolean | Promise<boolean>;
   /** 整条替换一条排队消息(同 clientId 原位替换);steering / 已派发返回 false。 */
-  replaceQueuedMessage(sessionId: string, clientId: string, next: AgentInputQueuedMessage, expected?: AgentInputQueuedMessage): boolean;
+  replaceQueuedMessage(sessionId: string, clientId: string, next: AgentInputQueuedMessage, expected?: AgentInputQueuedMessage): boolean | Promise<boolean>;
   steerStoredQueuedMessage(sessionId: string, clientId: string): Promise<QueuedSteerOutcome>;
-  moveQueuedMessage(sessionId: string, clientId: string, position: number): number | null | 'locked';
+  moveQueuedMessage(sessionId: string, clientId: string, position: number): number | null | 'locked' | Promise<number | null | 'locked'>;
   mergeQueuedMessages(
     sessionId: string,
     clientIds: readonly string[],
     buildReplacement: (
       targets: readonly AgentInputQueuedMessage[],
     ) => AgentInputQueuedMessage | null,
-  ): boolean;
+  ): boolean | Promise<boolean>;
   log: {
     info(message: string, fields?: Record<string, unknown>): void;
     warn(message: string, fields?: Record<string, unknown>): void;
@@ -645,16 +652,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     state.inFlight = true;
     state.retryAfterRejectedDelivery = false;
     const version = state.version;
-    const finalText =
-      turn.finalText.trim() ||
-      state.capturedText.trim() ||
-      turn.diagnostic?.trim() ||
-      '(no output captured)';
-    const header =
-      turn.status === 'error'
-        ? '[Auto-bridged: worker 异常终止]'
-        : '[Auto-bridged: worker 已完成，系统自动回传结果]';
-    const bridgeText = `${header}\n\n${finalText}`;
+    const bridgeText = formatOrcaWorkerCompletion(turn, state.capturedText);
     try {
       const result = await deps.sendAutoBridgeToLead(
         state.leadSessionId,
@@ -1389,7 +1387,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     // 归档会释放 runtime；先取消未落地的后台预热，避免归档后被重新拉起（review P1）。
     deps.cancelWorkerResume?.(worker.sessionId);
     await params.beforeArchive?.();
-    await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive);
+    await closeWorkerSessionBestEffort(worker.sessionId, 'archiveWorker', params.beforeArchive, params.onlyIfIdle);
     await params.beforeArchive?.();
     await deps.archiveWorkerSession(worker.sessionId, params.beforeArchive);
     await params.beforeArchive?.();
@@ -1662,7 +1660,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       };
     }
     await assertCurrent?.();
-    const merged = deps.mergeQueuedMessages(
+    const merged = await deps.mergeQueuedMessages(
       found.worker.sessionId,
       params.queuedMessageIds,
       (targets) => {
@@ -1730,14 +1728,15 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
     };
   }
 
-  async function closeWorkerSessionBestEffort(sessionId: string, owner: string, assertCurrent?: () => Promise<void>): Promise<void> {
+  async function closeWorkerSessionBestEffort(sessionId: string, owner: string, assertCurrent?: () => Promise<void>, sendLockHeld = false): Promise<void> {
     let authorityRejected = false;
     const beforeClose = assertCurrent ? async () => {
       try { await assertCurrent(); }
       catch (err) { authorityRejected = true; throw err; }
     } : undefined;
     try {
-      if (beforeClose) await deps.closeWorkerSession(sessionId, beforeClose);
+      if (sendLockHeld) await deps.closeWorkerSession(sessionId, beforeClose, true);
+      else if (beforeClose) await deps.closeWorkerSession(sessionId, beforeClose);
       else await deps.closeWorkerSession(sessionId);
     } catch (err) {
       if (authorityRejected) throw err;

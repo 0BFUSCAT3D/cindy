@@ -58,6 +58,8 @@ export type OrcaInterAgentMessageSource = 'lead' | 'worker';
 
 /** 一次 lead/worker 间消息派发请求，accepted 回调用于把业务副作用绑定到真正派发边界。 */
 export interface DispatchOrcaInterAgentMessageParams {
+  /** Host-owned durable outbox identity; never accepted from MCP/wire input. */
+  clientId?: string;
   targetSessionId: string;
   rawContent: string;
   source: OrcaInterAgentMessageSource;
@@ -200,7 +202,7 @@ export interface OrcaInterAgentDispatcherDeps<TSessionMeta> {
     sessionId: string,
     meta: TSessionMeta,
   ) => Promise<AgentInputCreateOpts>;
-  enqueueQueuedMessage: (sessionId: string, item: AgentInputQueuedMessage) => void;
+  enqueueQueuedMessage: (sessionId: string, item: AgentInputQueuedMessage) => void | Promise<void>;
   /** Restore first, then synchronously reserve the item at the live queue head. */
   reserveNextQueuedMessage: (
     sessionId: string,
@@ -263,7 +265,7 @@ export interface OrcaInterAgentDispatcher {
   ) => void;
   runQueuedOrcaInterAgentAcceptedCallback: (
     sessionId: string,
-    item: AgentInputQueuedMessage,
+    item: Pick<AgentInputQueuedMessage, 'clientId'>,
   ) => Promise<void> | undefined;
   rollbackQueuedOrcaInterAgentAcceptedCallback: (
     sessionId: string,
@@ -342,7 +344,7 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
 
   const runQueuedOrcaInterAgentAcceptedCallback = (
     sessionId: string,
-    item: AgentInputQueuedMessage,
+    item: Pick<AgentInputQueuedMessage, 'clientId'>,
   ): Promise<void> | undefined => {
     const callback = queuedOrcaInterAgentAcceptedCallbacks.get(item.clientId);
     if (!callback) return undefined;
@@ -382,7 +384,7 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
       };
     }
 
-    const clientId = deps.createId();
+    const clientId = params.clientId ?? deps.createId();
     // worker 回报的前缀要带发件 worker 的 role,需要反查;只查一次,文本与来源标签共用。
     let workerRolePromise: Promise<string | undefined> | undefined;
     const resolveRole = (): Promise<string | undefined> =>
@@ -525,7 +527,12 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
           params.onAcceptedCommit,
         );
       }
-      deps.enqueueQueuedMessage(params.targetSessionId, queued);
+      try {
+        await deps.enqueueQueuedMessage(params.targetSessionId, queued);
+      } catch (error) {
+        discardQueuedOrcaInterAgentAcceptedCallback(clientId);
+        throw error;
+      }
       log.info(logEvent, {
         targetSessionId: params.targetSessionId,
         clientId,

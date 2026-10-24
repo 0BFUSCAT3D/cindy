@@ -99,7 +99,7 @@ export interface OrcaLifecycleDeps {
     permissionMode?: OrcaWorkerPermissionMode;
     assertCurrent: () => Promise<void>;
   }>;
-  setWorkerPermissionMode(workerPermissionMode: OrcaWorkerPermissionMode): void;
+  setWorkerPermissionMode(workerPermissionMode: OrcaWorkerPermissionMode): void | Promise<void>;
   createWorkerInTeam(params: OrcaWorkerCreateInTeamParams, assertCurrent?: () => Promise<void>,
     onCreated?: (assertCreatedCurrent: () => Promise<void>) => void): Promise<OrcaWorkerCreationResult>;
   dispatchWorkerTask(params: {
@@ -206,14 +206,14 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   const initializingTeamIds = new Set<string>();
   const dispatchSource = 'maker-ipc/collab';
 
-  function workerPermissionModeForCreate(
+  async function workerPermissionModeForCreate(
     explicitMode: OrcaWorkerPermissionMode | undefined,
     override: Awaited<ReturnType<NonNullable<OrcaLifecycleDeps['getWorkerPermissionModeOverride']>>> | undefined,
-  ): { workerPermissionMode: OrcaWorkerPermissionMode; assertCurrent?: () => Promise<void> } {
+  ): Promise<{ workerPermissionMode: OrcaWorkerPermissionMode; assertCurrent?: () => Promise<void> }> {
     if (override?.permissionMode !== undefined) return { workerPermissionMode: override.permissionMode, assertCurrent: override.assertCurrent };
     if (explicitMode === undefined) return { workerPermissionMode: deps.getWorkerPermissionMode(), assertCurrent: override?.assertCurrent };
     const resolved = resolveOrcaWorkerPermissionMode(explicitMode);
-    deps.setWorkerPermissionMode(resolved);
+    await deps.setWorkerPermissionMode(resolved);
     return { workerPermissionMode: resolved, assertCurrent: override?.assertCurrent };
   }
 
@@ -271,7 +271,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
     if (!team) {
       return { ok: false, errorCode: 'NOT_FOUND', message: 'no active team for this lead' };
     }
-    const { workerPermissionMode, assertCurrent } = workerPermissionModeForCreate(params.workerPermissionMode, override);
+    const { workerPermissionMode, assertCurrent } = await workerPermissionModeForCreate(params.workerPermissionMode, override);
     const initialTask = hasNonEmptyInitialTask(params.initialTask) ? params.initialTask : undefined;
     let assertCreatedCurrent = assertCurrent;
     const created = await deps.createWorkerInTeam({
@@ -366,7 +366,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   }
 
   async function startTeam(params: OrcaStartTeamParams, assertCurrent?: () => Promise<void>): Promise<OrcaStartTeamResult> {
-    const admission = workerPermissionModeForCreate(params.workerPermissionMode, await deps.getWorkerPermissionModeOverride?.(params.leadSessionId));
+    const admission = await workerPermissionModeForCreate(params.workerPermissionMode, await deps.getWorkerPermissionModeOverride?.(params.leadSessionId));
     const { workerPermissionMode } = admission;
     const assertAdmission = async () => {
       await assertCurrent?.();
@@ -399,7 +399,7 @@ export function createOrcaLifecycleService(deps: OrcaLifecycleDeps): OrcaLifecyc
   }
 
   async function enableTeam(params: OrcaEnableTeamParams): Promise<OrcaEnableTeamResult> {
-    const { workerPermissionMode, assertCurrent } = workerPermissionModeForCreate(params.workerPermissionMode, await deps.getWorkerPermissionModeOverride?.(params.leadSessionId));
+    const { workerPermissionMode, assertCurrent } = await workerPermissionModeForCreate(params.workerPermissionMode, await deps.getWorkerPermissionModeOverride?.(params.leadSessionId));
     let assertCreatedCurrent = assertCurrent;
     const normalized = normalizeEnableParams(params);
     const validationFailure = validateEnableParams(normalized);

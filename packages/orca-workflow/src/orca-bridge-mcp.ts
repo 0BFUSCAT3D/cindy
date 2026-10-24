@@ -120,19 +120,26 @@ export interface OrcaWorkerVendorOptions extends Record<string, unknown> {
 }
 
 export interface OrcaBridgeMcpDeps {
+  /** HTTP transports shared by harnesses keep definitions stable; handlers
+   * still resolve and attest the owning Worker on every invocation. */
+  sharedBridge?: boolean;
+  /** Durable hosts settle the captured assignment at their acceptance boundary. */
+  manageWorkerStatus?: boolean;
   /** Host-owned routing for execution-device Workers; null means a local caller. */
   forwardRemoteWorkerTool?: (
     ctx: McpProviderContext,
     tool: string,
     args: Record<string, unknown>,
   ) => Promise<OrcaToolResult | null>;
-  getMaker: () => Maker;
+  getMaker?: () => Maker;
+  /** Hosts with one Maker per task restore through their normal runtime owner. */
+  ensureSession?: (meta: OrcaPersistedSession, vendorOptions?: Record<string, unknown>) => Promise<Session>;
   logger: Logger;
   persistUserMessage: (
     sessionId: string,
     message: { clientId: string; content: string },
   ) => Promise<void>;
-  wireSession: (session: Session) => void;
+  wireSession?: (session: Session) => void;
   hydrateSessionRoute?: (sessionId: string, providerId: string | null) => void | Promise<void>;
   /**
    * 远端 session 重建前的 preflight (SSH 重连 / agent install / 远端 MCP
@@ -548,7 +555,9 @@ async function ensureSessionFromMeta(
   meta: OrcaPersistedSession,
   vendorOptions?: Record<string, unknown>,
 ): Promise<Session> {
-  const maker = deps.getMaker();
+  if (deps.ensureSession) return deps.ensureSession(meta, vendorOptions);
+  const maker = deps.getMaker?.();
+  if (!maker) throw new Error('Orca session host is unavailable');
   await deps.hydrateSessionRoute?.(meta.sessionId, meta.providerId ?? null);
   const active = maker.getSession(meta.sessionId);
   if (active) return active;
@@ -589,7 +598,7 @@ async function ensureSessionFromMeta(
       ? { remoteHostId: meta.remoteHostId, makerMemoryEnabled: remoteMakerMemoryEnabled }
       : {}),
   });
-  deps.wireSession(session);
+  deps.wireSession?.(session);
   return session;
 }
 
@@ -1032,10 +1041,10 @@ function createWorkerBridgeProvider(deps: OrcaBridgeMcpDeps | undefined, forward
         const forwarded = await forwardRemoteWorkerTool?.(runtime, name, args);
         return forwarded ?? handler(args);
       });
-    }, options);
+    }, { manageWorkerStatus: deps?.manageWorkerStatus, ...options });
   };
   const enabled = (ctx: McpProviderContext) =>
-    !deps || ctx.vendorOptions?.orcaRole === 'worker'
+    !deps || deps.sharedBridge === true || ctx.vendorOptions?.orcaRole === 'worker'
     || ctx.vendorOptions?.orcaRemoteWorker === true
     || ctx.agentKind === 'codex'
     // Claude also has this accessor on ordinary per-session contexts; it is not a role.

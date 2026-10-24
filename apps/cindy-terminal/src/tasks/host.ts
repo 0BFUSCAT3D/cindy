@@ -1,6 +1,24 @@
+import { preparePersistedOrcaSessionStart } from '@cindy/orca-workflow/host/orcaSessionStartOptions';
+import { createOrcaRemoteWorkers } from '@cindy/orca-workflow/host/orcaRemoteWorkers';
+import { createOrcaTeamService, type OrcaTeamService, type OrcaManualInterruptSnapshot } from '@cindy/orca-workflow/host/orcaTeamService';
+import { createOrcaInterAgentDispatcher } from '@cindy/orca-workflow/host/orcaInterAgentDispatcher';
+import { toDesktopSessionDispatchOutcome } from '@cindy/im-runtime/sendOutcome';
+import type { ControlSteerOutcome, QueuedSteerOutcome } from '@cindy/im-runtime/sessionQueueControl';
+import type { AgentInputQueuedMessage } from '@cindy/maker-shared/agent-input-queue';
+import { assertTerminalOrcaInput, captureTerminalOrcaInput, terminalOrcaHistoryMessage, type TerminalOrcaInput } from './orca-input.js';
+import { TerminalOrcaReports } from './orca-reports.js';
+import { TerminalOrcaQueue } from './orca-queue.js';
+import { createTerminalOrcaLifecycle } from './orca-lifecycle.js';
+import { createTerminalOrcaTools } from './orca-tools.js';
+import { createTerminalOrcaIpc, ORCA_CONTROL_CHANNELS } from './orca-ipc.js';
+import { createOrcaIdleReleaseWatcher } from '@cindy/orca-workflow/host/orcaIdleReleaseWatcher';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { ORCA_EXECUTION_DEVICES_CHANNEL } from '@cindy/device-link';
+import type { MakerSessionCreateOpts } from '@cindy/orca-workflow/host/sessionTypes';
 import { createOrcaRemoteWorkerForwarder } from '@cindy/orca-workflow/host/orcaRemoteWorkerBridge';
 import { TerminalOrcaStore } from './orca-store.js';
-import { createOrcaRemoteWorkerMcpProvider } from '@cindy/orca-workflow/mcp';
+import { createOrcaRemoteWorkerMcpProvider, createOrcaWorkerBridgeMcpProvider } from '@cindy/orca-workflow/mcp';
+import type { McpProvider, McpProviderContext } from '@cindy/maker-core';
 import { createTerminalRemoteWorkerHost, REMOTE_WORKER_CHANNELS, readRemoteWorkerAssignment, assertRemoteWorkerAssignment, type RemoteWorkerAssignment } from './orca-remote.js';
 import type { OrcaRemoteLead } from '@cindy/maker-shared/orca-remote-worker';
 import { isSameSessionExecution } from '@cindy/plugin-runtime/sessionExecutionOwnership';
@@ -22,7 +40,7 @@ import { readTaskDelivery, validateTaskDelivery, type TaskDeliveryProof } from '
 import { TerminalTaskMedia } from './media.js';
 import { persistedUserContentToWireMessage, isContextOverflowErrorData, isOversizedHistoryErrorData, isUnsupportedRequestOptionErrorData, type ContextOverflowRolloverDeps } from '@cindy/im-runtime/contextOverflowRollover';
 import { createAutoReviewIntentProjection } from '@cindy/maker-shared/auto-review-intent';
-import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, INHERITED_CAPABILITY_SELECTION, PI_CACHE_RECOVERY_EXPECTATION } from '@cindy/maker-core';
+import { AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION, INHERITED_CAPABILITY_SELECTION, PI_CACHE_RECOVERY_EXPECTATION } from '@cindy/maker-core';
 import type { AutoReviewDelegate, AutoReviewRequest } from '@cindy/maker-core';
 import { normalizeTaskInput, appendInputText, inputPlainText, persistedInput, type InputHost, type AttachmentLifecycle } from './input.js';
 import { createRemoteHistory } from './remote-history.js';
@@ -90,6 +108,10 @@ export const TERMINAL_TASK_CHANNELS = [
   'maker:set-permission-mode', 'maker:set-plan-mode', 'maker:set-fast-mode', 'maker:compact-session',
   'maker:get-plugin-write-access-recovery', 'maker:retry-plugin-write-access',
   ...REMOTE_WORKER_CHANNELS,
+  ...ORCA_CONTROL_CHANNELS,
+  ORCA_EXECUTION_DEVICES_CHANNEL,
+  'local-db:orca-workflows:get-by-lead', 'local-db:orca-workflows:get-by-worker-session',
+  'local-db:orca-workflows:list-workers-by-lead', 'local-db:orca-workflows:list-workers-by-leads',
   'maker:list-available-agents', 'maker:agent:status', 'maker:provider:list',
   'maker:provider:presets', 'maker:provider:test-connection', 'maker:provider:models-fetch', 'maker:provider:models-refresh', 'maker:provider:models-rediscover', 'maker:provider:models-auto-refresh', 'maker:provider:custom:disconnect', 'maker:model-disable:set',
   'maker:provider:custom:create', 'maker:provider:custom:update', 'maker:provider:custom:delete',
@@ -104,6 +126,7 @@ export interface TerminalTaskHostOptions extends InputHost {
   profileDir: string;
   deviceId?: string;
   remoteWorkerLocations?: () => Promise<Array<{ agentDeviceId: string; name: string }>>;
+  listOrcaDevices?: () => Promise<{ devices: import('@cindy/remote-agent/shared/deviceLinkIpc').DeviceLinkDeviceView[] }>;
   logger: Logger;
   secretStore: TerminalSecrets;
   emit(channel: string, args: unknown[]): void;
@@ -126,8 +149,8 @@ export interface TerminalTaskHostOptions extends InputHost {
   nativeStatus?: (kind: AgentKind, binary: string | null) => ReturnType<typeof nativeAuthState>;
 }
 type ScheduledOrigin = { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string; firedAt?: number };
-type TaskInvocationContext = InvocationContext & { orca?: RemoteWorkerAssignment; scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; plugin?: {id:string;name:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
-type LiveTask = { revoke():void; plugin?:TerminalPluginTask; capabilityRevision: number; modelRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
+type TaskInvocationContext = InvocationContext & { collaboration?: TerminalOrcaInput; orca?: RemoteWorkerAssignment; scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; plugin?: {id:string;name:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
+type LiveTask = { revoke():void; didInjectOrcaInstructions: boolean; plugin?:TerminalPluginTask; capabilityRevision: number; modelRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
 type Pending = { sessionId: string; sourceRequestId: string; request: InteractionRequest; settle: (decision: InteractionDecision) => void; decide: (decision:InteractionDecision)=>boolean; deferred?:InteractionDecision; shared?: SharedPermission; migrated?: boolean };
 
 function record(value: unknown): Record<string, unknown> {
@@ -151,6 +174,18 @@ export class TerminalTaskHost {
   readonly models: TerminalModelConfig;
   readonly storage: TerminalTaskStorage;
   readonly orcaStore: TerminalOrcaStore;
+  private readonly orcaRemoteController: ReturnType<typeof createOrcaRemoteWorkers>;
+  readonly orcaTeamService: OrcaTeamService;
+  readonly orcaLifecycle: ReturnType<typeof createTerminalOrcaLifecycle>['lifecycle'];
+  readonly orcaTools: ReturnType<typeof createTerminalOrcaTools>;
+  private readonly orcaIpc: ReturnType<typeof createTerminalOrcaIpc>;
+  readonly orcaReports: TerminalOrcaReports;
+  readonly orcaIdle: ReturnType<typeof createOrcaIdleReleaseWatcher>;
+  private readonly orcaAction = new AsyncLocalStorage<() => void>();
+  private readonly orcaBootOptions = new Map<string, MakerSessionCreateOpts>();
+  private readonly manualOrcaInterrupts = new Map<string, OrcaManualInterruptSnapshot>();
+  readonly orcaDispatcher: ReturnType<typeof createOrcaInterAgentDispatcher<TerminalTaskMeta>>;
+  readonly orcaQueue: TerminalOrcaQueue;
   readonly changes: TerminalTaskChanges;
   readonly turnLifecycle: TerminalTurnLifecycle;
   readonly channelSignals: ReturnType<typeof createChannelTurnSignals>;
@@ -198,6 +233,8 @@ export class TerminalTaskHost {
   private readonly queuedSubmissions = new Map<string, Array<{ requestId: string; message: UserMessage; context: TaskInvocationContext; sendAtMs?: number }>>();
   private readonly queuePaused = new Set<string>();
   private readonly queueMutations = new Set<string>();
+  private readonly steeringSubmissions = new Map<string, { clientId: string; controller: AbortController }>();
+  private readonly steerOperations = new Set<Promise<ControlSteerOutcome>>();
   private readonly queueLocks = new Map<string, Set<string>>();
   private readonly queueEditLocks = new Map<string, Set<string>>();
   private readonly queueTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -273,6 +310,45 @@ export class TerminalTaskHost {
         this.emit('terminal:tasks:changed', { sessionId: id });
       },
     });
+    this.orcaRemoteController = createOrcaRemoteWorkers({
+      getOwnerToken: () => this.closed ? null : this,
+      getTeamService: () => this.orcaTeamService,
+      listDevices: async () => {
+        if (!options.listOrcaDevices) throw new Error('REMOTE_TRANSPORT_UNAVAILABLE');
+        return options.listOrcaDevices();
+      },
+      remoteInvoke: async (device, channel, args) => {
+        if (!options.remoteInvoke) throw new Error('REMOTE_TRANSPORT_UNAVAILABLE');
+        const response = await options.remoteInvoke(device, channel, args);
+        return response.ok ? { ok: true, result: response.result } : { ok: false,
+          error: { code: 'IPC_ERROR', message: `[${response.error?.code ?? 'INTERNAL'}] ${response.error?.message ?? 'Remote invocation failed'}` } };
+      },
+      readLeadTitle: async id => (await this.storage.get(id))?.title ?? '',
+      broadcastOrcaWorkerChanged: leadSessionId => this.emit('maker:orca:worker-changed', { leadSessionId }),
+      log: options.logger,
+      store: {
+        archiveSingleWorkerSession: async (id, beforeMutation) => {
+          await beforeMutation?.(); this.guard({ source: 'local' });
+          await this.patchMeta(id, { status: 'archived' }, () => this.guard({ source: 'local' }));
+        },
+        getRemoteWorkerByProxySession: id => this.orcaStore.getRemoteWorkerByProxySession(id),
+        listActiveRemoteWorkers: () => this.orcaStore.listActiveRemoteWorkers(),
+        listUnreleasedEndedRemoteWorkers: () => this.orcaStore.listUnreleasedEndedRemoteWorkers(),
+        markWorkerRemoteReleased: (id, at) => this.orcaStore.markWorkerRemoteReleased(id, at),
+        markWorkerRemoteStopConfirmed: (id, at) => this.orcaStore.markWorkerRemoteStopConfirmed(id, at),
+        getWorkerRemoteReleaseState: id => this.orcaStore.getWorkerRemoteReleaseState(id),
+        saveWorkerRemoteReport: (id, pending, message, done) => this.orcaStore.saveWorkerRemoteReport(id, pending, message, done),
+        saveRemoteWorkerOpen: (device, id) => this.orcaStore.saveRemoteWorkerOpen(device, id),
+        removeRemoteWorkerOpen: id => this.orcaStore.removeRemoteWorkerOpen(id),
+        listOrphanRemoteWorkerOpens: id => this.orcaStore.listOrphanRemoteWorkerOpens(id),
+        addRemoteWorker: input => this.orcaStore.addRemoteWorker(input),
+        removeWorker: id => this.orcaStore.removeWorker(id),
+      },
+    });
+    this.orcaStore.setRemoteWorkerStatusProvider((session, device) => this.orcaRemoteController.runtime.isRemote(session) ? ({
+      deviceName: this.orcaRemoteController.deviceName(device),
+      reachable: this.orcaRemoteController.runtime.isReachable(session),
+    }) : undefined);
     this.channelBindings = new TerminalImBindings({ root: options.profileDir, logger: options.logger, beforeOpen: this.storageReady, assertCurrent: () => { if (this.closed) throw new Error('TASK_HOST_CLOSED'); } });
     this.channelDefaults = new TerminalImDefaults({ root: options.profileDir, assertCurrent: () => this.guard({ source: 'local' }), changed: channel => this.emit('maker:remote-resources:changed', { collectionId: 'channels', channel }) });
     this.channelSessionDefaults = createImSessionDefaults({
@@ -361,10 +437,122 @@ export class TerminalTaskHost {
       },
     });
     this.channelOrchestrators = new TerminalImOrchestrators(this);
+    this.orcaDispatcher = this.createOrcaDispatcher();
+    this.orcaQueue = new TerminalOrcaQueue({ storage: this.storage, store: this.orcaStore,
+      assertCurrent: () => this.guard({ source: 'local' }),
+      mutate: (id, work) => this.mutateQueued(id, work),
+      consuming: (id, clientId) => this.activeSubmissions.get(id) === clientId || this.steeringSubmissions.get(id)?.clientId === clientId,
+      locked: (id, clientId) => this.queueEditLocks.get(id)?.has(clientId) === true || !!this.queueLocks.get(id)?.size,
+      normalize: (id, input) => this.message(id, input, { source: 'local' }),
+      changed: async (id, rows) => {
+        const queue = this.queuedSubmissions.get(id) ?? [];
+        for (const row of rows) {
+          const index = queue.findIndex(item => item.requestId === row.requestId);
+          if (index >= 0) {
+            if (row.status !== 'queued') queue.splice(index, 1);
+            else if (row.message) { queue[index]!.message = row.message; queue[index]!.context.collaboration = row.collaboration; }
+          }
+          if (row.plugin) await this.pluginSessions?.onSubmission(row);
+          this.emit('terminal:tasks:submission', row);
+          for (const listener of this.receiptListeners) listener(row);
+        }
+        this.emit('maker:input:projection', await this.projection(id));
+      },
+      reordered: (id, ids) => {
+        const queue = this.queuedSubmissions.get(id) ?? [];
+        queue.sort((a, b) => ids.indexOf(a.requestId) - ids.indexOf(b.requestId));
+        void this.projection(id).then(value => this.emit('maker:input:projection', value)).catch(() => undefined);
+      },
+      discard: id => this.orcaDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(id),
+    });
+    this.orcaTeamService = this.createOrcaTeamControls();
+    this.orcaReports = new TerminalOrcaReports({ storage: this.storage, store: this.orcaStore,
+      guard: () => this.guard({ source: 'local' }),
+      dispatch: input => this.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage(input),
+      withWorkerLock: (id, work) => this.routes.withLock(id, work),
+      settled: id => { this.orcaTeamService.clearAutoBridgeState(id); void this.orcaStore.getWorkerLink({ workerSessionId: id })
+        .then(link => { if (link) this.emit('maker:orca:worker-changed', { leadSessionId: link.leadSessionId }); }).catch(() => undefined); },
+      warn: () => options.logger.warn('ORCA_REPORT_RECOVERY_FAILED'),
+    });
+    this.orcaLifecycle = createTerminalOrcaLifecycle({
+      store: this.orcaStore, tasks: this.storage, models: this.models, team: this.orcaTeamService, remote: this.orcaRemoteController,
+      remoteInvoke: options.remoteInvoke, selfDeviceId: () => options.deviceId,
+      guard: () => { this.guard({ source: 'local' }); this.orcaAction.getStore()?.(); },
+      withLock: (id, work) => this.routes.withLock(id, work),
+      authority: id => this.captureOrcaAuthority(id),
+      validatePlan: async (...args) => {
+        const row = await this.storage.get(args[0].leadSessionId);
+        if (this.pluginSessions?.validateWorkerPlan) return this.pluginSessions.validateWorkerPlan(...args);
+        if (row?.source === 'plugin') throw new Error('PLUGIN_TASK_AUTHORITY_UNAVAILABLE');
+        await args[3]?.(); return undefined;
+      },
+      bootstrap: async input => {
+        const id = string(input.id), current = this.orcaAction.getStore();
+        if (input.remoteHostId) throw new Error('SSH_TASK_ROUTE_REQUIRED');
+        this.orcaBootOptions.set(id, input);
+        try {
+          await this.create(input, () => { this.guard({ source: 'local' }); current?.(); }, undefined, undefined, { id, role: 'worker' });
+          const task = this.live.get(id);
+          if (!task) throw new Error('TASK_NOT_ACTIVE');
+          return { session: task.session, didInjectOrcaInstructions: task.didInjectOrcaInstructions, didInjectProjectContext: false };
+        } finally { this.orcaBootOptions.delete(id); }
+      },
+      live: id => this.live.get(id)?.session,
+      close: id => this.closeTask(id),
+      archive: async id => { await this.patchMeta(id, { status: 'archived' }, () => this.guard({ source: 'local' })); },
+      forget: id => { this.manualOrcaInterrupts.delete(id); this.orcaTeamService.clearAutoBridgeState(id); },
+      readyMessage: async (id, message, current) => {
+        await current?.();
+        const task = await this.ensureLive(id);
+        const result = await task.session.send({ type: 'user', content: message }, {
+          planMode: false, throwOnStartFailure: true, onAccepted: current,
+          [AUTO_REVIEW_SOURCE_CONTENT]: '', [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+        });
+        if (!result.accepted) throw new Error('ORCA_WORKER_READY_FAILED');
+      },
+      changed: leadSessionId => this.emit('maker:orca:worker-changed', { leadSessionId }),
+      created: sessionId => this.emit('local-db:sessions:created', { sessionId }),
+    }).lifecycle;
+    this.orcaTools = createTerminalOrcaTools({
+      store: this.orcaStore, tasks: this.storage, lifecycle: this.orcaLifecycle, team: this.orcaTeamService, remote: this.orcaRemoteController,
+      selfDeviceId: options.deviceId,
+      providers: id => id ? options.remoteInvoke ? readDeviceProviderViews(options.remoteInvoke, id) : Promise.reject(new Error('REMOTE_AGENT_UNAVAILABLE')) : this.models.views(),
+      locations: () => options.remoteWorkerLocations?.() ?? Promise.resolve([]),
+      authorize: ctx => async input => {
+        const current = this.orcaMcpGuard(ctx, input.sessionId);
+        current();
+        return { ok: true, run: async operation => this.orcaAction.run(current, async () => { current(); const result = await operation(); current(); return result; }) };
+      },
+      authority: id => this.captureOrcaAuthority(id), live: id => this.live.get(id)?.session,
+      resume: (id, current) => this.routes.withLock(id, async () => {
+        await current(); const row = await this.storage.get(id);
+        if (!row || row.deleted || row.archived) throw new Error('TASK_NOT_FOUND');
+        await current(); await this.ensureLive(id); await current();
+      }),
+      end: id => this.endOrca(id),
+      latestText: async id => (await this.messages(id, { limit: Infinity }, true)).find(row => row.role === 'assistant')?.content ?? '',
+      running: id => this.isTurnRunning(id), paused: id => this.queuePaused.has(id),
+      changed: leadSessionId => this.emit('maker:orca:worker-changed', { leadSessionId }),
+      warn: error => options.logger.warn('ORCA_WORKER_RESUME_FAILED', { error: String(error) }),
+    });
+    this.orcaIpc = createTerminalOrcaIpc({ store: this.orcaStore, lifecycle: this.orcaLifecycle, team: this.orcaTeamService, api: this.orcaTools.api,
+      authority: id => this.captureOrcaAuthority(id), remote: id => this.orcaRemoteController.runtime.isRemote(id),
+      hasUserMessageSince: async (id, at) => (await this.messages(id, { limit: Infinity }, true)).some(message => message.role === 'user' && Date.parse(message.createdAt) >= at),
+    });
+    this.orcaIdle = createOrcaIdleReleaseWatcher({
+      readIdleReleaseMinutes: () => this.orcaStore.settings().workerIdleReleaseMinutes,
+      listCandidates: at => this.orcaStore.idleCandidates(at), getSession: id => this.live.get(id)?.session ?? null,
+      withSessionLock: (id, work) => this.routes.withLock(id, work),
+      hasPendingInput: async id => this.isTurnRunning(id) || (await this.storage.queued(id)).length > 0 || [...this.pending.values()].some(request => request.sessionId === id),
+      markReleased: (candidate, at) => this.orcaStore.markIdleReleased(candidate, at), touchWorker: (id, at) => this.orcaStore.touchWorker(id, at),
+      closeSession: id => this.closeTask(id), broadcastWorkerChanged: leadSessionId => this.emit('maker:orca:worker-changed', { leadSessionId }),
+      now: Date.now, timer: { setInterval: (work, delay) => { const timer = setInterval(work, delay); timer.unref(); return timer; }, clearInterval }, log: options.logger,
+    });
     this.channelBindings.store.onChange(event => this.emit('binding:changed', {
       sessionId: event.value, attached: event.value !== null, channel: event.identity.channel, userId: event.identity.userId,
     }));
     this.ready = this.initialize();
+    void this.ready.then(() => { if (!this.closed) this.orcaReports.start(); }).catch(() => undefined);
   }
   private async initialize() {
     await privateDirectory(this.options.profileDir);
@@ -382,8 +570,106 @@ export class TerminalTaskHost {
       if (row.queuePaused) this.queuePaused.add(row.id);
       if (row.groupBinding) this.groupBindings.set(row.id, row.groupBinding);
       const queued = await this.storage.queued(row.id);
-      for (const receipt of queued) if (receipt.message) this.enqueueSubmission(row.id, receipt.message, receipt.requestId, { source: receipt.source ?? 'local', deviceId: receipt.deviceId, sourceDevice: receipt.sourceDevice, ownerId: receipt.ownerId, scheduler: receipt.scheduler, sender:receipt.sender, plugin:receipt.plugin, orca:receipt.orca, deliveryProof: receipt.deliveryProof, ...(receipt.sharedTask ? { sharedTask: receipt.sharedTask, assertCurrent: () => { throw new Error('SHARED_TASK_REVALIDATION_REQUIRED'); } } : {}) }, receipt.sendAtMs);
+      for (const receipt of queued) if (receipt.message) this.enqueueSubmission(row.id, receipt.message, receipt.requestId, { source: receipt.source ?? 'local', deviceId: receipt.deviceId, sourceDevice: receipt.sourceDevice, ownerId: receipt.ownerId, scheduler: receipt.scheduler, sender:receipt.sender, plugin:receipt.plugin, orca:receipt.orca, collaboration:receipt.collaboration, deliveryProof: receipt.deliveryProof, ...(receipt.sharedTask ? { sharedTask: receipt.sharedTask, assertCurrent: () => { throw new Error('SHARED_TASK_REVALIDATION_REQUIRED'); } } : {}) }, receipt.sendAtMs);
     }
+    this.guard({ source: 'local' });
+    await this.orcaRemoteController.start();
+    this.guard({ source: 'local' });
+    this.orcaIdle.start();
+  }
+  private orcaMcpGuard(context: McpProviderContext, expectedId?: string): () => void {
+    const ctx = context.getSessionContext ? context.getSessionContext() : context;
+    if (!ctx?.sessionId || expectedId && ctx.sessionId !== expectedId) throw new Error('TASK_MCP_SCOPE_MISMATCH');
+    const id = ctx.sessionId, instance = ctx.sessionInstanceId;
+    const session = this.live.get(id)?.session;
+    if (!instance || !session || session.instanceId !== instance) throw new Error('TASK_MCP_SCOPE_MISMATCH');
+    return () => { this.guard({ source: 'local' }); if (this.live.get(id)?.session !== session || session.getStatus() !== 'active') throw new Error('TASK_MCP_SCOPE_REVOKED'); };
+  }
+  private async endOrca(id: string) {
+    return this.routes.withLock(id, async () => {
+      const authority = await this.captureOrcaAuthority(id), team = await this.orcaStore.getActiveTeamByLead(id);
+      await authority.assertCurrent();
+      if (team) {
+        for (const worker of await this.orcaStore.listWorkersByLead(id)) {
+          await authority.assertCurrent();
+          const result = await this.orcaTeamService.archiveWorker({ callerLeadSessionId: id, workerId: worker.id, beforeArchive: authority.assertCurrent });
+          if (!result.ok) throw new Error(result.message);
+        }
+        await authority.assertCurrent(); await this.orcaStore.markTeamEnded(team.id, 'completed');
+        await this.orcaStore.markWorkerStatusesByTeam(team.id, 'done');
+      } else {
+        for (const worker of await this.orcaStore.reconcileInactiveTeamWorkersForLead(id)) {
+          await authority.assertCurrent(); await this.closeTask(worker);
+          this.orcaTeamService.clearAutoBridgeState(worker);
+        }
+      }
+      await authority.assertCurrent(); await this.orcaStore.setSessionOrcaRole(id, null);
+      await this.live.get(id)?.session.setVendorOptions({ orcaRole: null, orcaWorkflowId: null, orcaLeadSessionId: null, initialWorker: null });
+      this.emit('maker:orca:worker-changed', { leadSessionId: id });
+    });
+  }
+  private localWorkerMcpProvider(id: string): McpProvider {
+    return { name: 'orca_worker_bridge', toClaudeSdkConfig: context => {
+      const current = () => this.orcaMcpGuard(context, id)();
+      const linkForCaller = async (input: { workerId?: string; workerSessionId?: string }) => {
+        current();
+        if (input.workerSessionId && input.workerSessionId !== id) throw new Error('TASK_MCP_SCOPE_MISMATCH');
+        const link = await this.orcaStore.getWorkerLink({ ...input, workerSessionId: id });
+        if (!link) return null;
+        const [team, worker, lead] = await Promise.all([this.orcaStore.getActiveTeamByLead(link.leadSessionId), this.storage.get(id), this.storage.get(link.leadSessionId)]);
+        current();
+        return team?.id === link.teamId && worker && !worker.deleted && !worker.archived && lead && !lead.deleted && !lead.archived ? link : null;
+      };
+      return createOrcaWorkerBridgeMcpProvider({
+        logger: this.options.logger, sharedBridge: true, manageWorkerStatus: false,
+        ensureSession: async meta => { current(); const link = await linkForCaller({ workerSessionId: id });
+          if (link?.leadSessionId !== meta.sessionId) throw new Error('ORCA_ASSIGNMENT_REVOKED');
+          const task = await this.ensureLive(meta.sessionId); current(); return task.session; },
+        orcaTeamStore: {
+          getWorkerLink: async input => {
+            const link = await linkForCaller(input);
+            if (!link) return null;
+            const { effort, ...leadSession } = link.leadSession;
+            return { ...link, workflowId: link.teamId, leadSession: { ...leadSession,
+              ...(effort ? { effort: effort as import('@cindy/maker-core').Effort } : {}) } };
+          },
+          updateWorkerStatus: async (workerId, status) => { const link = await linkForCaller({ workerId }); if (!link) throw new Error('ORCA_ASSIGNMENT_REVOKED'); await this.orcaStore.updateWorkerStatus(workerId, status); },
+        },
+        persistUserMessage: async (target, message) => { current(); await this.storage.append(target, { kind: 'user', clientId: message.clientId, message: { type: 'user', content: message.content } }); },
+        readLeadHistory: async input => {
+          const link = await linkForCaller({ workerSessionId: id });
+          if (link?.leadSessionId !== input.leadSessionId) throw new Error('ORCA_ASSIGNMENT_REVOKED');
+          const page = await createRemoteHistory(this.historyDeps(), taskId => this.storage.get(taskId), current).messages({
+            sessionId: input.leadSessionId, fromMs: input.fromMs, toMs: null, roles: ['user', 'assistant'],
+            workdir: null, agentKind: null, limit: input.limit, cursor: input.cursor, order: 'asc', includeRewound: false });
+          current(); return { ...page, items: page.items.flatMap(item => item.role === 'user' || item.role === 'assistant'
+            ? [{ ...item, role: item.role, agentMeta: item.agentMeta ?? null }] : []) };
+        },
+        dispatchInterAgentMessage: async input => {
+          const link = await linkForCaller({ workerId: input.workerId, workerSessionId: id });
+          if (input.source !== 'worker' || link?.leadSessionId !== input.targetSessionId) throw new Error('ORCA_ASSIGNMENT_REVOKED');
+          const capture = this.orcaTeamService.captureWorkerTerminalTurn(id);
+          const result = await this.orcaReports.manual(id, this.activeSubmissions.get(id), input);
+          if (result.ok) await this.orcaTeamService.settleReportedWorker(capture);
+          return result;
+        },
+      }).toClaudeSdkConfig(context);
+    } };
+  }
+  private async captureOrcaAuthority(id: string) {
+    const current = this.orcaAction.getStore();
+    const row = await this.storage.get(id);
+    if (!row || row.archived || row.deleted || row.orcaRole === 'worker' || row.orcaRemoteLead && row.orcaRemoteLead.releasedAt === undefined) throw new Error('ORCA_LEAD_UNAVAILABLE');
+    const plugin = this.pluginSessions?.captureOrcaAuthority
+      ? await this.pluginSessions.captureOrcaAuthority(id, this.activeSubmissions.get(id)) : undefined;
+    if (!plugin && row.source === 'plugin') throw new Error('PLUGIN_TASK_AUTHORITY_UNAVAILABLE');
+    const assertCurrent = async () => {
+      this.guard({ source: 'local' }); current?.();
+      const latest = await this.storage.get(id);
+      if (!latest || latest.archived || latest.deleted || latest.source !== row.source || latest.orcaRole === 'worker') throw new Error('ORCA_LEAD_UNAVAILABLE');
+      await plugin?.assertCurrent(); this.guard({ source: 'local' }); current?.();
+    };
+    await assertCurrent(); return { permissionMode: plugin?.permissionMode, assertCurrent };
   }
   private async authState(kind: AgentKind) {
     if (kind === 'codex' && this.models?.openAiAccount()) return { authenticated: this.models.openAiAccount()!.connected(), authSource: 'oauth' as const };
@@ -393,8 +679,302 @@ export class TerminalTaskHost {
     this.authCache.set(kind, { at: Date.now(), value });
     return value;
   }
+  private createOrcaDispatcher() {
+    const createOpts = (row: TerminalTaskMeta) => ({ agentKind: row.agentKind, workingDir: row.workDir,
+      model: row.model, providerId: row.providerId, effort: row.effort, fastMode: row.fastMode,
+      permissionMode: row.permissionMode, orcaRole: row.orcaRole });
+    return createOrcaInterAgentDispatcher<TerminalTaskMeta>({
+      createId: randomUUID,
+      getSessionMeta: id => this.storage.get(id),
+      getSessionRowSnapshot: async id => { const row = await this.storage.get(id); return row ? {
+        title: row.title ?? null, status: row.deleted ? 'deleted' : row.archived ? 'archived' : 'active',
+        userSendAt: row.userSendAt ?? null,
+      } : null; },
+      getLiveSession: id => this.live.get(id)?.session,
+      readAutoReviewHistory: async id => (await this.contextMessages(id, Infinity)).map(row => ({ ...row, agentMeta: row.agentMeta ?? null })),
+      // Every terminal turn has a durable receipt, including an idle target.
+      // Only explicit same-turn steering may bypass the new-turn queue.
+      shouldQueueNewTurn: () => true,
+      hasSendToSessionLock: id => this.routes.isLocked(id),
+      withSendToSessionLock: (id, work) => this.routes.withLock(id, work),
+      hasPendingAgentSwitch: id => this.routes.intent(id) !== null,
+      steerControlInput: (id, item, expected) => this.steerOrcaInput(id, item, expected),
+      buildCreateOptsForQueuedSession: async (_id, row) => createOpts(row),
+      enqueueQueuedMessage: async (id, item) => { await this.enqueueOrcaInput(id, item); },
+      reserveNextQueuedMessage: async (id, item, onReserved, beforeReserve) => {
+        await this.enqueueOrcaInput(id, item, true, onReserved, beforeReserve);
+        return true;
+      },
+      validateImageAttachments: async paths => {
+        const images = [];
+        for (const reference of paths) {
+          const file = path.isAbsolute(reference) ? reference : (await this.media.resolveManaged(reference)).path;
+          const ext = path.extname(file).toLowerCase(), mimeType = ({ '.png': 'image/png', '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' } as Record<string, string>)[ext];
+          const info = await stat(file);
+          if (!mimeType || !info.isFile() || info.size > 64 * 1024 * 1024) return { ok: false, message: 'INVALID_IMAGE_ATTACHMENT' };
+          images.push({ path: file, name: path.basename(file), ext, size: info.size, mimeType });
+        }
+        return { ok: true, images };
+      },
+      resolveWorkerSessionLink: id => this.orcaStore.getWorkerLink({ workerId: id }),
+      resolveWorkerSenderLabel: async (id, fallback) => {
+        const link = await this.orcaStore.getWorkerLink({ workerId: id });
+        return link ? (await this.orcaStore.listWorkersByLead(link.leadSessionId)).find(worker => worker.id === id)?.role ?? fallback : fallback;
+      },
+      // The shared dispatcher's cold/direct ports retain the same durable
+      // ingress if its scheduling policy changes in a future host version.
+      sendToSessionInternal: async input => {
+        const row = await this.storage.get(input.targetSessionId);
+        if (!row || row.deleted || row.archived) return { ok: false, errorCode: 'NOT_FOUND', message: 'TASK_NOT_FOUND' };
+        if (input.onAccepted) this.orcaDispatcher.registerQueuedOrcaInterAgentAcceptedCallback(input.clientId,
+          input.onAccepted, input.onAcceptedRollback, input.onAcceptedCommit);
+        try {
+          await this.enqueueOrcaInput(row.id, { clientId: input.clientId, text: input.message, persistedContent: input.persistedContent,
+            origin: input.origin, model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'ask', workingDir: row.workDir,
+            createOpts: createOpts(row), chatMessage: { clientId: input.clientId, role: 'user', content: input.persistedContent, createdAt: new Date().toISOString() } });
+          return { ok: true, targetSessionId: row.id, agentKind: row.agentKind, wakeKind: 'queued', targetTitle: row.title ?? null,
+            targetLastUserSendAt: row.userSendAt ? new Date(row.userSendAt).toISOString() : null };
+        } catch (error) { this.orcaDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(input.clientId); throw error; }
+      },
+      createDbMessage: (id, input) => this.storage.append(id, { kind: 'user', message: { type: 'user', content: input.content },
+        clientId: input.clientId, origin: 'local', agentMeta: input.agentMeta }),
+      beginDirectTurnChangeSet: async (id, clientId) => { await this.changes.begin((await this.ensureLive(id)).session, clientId); },
+      abortDirectTurnChangeSet: id => this.changes.store.clearPendingTurnChangeSets(id),
+      isSessionRunningError: error => error instanceof Error && error.message === 'SESSION_RUNNING',
+      log: this.options.logger,
+    }, this.options.logger);
+  }
+  private async enqueueOrcaInput(id: string, item: AgentInputQueuedMessage, atHead = false,
+    onReserved?: () => void, beforeReserve?: () => Promise<void>) {
+    await this.ready;
+    return this.mutateQueued(id, async () => {
+        await beforeReserve?.();
+        const collaboration = await captureTerminalOrcaInput(this.orcaStore, this.storage, id, item);
+        const receipt = await this.submit(id, { text: item.text, files: item.files, mentions: item.mentions },
+          { requestId: item.clientId }, { source: 'local', collaboration }, atHead);
+        await onReserved?.();
+        return receipt;
+    });
+  }
+  private async mutateQueued<T>(id: string, work: () => Promise<T>): Promise<T> {
+    return this.routes.withLock(id, async () => {
+      this.queueMutations.add(id);
+      try { return await work(); }
+      finally { this.queueMutations.delete(id); setImmediate(() => this.drain(id)); }
+    });
+  }
+  private createOrcaTeamControls(): OrcaTeamService {
+    const changed = (leadSessionId: string) => this.emit('maker:orca:worker-changed', { leadSessionId });
+    const closeIfIdle = async (id: string) => {
+      if (this.isTurnRunning(id) || this.steeringSubmissions.has(id) || (await this.storage.queued(id)).length) return false;
+      await this.closeTask(id); return true;
+    };
+    return createOrcaTeamService(this.orcaRemoteController.wrapTeamDeps({
+      captureControlAuthority: async leadId => {
+        // The shared queue tools also let a Worker manage collaboration input
+        // in its own queue. Resolve its real Lead without granting a new team.
+        const worker = (await this.storage.get(leadId))?.orcaRole === 'worker'
+          ? await this.orcaStore.getWorkerLink({ workerSessionId: leadId }) : null;
+        const authorityId = worker?.leadSessionId ?? leadId;
+        const authority = await this.captureOrcaAuthority(authorityId);
+        const team = await this.orcaStore.getActiveTeamByLead(authorityId);
+        if (worker && team?.id !== worker.teamId) throw new Error('ORCA_TEAM_NOT_FOUND');
+        return async () => {
+          await authority.assertCurrent();
+          this.guard({ source: 'local' });
+          const [current, row, link] = await Promise.all([this.orcaStore.getActiveTeamByLead(authorityId), this.storage.get(leadId),
+            worker ? this.orcaStore.getWorkerLink({ workerSessionId: leadId }) : null]);
+          if (current?.id !== team?.id || !row || row.deleted || row.archived || worker && link?.workerId !== worker.workerId) throw new Error('ORCA_ASSIGNMENT_REVOKED');
+        };
+      },
+      getWorkerLinkBySessionId: workerSessionId => this.orcaStore.getWorkerLink({ workerSessionId }),
+      getWorkerLinkByWorkerId: workerId => this.orcaStore.getWorkerLink({ workerId }),
+      listWorkersByLead: id => this.orcaStore.listWorkersByLead(id),
+      getLiveSession: id => this.live.get(id)?.session ?? null,
+      resumeWorkerSession: worker => this.routes.withLock(worker.sessionId, async () => {
+        const link = await this.orcaStore.getWorkerLink({ workerId: worker.id, workerSessionId: worker.sessionId });
+        if (!link || (await this.orcaStore.getActiveTeamByLead(link.leadSessionId))?.id !== link.teamId) throw new Error('ORCA_ASSIGNMENT_REVOKED');
+        await this.ensureLive(worker.sessionId);
+      }),
+      updateWorkerStatus: (id, status) => this.orcaStore.updateWorkerStatus(id, status),
+      markWorkerIdle: id => this.orcaStore.markWorkerIdle(id),
+      markWorkerIdleIfStatus: (id, status) => this.orcaStore.markWorkerIdleIfStatus(id, status),
+      restoreWorkerDoneIfIdle: id => this.orcaStore.restoreWorkerDoneIfIdle(id),
+      closeWorkerSession: (id, beforeClose, sendLockHeld) => {
+        const close = async () => {
+          await beforeClose?.(); this.manualOrcaInterrupts.set(id, { markedAt: Date.now(), reason: 'lead_idle' });
+          await this.orcaReports.suppress(id, this.activeSubmissions.get(id));
+          const session = this.live.get(id)?.session;
+          if (session) await this.turnLifecycle.stop(session);
+          await beforeClose?.(); await this.closeTask(id);
+        };
+        return sendLockHeld ? close() : this.routes.withLock(id, close);
+      },
+      closeWorkerSessionIfIdle: (id, lockHeld) => lockHeld ? closeIfIdle(id) : this.routes.withLock(id, () => closeIfIdle(id)),
+      hasPendingWorkerInput: async id => this.activeSubmissions.has(id) || this.steeringSubmissions.has(id) || this.recovering.has(id)
+        || this.sending.has(id) || (await this.storage.queued(id)).length > 0,
+      hasSendToSessionLock: id => this.routes.isLocked(id),
+      withSessionSendLock: (id, work) => this.routes.withLock(id, work),
+      archiveWorkerSession: async (id, beforeMutation) => {
+        await beforeMutation?.(); this.manualOrcaInterrupts.set(id, { markedAt: Date.now(), reason: 'lead_archive' });
+        await this.patchMeta(id, { status: 'archived' }, () => this.guard({ source: 'local' }));
+      },
+      getManualInterrupt: id => this.manualOrcaInterrupts.get(id) ?? null,
+      clearManualInterrupt: id => { this.manualOrcaInterrupts.delete(id); },
+      restoreManualInterrupt: (id, snapshot) => { this.manualOrcaInterrupts.set(id, snapshot); },
+      forgetWorkerSession: id => { this.manualOrcaInterrupts.delete(id); this.orcaTeamService.clearAutoBridgeState(id); },
+      broadcastOrcaWorkerChanged: changed,
+      dispatchWorkerMessage: async params => {
+        const result = await this.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage({ ...params, source: 'lead', senderLabel: 'Lead',
+          rawContent: params.message, meta: params.dispatchMeta });
+        return result.ok ? { ...result, targetTitle: result.targetTitle ?? null, targetLastUserSendAt: result.targetLastUserSendAt ?? null } : result;
+      },
+      reserveWorkerMessage: async params => {
+        const result = await this.orcaDispatcher.reserveNextOrcaInterAgentMessage({ ...params, source: 'lead', senderLabel: 'Lead',
+          rawContent: params.message, meta: params.dispatchMeta });
+        return result.ok ? { ...result, targetTitle: result.targetTitle ?? null, targetLastUserSendAt: result.targetLastUserSendAt ?? null } : result;
+      },
+      requestWorkerInterrupt: async id => {
+        this.manualOrcaInterrupts.set(id, { markedAt: Date.now(), reason: 'lead_interrupt' });
+        await this.orcaReports.suppress(id, this.activeSubmissions.get(id));
+        const session = this.live.get(id)?.session;
+        const result = session ? await session.requestGracefulStop() : { status: this.starts.has(id) || this.sending.has(id) ? 'unconfirmed' as const : 'no-active-turn' as const };
+        return { stopOutcome: result.status, queuePaused: this.queuePaused.has(id) };
+      },
+      getWorkerQueuePaused: id => this.queuePaused.has(id),
+      getSessionQueueSnapshot: async id => ({ pendingQueue: await this.orcaQueue.snapshot(id),
+        steeringClientIds: this.steeringSubmissions.has(id) ? [this.steeringSubmissions.get(id)!.clientId] : [],
+        consumingClientIds: [this.activeSubmissions.get(id), this.steeringSubmissions.get(id)?.clientId].filter((value): value is string => !!value),
+        isWorking: this.isTurnRunning(id), willQueue: true, queuePaused: this.queuePaused.has(id),
+      }),
+      ensureWorkerQueueRestored: async () => { await this.ready; return !this.closed; },
+      removeQueuedMessage: (id, clientId, expected) => this.orcaQueue.remove(id, clientId, expected),
+      replaceQueuedMessage: (id, clientId, next, expected) => this.orcaQueue.replace(id, clientId, next, expected),
+      mergeQueuedMessages: (id, clientIds, build) => this.orcaQueue.merge(id, clientIds, build),
+      moveQueuedMessage: (id, clientId, position) => this.orcaQueue.move(id, clientId, position),
+      steerStoredQueuedMessage: (id, clientId) => this.steerQueuedOrcaInput(id, clientId),
+      sendAutoBridgeToLead: async (id, message, workerId) => {
+        const result = await this.orcaReports.automatic({ targetSessionId: id, rawContent: message,
+          source: 'worker', senderLabel: 'Worker', workerId, meta: { source: 'orca', context: `worker_auto_bridge/${id}/${workerId}` } });
+        return { accepted: result.ok };
+      },
+      log: this.options.logger,
+    }));
+  }
+  /** Called with the route lock held, including by the shared dispatcher. */
+  private steerOrcaInput(id: string, item: AgentInputQueuedMessage,
+    expected: { session: object; turnGeneration: number }): Promise<ControlSteerOutcome> {
+    const operation = this.performOrcaSteer(id, item, expected);
+    this.steerOperations.add(operation);
+    void operation.finally(() => this.steerOperations.delete(operation)).catch(() => undefined);
+    return operation;
+  }
+  private async performOrcaSteer(id: string, item: AgentInputQueuedMessage,
+    expected: { session: object; turnGeneration: number }): Promise<ControlSteerOutcome> {
+    const session = this.live.get(id)?.session;
+    const currentTurn = () => this.live.get(id)?.session === session && session === expected.session
+      && session.getTurnGeneration() === expected.turnGeneration && session.isTurnRunning();
+    const blocked = () => this.stoppingTasks.has(id) || this.queuePaused.has(id) || this.recovering.has(id)
+      || this.sending.has(id) || !!this.queueLocks.get(id)?.size || this.queueEditLocks.get(id)?.has(item.clientId) === true
+      || [...this.pending.values()].some(pending => pending.sessionId === id) || this.routes.intent(id) !== null;
+    if (!session || !currentTurn() || blocked() || this.steeringSubmissions.has(id)) return 'not-attempted';
+    if (!session.capabilities.sameTurnSteer.supported) return 'not-attempted';
+    const collaboration = await captureTerminalOrcaInput(this.orcaStore, this.storage, id, item);
+    if (!currentTurn() || blocked()) return 'not-attempted';
+    const controller = new AbortController(), boundary = { clientId: item.clientId, controller };
+    this.steeringSubmissions.set(id, boundary);
+    let providerBoundaryReached = false, providerAccepted = false;
+    const removeWaiting = () => {
+      const queue = this.queuedSubmissions.get(id), index = queue?.findIndex(row => row.requestId === item.clientId) ?? -1;
+      if (index >= 0) queue!.splice(index, 1);
+    };
+    try {
+      let receipt = await this.storage.submission(id, item.clientId);
+      if (!receipt) receipt = await this.submit(id, { text: item.text, files: item.files, mentions: item.mentions },
+        { requestId: item.clientId }, { source: 'local', collaboration });
+      if (receipt.status !== 'queued' || !receipt.message || !receipt.collaboration) return 'rejected';
+      const message = receipt.message;
+      await assertTerminalOrcaInput(this.orcaStore, this.storage, id, receipt.collaboration);
+      if (!currentTurn() || blocked() || controller.signal.aborted) return 'not-attempted';
+      // A crash after the RPC starts leaves an interrupted receipt, never a
+      // replayable queued row. Only a confirmed non-delivery can restore it.
+      if (!await this.updateReceipt(id, item.clientId, 'sending')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
+      const source = buildMessageSourceNote(messageSourceSenderFromMeta({ origin: receipt.collaboration.origin }));
+      await session.steer(source ? appendInputText(message, source) : message, {
+        signal: controller.signal, [AUTO_REVIEW_SOURCE_CONTENT]: '', [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+        beforeProviderStart: async () => {
+          this.guard({ source: 'local', signal: controller.signal });
+          if (!currentTurn() || blocked()) throw new Error('ORCA_STEER_BOUNDARY_CHANGED');
+          await assertTerminalOrcaInput(this.orcaStore, this.storage, id, receipt!.collaboration!);
+          this.guard({ source: 'local', signal: controller.signal });
+          if (!currentTurn() || blocked()) throw new Error('ORCA_STEER_BOUNDARY_CHANGED');
+          providerBoundaryReached = true;
+        },
+      });
+      providerAccepted = true;
+      removeWaiting();
+      this.orcaDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(item.clientId);
+      const visible = terminalOrcaHistoryMessage(message, receipt.collaboration);
+      const agentMeta = { origin: receipt.collaboration.origin, delivery: 'steer', autoReviewUserText: { kind: 'delegated-continuation' } };
+      const stored = await this.storage.append(id, { kind: 'user', message: visible, clientId: item.clientId, origin: 'local', agentMeta });
+      if (!await this.updateReceipt(id, item.clientId, 'completed')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
+      this.emit('local-db:messages:created', { sessionId: id, message: { id: `${id}:${stored.sequence}`, clientId: item.clientId,
+        sessionId: id, role: 'user', content: persistedInput(visible), createdAt: new Date(stored.timestamp).toISOString(),
+        agentKind: session.agentKind === 'claude-code' ? 'cc' : session.agentKind, agentMeta } });
+      return 'steered';
+    } catch (error) {
+      if (providerAccepted) {
+        // Provider ACK cannot be undone by a later local bookkeeping failure.
+        this.persistenceFaults.add(id);
+        this.options.logger.warn('ORCA_STEER_PERSISTENCE_FAILED');
+        return 'steered';
+      }
+      const reason = error instanceof Error ? error.message : '';
+      if (reason === 'ORCA_ASSIGNMENT_REVOKED') {
+        removeWaiting();
+        await this.updateReceipt(id, item.clientId, 'failed', reason);
+        return 'rejected';
+      }
+      const knownUndelivered = /\[NO_ACTIVE_TURN\]|\[STALE_TURN\]|no active .*turn|has no active turn/i.test(reason);
+      if (providerBoundaryReached && !knownUndelivered) {
+        // An ACK timeout is not proof of non-delivery. Preserve the input in
+        // a durable paused queue; only an explicit user resume may retry it.
+        this.queuePaused.add(id);
+        await this.storage.update(id, { queuePaused: true });
+        await this.updateReceipt(id, item.clientId, 'queued', 'STEER_DELIVERY_UNCERTAIN');
+        return 'queued';
+      }
+      await this.updateReceipt(id, item.clientId, 'queued');
+      return 'not-attempted';
+    } finally {
+      if (this.steeringSubmissions.get(id) === boundary) this.steeringSubmissions.delete(id);
+      void this.projection(id).then(value => this.emit('maker:input:projection', value)).catch(() => undefined);
+      setImmediate(() => this.drain(id));
+    }
+  }
+  private async steerQueuedOrcaInput(id: string, clientId: string): Promise<QueuedSteerOutcome> {
+    const live = this.live.get(id)?.session;
+    if (!live?.isTurnRunning()) return { kind: 'queued', reason: 'NO_ACTIVE_TURN' };
+    if (!live.capabilities.sameTurnSteer.supported || live.remoteHostId) return { kind: 'queued', reason: 'STEER_UNSUPPORTED' };
+    if (this.routes.isLocked(id)) return { kind: 'queued', reason: 'INPUT_BOUNDARY_BUSY' };
+    const expected = { session: live, turnGeneration: live.getTurnGeneration() };
+    return this.routes.withLock(id, async () => {
+      const item = (await this.orcaQueue.snapshot(id)).find(row => row.clientId === clientId);
+      if (!item) return { kind: 'gone' };
+      const result = await this.steerOrcaInput(id, item, expected);
+      if (result === 'steered') return { kind: 'steered' };
+      if (result === 'rejected') return { kind: 'gone' };
+      return { kind: 'queued', reason: result === 'queued' ? 'STEER_UNCERTAIN'
+        : live.isTurnRunning() ? 'INPUT_BOUNDARY_BUSY' : 'NO_ACTIVE_TURN' };
+    });
+  }
   private emit(channel: string, payload: unknown) {
     if (this.closed) return;
+    if (channel === 'local-db:messages:created') {
+      const event = payload as { sessionId?: string; message?: { role?: string } };
+      if (event?.sessionId && event.message?.role === 'user') this.orcaIpc?.history.notifyUserMessagePersisted(event.sessionId);
+    }
     try { this.options.emit(channel, [payload]); }
     catch { this.options.logger.warn('Terminal subscriber delivery failed', { channel }); }
   }
@@ -973,7 +1553,7 @@ export class TerminalTaskHost {
   observeTask(id:string, listener:(event:AgentEvent)=>void) {const set=this.taskObservers.get(id)??new Set();set.add(listener);this.taskObservers.set(id,set);return ()=>{set.delete(listener);if(!set.size)this.taskObservers.delete(id);};}
   listBindings() { return Object.fromEntries(this.groupBindings); }
   async sessionGroup(id: string) { const row = await this.storage.get(id); return row?.groupBinding ? { groupDeviceId: row.groupBinding.groupDeviceId ?? null, providerId: row.groupBinding.providerId } : null; }
-  isTurnRunning(id: string): boolean { return this.recovering.has(id) || this.turnLifecycle.running(id) || this.starts.has(id) || this.sending.has(id) || this.activeSubmissions.has(id) || this.live.get(id)?.session.isTurnRunning() === true; }
+  isTurnRunning(id: string): boolean { return this.steeringSubmissions.has(id) || this.recovering.has(id) || this.turnLifecycle.running(id) || this.starts.has(id) || this.sending.has(id) || this.activeSubmissions.has(id) || this.live.get(id)?.session.isTurnRunning() === true; }
   async submitScheduled(id: string, text: string, origin: Omit<ScheduledOrigin, 'kind'> & { requestId?: string; assertCurrent?: () => void }) {
     return this.submit(id, { text }, { requestId: origin.requestId ?? randomUUID() }, { source: 'local', assertCurrent: origin.assertCurrent, scheduler: { kind: 'scheduler', scheduleId: origin.scheduleId, scheduleName: origin.scheduleName, runId: origin.runId, firedAt:origin.firedAt } });
   }
@@ -1087,8 +1667,8 @@ export class TerminalTaskHost {
       warn: message => this.options.logger.warn(message),
     }, config, namespace, options);
   }
-  private async create(input: Record<string, unknown>, guard: () => void, plugin?: {id:string;hidden?:boolean;onPersistenceStarted():void}, remoteWorker?: {id:string;lead:OrcaRemoteLead}) {
-    const id = plugin?.id ?? remoteWorker?.id ?? randomUUID();
+  private async create(input: Record<string, unknown>, guard: () => void, plugin?: {id:string;hidden?:boolean;onPersistenceStarted():void}, remoteWorker?: {id:string;lead:OrcaRemoteLead}, collaboration?: { id: string; role: 'worker' }) {
+    const id = plugin?.id ?? remoteWorker?.id ?? collaboration?.id ?? randomUUID();
     const admitted = await this.admitTask(input, id, guard);
     const { resolved } = admitted;
     // Plugin task roots become authorization facts for later worker plans.
@@ -1101,6 +1681,8 @@ export class TerminalTaskHost {
     await this.storage.create({
       ...(plugin ? { source: 'plugin', hiddenAt: plugin.hidden ? Date.now() : null } : {}),
       ...(remoteWorker ? { orcaRemoteLead: remoteWorker.lead } : {}),
+      ...(collaboration ? { orcaRole: collaboration.role } : {}),
+      ...(input.workspaceKind === 'dialogue' || input.workspaceKind === 'project' ? { workspaceKind: input.workspaceKind } : {}),
       id, ...resolved.selection, workDir: cwd,
       title: typeof input.title === 'string' ? input.title : typeof this.options.defaultTitle === 'function' ? this.options.defaultTitle() : this.options.defaultTitle ?? 'New task',
       permissionMode: input.permissionMode ? permission(input.permissionMode) : 'default',
@@ -1151,12 +1733,12 @@ export class TerminalTaskHost {
     catch(error){await knowledge?.close();await capability.close();throw error;}
     let tools: Awaited<ReturnType<typeof createTaskTools>>;
     try { tools = await createTaskTools({ logger: this.options.logger, sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind,
-      ...(row.orcaRemoteLead && this.options.remoteInvoke ? { extraProviders: [createOrcaRemoteWorkerMcpProvider(async (context, tool, args) => {
+      extraProviders: [this.orcaTools.provider, row.orcaRemoteLead && this.options.remoteInvoke ? createOrcaRemoteWorkerMcpProvider(async (context, tool, args) => {
         assertCurrent();
         if (context.sessionId !== id || !lease || context.sessionInstanceId !== lease.session.instanceId) throw new Error('TASK_MCP_SCOPE_MISMATCH');
         const result = await this.remoteWorkerForwarder.forwardTool(context, tool, args);
         assertCurrent(); return result;
-      }, this.options.logger)] } : {}),
+      }, this.options.logger) : this.localWorkerMcpProvider(id)],
       extraFactories: {...capability.factories,...knowledge?.factories,...plugin?.factories,...this.channelTools?.(() => {
         if (!isCurrent()) throw new Error('TASK_TOOLS_REVOKED');
         const session = this.live.get(id)?.session;
@@ -1173,7 +1755,9 @@ export class TerminalTaskHost {
       const {delegatedTask:_delegation,authorizationError:_error,...ordinary}=request;
       // Plugin-created tasks require their own live receipt; never reinterpret
       // a lost delegation as authority from the owner of an ordinary task.
-      if(current.source==='plugin')return this.pluginSessions ? this.pluginSessions.review(ordinary) : {...ordinary,authorizationError:'The plugin task authorization receipt is unavailable.'};
+      const workerLink = current.orcaRole === 'worker' ? await this.orcaStore.getWorkerLink({ workerSessionId: id }) : null;
+      const pluginOwned = current.source === 'plugin' || workerLink && (await this.storage.get(workerLink.leadSessionId))?.source === 'plugin';
+      if(pluginOwned)return this.pluginSessions ? this.pluginSessions.review(ordinary) : {...ordinary,authorizationError:'The plugin task authorization receipt is unavailable.'};
       return ordinary;
     },reviewAbort.signal);
     let agent;
@@ -1187,9 +1771,19 @@ export class TerminalTaskHost {
     });
     try {
       if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
-      const session = await maker.createSession({ id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, thinkingEnabled: row.thinkingEnabled, vendorOptions: this.channelBindings.store.findByTarget(id) ? undefined : this.channelOrchestrators.vendorOptionsForSession(id) ?? this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) });
+      const createOptions: MakerSessionCreateOpts = { id, agentKind: chosen.selection.agentKind, workingDir: row.workDir, title: row.title, ...(row.agentDeviceId ? { agentDeviceId: row.agentDeviceId } : {}), model: chosen.selection.model, providerId: chosen.selection.providerId, effort: chosen.selection.effort, permissionMode: row.permissionMode, fastMode: row.fastMode, planMode: row.planMode, thinkingEnabled: row.thinkingEnabled, vendorOptions: this.channelBindings.store.findByTarget(id) ? undefined : this.channelOrchestrators.vendorOptionsForSession(id) ?? this.channelVendorOptions.get(id), ...(row.sdkSessionId ? { resumeSessionId: row.sdkSessionId } : {}) };
+      const bootstrap = this.orcaBootOptions.get(id);
+      if (bootstrap?.vendorOptions) createOptions.vendorOptions = { ...createOptions.vendorOptions, ...bootstrap.vendorOptions };
+      const didInjectOrcaInstructions = await preparePersistedOrcaSessionStart(id, createOptions, {
+        getSessionRole: taskId => this.orcaStore.getSessionOrcaRole(taskId),
+        getWorkerLink: taskId => this.orcaStore.getWorkerLink({ workerSessionId: taskId }),
+        getRemoteLead: async taskId => (await this.storage.get(taskId))?.orcaRemoteLead ?? null,
+        warn: (message, fields) => this.options.logger.warn(message, fields),
+      });
+      assertCurrent();
+      const session = await maker.createSession(createOptions);
       if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
-      const task: LiveTask = { revoke:()=>{revoked=true;reviewAbort.abort();plugin?.close();},plugin,capabilityRevision:capability.revision,modelRevision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;reviewAbort.abort();plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
+      const task: LiveTask = { didInjectOrcaInstructions, revoke:()=>{revoked=true;reviewAbort.abort();plugin?.close();},plugin,capabilityRevision:capability.revision,modelRevision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;reviewAbort.abort();plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
       installDesktopInteractionHandler(session,(request,shared)=>this.interaction(id,request,undefined,shared),(sourceRequestId,decision)=>{
         for(const pending of this.pending.values())if(pending.sessionId===id&&pending.sourceRequestId===sourceRequestId){pending.settle(decision);return true;}
         return false;
@@ -1233,6 +1827,16 @@ export class TerminalTaskHost {
   }
   private persistTaskEvent(id: string, event: AgentEvent, sourceRequestId?: string) {
     const runtime = this.live.get(id)?.session;
+    const currentOrcaTurn = runtime && event.turnScope !== 'background'
+      && event.sessionInstanceId === runtime.instanceId && event.sessionTurnGeneration === runtime.getTurnGeneration();
+    const terminalOrcaTurn = currentOrcaTurn && (event.type === 'done' && (event.data as { silentStop?: boolean } | undefined)?.silentStop !== true
+      || event.type === 'error' && (event.data as { isTerminal?: boolean } | undefined)?.isTerminal !== false);
+    const orcaCapture = terminalOrcaTurn ? this.orcaTeamService.captureWorkerTerminalTurn(id) : undefined;
+    if (currentOrcaTurn && event.type === 'text') {
+      const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
+      const text = typeof data.text === 'string' ? data.text : typeof data.content === 'string' ? data.content : '';
+      this.orcaTeamService.captureWorkerText(id, text, { isFinal: data.isFinal === true });
+    }
     if (runtime) this.changes.observe(runtime, event);
     for(const observer of this.taskObservers.get(id)??[])observer(event);
     // Generated byte payloads are host-owned, not durable conversation text.
@@ -1245,7 +1849,7 @@ export class TerminalTaskHost {
       const { data: _bytes, ...data } = event.data as Record<string, unknown>;
       saved = { ...event, data };
     }
-    void this.storage.append(id, { kind: 'event', event: saved }).then(row => {
+    void this.storage.append(id, { kind: 'event', event: saved, clientId: sourceRequestId }).then(async row => {
       this.emit('maker:event', { sessionId: id, event: saved, sequence: row.sequence });
       const requestId = this.activeSubmissions.get(id) === sourceRequestId ? sourceRequestId : undefined;
       if (requestId && event.turnScope !== 'background' && event.type === 'text') {
@@ -1254,6 +1858,13 @@ export class TerminalTaskHost {
         this.submissionText.set(id, data.isFinal === true ? text : (this.submissionText.get(id) ?? '') + text);
       }
       const silentStop = event.type === 'done' && (event.data as { silentStop?: boolean } | undefined)?.silentStop === true;
+      if (orcaCapture) {
+        const turn = { sessionId: id, status: event.type === 'done' ? 'done' as const : 'error' as const,
+          finalText: this.submissionText.get(id) ?? '', capture: orcaCapture,
+          ...(event.type === 'error' ? { diagnostic: 'TURN_FAILED' } : {}) };
+        await this.orcaReports.terminal(id, sourceRequestId, turn, () => this.orcaTeamService.handleWorkerTerminalTurn(turn))
+          .catch(() => this.options.logger.warn('ORCA_TERMINAL_REPORT_FAILED'));
+      }
       if (event.type === 'done' && !silentStop) { void this.messages(id,{limit:1}).then(rows=>{if(rows[0]?.role==='assistant')this.emit('local-db:messages:created',{sessionId:id,message:rows[0]});}).catch(()=>{}); setImmediate(() => this.drain(id)); const usage = this.live.get(id)?.session.getUsageSnapshot(); if (usage) void this.storage.update(id, { usage }).catch(() => this.persistenceFaults.add(id)); }
       if (requestId && !silentStop && event.turnScope !== 'background' && (event.type === 'done' || (event.type === 'error' && (event.data as { isTerminal?: boolean })?.isTerminal !== false))) {
         this.activeSubmissions.delete(id);
@@ -1400,7 +2011,10 @@ export class TerminalTaskHost {
     const stopsTask = ['maker:input:stop', 'maker:abort-session', 'maker:close-session', 'terminal:tasks:delete'].includes(channel)
       || channel === 'local-db:sessions:update' && record(args[1] ?? {}).status !== undefined && record(args[1]).status !== 'active';
     const stoppingId = stopsTask ? string(args[0]) : undefined;
-    if (stoppingId) this.stoppingTasks.set(stoppingId, (this.stoppingTasks.get(stoppingId) ?? 0) + 1);
+    if (stoppingId) {
+      this.stoppingTasks.set(stoppingId, (this.stoppingTasks.get(stoppingId) ?? 0) + 1);
+      this.steeringSubmissions.get(stoppingId)?.controller.abort();
+    }
     try {
       const result = await this.dispatch(channel, args, context);
       this.guard(context);
@@ -1432,7 +2046,21 @@ export class TerminalTaskHost {
       const target = channel==='maker:provider:list'||channel==='maker:get-capabilities' ? context.sharedTask.sessionId : channel === 'maker:resolve-interaction' ? this.pending.get(string(args[0]))?.sessionId : channel === 'local-db:history:messages' ? record(args[0]).sessionId : args[0];
       if (target !== context.sharedTask.sessionId) throw new Error('SHARED_TASK_SCOPE_MISMATCH');
     }
+    const stopWorker = ['maker:input:stop', 'maker:abort-session', 'maker:close-session', 'terminal:tasks:delete'].includes(channel)
+      || channel === 'local-db:sessions:update' && record(args[1] ?? {}).status !== undefined && record(args[1]).status !== 'active';
+    // Revoke recovery before the first asynchronous metadata/report read. Its
+    // commit guard must already be cancelled if a waiting write resumes now.
+    if (stopWorker) this.routes.recovery.runtime.cancelRecovery(string(args[0]));
+    if (stopWorker && (await this.storage.get(string(args[0])))?.orcaRole === 'worker') {
+      this.guard(context);
+      this.manualOrcaInterrupts.set(string(args[0]), { markedAt: Date.now(), reason: 'user_stop' });
+      await this.orcaReports.suppress(string(args[0]), this.activeSubmissions.get(string(args[0])));
+    }
     if (REMOTE_WORKER_CHANNELS.includes(channel as typeof REMOTE_WORKER_CHANNELS[number])) return this.remoteWorkers(channel, args, context);
+    if (ORCA_CONTROL_CHANNELS.includes(channel as typeof ORCA_CONTROL_CHANNELS[number])) {
+      if (context.source === 'remote' && (!context.deviceId || !context.ownerId || !context.assertCurrent)) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
+      return this.orcaAction.run(() => this.guard(context), () => this.orcaIpc.invoke(channel, args));
+    }
     if(CAPABILITY_CHANNELS.includes(channel))return this.capabilities.invoke(channel,args,context);
     switch (channel) {
       case 'maker:generate-title': {
@@ -1450,16 +2078,15 @@ export class TerminalTaskHost {
       case 'maker:input:resume': {const id=string(args[0]);await this.storage.update(id,{queuePaused:false});this.queuePaused.delete(id);for(const pending of this.pending.values())if(pending.sessionId===id&&pending.deferred){const decision=pending.deferred;pending.deferred=undefined;pending.decide(decision);}this.drain(id);return this.projection(id);}
       case 'maker:input:remove': {const id=string(args[0]);await this.removeQueued(id,string(args[1]),context);return {...await this.projection(id),inputDeliveryCancelled:true};}
       case 'maker:input:update-text':case 'maker:input:update-content': {
-        const id=string(args[0]),clientId=string(args[1]);const previous=await this.requireQueued(id,clientId,context);this.queueMutations.add(id);
-        try {const incoming=channel.endsWith('update-text')?{type:'user',content:typeof previous.message?.content==='string'?string(args[2]):[{type:'text',text:string(args[2])},...(previous.message?.content??[]).filter(block=>block.type!=='text')]}:args[2];
-          const message=await this.message(id,incoming,context);this.guard(context);await this.storage.editQueuedSubmission(id,clientId,{message,sharedTask:context.sharedTask,deviceId:context.deviceId,source:context.source,deliveryProof:undefined,orca:undefined},()=>this.guard(context));
+        const id=string(args[0]),clientId=string(args[1]);await this.mutateQueued(id,async()=>{const previous=await this.requireQueued(id,clientId,context);
+          const incoming=channel.endsWith('update-text')?{type:'user',content:typeof previous.message?.content==='string'?string(args[2]):[{type:'text',text:string(args[2])},...(previous.message?.content??[]).filter(block=>block.type!=='text')]}:args[2];
+          const message=await this.message(id,incoming,context);this.guard(context);await this.storage.editQueuedSubmission(id,clientId,{message,sharedTask:context.sharedTask,deviceId:context.deviceId,source:context.source,deliveryProof:undefined,orca:undefined,collaboration:undefined},()=>this.guard(context));
+          this.orcaDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(clientId);
           const item=this.queuedSubmissions.get(id)?.find(item=>item.requestId===clientId);if(item){item.message=message;item.context={...context,plugin:previous.plugin,signal:undefined};}
-        }finally{this.queueMutations.delete(id);this.drain(id);}return this.projection(id);
+        });return this.projection(id);
       }
       case 'maker:input:move': {
-        const id=string(args[0]);this.queueMutations.add(id);
-        try {await this.requireQueued(id,string(args[1]),context);const queue=[...(this.queuedSubmissions.get(id)??[])];const index=queue.findIndex(item=>item.requestId===args[1]);const destination=Number(args[2]);if(index<0||!Number.isInteger(destination)||destination<0||destination>=queue.length)throw new Error('INVALID_QUEUE_INDEX');queue.splice(destination,0,...queue.splice(index,1));await this.storage.reorderQueued(id,queue.map(item=>item.requestId),()=>this.guard(context));this.queuedSubmissions.set(id,queue);}
-        finally {this.queueMutations.delete(id);this.drain(id);}return this.projection(id);
+        const id=string(args[0]);await this.mutateQueued(id,async()=>{await this.requireQueued(id,string(args[1]),context);const queue=[...(this.queuedSubmissions.get(id)??[])];const index=queue.findIndex(item=>item.requestId===args[1]);const destination=Number(args[2]);if(index<0||!Number.isInteger(destination)||destination<0||destination>=queue.length)throw new Error('INVALID_QUEUE_INDEX');queue.splice(destination,0,...queue.splice(index,1));await this.storage.reorderQueued(id,queue.map(item=>item.requestId),()=>this.guard(context));const order=queue.map(item=>item.requestId);this.queuedSubmissions.get(id)?.sort((a,b)=>order.indexOf(a.requestId)-order.indexOf(b.requestId));});return this.projection(id);
       }
       case 'maker:input:set-expanded':{const id=string(args[0]);await this.storage.update(id,{queueExpanded:args[1]===true});return this.projection(id);}
       case 'maker:input:set-edit-lock':case 'maker:input:set-interaction-lock':{const id=string(args[0]);const map=channel.endsWith('edit-lock')?this.queueEditLocks:this.queueLocks;const locks=map.get(id)??new Set<string>();args[2]===true?locks.add(string(args[1])):locks.delete(string(args[1]));map.set(id,locks);this.drain(id);return this.projection(id);}
@@ -1531,6 +2158,14 @@ export class TerminalTaskHost {
       case 'terminal:tasks:list': return (await this.storage.list()).filter(row=>!row.hiddenAt).map(row => this.view(row));
       case 'local-db:sessions:list': return (await this.storage.list()).filter(row=>!row.hiddenAt).filter(row => args[1] === 'archived' ? row.archived && !row.deleted : args[1] === 'deleted' ? row.deleted : !row.archived && !row.deleted).slice(0, typeof args[0] === 'number' ? Math.min(1000, Math.max(1, args[0])) : 100).map(row => this.guiSession(row));
       case 'local-db:sessions:get': { const row = await this.storage.get(string(args[0])); return row ? this.guiSession(row) : null; }
+      case 'local-db:orca-workflows:get-by-lead': return this.orcaStore.getTeamByLeadSession(string(args[0]));
+      case ORCA_EXECUTION_DEVICES_CHANNEL: return { devices: await this.orcaRemoteController.listExecutionDevices() };
+      case 'local-db:orca-workflows:get-by-worker-session': return this.orcaStore.getTeamByWorkerSession(string(args[0]));
+      case 'local-db:orca-workflows:list-workers-by-lead': return this.orcaStore.listWorkersByLead(string(args[0]));
+      case 'local-db:orca-workflows:list-workers-by-leads': {
+        if (!Array.isArray(args[0]) || args[0].length > 200) throw new Error('INVALID_ARGUMENT');
+        return this.orcaStore.listWorkersByLeads(args[0].map(id => string(id)));
+      }
       case 'local-db:sessions:update': case 'local-db:sessions:patch-meta': return this.patchMeta(string(args[0]), record(args[1]),()=>this.guard(context));
       case 'local-db:messages:list': return this.messages(string(args[0]), args[1] === undefined ? {} : record(args[1]));
       case 'local-db:messages:around': case 'local-db:messages:around-client-id': {
@@ -1578,32 +2213,73 @@ export class TerminalTaskHost {
           if(context.deliveryProof){await validateTaskDelivery(this.options.remoteInvoke,context.deliveryProof);this.guard(context);}
           if(context.plugin){if(!this.pluginSessions)throw new Error('PLUGIN_TASKS_UNAVAILABLE');await this.pluginSessions.assertDispatch(context.plugin.id,id);this.guard(context);}
           if (context.orca) { await assertRemoteWorkerAssignment(this.storage, id, context.orca); this.guard(context); }
-          const agentMeta = context.orca ? { origin: context.orca.origin } : context.plugin ? {sourcePlugin:{pluginId:context.plugin.id,name:context.plugin.name}} : context.deliveryProof ? {origin:{kind:'session' as const,senderSessionId:`${context.deliveryProof.controllerDeviceId}::${context.deliveryProof.sessionId}`,senderSessionTitle:context.deliveryProof.senderTitle,displayText:context.deliveryProof.message}} : context.sender ? {origin:{kind:'session' as const,senderSessionId:context.sender.sessionId,senderSessionTitle:context.sender.title,displayText:inputPlainText(message)}} : context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.sourceDevice ? { sourceDevice: context.sourceDevice } : undefined;
+          if (context.collaboration) { await assertTerminalOrcaInput(this.orcaStore, this.storage, id, context.collaboration); this.guard(context); }
+          const agentMeta = context.collaboration ? { origin: context.collaboration.origin } : context.orca ? { origin: context.orca.origin } : context.plugin ? {sourcePlugin:{pluginId:context.plugin.id,name:context.plugin.name}} : context.deliveryProof ? {origin:{kind:'session' as const,senderSessionId:`${context.deliveryProof.controllerDeviceId}::${context.deliveryProof.sessionId}`,senderSessionTitle:context.deliveryProof.senderTitle,displayText:context.deliveryProof.message}} : context.sender ? {origin:{kind:'session' as const,senderSessionId:context.sender.sessionId,senderSessionTitle:context.sender.title,displayText:inputPlainText(message)}} : context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.sourceDevice ? { sourceDevice: context.sourceDevice } : undefined;
           const projection=createAutoReviewIntentProjection();
           const authoredText=projection.readText(persistedInput(message))??'';
-          const authorityMeta={...agentMeta,delivery:'turn',autoReviewUserText:context.scheduler?{kind:'scheduled-continuation'}:context.orca||context.plugin||context.sender||context.deliveryProof||context.sharedTask?{kind:'delegated-continuation'}:authoredText};
+          const authorityMeta={...agentMeta,delivery:'turn',autoReviewUserText:context.scheduler?{kind:'scheduled-continuation'}:context.collaboration||context.orca||context.plugin||context.sender||context.deliveryProof||context.sharedTask?{kind:'delegated-continuation'}:authoredText};
           this.changes.assertCanDispatch(task.session.workDir);
-          const stored=await this.storage.append(id, { kind: 'user', message, clientId: this.activeSubmissions.get(id) ?? randomUUID(), origin: context.source, agentMeta:authorityMeta });
-          this.emit('local-db:messages:created',{sessionId:id,message:{id:`${id}:${stored.sequence}`,clientId:stored.clientId??`${id}:${stored.sequence}`,sessionId:id,role:'user',content:persistedInput(message),createdAt:new Date(stored.timestamp).toISOString(),agentKind:task.selection.agentKind==='claude-code'?'cc':task.selection.agentKind,agentMeta:authorityMeta}});
+          const historyMessage = terminalOrcaHistoryMessage(message, context.collaboration);
+          const stored=await this.storage.append(id, { kind: 'user', message: historyMessage, clientId: this.activeSubmissions.get(id) ?? randomUUID(), origin: context.source, agentMeta:authorityMeta });
+          this.emit('local-db:messages:created',{sessionId:id,message:{id:`${id}:${stored.sequence}`,clientId:stored.clientId??`${id}:${stored.sequence}`,sessionId:id,role:'user',content:persistedInput(historyMessage),createdAt:new Date(stored.timestamp).toISOString(),agentKind:task.selection.agentKind==='claude-code'?'cc':task.selection.agentKind,agentMeta:authorityMeta}});
           this.guard(context);
           const payload = context.scheduler ? appendInputText(message, `[Scheduled run context]\nschedule: ${JSON.stringify(context.scheduler.scheduleName)} (schedule_id: ${context.scheduler.scheduleId})\nrun_id: ${context.scheduler.runId}\nfiredAtUtc: ${new Date(context.scheduler.firedAt??Date.now()).toISOString()}`) : agentMeta ? appendInputText(message, 'sourceDevice' in agentMeta && agentMeta.sourceDevice ? buildClientDeviceNote(agentMeta.sourceDevice) : buildMessageSourceNote(messageSourceSenderFromMeta(agentMeta)) ?? '') : message;
           let changeSetStarted = false;
+          let restoredOrcaReport = false;
           try {
             const outgoing = await this.taskContext.prepareHandoff(id, payload);
             const history=await this.contextMessages(id,Infinity);
-            const intent=projection.restore(history.map(message=>({...message,agentMeta:message.agentMeta??null})),context.orca||context.plugin||context.scheduler||context.sender||context.deliveryProof?undefined:{clientId:stored.clientId!,content:persistedInput(message),authoredText});
+            const intent=projection.restore(history.map(message=>({...message,agentMeta:message.agentMeta??null})),context.collaboration||context.orca||context.plugin||context.scheduler||context.sender||context.deliveryProof?undefined:{clientId:stored.clientId!,content:persistedInput(message),authoredText});
             this.guard(context);
             const result = await this.channelSignals.withChannelTurnSource(id, this.channelSignals.channelTurnSourceFor(agentMeta?.origin, false), () => task.session.send(outgoing.message, {
               ...(context.scheduler ? { origin: context.scheduler } : {}),
               [AUTO_REVIEW_SOURCE_CONTENT]:message.content,
               [AUTO_REVIEW_USER_INTENT]:intent,
               ...(context.sharedTask?{turnPermissionPolicy:{origin:{kind:'desktop' as const},confirmationSurface:'desktop' as const,autoReviewContext:{requesterAuthority:'guest' as const,source:'group' as const},forceConfirmToolCall:()=>false}}:{}),
-              onAccepted: async () => { this.guard(context); if(context.plugin){if(!this.pluginSessions)throw new Error('PLUGIN_TASKS_UNAVAILABLE');await this.pluginSessions.accept(context.plugin.id,id,stored.clientId!,{instanceId:task.session.instanceId,generation:task.session.getTurnGeneration()});this.guard(context);} this.turnLifecycle.noteUserSend(id); await this.changes.begin(task.session, stored.clientId!); changeSetStarted = true; if (context.orca) this.remoteWorkerTurns.set(id, { instanceId: task.session.instanceId, generation: task.session.getTurnGeneration(), clientId: stored.clientId! }); else this.remoteWorkerTurns.delete(id); },
+              onAccepted: async () => {
+                this.guard(context);
+                if (context.orca) await assertRemoteWorkerAssignment(this.storage, id, context.orca);
+                if (context.collaboration) await assertTerminalOrcaInput(this.orcaStore, this.storage, id, context.collaboration);
+                if(context.plugin){if(!this.pluginSessions)throw new Error('PLUGIN_TASKS_UNAVAILABLE');await this.pluginSessions.accept(context.plugin.id,id,stored.clientId!,{instanceId:task.session.instanceId,generation:task.session.getTurnGeneration()});this.guard(context);}
+                this.turnLifecycle.noteUserSend(id);
+                await this.changes.begin(task.session, stored.clientId!);
+                changeSetStarted = true;
+                if (context.collaboration) {
+                  await assertTerminalOrcaInput(this.orcaStore, this.storage, id, context.collaboration);
+                  if (context.collaboration.source === 'lead') await this.orcaReports.begin(id, stored.clientId!);
+                  const accepted = this.orcaDispatcher.runQueuedOrcaInterAgentAcceptedCallback(id, { clientId: stored.clientId! });
+                  if (accepted) await accepted;
+                  else if (context.collaboration.source === 'lead' && this.orcaTeamService) {
+                    // Callback closures cannot survive a process restart. The
+                    // durable assignment restores the shared service's report ownership.
+                    this.orcaTeamService.restoreWorkerPendingReport(id, context.collaboration);
+                    restoredOrcaReport = true;
+                  }
+                  await this.orcaTeamService?.handleWorkerTurnStarted(id);
+                }
+                this.guard(context);
+                if (context.orca) this.remoteWorkerTurns.set(id, { instanceId: task.session.instanceId, generation: task.session.getTurnGeneration(), clientId: stored.clientId! });
+                else this.remoteWorkerTurns.delete(id);
+              },
             }));
+            if (context.collaboration) {
+              await this.orcaDispatcher.settleQueuedOrcaInterAgentAcceptedCallback(id,
+                { persistUserMessage: { clientId: stored.clientId!, content: persistedInput(historyMessage), delivery: 'turn' } },
+                toDesktopSessionDispatchOutcome(result, { source: 'orca', context: 'terminal-durable-input' }));
+              if (!result.accepted) await this.orcaReports.suppress(id, stored.clientId);
+              if (!result.accepted && restoredOrcaReport) this.orcaTeamService?.clearAutoBridgeState(id);
+            }
             if (result.accepted) outgoing.accepted();
             if (!result.accepted && changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id);
             return result;
-          } catch (error) { if (changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id); throw error; }
+          } catch (error) {
+            if (context.collaboration) {
+              await this.orcaReports.suppress(id, stored.clientId);
+              await this.orcaDispatcher.rollbackQueuedOrcaInterAgentAcceptedCallback(id, stored.clientId);
+              if (restoredOrcaReport) this.orcaTeamService?.clearAutoBridgeState(id);
+            }
+            if (changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id); throw error;
+          }
         } finally { this.sending.delete(id); releaseRoute(); }
       }
       case 'maker:steer': {const id=string(args[0]),session=(await this.ensureLive(id)).session;noteInteractionRouteSteer(session);return session.steer(typeof args[1] === 'string' ? args[1] : await this.message(id, args[1], context),{beforeProviderStart:()=>{this.guard(context);this.remoteWorkerTurns.delete(id);}});}
@@ -1682,7 +2358,7 @@ export class TerminalTaskHost {
     const pendingRequests = [...this.pending.values()].filter(item => item.sessionId === receipt.sessionId).map(item => item.request);
     return { ...receipt, clientId: receipt.requestId, status: pendingRequests.length && ['running', 'sending'].includes(receipt.status) ? 'waiting' : receipt.status === 'sending' ? 'running' : receipt.status, errorCode: receipt.error ?? null, finalText: receipt.finalText ?? (this.activeSubmissions.get(receipt.sessionId) === receipt.requestId ? this.submissionText.get(receipt.sessionId) : '') ?? '', pendingRequests };
   }
-  private async submit(id: string, input: unknown, options: Record<string, unknown>, context: TaskInvocationContext) {
+  private async submit(id: string, input: unknown, options: Record<string, unknown>, context: TaskInvocationContext, atHead = false) {
     const lifecycle: AttachmentLifecycle = {cleanup:[],accepted:[]};
     try {
     const message = await this.message(id, input, context, lifecycle);
@@ -1690,25 +2366,25 @@ export class TerminalTaskHost {
     if (!(context.plugin ? /^plugin-task:[a-zA-Z0-9_-]{1,100}$/ : /^[a-zA-Z0-9_-]{1,100}$/).test(requestId)) throw new Error('INVALID_REQUEST_ID');
     const sendAtMs = options.sendAtMs === undefined ? undefined : Number(options.sendAtMs);
     if (sendAtMs !== undefined && (!Number.isFinite(sendAtMs) || sendAtMs < 0)) throw new Error('INVALID_SEND_TIME');
-    const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId, pluginId:context.plugin?.id, orca:context.orca, sendAtMs })).digest('hex');
-    const claimed = await this.permissionChanges.withSessionPermissionChange(id,()=>this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, sourceDevice: context.sourceDevice, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, plugin:context.plugin, orca:context.orca, deliveryProof:context.deliveryProof, sendAtMs }));
+    const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId, pluginId:context.plugin?.id, orca:context.orca, collaboration:context.collaboration, sendAtMs })).digest('hex');
+    const claimed = await this.permissionChanges.withSessionPermissionChange(id,()=>this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, sourceDevice: context.sourceDevice, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, plugin:context.plugin, orca:context.orca, collaboration:context.collaboration, deliveryProof:context.deliveryProof, sendAtMs }, atHead));
     for(const accepted of lifecycle.accepted) await accepted().catch(()=>this.options.logger.warn('ATTACHMENT_RELAY_CLEANUP_FAILED'));
     if (!claimed.created) return claimed.receipt;
     // Acceptance is durable before work begins; reconnecting with the same key
     // returns the original receipt, including after a process restart.
-    this.enqueueSubmission(id, message, requestId, { ...context, signal: undefined }, sendAtMs);
+    this.enqueueSubmission(id, message, requestId, { ...context, signal: undefined }, sendAtMs, atHead);
     return claimed.receipt;
     } finally { await Promise.allSettled(lifecycle.cleanup.map(cleanup=>cleanup())); }
   }
-  private enqueueSubmission(id: string, message: UserMessage, requestId: string, context: TaskInvocationContext, sendAtMs?: number) {
+  private enqueueSubmission(id: string, message: UserMessage, requestId: string, context: TaskInvocationContext, sendAtMs?: number, atHead = false) {
     const queue = this.queuedSubmissions.get(id) ?? [];
-    if (!queue.some(item => item.requestId === requestId)) queue.push({ message, requestId, context, sendAtMs });
+    if (!queue.some(item => item.requestId === requestId)) queue.splice(atHead ? 0 : queue.length, 0, { message, requestId, context, sendAtMs });
     this.queuedSubmissions.set(id, queue);
     setImmediate(() => this.drain(id));
     void this.projection(id).then(projection => this.emit('maker:input:projection', projection)).catch(() => undefined);
   }
   private drain(id: string) {
-    if (!this.pendingDispatchReady || this.closed || this.stoppingTasks.has(id) || this.recovering.has(id) || this.queuePaused.has(id) || this.queueMutations.has(id) || this.queueLocks.get(id)?.size || this.queueEditLocks.get(id)?.size || this.activeSubmissions.has(id) || this.starts.has(id) || this.sending.has(id) || this.turnLifecycle.running(id) || this.live.get(id)?.session.isTurnRunning()) return;
+    if (!this.pendingDispatchReady || this.closed || this.stoppingTasks.has(id) || this.recovering.has(id) || this.queuePaused.has(id) || this.queueMutations.has(id) || this.steeringSubmissions.has(id) || this.queueLocks.get(id)?.size || this.queueEditLocks.get(id)?.size || this.activeSubmissions.has(id) || this.starts.has(id) || this.sending.has(id) || this.turnLifecycle.running(id) || this.live.get(id)?.session.isTurnRunning()) return;
     const queue = this.queuedSubmissions.get(id) ?? [];
     const readyIndex = queue.findIndex(item => !item.sendAtMs || item.sendAtMs <= Date.now());
     const next = readyIndex >= 0 ? queue.splice(readyIndex,1)[0] : undefined;
@@ -1717,13 +2393,13 @@ export class TerminalTaskHost {
     if (next) void this.runSubmission(id, next.message, next.requestId, next.context);
   }
   private async requireQueued(id:string,clientId:string,context:TaskInvocationContext){
-    const receipt=await this.storage.submission(id,clientId);if(!receipt||receipt.status!=='queued'||this.activeSubmissions.get(id)===clientId)throw new Error('QUEUED_MESSAGE_NOT_FOUND');
+    const receipt=await this.storage.submission(id,clientId);if(!receipt||receipt.status!=='queued'||(this.activeSubmissions.get(id)===clientId||this.steeringSubmissions.get(id)?.clientId===clientId))throw new Error('QUEUED_MESSAGE_NOT_FOUND');
     if(context.sharedTask&&receipt.sharedTask?.memberId!==context.sharedTask.memberId)throw new Error('SHARED_TASK_INPUT_NOT_OWNED');return receipt;
   }
   private async removeQueued(id:string,clientId:string,context:TaskInvocationContext){
-    await this.requireQueued(id,clientId,context);this.queueMutations.add(id);
-    try {const receipt=await this.storage.editQueuedSubmission(id,clientId,{status:'interrupted',error:'INPUT_REMOVED'},()=>this.guard(context));if(receipt.plugin)await this.pluginSessions?.onSubmission(receipt);this.emit('terminal:tasks:submission',receipt);for(const listener of this.receiptListeners)listener(receipt);const queue=this.queuedSubmissions.get(id);const index=queue?.findIndex(item=>item.requestId===clientId)??-1;if(index>=0)queue!.splice(index,1);}
-    finally {this.queueMutations.delete(id);this.drain(id);}
+    await this.mutateQueued(id,async()=>{await this.requireQueued(id,clientId,context);
+      const receipt=await this.storage.editQueuedSubmission(id,clientId,{status:'interrupted',error:'INPUT_REMOVED'},()=>this.guard(context));this.orcaDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(clientId);if(receipt.plugin)await this.pluginSessions?.onSubmission(receipt);this.emit('terminal:tasks:submission',receipt);for(const listener of this.receiptListeners)listener(receipt);const queue=this.queuedSubmissions.get(id);const index=queue?.findIndex(item=>item.requestId===clientId)??-1;if(index>=0)queue!.splice(index,1);
+    });
   }
   private async projection(id: string, options: Record<string, unknown> = {}) {
     const requested = options.deliveryClientIds;
@@ -1740,10 +2416,10 @@ export class TerminalTaskHost {
     const persisted = await this.storage.queued(id);
     const order = this.queuedSubmissions.get(id)??[];const queued = [...persisted].sort((a,b)=>order.findIndex(item=>item.requestId===a.requestId)-order.findIndex(item=>item.requestId===b.requestId));
     return { sessionId: id, terminalTurnReceiptsVersion: 1, ...(deliveryReceipts ? {deliveryReceipts} : {}), turnInProgress: this.activeSubmissions.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning() === true,
-      pendingQueue: queued.map(item => ({ clientId: item.requestId, ...(item.orca ? { origin: item.orca.origin } : {}), ...(item.sendAtMs ? {sendAtMs:item.sendAtMs} : {}), text: inputPlainText(item.message), persistedContent: item.message ? persistedInput(item.message) : '', model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir,
-        chatMessage: { clientId: item.requestId, role: 'user', content: item.message ? persistedInput(item.message) : '', createdAt: new Date(item.createdAt).toISOString() },
+      pendingQueue: queued.map(item => ({ clientId: item.requestId, ...(item.collaboration || item.orca ? { origin: item.collaboration?.origin ?? item.orca?.origin } : {}), ...(item.sendAtMs ? {sendAtMs:item.sendAtMs} : {}), text: inputPlainText(item.message), persistedContent: item.message ? persistedInput(terminalOrcaHistoryMessage(item.message, item.collaboration)) : '', model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir,
+        chatMessage: { clientId: item.requestId, role: 'user', content: item.message ? persistedInput(terminalOrcaHistoryMessage(item.message, item.collaboration)) : '', createdAt: new Date(item.createdAt).toISOString() },
         createOpts: { agentKind: row.agentKind, workingDir: row.workDir, model: row.model, providerId: row.providerId },
-      })), steeringQueueClientIds: [], queuePaused: this.queuePaused.has(id), queueExpanded: row.queueExpanded!==false, queueInteractionLocks: [...(this.queueLocks.get(id)??[])], queueEditLocks: [...(this.queueEditLocks.get(id)??[])], queueAbortPending: false, error: null, errorReason: null, recovery: null, errorRetryText: null, credentialSwitchWait: null };
+      })), steeringQueueClientIds: this.steeringSubmissions.has(id) ? [this.steeringSubmissions.get(id)!.clientId] : [], queuePaused: this.queuePaused.has(id), queueExpanded: row.queueExpanded!==false, queueInteractionLocks: [...(this.queueLocks.get(id)??[])], queueEditLocks: [...(this.queueEditLocks.get(id)??[])], queueAbortPending: false, error: null, errorReason: null, recovery: null, errorRetryText: null, credentialSwitchWait: null };
   }
   private async runSubmission(id: string, message: UserMessage, requestId: string, context: TaskInvocationContext) {
     try {
@@ -1753,7 +2429,7 @@ export class TerminalTaskHost {
       // These dispatchers own their retry and source metadata. Generic replay
       // deliberately leaves them alone, including task-to-task inputs whose
       // source is persisted but is not a Maker SendOrigin.
-      if (context.orca || context.plugin || context.scheduler || context.sender || context.deliveryProof) this.externalSubmissions.set(id, requestId);
+      if (context.collaboration || context.orca || context.plugin || context.scheduler || context.sender || context.deliveryProof) this.externalSubmissions.set(id, requestId);
       else this.externalSubmissions.delete(id);
       if (!await this.updateReceipt(id, requestId, 'sending')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
       const result = await this.invoke('maker:send', [id, message], {...context, normalizedInput:true}) as { accepted: boolean; reason?: string };
@@ -1765,6 +2441,7 @@ export class TerminalTaskHost {
       if (this.activeSubmissions.get(id) === requestId) { this.activeSubmissions.delete(id); this.externalSubmissions.delete(id); }
       const reason = error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : 'SEND_FAILED';
       await this.updateReceipt(id, requestId, 'failed', reason);
+      this.orcaDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(requestId);
       setImmediate(() => this.drain(id));
     }
   }
@@ -1932,6 +2609,9 @@ export class TerminalTaskHost {
   }
   private async shutdown() {
     this.closed = true;
+    this.orcaIdle.stop();
+    this.orcaRemoteController.stop();
+    await this.orcaReports.close();
     this.utilityAbort.abort();
     await this.utility.close();
     const recovery = [...this.recovering.keys()].map(id => this.cancelTaskRecovery(id));
@@ -1946,6 +2626,8 @@ export class TerminalTaskHost {
     await Promise.allSettled(this.utilityWork);
     await Promise.allSettled(recovery);
     await Promise.allSettled(this.starts.values());
+    for (const boundary of this.steeringSubmissions.values()) boundary.controller.abort();
+    await Promise.allSettled(this.steerOperations);
     await Promise.all([...this.live.keys()].map(id => this.closeTask(id)));
     this.makerObservers.clear();
     this.channelVendorOptions.clear();

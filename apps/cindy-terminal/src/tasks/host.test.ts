@@ -24,6 +24,7 @@ import path from 'node:path';
 import { ClaudeCodeAgent, CodexAgent, PiAgent, type AgentEvent, type AgentSessionHandle, type InteractionDecision, type InteractionResolver, type Logger, type StartSessionOptions } from '@cindy/maker-core';
 import type { TerminalSecrets } from '../contracts.js';
 import { TerminalTaskHost } from './host.js';
+import { rebuildQueuedOrcaLeadMessage } from '@cindy/orca-workflow/host/orcaInterAgentDispatcher';
 import type { RuntimeInput } from '../models/runtime.js';
 import { TerminalTaskStorage } from './storage.js';
 import { downloadRemoteFile } from '../file-transfers.js';
@@ -65,6 +66,11 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
   const title = { reply: async () => '"Server task"' };
   const titleRequests: Array<{ prompt: string; options?: import('@cindy/maker-core').OneShotOptions }> = [];
   const sent: import('@cindy/maker-core').UserMessage[] = [];
+  const sentTaskIds: string[] = [];
+  const steered: import('@cindy/maker-core').UserMessage[] = [];
+  const steer = { reply: async () => {} };
+  const held = new Map<string, () => void>();
+  const heldListeners = new Map<string, () => void>();
   const sends: Array<SendOptions|undefined> = [];
   const resumeFailures = new Set<string>();
   const overflowed = new Set<string>();
@@ -90,11 +96,17 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
         agentKind: input.selection.agentKind, model: options.model,
         async send(message,sendOptions) {
           sent.push(message);
+          sentTaskIds.push(input.taskId);
           sends.push(sendOptions);
           running = true;
           emit({ type: 'status', data: { isRunning: true } });
           await beforeSend?.(input, options);
           const text = typeof message.content === 'string' ? message.content : '';
+          if (text === 'wait-for-steer') {
+            held.set(input.taskId, () => { running = false; emit({ type: 'done', data: {} }); held.delete(input.taskId); });
+            heldListeners.get(input.taskId)?.(); heldListeners.delete(input.taskId);
+            return;
+          }
           if (text === 'silent-once' || text === 'silent-loop' || silentForever) {
             silentForever ||= text === 'silent-loop';
             running = false;
@@ -123,7 +135,7 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
           running = false;
           emit({ type: 'done', data: {} });
         },
-        async steer() {},
+        async steer(message) { steered.push(message); await steer.reply(); },
         async abort() { running = false; emit({ type: 'done', data: {} }); },
         async close() { ended = true; running = false; awaken?.(); },
         async *events() {
@@ -136,6 +148,7 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
         getUsageSnapshot: () => ({ tokenUsage: 0, contextTokens: 0, contextWindow: input.route.model.contextWindow, costUsd: 0, ...usageByModel.get(options.model!) }),
         setInteractionResolver: value => { resolver = value; },
         async setPermissionMode(mode) { permissionModes.push(mode); },
+        async setVendorOptions(patch) { options.vendorOptions = { ...options.vendorOptions, ...patch }; },
         getPlanMode: () => options.planMode ?? false,
         isTurnRunning: () => running,
       };
@@ -143,7 +156,10 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
     };
     return agent;
   };
-  return { create, starts, decisions, inputs, sent, sends, permissionModes, title, titleRequests, resumeFailures, usageByModel };
+  return { create, starts, decisions, inputs, sent, sends, permissionModes, title, titleRequests, resumeFailures, usageByModel,
+    steered, steer, sentFor: (id: string) => sent.filter((_message, index) => sentTaskIds[index] === id), finishHeld: (id: string) => held.get(id)?.(),
+    waitForHeld: (id: string) => held.has(id) ? Promise.resolve() : new Promise<void>(resolve => heldListeners.set(id, resolve)),
+  };
 }
 
 async function setup(native = engine(), overrides: Partial<ConstructorParameters<typeof TerminalTaskHost>[0]> = {}) {
@@ -185,6 +201,414 @@ async function auxiliaryFixture(host: TerminalTaskHost, reply: () => Promise<str
 }
 
 describe('terminal task host', () => {
+  it('discovers remote worker computers through the shared controller without exposing the account directory to guests', async () => {
+    const device = (id: string, patch: Record<string, unknown> = {}) => ({ deviceId: id, name: id, platform: 'linux',
+      appVersion: null, lastSeenAt: null, online: true, busy: false, remoteControlEnabled: true, controlEnabled: true, isSelf: false, ...patch });
+    const probed: string[] = [];
+    const { host } = await setup(engine(), {
+      listOrcaDevices: async () => ({ devices: [device('server'), device('older-client'), device('offline', { online: false }), device('phone', { platform: 'ios' }), device('self', { isSelf: true }), device('disabled', { controlEnabled: false })] }),
+      remoteInvoke: async (id, channel) => {
+        expect(channel).toBe('maker:orca:remote-worker:caps'); probed.push(id);
+        return id === 'server' ? { ok: true, result: { version: 1, workerBridge: true, agentDevice: true } }
+          : { ok: false, error: { code: 'CHANNEL_NOT_ALLOWED', message: 'unsupported by older client' } };
+      },
+    });
+    expect(await host.invoke('maker:orca:execution-devices')).toEqual({ devices: [
+      { deviceId: 'server', name: 'server', platform: 'linux', supported: true, supportsAgentDevice: true },
+      { deviceId: 'older-client', name: 'older-client', platform: 'linux', supported: false },
+    ] });
+    expect(probed).toEqual(['server', 'older-client']);
+    await expect(host.invoke('maker:orca:execution-devices', [], { source: 'remote', sharedTask: { sessionId: 'shared' } as never })).rejects.toThrow();
+    expect(probed).toHaveLength(2);
+  });
+  // Existing GUI/Mobile consumers must observe the durable collaboration
+  // projection after a terminal process restart, without internal receipts.
+  it('restores team membership through the existing remote GUI read channels', async () => {
+    const { host, create } = await setup();
+    const lead = await host.invoke('maker:create-session', [{ title: 'Lead' }]) as { sessionId: string };
+    const worker = await host.invoke('maker:create-session', [{ title: 'Worker' }]) as { sessionId: string };
+    const team = await host.orcaStore.createActiveTeam({ leadSessionId: lead.sessionId });
+    await host.orcaStore.setSessionOrcaRole(lead.sessionId, 'lead');
+    await host.orcaStore.addOrUpdateWorker({ id: 'worker-link', teamId: team.id, sessionId: worker.sessionId, label: 'Build', role: 'developer' });
+    await host.close();
+    const restored = create();
+    const context = { source: 'remote' as const, deviceId: 'controller', ownerId: 'owner', assertCurrent() {} };
+    expect(await restored.invoke('local-db:orca-workflows:get-by-lead', [lead.sessionId], context)).toMatchObject({ id: team.id, status: 'active' });
+    expect(await restored.invoke('local-db:orca-workflows:get-by-worker-session', [worker.sessionId], context)).toMatchObject({ id: team.id });
+    const batch = await restored.invoke('local-db:orca-workflows:list-workers-by-leads', [[lead.sessionId, 'another-lead', lead.sessionId]], context) as Record<string, Array<Record<string, unknown>>>;
+    expect(batch['another-lead']).toEqual([]);
+    expect(batch[lead.sessionId]).toMatchObject([{ id: 'worker-link', label: 'build', session: { title: 'Worker' } }]);
+    expect(batch[lead.sessionId]![0]).not.toHaveProperty('pendingReport');
+    expect(await restored.invoke('local-db:sessions:get', [worker.sessionId], context)).toMatchObject({ orcaRole: 'worker' });
+    await expect(restored.invoke('local-db:orca-workflows:list-workers-by-leads', [Array(201).fill(lead.sessionId)], context)).rejects.toThrow('INVALID_ARGUMENT');
+    await expect(restored.invoke('local-db:orca-workflows:get-by-lead', [lead.sessionId], { ...context, sharedTask: { sessionId: lead.sessionId } as never })).rejects.toThrow();
+  });
+  // Integration: the shared dispatcher must commit actual terminal receipts.
+  // A paused assignment, a process restart and a released team are the minimum
+  // inputs that distinguish persistence from an in-memory queue mock.
+  it('persists local collaboration input, restores its sender, and rejects revoked assignments', async () => {
+    const { host, create, native } = await setup();
+    const lead = await host.invoke('maker:create-session', [{ title: 'Lead' }]) as { sessionId: string };
+    const worker = await host.invoke('maker:create-session', [{ title: 'Worker' }]) as { sessionId: string };
+    const team = await host.orcaStore.createActiveTeam({ leadSessionId: lead.sessionId });
+    await host.orcaStore.setSessionOrcaRole(lead.sessionId, 'lead');
+    await host.orcaStore.addOrUpdateWorker({ id: 'durable-worker', teamId: team.id, sessionId: worker.sessionId, label: 'Build', role: 'developer' });
+    await host.invoke('maker:input:stop', [worker.sessionId]);
+    const dispatch = (target: TerminalTaskHost, content: string) => target.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage({
+      targetSessionId: worker.sessionId, source: 'lead', senderLabel: 'untrusted label', workerId: 'durable-worker', rawContent: content,
+      meta: { source: 'orca', context: 'durable-assignment-test' },
+    });
+    const queued = await dispatch(host, 'Inspect the project');
+    if (!queued.ok) throw new Error('Expected a queued assignment');
+    expect(queued.mode).toBe('queued');
+    expect(await host.storage.submission(worker.sessionId, queued.clientId)).toMatchObject({ status: 'queued', collaboration: {
+      teamId: team.id, source: 'lead', origin: { kind: 'orca', senderSessionId: lead.sessionId, senderLabel: 'Lead' },
+    } });
+    expect(native.sent).toHaveLength(0);
+    await host.close();
+    const restored = create();
+    expect(await restored.invoke('maker:input:get-projection', [worker.sessionId])).toMatchObject({ pendingQueue: [{
+      clientId: queued.clientId, origin: { senderSessionId: lead.sessionId, senderLabel: 'Lead' },
+    }] });
+    await restored.invoke('maker:input:resume', [worker.sessionId]);
+    expect(await restored.invoke('terminal:tasks:wait', [worker.sessionId, queued.clientId])).toMatchObject({ status: 'completed' });
+    const history = (await restored.storage.history(worker.sessionId)).records.filter(row => row.kind === 'user');
+    expect(history).toHaveLength(1);
+    expect(history[0].agentMeta).toMatchObject({ origin: { kind: 'orca', senderSessionId: lead.sessionId }, autoReviewUserText: { kind: 'delegated-continuation' } });
+    expect(history[0].message).not.toEqual(native.sent[0]);
+    expect(JSON.stringify(native.sent[0])).toContain('Inspect the project');
+    await restored.invoke('maker:input:stop', [worker.sessionId]);
+    const revoked = await dispatch(restored, 'Do not execute after release');
+    const edited = await dispatch(restored, 'Replace this delegated input');
+    if (!revoked.ok || !edited.ok) throw new Error('Expected queued assignments');
+    await restored.invoke('maker:input:update-text', [worker.sessionId, edited.clientId, 'A new human request']);
+    expect((await restored.storage.submission(worker.sessionId, edited.clientId))?.collaboration).toBeUndefined();
+    await restored.orcaStore.markTeamEnded(team.id, 'completed');
+    await restored.invoke('maker:input:resume', [worker.sessionId]);
+    expect(await restored.invoke('terminal:tasks:wait', [worker.sessionId, revoked.clientId])).toMatchObject({ status: 'failed', error: 'ORCA_ASSIGNMENT_REVOKED' });
+    expect(await restored.invoke('terminal:tasks:wait', [worker.sessionId, edited.clientId])).toMatchObject({ status: 'completed' });
+    expect(native.sentFor(worker.sessionId)).toHaveLength(2);
+    expect(JSON.stringify(native.sentFor(worker.sessionId)[1])).toContain('A new human request');
+    const users = (await restored.storage.history(worker.sessionId)).records.filter(row => row.kind === 'user');
+    expect(users.map(row => row.clientId)).toEqual([queued.clientId, edited.clientId]);
+    expect(users[1].agentMeta?.origin).toBeUndefined();
+  });
+
+  // Integration: accepted callbacks claim a native turn, not an enqueue. A
+  // release during the real change-set preparation must still prevent send.
+  it('settles collaboration callbacks at native acceptance and rechecks assignment before sending', async () => {
+    const { host, native } = await setup();
+    const lead = await host.invoke('maker:create-session', [{ title: 'Lead' }]) as { sessionId: string };
+    const worker = await host.invoke('maker:create-session', [{ title: 'Worker' }]) as { sessionId: string };
+    const team = await host.orcaStore.createActiveTeam({ leadSessionId: lead.sessionId });
+    await host.orcaStore.addOrUpdateWorker({ id: 'accepted-worker', teamId: team.id, sessionId: worker.sessionId, label: 'Build' });
+    const events: string[] = [];
+    const request = { targetSessionId: worker.sessionId, rawContent: 'Build', source: 'lead' as const,
+      senderLabel: 'Lead', workerId: 'accepted-worker', meta: { source: 'orca', context: 'acceptance-test' },
+      onAccepted: () => { events.push('accepted'); }, onAcceptedCommit: () => { events.push('commit'); },
+      onAcceptedRollback: () => { events.push('rollback'); } };
+    await host.invoke('maker:input:stop', [worker.sessionId]);
+    const waiting = await host.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage(request);
+    if (!waiting.ok) throw new Error('Expected queued assignment');
+    expect(events).toEqual([]);
+    await host.invoke('maker:input:resume', [worker.sessionId]);
+    expect(await host.invoke('terminal:tasks:wait', [worker.sessionId, waiting.clientId])).toMatchObject({ status: 'completed' });
+    expect(events).toEqual(['accepted', 'commit']);
+    const begin = host.changes.begin.bind(host.changes);
+    const releaseDuringPreparation = vi.spyOn(host.changes, 'begin').mockImplementationOnce(async (...args) => {
+      await begin(...args); await host.orcaStore.markTeamEnded(team.id, 'completed');
+    });
+    try {
+      const rejected = await host.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage(request);
+      if (!rejected.ok) throw new Error('Expected queued assignment');
+      expect(await host.invoke('terminal:tasks:wait', [worker.sessionId, rejected.clientId])).toMatchObject({ status: 'failed' });
+      expect(native.sent).toHaveLength(1);
+      expect(events).toEqual(['accepted', 'commit']);
+    } finally { releaseDuringPreparation.mockRestore(); }
+  });
+
+  // Integration: async merge/remove/update share the persisted receipt boundary
+  // with controller edits. A stale snapshot and one failed file commit must
+  // preserve the newer body and every source message, including after restart.
+  it('commits collaboration queue edits atomically and preserves newer controller input', async () => {
+    const { host, create } = await setup();
+    const lead = await host.invoke('maker:create-session', [{ title: 'Lead' }]) as { sessionId: string };
+    const worker = await host.invoke('maker:create-session', [{ title: 'Worker' }]) as { sessionId: string };
+    const team = await host.orcaStore.createActiveTeam({ leadSessionId: lead.sessionId });
+    await host.orcaStore.addOrUpdateWorker({ id: 'queue-worker', teamId: team.id, sessionId: worker.sessionId, label: 'Build' });
+    await host.invoke('maker:input:stop', [worker.sessionId]);
+    const ids: string[] = [];
+    for (const content of ['first', 'second', 'third']) {
+      const result = await host.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage({ targetSessionId: worker.sessionId,
+        source: 'lead', senderLabel: 'Lead', workerId: 'queue-worker', rawContent: content, meta: { source: 'orca', context: 'queue-edit-test' } });
+      if (!result.ok) throw new Error('Expected queued assignment');
+      ids.push(result.clientId);
+    }
+    const original = await host.orcaQueue.snapshot(worker.sessionId);
+    await host.invoke('maker:input:update-text', [worker.sessionId, ids[0], 'A newer controller edit']);
+    expect(await host.orcaQueue.replace(worker.sessionId, ids[0]!, rebuildQueuedOrcaLeadMessage(original[0]!, 'stale overwrite'), original[0])).toBe(false);
+    expect(await host.orcaQueue.remove(worker.sessionId, ids[0]!, original[0])).toBe(false);
+    expect((await host.storage.submission(worker.sessionId, ids[0]!))?.message?.content).toBe('A newer controller edit');
+    await host.invoke('maker:input:set-edit-lock', [worker.sessionId, ids[2], true]);
+    expect(await host.orcaQueue.move(worker.sessionId, ids[2]!, 0)).toBe('locked');
+    await host.invoke('maker:input:set-edit-lock', [worker.sessionId, ids[2], false]);
+    expect(await host.orcaQueue.move(worker.sessionId, ids[2]!, 0)).toBe(0);
+    const write = platform.atomicPrivateWrite;
+    const failure = vi.spyOn(platform, 'atomicPrivateWrite').mockImplementation(async (file, content, ...rest) => {
+      if (file.endsWith(`${worker.sessionId}${path.sep}requests.json`)) throw new Error('fixture queue write failed');
+      return write(file, content, ...rest);
+    });
+    try {
+      await expect(host.orcaQueue.merge(worker.sessionId, ids.slice(1), items => rebuildQueuedOrcaLeadMessage(items[0]!, 'Merged task'))).rejects.toThrow('fixture queue write failed');
+      expect((await host.storage.queued(worker.sessionId)).map(row => row.requestId)).toEqual([ids[2], ids[0], ids[1]]);
+    } finally { failure.mockRestore(); }
+    expect(await host.orcaQueue.merge(worker.sessionId, ids.slice(1), items => rebuildQueuedOrcaLeadMessage(items[0]!, 'Merged task'))).toBe(true);
+    expect((await host.storage.queued(worker.sessionId)).map(row => row.requestId)).toEqual([ids[2], ids[0]]);
+    expect(await host.storage.submission(worker.sessionId, ids[1]!)).toMatchObject({ status: 'interrupted', error: 'INPUT_REMOVED' });
+    await host.close();
+    const restored = create();
+    await restored.ready;
+    expect((await restored.orcaQueue.snapshot(worker.sessionId)).map(row => ({ id: row.clientId, text: row.origin?.kind === 'orca' ? row.origin.displayText : row.text })))
+      .toEqual([{ id: ids[2], text: 'Merged task' }, { id: ids[0], text: 'A newer controller edit' }]);
+  });
+
+  // Integration: native steering ACK belongs to the existing turn. An uncertain
+  // ACK must survive restart as paused input and never silently run twice.
+  it('steers collaboration into the current native turn and durably pauses uncertain delivery', async () => {
+    const { host, create, native, nextPush } = await setup();
+    const lead = await host.invoke('maker:create-session', [{ title: 'Lead' }]) as { sessionId: string };
+    const worker = await host.invoke('maker:create-session', [{ title: 'Worker' }]) as { sessionId: string };
+    const team = await host.orcaStore.createActiveTeam({ leadSessionId: lead.sessionId });
+    await host.orcaStore.addOrUpdateWorker({ id: 'steer-worker', teamId: team.id, sessionId: worker.sessionId, label: 'Build' });
+    await host.invoke('maker:input:enqueue', [worker.sessionId, { clientId: 'original-turn', text: 'wait-for-steer' }]);
+    await native.waitForHeld(worker.sessionId);
+    for (;;) {
+      const changed = nextPush('terminal:tasks:submission');
+      if ((await host.storage.submission(worker.sessionId, 'original-turn'))?.status === 'running') break;
+      await changed;
+    }
+    const accepted = vi.fn();
+    const request = { targetSessionId: worker.sessionId, rawContent: 'A correction', source: 'lead' as const,
+      senderLabel: 'Lead', workerId: 'steer-worker', delivery: 'steer' as const,
+      meta: { source: 'orca', context: 'native-steer-test' }, onAccepted: accepted };
+    const sent = await host.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage(request);
+    expect(sent).toMatchObject({ ok: true, mode: 'steered' });
+    expect(native.steered).toHaveLength(1);
+    expect(accepted).not.toHaveBeenCalled();
+    expect((await host.storage.history(worker.sessionId)).records.filter(row => row.kind === 'user').at(-1)?.agentMeta).toMatchObject({
+      delivery: 'steer', origin: { kind: 'orca', senderSessionId: lead.sessionId },
+    });
+    native.steer.reply = async () => { throw new Error('The provider did not acknowledge within its deadline'); };
+    const uncertain = await host.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage({ ...request, rawContent: 'An uncertain correction' });
+    if (!uncertain.ok) throw new Error('Expected retained input');
+    expect(uncertain).toMatchObject({ mode: 'queued', steerFallbackReason: 'STEER_UNCERTAIN' });
+    expect(await host.storage.submission(worker.sessionId, uncertain.clientId)).toMatchObject({ status: 'queued', error: 'STEER_DELIVERY_UNCERTAIN' });
+    expect(await host.invoke('maker:input:get-projection', [worker.sessionId])).toMatchObject({ queuePaused: true, pendingQueue: [{ clientId: uncertain.clientId }] });
+    native.finishHeld(worker.sessionId);
+    expect(await host.invoke('terminal:tasks:wait', [worker.sessionId, 'original-turn'])).toMatchObject({ status: 'completed' });
+    expect(native.sent).toHaveLength(1);
+    await host.close();
+    const restored = create();
+    expect(await restored.invoke('maker:input:get-projection', [worker.sessionId])).toMatchObject({ queuePaused: true, pendingQueue: [{ clientId: uncertain.clientId }] });
+    expect(native.sent).toHaveLength(1);
+    await restored.invoke('maker:input:resume', [worker.sessionId]);
+    expect(await restored.invoke('terminal:tasks:wait', [worker.sessionId, uncertain.clientId])).toMatchObject({ status: 'completed' });
+    expect((await restored.storage.submission(worker.sessionId, uncertain.clientId))?.error).toBeUndefined();
+    expect(native.sentFor(worker.sessionId)).toHaveLength(2);
+  });
+
+  // Integration: the actual shared team controller must use terminal queues,
+  // resume a dormant worker, report each accepted turn once and release it.
+  it('runs shared team controls through durable worker tasks and automatic Lead reports', async () => {
+    const { host, native } = await setup();
+    const lead = await host.invoke('maker:create-session', [{ title: 'Lead' }]) as { sessionId: string };
+    const worker = await host.invoke('maker:create-session', [{ title: 'Worker' }]) as { sessionId: string };
+    const foreign = await host.invoke('maker:create-session', [{ title: 'Other Lead' }]) as { sessionId: string };
+    const team = await host.orcaStore.createActiveTeam({ leadSessionId: lead.sessionId });
+    await host.orcaStore.createActiveTeam({ leadSessionId: foreign.sessionId });
+    await host.orcaStore.setSessionOrcaRole(lead.sessionId, 'lead');
+    await host.orcaStore.addOrUpdateWorker({ id: 'controlled-worker', teamId: team.id, sessionId: worker.sessionId, label: 'Build', role: 'developer' });
+    await host.invoke('maker:close-session', [worker.sessionId]);
+    await host.invoke('maker:input:stop', [worker.sessionId]);
+    await host.invoke('maker:input:stop', [lead.sessionId]);
+    const controls = host.orcaTeamService;
+    expect(await controls.sendToWorker({ callerLeadSessionId: foreign.sessionId, targetSessionId: worker.sessionId, message: 'Wrong team' })).toMatchObject({ ok: false });
+    const ids: string[] = [];
+    for (const message of ['First task', 'Remove this task', 'Last task']) {
+      const result = await controls.sendToWorker({ callerLeadSessionId: lead.sessionId, targetSessionId: worker.sessionId, message });
+      if (!result.ok || !result.queuedMessageId) throw new Error('Expected queued worker task');
+      ids.push(result.queuedMessageId);
+    }
+    await host.orcaStore.setSessionOrcaRole(worker.sessionId, 'worker');
+    expect(await controls.moveWorkerQueuedMessage({ callerLeadSessionId: worker.sessionId, queuedMessageId: ids[0]!, position: 0 })).toMatchObject({ ok: true });
+    const updated = await controls.updateWorkerQueuedMessage({ callerLeadSessionId: lead.sessionId, workerRef: 'controlled-worker', queuedMessageId: ids[0]!, message: 'Updated first task' });
+    expect(updated, JSON.stringify(updated)).toMatchObject({ ok: true });
+    expect(await controls.cancelWorkerQueuedMessage({ callerLeadSessionId: lead.sessionId, workerRef: 'controlled-worker', queuedMessageId: ids[1]! })).toMatchObject({ ok: true });
+    await host.invoke('maker:input:resume', [worker.sessionId]);
+    for (const id of [ids[0]!, ids[2]!]) expect(await host.invoke('terminal:tasks:wait', [worker.sessionId, id])).toMatchObject({ status: 'completed' });
+    expect(native.sentFor(worker.sessionId)).toHaveLength(2);
+    const reports = await host.storage.queued(lead.sessionId);
+    expect(reports).toHaveLength(2);
+    expect(reports.map(row => row.collaboration?.origin)).toEqual([
+      expect.objectContaining({ kind: 'orca', senderSessionId: worker.sessionId, senderLabel: 'developer' }),
+      expect.objectContaining({ kind: 'orca', senderSessionId: worker.sessionId, senderLabel: 'developer' }),
+    ]);
+    expect(JSON.stringify(reports[0]!.message)).toContain('Updated first task');
+    await host.invoke('maker:input:resume', [lead.sessionId]);
+    for (const report of reports) expect(await host.invoke('terminal:tasks:wait', [lead.sessionId, report.requestId])).toMatchObject({ status: 'completed' });
+    expect(native.sentFor(lead.sessionId)).toHaveLength(2);
+    expect((await host.orcaStore.listWorkersByLead(lead.sessionId))[0]).toMatchObject({ status: 'done' });
+    expect(await controls.idleWorker({ callerLeadSessionId: lead.sessionId, workerId: 'controlled-worker', expectedStatus: 'done' })).toMatchObject({ ok: true });
+    expect((await host.orcaStore.listWorkersByLead(lead.sessionId))[0]).toMatchObject({ status: 'idle' });
+    expect(await controls.archiveWorker({ callerLeadSessionId: lead.sessionId, workerId: 'controlled-worker', onlyIfIdle: true })).toMatchObject({ ok: true });
+    expect((await host.storage.get(worker.sessionId))?.archived).toBe(true);
+    expect(await host.orcaStore.listWorkersByLead(lead.sessionId)).toEqual([]);
+  });
+
+  // Integration: native bootstrap can fail after task persistence; that orphan
+  // must not occupy a slot. The replacement's idle release must close its real
+  // runtime while preserving native identity for the next assignment.
+  it('archives failed Worker bootstrap and releases a completed Worker without losing its native identity', async () => {
+    let failWorker = true;
+    const native = engine(async (_input, options) => {
+      if (failWorker && options.vendorOptions?.orcaRole === 'worker') { failWorker = false; throw new Error('NATIVE_WORKER_START_FAILED'); }
+    });
+    const { host } = await setup(native);
+    const lead = await host.invoke('maker:create-session', [{}]) as { id: string };
+    await host.invoke('maker:input:stop', [lead.id]);
+    await host.orcaLifecycle.startTeam({ leadSessionId: lead.id });
+    const args = { leadSessionId: lead.id, agent: 'claude-code' as const, role: 'developer', label: 'Retry', initialTask: 'Run the assignment' };
+    expect(await host.orcaLifecycle.createWorker(args)).toMatchObject({ ok: false });
+    const discarded = (await host.storage.list()).filter(task => task.id !== lead.id);
+    expect(discarded).toHaveLength(1); expect(discarded[0]?.archived).toBe(true);
+    const worker = await host.orcaLifecycle.createWorker(args);
+    if (!worker.ok) throw new Error(worker.message);
+    await vi.waitFor(async () => expect((await host.orcaStore.workerForLead(lead.id, worker.workerId))?.status).toBe('done'));
+    const sdkId = (await host.storage.get(worker.workerSessionId))!.sdkSessionId;
+    await host.invoke('maker:collaboration-settings:set', [{ key: 'workerIdleReleaseMinutes', value: 1 }]);
+    await host.orcaStore.touchWorker(worker.workerId, Date.now() - 120_000);
+    await host.orcaIdle.scanNow();
+    expect(await host.orcaTools.api.getWorkerStatus({ leadSessionId: lead.id, workerId: worker.workerId })).toMatchObject({ status: 'idle', session_status: 'not_running' });
+    const next = await host.orcaTeamService.sendToWorker({ callerLeadSessionId: lead.id, targetSessionId: worker.workerSessionId, message: 'Another assignment' });
+    if (!next.ok || !next.queuedMessageId) throw new Error('Expected worker assignment');
+    expect(await host.invoke('terminal:tasks:wait', [worker.workerSessionId, next.queuedMessageId])).toMatchObject({ status: 'completed' });
+    expect((await host.storage.get(worker.workerSessionId))!.sdkSessionId).toBe(sdkId);
+    expect(native.sentFor(worker.workerSessionId)).toHaveLength(2);
+  });
+
+  // Integration: GUI IPC + real Maker/storage must recover a completed Worker
+  // across either crash window. Existing in-process report tests cannot expose
+  // missing outbox durability or an ACK lost after the Lead receipt is written.
+  it.each(['before-outbox', 'after-lead-commit'] as const)('recovers one GUI-created Worker report after %s', async fault => {
+    const { host, create, native } = await setup(engine(), { deferPendingTasks: true });
+    let authorized = true;
+    const remote = { source: 'remote' as const, deviceId: 'gui-controller', ownerId: 'test-owner',
+      assertCurrent: () => { if (!authorized) throw new Error('CONTROLLER_REVOKED'); } };
+    const lead = await host.invoke('maker:create-session', [{}]) as { id: string };
+    await host.invoke('maker:input:stop', [lead.id]);
+    expect(await host.invoke('maker:collaboration-settings:set', [{ key: 'workerIdleReleaseMinutes', value: 1 }], remote)).toMatchObject({ workerIdleReleaseMinutes: 1 });
+    const created = await host.invoke('maker:session:enable-orca', [lead.id, { workerAgent: 'claude-code', label: 'Recovery', delegateTask: 'Durable GUI assignment' }], remote) as { workerId: string; workerSessionId: string };
+    const pending = await host.storage.queued(created.workerSessionId);
+    expect(pending).toHaveLength(1);
+    expect(await host.invoke('maker:worker:list', [lead.id], remote)).toEqual([expect.objectContaining({ id: created.workerId })]);
+    if (fault === 'before-outbox') vi.spyOn(host.orcaReports, 'terminal').mockRejectedValueOnce(new Error('simulated process exit before report preparation'));
+    else {
+      const dispatch = host.orcaDispatcher.dispatchOrEnqueueOrcaInterAgentMessage;
+      vi.spyOn(host.orcaDispatcher, 'dispatchOrEnqueueOrcaInterAgentMessage').mockImplementation(async input => {
+        const result = await dispatch(input);
+        if (input.source === 'worker') throw new Error('simulated lost acknowledgement after Lead commit');
+        return result;
+      });
+    }
+    host.resumePending();
+    expect(await host.invoke('terminal:tasks:wait', [created.workerSessionId, pending[0]!.requestId])).toMatchObject({ status: 'completed' });
+    expect(await host.storage.queued(lead.id)).toHaveLength(fault === 'before-outbox' ? 0 : 1);
+    expect(native.sentFor(created.workerSessionId)).toHaveLength(1);
+    await host.close();
+    const restarted = create(); await restarted.ready; await restarted.orcaReports.recover();
+    const reports = await restarted.storage.queued(lead.id);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.collaboration?.origin.displayText).toContain('Durable GUI assignment');
+    expect((await restarted.storage.submission(created.workerSessionId, pending[0]!.requestId))?.orcaReport).toMatchObject({ phase: 'delivered', clientId: reports[0]!.requestId });
+    await restarted.orcaReports.recover();
+    expect(await restarted.storage.queued(lead.id)).toHaveLength(1);
+    expect(native.sentFor(created.workerSessionId)).toHaveLength(1);
+    expect(await restarted.invoke('maker:collaboration-settings:get', [], remote)).toMatchObject({ workerIdleReleaseMinutes: 1 });
+    authorized = false;
+    await expect(restarted.invoke('maker:worker:archive', [{ leadSessionId: lead.id, workerId: created.workerId }], remote)).rejects.toThrow('CONTROLLER_REVOKED');
+    expect((await restarted.storage.get(created.workerSessionId))?.archived).not.toBe(true);
+    authorized = true;
+    await restarted.invoke('maker:worker:archive', [{ leadSessionId: lead.id, workerId: created.workerId }], remote);
+    expect((await restarted.storage.get(created.workerSessionId))?.archived).toBe(true);
+    await restarted.invoke('maker:session:disable-orca', [lead.id], remote);
+    expect(await restarted.orcaStore.getActiveTeamByLead(lead.id)).toBeNull();
+  });
+
+  // Integration: public MCP creation must boot real Maker Sessions with their
+  // role, persist local assignments, and settle explicit reports exactly once.
+  it('creates teams and reports through native MCP, then restores Lead identity after restart', async () => {
+    const connect = async (input: RuntimeInput, options: StartSessionOptions, name: string) => {
+      const tools = input.tools!, ctx = { sessionId: options.sessionId!, sessionInstanceId: options.sessionInstanceId!,
+        workingDir: options.workingDir, agentKind: input.selection.agentKind, vendorOptions: options.vendorOptions,
+        mcpCallerKind: 'root' as const, mcpCallerAttested: true };
+      const bridge = tools.pi(ctx), client = new McpClient({ name: 'terminal-orca-integration', version: '1' });
+      await client.connect(new StreamableHTTPClientTransport(new URL(bridge.mcpBridge!.servers.find(server => server.name === name)!.url),
+        { requestInit: { headers: { Authorization: `Bearer ${bridge.mcpBridge!.token}` } } }));
+      return { call: async (tool: string, args: Record<string, unknown>) => {
+        const result = await client.callTool({ name: tool, arguments: args });
+        return JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
+      }, close: async () => { await client.close(); bridge.disposeSessionCtx?.(); } };
+    };
+    const reports: unknown[] = [];
+    const native = engine(undefined, async (input, options) => {
+      if (options.vendorOptions?.orcaRole !== 'worker') return;
+      const bridge = await connect(input, options, 'orca_worker_bridge');
+      try {
+        reports.push(await bridge.call('send_to_lead', { worker_id: options.vendorOptions.orcaWorkerId, message: 'MCP_WORKER_RESULT' }));
+      } finally { await bridge.close(); }
+    });
+    const { host, create } = await setup(native, { deferPendingTasks: true });
+    const lead = await host.invoke('maker:create-session', [{}]) as { id: string };
+    await host.invoke('maker:input:stop', [lead.id]);
+    const control = await connect(native.inputs[0]!, native.starts[0]!, 'cindy_orca');
+    let workerId = '', workerSessionId = '';
+    try {
+      expect(await control.call('start_team', {})).toMatchObject({ ok: true });
+      const invalid = await control.call('create_worker', { role: 'developer', label: 'invalid', agent: 'claude-code', model: 'unavailable-model' });
+      expect(invalid.ok).toBe(false);
+      const created = await control.call('create_worker', { role: 'developer', label: 'builder', agent: 'claude-code', initial_task: 'Complete the assigned work' });
+      expect(created).toMatchObject({ ok: true });
+      workerId = created.worker_id; workerSessionId = created.worker_session_id;
+      expect(workerId).toBeTruthy(); expect(workerSessionId).toBeTruthy();
+      const worker = native.starts.find(start => start.sessionId === workerSessionId)!;
+      expect(worker.vendorOptions).toMatchObject({ orcaRole: 'worker', orcaWorkerId: workerId, orcaLeadSessionId: lead.id });
+      expect(await host.storage.get(workerSessionId)).toMatchObject({ orcaRole: 'worker', providerId: 'fixture', permissionMode: 'bypassPermissions' });
+      expect((await host.storage.get(workerSessionId))?.source).not.toBe('plugin');
+      const queued = await host.storage.queued(workerSessionId);
+      expect(queued).toHaveLength(1);
+      host.resumePending();
+      expect(await host.invoke('terminal:tasks:wait', [workerSessionId, queued[0]!.requestId])).toMatchObject({ status: 'completed' });
+      expect(reports).toEqual([expect.objectContaining({ ok: true, queued: true })]);
+      const leadQueue = await host.orcaQueue.snapshot(lead.id);
+      expect(leadQueue).toHaveLength(1);
+      expect(leadQueue[0]!.origin).toMatchObject({ kind: 'orca', displayText: 'MCP_WORKER_RESULT', senderSessionId: workerSessionId });
+    } finally { await control.close(); }
+    await host.close();
+    const restarted = create(); await restarted.ready;
+    expect(await restarted.orcaStore.listWorkersByLead(lead.id)).toEqual([expect.objectContaining({ id: workerId, status: 'done' })]);
+    await restarted.invoke('maker:set-thinking-enabled', [lead.id, true]);
+    const currentInput = native.inputs.at(-1)!, currentStart = native.starts.at(-1)!;
+    expect(currentStart.vendorOptions).toMatchObject({ orcaRole: 'lead', orcaLeadSessionId: lead.id });
+    const resumedControl = await connect(currentInput, currentStart, 'cindy_orca');
+    try {
+      expect(await resumedControl.call('get_workspace_info', {})).toMatchObject({ ok: true, worker_count: 1 });
+      expect(await resumedControl.call('end_team', {})).toMatchObject({ ok: true });
+      expect((await restarted.storage.get(workerSessionId))?.archived).toBe(true);
+      expect((await restarted.storage.get(lead.id))?.orcaRole).toBeNull();
+      expect(await restarted.orcaStore.getActiveTeamByLead(lead.id)).toBeNull();
+    } finally { await resumedControl.close(); }
+  });
+
   // Integration: real MCP transports must preserve harness-attested lineage.
   // An inherited task token alone cannot make a child Agent a root reporter;
   // a later human turn must also lose the preceding Lead assignment identity.
@@ -1527,6 +1951,41 @@ describe('terminal task host', () => {
       expect(await call('setTeamPlan',{taskId:planned.taskId,plan})).toEqual({ok:true});
       await expect(call('setTeamPlan',{taskId:planned.taskId,plan:{...plan,concurrency:2}})).rejects.toThrow('IDEMPOTENCY_CONFLICT');
       await expect(call('setTeamPlan',{taskId:created.taskId,plan:{...plan,items:[{...plan.items[0],workingDir:created.workingDir}]}})).rejects.toThrow('TASK_BUSY');
+      // Integration: plugin team commands share real Worker admission, final
+      // completion receipts and Auto-review scope. The previous plan-only test
+      // did not create/release a Worker or exercise revoked delegation.
+      await expect(call('startTeam',{taskId:planned.taskId})).rejects.toThrow('PERMISSION_DENIED');
+      const teamGrant=call('requestWriteAccess',{taskId:planned.taskId,mode:'auto'});
+      await confirm(planned.taskId,'allow');expect(await teamGrant).toMatchObject({granted:true});
+      await host.invoke('maker:input:stop',[planned.taskId]);
+      expect(await call('startTeam',{taskId:planned.taskId})).toMatchObject({ok:true});
+      expect(await call('getTeam',{taskId:planned.taskId})).toMatchObject({worker_count:0,capacity:{hardLimit:1,remainingSlots:1}});
+      const workerArgs={leadSessionId:planned.taskId,role:'developer',label:'review',agent:planned.resolvedConfig.agentKind==='cc'?'claude-code' as const:planned.resolvedConfig.agentKind,
+        model:planned.resolvedConfig.model,providerId:planned.resolvedConfig.providerId,effort:planned.resolvedConfig.effort||undefined,fast:planned.resolvedConfig.fastMode,workingDir:planned.workingDir};
+      await expect(host.orcaLifecycle.createWorker({...workerArgs,label:'unplanned'})).rejects.toThrow('Worker is not pending');
+      const workerResult=await host.orcaLifecycle.createWorker({...workerArgs,initialTask:'Inspect the selected directory'});
+      if(!workerResult.ok)throw new Error(workerResult.message);
+      const workerId=workerResult.workerId,workerSessionId=workerResult.workerSessionId;
+      expect((await host.storage.get(workerSessionId))?.permissionMode).toBe('auto');
+      const completedTeam=await vi.waitFor(async()=>{
+        const team=await call('getTeam',{taskId:planned.taskId});
+        expect(team.workers[0]?.completedAt).toEqual(expect.any(Number));return team;
+      });
+      expect(completedTeam.capacity).toMatchObject({hardLimit:1,occupiedSlots:1,remainingSlots:0});
+      const reviewRequest:import('@cindy/maker-core').AutoReviewRequest={sessionId:workerSessionId,agentKind:workerArgs.agent,model:workerArgs.model,
+        userIntent:'',workspaceRoots:[planned.workingDir],platform:process.platform,action:{kind:'exec',command:'pwd',cwd:planned.workingDir}};
+      expect(await tasks.sessions.review(reviewRequest)).toMatchObject({delegatedTask:{role:'worker',task:plan.items[0].task}});
+      await expect(call('releaseWorker',{taskId:planned.taskId,workerId,completedAt:completedTeam.workers[0].completedAt+1})).rejects.toThrow('STALE_REVISION');
+      await plugins.setTaskPermission('_root__fixture-plugin','ask');
+      const revokedReview=await tasks.sessions.review(reviewRequest);
+      expect(revokedReview.authorizationError).toContain('no longer active');
+      expect(revokedReview.delegatedTask).toBeUndefined();
+      await plugins.setTaskPermission('_root__fixture-plugin','auto');
+      expect(await call('releaseWorker',{taskId:planned.taskId,workerId,completedAt:completedTeam.workers[0].completedAt})).toMatchObject({ok:true,workerId});
+      expect(await call('releaseWorker',{taskId:planned.taskId,workerId,completedAt:completedTeam.workers[0].completedAt})).toMatchObject({ok:true,workerId});
+      expect((await host.storage.get(workerSessionId))?.archived).toBe(true);
+      expect(await call('getTeam',{taskId:planned.taskId})).toMatchObject({worker_count:0,capacity:{remainingSlots:1}});
+      await expect(host.orcaLifecycle.createWorker(workerArgs)).rejects.toThrow('Worker is not pending');
       await tasks.sessions.close();
       const reopened=new TerminalPluginSessions({root,host:plugins,tasks:host,guard:()=>{}});plugins.configureTaskSessions(reopened);
       try{

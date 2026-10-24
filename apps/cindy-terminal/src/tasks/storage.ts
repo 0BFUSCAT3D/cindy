@@ -23,9 +23,17 @@ export type TerminalTaskMeta = SessionMeta & {
   usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number };
 };
 export type NewTerminalTaskMeta = Omit<TerminalTaskMeta, 'createdAt' | 'updatedAt'>;
+export type TerminalOrcaReport = {
+  phase: 'pending' | 'ready' | 'delivered' | 'suppressed';
+  /** Stable Lead receipt ID, independent of daemon and native session lifetime. */
+  clientId: string;
+  content?: string;
+  completion?: 'done' | 'error';
+};
 type ChannelRotation = { version: 1; rows: TerminalTaskMeta[]; bindings: ImBindingRow[] };
-export type Submission = { orca?: import('./orca-remote.js').RemoteWorkerAssignment; requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; plugin?: { id: string; name: string }; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
+export type Submission = { orcaReport?: TerminalOrcaReport; collaboration?: import('./orca-input.js').TerminalOrcaInput; orca?: import('./orca-remote.js').RemoteWorkerAssignment; requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; plugin?: { id: string; name: string }; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
 export type ContextRebuild = Parameters<import('@cindy/im-runtime/contextOverflowRollover').ContextOverflowRolloverDeps['commitRebuild']>[2] & { handoff: string };
+export type QueuedSubmissionPatch = Pick<Partial<Submission>, 'message' | 'collaboration' | 'status' | 'error'>;
 export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user' | 'user-meta' | 'boundary' | 'boundary-meta' | 'context-rebuild'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string; boundary?: import('@cindy/im-runtime/sessionAgentSwitch').AgentSwitchBoundaryContent; contextRebuild?: ContextRebuild };
 type RouteCommit = { version: 1; row: TerminalTaskMeta; record: HistoryRecord };
 function taskId(value: string): string {
@@ -354,7 +362,25 @@ export class TerminalTaskStorage implements SessionStorage {
     taskId(id); await this.writes.get(id);
     return structuredClone(this.submissions.get(id)?.find(item => item.requestId === requestId) ?? null);
   }
-  claimSubmission(id: string, requestId: string, fingerprint: string, guard: () => void, payload?: Pick<Submission, 'message' | 'source' | 'deviceId' | 'sourceDevice' | 'ownerId' | 'sharedTask' | 'scheduler' | 'sendAtMs' | 'deliveryProof' | 'sender' | 'plugin' | 'orca'>): Promise<{ receipt: Submission; created: boolean }> {
+  async reportSubmissions(id: string): Promise<Submission[]> {
+    taskId(id); await this.writes.get(id);
+    return structuredClone((this.submissions.get(id) ?? []).filter(item => item.orcaReport));
+  }
+  changeOrcaReport(id: string, requestId: string, change: (current: TerminalOrcaReport | undefined) => TerminalOrcaReport | undefined, guard: () => void): Promise<TerminalOrcaReport | undefined> {
+    return this.enqueue(id, async () => {
+      guard();
+      const entries = this.submissions.get(id) ?? [], found = entries.find(item => item.requestId === requestId);
+      if (!found || found.collaboration?.source !== 'lead') throw new Error('ORCA_REPORT_INPUT_NOT_FOUND');
+      const report = change(structuredClone(found.orcaReport));
+      const next = entries.map(item => item === found ? { ...item, orcaReport: report } : item);
+      guard();
+      try { await atomicPrivateWrite(path.join(this.directory(id), 'requests.json'), JSON.stringify(next)); }
+      catch (error) { this.routeFaults.set(id, error); throw error; }
+      this.submissions.set(id, next);
+      return structuredClone(report);
+    });
+  }
+  claimSubmission(id: string, requestId: string, fingerprint: string, guard: () => void, payload?: Pick<Submission, 'message' | 'source' | 'deviceId' | 'sourceDevice' | 'ownerId' | 'sharedTask' | 'scheduler' | 'sendAtMs' | 'deliveryProof' | 'sender' | 'plugin' | 'orca' | 'collaboration'>, atHead = false): Promise<{ receipt: Submission; created: boolean }> {
     return this.enqueue(id, async () => {
       guard();
       if (!this.rows.has(id)) throw new Error('TASK_NOT_FOUND');
@@ -365,8 +391,11 @@ export class TerminalTaskStorage implements SessionStorage {
         return { receipt: structuredClone(found), created: false };
       }
       const receipt: Submission = { ...payload, requestId, sessionId: id, fingerprint, status: 'queued', createdAt: Date.now(), updatedAt: Date.now() };
-      await atomicPrivateWrite(path.join(this.directory(id), 'requests.json'), JSON.stringify([...entries, receipt]));
-      this.submissions.set(id, [...entries, receipt]);
+      const updated = [...entries];
+      const position = atHead ? updated.findIndex(item => item.status === 'queued') : -1;
+      updated.splice(position < 0 ? updated.length : position, 0, receipt);
+      await atomicPrivateWrite(path.join(this.directory(id), 'requests.json'), JSON.stringify(updated));
+      this.submissions.set(id, updated);
       return { receipt: structuredClone(receipt), created: true };
     });
   }
@@ -374,8 +403,36 @@ export class TerminalTaskStorage implements SessionStorage {
     return this.enqueue(id,async()=>{
       guard();const entries=this.submissions.get(id)??[];const found=entries.find(item=>item.requestId===requestId);
       if(!found||found.status!=='queued')throw new Error('QUEUED_MESSAGE_NOT_FOUND');
-      const next={...found,...patch,requestId:found.requestId,sessionId:found.sessionId,updatedAt:Date.now()};
+      const next={...found,...patch,requestId:found.requestId,sessionId:found.sessionId,updatedAt:Math.max(Date.now(),found.updatedAt+1)};
       const updated=entries.map(item=>item===found?next:item);guard();await atomicPrivateWrite(path.join(this.directory(id),'requests.json'),JSON.stringify(updated));this.submissions.set(id,updated);return structuredClone(next);
+    });
+  }
+  /** Compare snapshots and commit a whole queue edit at one durable boundary.
+   * In particular, a merge must never remove its source rows before the new
+   * body is saved. Runtime consumption is checked by the host guard here. */
+  compareAndEditQueued(id: string, expected: readonly Submission[], edits: ReadonlyArray<{ requestId: string; patch: QueuedSubmissionPatch }>,
+    guard: () => void): Promise<Submission[] | null> {
+    return this.enqueue(id, async () => {
+      guard();
+      const entries = this.submissions.get(id) ?? [];
+      if (expected.length !== edits.length || new Set(edits.map(edit => edit.requestId)).size !== edits.length
+        || edits.some(edit => !expected.some(row => row.requestId === edit.requestId))) throw new Error('INVALID_QUEUE_MUTATION');
+      if (expected.some(snapshot => {
+        const current = entries.find(row => row.requestId === snapshot.requestId);
+        return !current || current.status !== 'queued' || JSON.stringify(current) !== JSON.stringify(snapshot);
+      })) return null;
+      const changed: Submission[] = [];
+      const updated = entries.map(row => {
+        const edit = edits.find(edit => edit.requestId === row.requestId);
+        if (!edit) return row;
+        // A monotonic timestamp also fences two edits within one clock tick.
+        const next = { ...row, ...edit.patch, updatedAt: Math.max(Date.now(), row.updatedAt + 1) };
+        changed.push(next); return next;
+      });
+      guard();
+      await atomicPrivateWrite(path.join(this.directory(id), 'requests.json'), JSON.stringify(updated));
+      this.submissions.set(id, updated);
+      return structuredClone(changed);
     });
   }
   reorderQueued(id:string,requestIds:string[],guard:()=>void):Promise<void> {
@@ -394,7 +451,7 @@ export class TerminalTaskStorage implements SessionStorage {
       if (!found) throw new Error('SUBMISSION_NOT_FOUND');
       // A fast native adapter can finish before send() returns its acceptance.
       if (['completed', 'failed', 'interrupted'].includes(found.status)) return structuredClone(found);
-      const receipt = { ...found, status, updatedAt: Date.now(), ...(error ? { error } : {}), ...(finalText === undefined ? {} : { finalText }) };
+      const receipt = { ...found, status, updatedAt: Date.now(), error, ...(finalText === undefined ? {} : { finalText }) };
       const next = entries.map(item => item === found ? receipt : item);
       await atomicPrivateWrite(path.join(this.directory(id), 'requests.json'), JSON.stringify(next));
       this.submissions.set(id, next);

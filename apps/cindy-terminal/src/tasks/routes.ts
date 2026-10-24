@@ -196,6 +196,7 @@ export class TerminalTaskRoutes {
     await previous;
     try { this.host.assertCurrent(); return done; } catch (error) { done(); throw error; }
   }
+  isLocked(id: string) { return this.lanes.has(id); }
   async withLock<T>(id: string, run: () => Promise<T>) { const release = await this.acquire(id); try { return await run(); } finally { release(); } }
   select(params: Parameters<typeof performSessionAgentSwitch>[1]) {
     if (typeof params.sessionId !== 'string') return performSessionAgentSwitch(this.deps, params);

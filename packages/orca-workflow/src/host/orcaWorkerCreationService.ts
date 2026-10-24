@@ -327,7 +327,7 @@ export interface OrcaWorkerCreationDeps {
   ): Promise<OrcaWorkerProviderRoutingContext>;
   /** 本机设备 id 判定：Worker 指向本机时按任务所在电脑处理。缺省 = 不判定。 */
   isSelfDeviceId?(deviceId: string): boolean;
-  readClaudeApiKey(): string | null;
+  readClaudeApiKey(): string | null | Promise<string | null>;
   reserveWorkerCreation(input: {
     reservationId: string;
     teamId: string;
@@ -1414,7 +1414,7 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     // Agent 在另一台电脑运行时用的是那台的登录与供应商，不按本机的 key 判。
     if (
       !workerAgentDeviceId
-      && budgetModelRequiresApiKey(params.agent, resolved.model, deps.readClaudeApiKey() != null)
+      && budgetModelRequiresApiKey(params.agent, resolved.model, await deps.readClaudeApiKey() != null)
       && (budgetRouteProviderId === null || budgetRouteProviderId === 'xd')
     ) {
       return {
@@ -1631,7 +1631,9 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
         const bootstrapped = await deps.bootstrapSession(workerOpts);
         workerSession = bootstrapped.session;
       } catch (err) {
-        if (createdWorktreeSessionId) await cleanupBootstrappedWorkerSession(createdWorktreeSessionId);
+        // Bootstrap may persist a task before the native Agent fails to start,
+        // including ordinary directories with no worktree to compensate.
+        await cleanupBootstrappedWorkerSession(workerSessionId);
         return toInternalFailure(err);
       }
 

@@ -38,14 +38,14 @@ export type SessionQueueMoveResult =
 
 export interface SessionQueueControlDeps {
   getSnapshot(sessionId: string): Promise<SessionQueueControlSnapshot>;
-  replaceQueuedMessage(sessionId: string, clientId: string, next: AgentInputQueuedMessage, expected?: AgentInputQueuedMessage): boolean;
-  removeQueuedMessage(sessionId: string, clientId: string, expected?: AgentInputQueuedMessage): boolean;
+  replaceQueuedMessage(sessionId: string, clientId: string, next: AgentInputQueuedMessage, expected?: AgentInputQueuedMessage): boolean | Promise<boolean>;
+  removeQueuedMessage(sessionId: string, clientId: string, expected?: AgentInputQueuedMessage): boolean | Promise<boolean>;
   steerQueuedMessage(sessionId: string, clientId: string): Promise<QueuedSteerOutcome>;
   /**
    * Moves among waiting rows; returns the final waiting-row index, null when it is gone,
    * or 'locked' while the user is editing it.
    */
-  moveQueuedMessage(sessionId: string, clientId: string, position: number): number | null | 'locked';
+  moveQueuedMessage(sessionId: string, clientId: string, position: number): number | null | 'locked' | Promise<number | null | 'locked'>;
 }
 
 export type SessionQueueAuthorization = (
@@ -122,7 +122,7 @@ export function createSessionQueueControlService(deps: SessionQueueControlDeps) 
           message: 'replacement must preserve queued message identity',
         };
       }
-      if (!deps.replaceQueuedMessage(params.sessionId, params.queuedMessageId, next, resolved.item)) {
+      if (!(await deps.replaceQueuedMessage(params.sessionId, params.queuedMessageId, next, resolved.item))) {
         return classifyLostRace(params.sessionId, params.queuedMessageId);
       }
       return { ok: true, queuedMessageId: params.queuedMessageId };
@@ -132,7 +132,7 @@ export function createSessionQueueControlService(deps: SessionQueueControlDeps) 
       const resolved = await resolve(params);
       if (!resolved.ok) return resolved;
       await params.beforeMutation?.();
-      if (!deps.removeQueuedMessage(params.sessionId, params.queuedMessageId, resolved.item)) {
+      if (!(await deps.removeQueuedMessage(params.sessionId, params.queuedMessageId, resolved.item))) {
         return classifyLostRace(params.sessionId, params.queuedMessageId);
       }
       return { ok: true, queuedMessageId: params.queuedMessageId };
@@ -162,7 +162,7 @@ export function createSessionQueueControlService(deps: SessionQueueControlDeps) 
       const resolved = await resolve(params);
       if (!resolved.ok) return resolved;
       await params.beforeMutation?.();
-      const position = deps.moveQueuedMessage(
+      const position = await deps.moveQueuedMessage(
         params.sessionId,
         params.queuedMessageId,
         params.position,
@@ -233,7 +233,7 @@ export function createQueueReorderAdapter(deps: {
   getCoordinator(): QueueReorderCoordinator;
 }): {
   steerStoredControlMessage(sessionId: string, clientId: string): Promise<QueuedSteerOutcome>;
-  moveStoredControlMessage(sessionId: string, clientId: string, position: number): number | null | 'locked';
+  moveStoredControlMessage(sessionId: string, clientId: string, position: number): number | null | 'locked' | Promise<number | null | 'locked'>;
 } {
   const waitingIndex = (sessionId: string, clientId: string): number =>
     deps

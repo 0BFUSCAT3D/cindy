@@ -1,5 +1,7 @@
 import { availableAppDefaultModels } from "@cindy/model-providers/availableTaskModels";
-import { resolvePluginWorkerDirectory } from '@cindy/plugin-runtime/pluginWorkerDirectory';
+import { resolvePluginWorkerDirectory, assertPluginWorkerDirectoryScope } from '@cindy/plugin-runtime/pluginWorkerDirectory';
+import { readTerminalWorkerCompletion } from '../tasks/orca-completion.js';
+import type { OrcaWorkerCreationPlanValidator } from '@cindy/orca-workflow/host/orcaWorkerCreationService';
 import { ENGINES } from "../models/config.js";
 import { createHash } from "node:crypto";
 import {
@@ -53,14 +55,17 @@ const operations: readonly (typeof PLUGIN_TASK_OPERATIONS)[number][] = [
   "setHidden",
   "requestWriteAccess",
   "setTeamPlan",
+  "startTeam",
+  "getTeam",
+  "releaseWorker",
 ];
 const policy = (value: unknown) =>
   ["ask", "plan", "acceptEdits", "auto"].includes(String(value))
     ? (value as "ask" | "plan" | "acceptEdits" | "auto")
     : "ask";
-const fail = (code: string, message: string): never => {
+function fail(code: string, message: string): never {
   throw new PluginTaskError(code, message);
-};
+}
 
 /** Host-owned adapter to the same receipt, authorization and dispatch service as
  * Desktop. Sandbox payloads never supply Session ownership or user intent. */
@@ -524,6 +529,73 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
   ): Promise<unknown> {
     const service = this.service!;
     switch (request.kind) {
+      case 'startTeam': return service.completeOperation(() => this.port.withTaskLock(request.taskId, async () => {
+        const task = await service.get(id, request.taskId), check = this.capture(id);
+        const authority = await this.captureOrcaAuthority(request.taskId);
+        const admission = (value: typeof task) => JSON.stringify([value.resolvedConfig, value.permissionMode, value.planModeEnabled, value.workingDir, value.status]);
+        const expected = admission(task);
+        const current = async () => {
+          check(); await authority.assertCurrent();
+          const fresh = await service.get(id, request.taskId);
+          check();
+          if (admission(fresh) !== expected) fail('STALE_REVISION', 'Task changed during team activation');
+        };
+        await current();
+        const result = await this.options.tasks.orcaLifecycle.startTeam({ leadSessionId: request.taskId }, current);
+        if (!result.ok) fail(result.errorCode, result.message);
+        return result;
+      }));
+      case 'getTeam': {
+        const host = this.options.tasks, check = this.capture(id);
+        await service.get(id, request.taskId);
+        const team = await host.orcaTools.api.getWorkspaceInfo({ leadSessionId: request.taskId });
+        if (!team.ok) fail('HOST_NOT_READY', 'Collaboration state unavailable');
+        const workers = await Promise.all(team.workers.map(async worker => {
+          const completion = await readTerminalWorkerCompletion(host, worker.session_id, worker.status);
+          const row = completion.row;
+          return { ...worker, acceptedAt: completion.acceptedAt, startedAt: completion.firstActivityAt, timingBasis: 'host-message-window',
+            createdAt: row.createdAt, lastTurnStartedAt: completion.startedAt, lastTurnEndedAt: completion.endedAt,
+            waitingForUser: !!this.port.live(worker.session_id)?.getTurnControlSnapshot().pendingInteractionCount,
+            usage: { scope: 'session-total', tokens: row.usage?.tokenUsage ?? null, costUSD: null, approximate: false,
+              reason: 'No confirmed USD cost; subscription value and other currencies are not a bill' },
+            status: completion.status, permissionMode: row.permissionMode, providerId: row.providerId, fastMode: row.fastMode, completedAt: completion.completedAt };
+        }));
+        const receipt = await (await this.store.get()).get(request.taskId), plan = receipt ? readPluginTaskPlanReceipt(receipt.payload).teamPlan : undefined;
+        const occupiedSlots = team.workflow ? await host.orcaStore.occupiedSlots(team.workflow.workflow_id) : 0;
+        const hardLimit = Math.min(host.orcaStore.settings().workerHardLimit, plan?.concurrency ?? Infinity);
+        const lead = await host.storage.get(request.taskId), pending = await host.storage.queued(request.taskId);
+        const waitingForUser = !!this.port.live(request.taskId)?.getTurnControlSnapshot().pendingInteractionCount;
+        await service.get(id, request.taskId); check();
+        return { ...team, workers, capacity: { hardLimit, occupiedSlots, remainingSlots: Math.max(0, hardLimit - occupiedSlots), advisory: true },
+          coordinatorUsage: { scope: 'session-total', tokens: lead?.usage?.tokenUsage ?? null, costUSD: null, approximate: false },
+          waitingForUser, leadWorking: host.isTurnRunning(request.taskId) || waitingForUser || pending.length > 0 };
+      }
+      case 'releaseWorker': return service.completeOperation(async () => {
+        const host = this.options.tasks, check = this.capture(id);
+        await service.get(id, request.taskId);
+        const record = await host.orcaStore.workerForLead(request.taskId, request.workerId);
+        if (!record) fail('TASK_NOT_FOUND', 'Worker not found');
+        const receipt = await (await this.store.get()).get(request.taskId), plan = receipt ? readPluginTaskPlanReceipt(receipt.payload).teamPlan : undefined;
+        if (plan && !plan.items.some(item => item.label === record.label)) fail('INVALID_REQUEST', 'Worker is not in team plan');
+        const validate = async () => {
+          check(); await service.get(id, request.taskId);
+          const latest = await host.orcaStore.workerForLead(request.taskId, request.workerId);
+          if (!latest || latest.sessionId !== record.sessionId) fail('TASK_NOT_FOUND', 'Worker not found');
+          const completion = await readTerminalWorkerCompletion(host, record.sessionId, latest.status);
+          check(); await service.get(id, request.taskId);
+          if (completion.completedAt === null || completion.completedAt !== request.completedAt) fail('STALE_REVISION', 'Worker has no matching successful completion');
+        };
+        const row = await host.storage.get(record.sessionId);
+        if (row?.archived) {
+          await validate();
+          if (plan) await service.settleWorkerLabel(id, request.taskId, record.label!);
+          return { ok: true, workerId: record.id };
+        }
+        const result = await host.orcaTeamService.archiveWorker({ callerLeadSessionId: request.taskId, workerId: record.id, onlyIfIdle: true, beforeArchive: validate });
+        if (!result.ok) fail(result.errorCode, result.message);
+        if (plan) await service.settleWorkerLabel(id, request.taskId, record.label!);
+        return result;
+      });
       case 'setTeamPlan': return this.port.withTaskLock(request.taskId, async () => {
         const task = await service.get(id, request.taskId);
         const config = this.config(id), current = this.capture(id);
@@ -648,6 +720,76 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
     await this.refresh(id);
     await this.service!.assertDispatch(id, taskId);
   }
+  async captureOrcaAuthority(taskId: string, acceptedInputId?: string) {
+    await this.ready;
+    const store = await this.store.get(), receipt = await store.get(taskId);
+    const input = acceptedInputId ? await this.options.tasks.storage.submission(taskId, acceptedInputId) : undefined;
+    const owner = receipt && ownsTaskReceipt(receipt, receipt.pluginId) ? receipt.pluginId : null;
+    // A pending/retried plugin input cannot become an owner command after uninstall.
+    if (input?.plugin && input.plugin.id !== owner) fail('PERMISSION_DENIED', 'Plugin input ownership changed');
+    if (receipt?.operation === 'create' && !owner && (input || this.port.live(taskId)?.isTurnRunning())) {
+      // A revoked plugin turn cannot become an owner command because its
+      // runtime survived uninstall. Only a new host-stamped human input can.
+      const history = await this.port.history(taskId);
+      const accepted = input ? history.find(row => row.clientId === input.requestId) : undefined;
+      const meta = accepted?.agentMeta;
+      const authored = meta?.autoReviewUserText;
+      if (!accepted || input?.plugin || input?.collaboration || meta?.origin || !['turn', 'steer'].includes(String(meta?.delivery))
+        || typeof authored !== 'string' || !authored.trim() || authored.startsWith('[UI_ACTION_TRIGGER]')) {
+        fail('PERMISSION_DENIED', 'Orca input provenance unavailable');
+      }
+    }
+    const check = owner ? this.capture(owner) : () => this.guard();
+    const assertCurrent = async () => {
+      check();
+      const latest = await store.get(taskId);
+      const nextOwner = latest && ownsTaskReceipt(latest, latest.pluginId) ? latest.pluginId : null;
+      if (nextOwner !== owner) fail('PERMISSION_DENIED', 'Orca task ownership changed');
+      if (owner) {
+        const task = await this.service!.get(owner, taskId);
+        check();
+        if (task.status !== 'active' || task.planModeEnabled || task.permissionMode !== 'auto' || this.config(owner).permissionMode !== 'auto') {
+          fail('PERMISSION_DENIED', 'Authorize Auto for the plugin coordinator before creating Workers');
+        }
+      }
+      check();
+    };
+    await assertCurrent();
+    return { ...(owner ? { permissionMode: 'auto' as const } : {}), assertCurrent };
+  }
+  validateWorkerPlan: OrcaWorkerCreationPlanValidator = async (params, resolvedDirectory, resolvedRoute, current) => {
+    await this.ready;
+    const store = await this.store.get(), receipt = await store.get(params.leadSessionId);
+    await current?.();
+    if (!receipt || receipt.operation !== 'create' || !ownsTaskReceipt(receipt, receipt.pluginId)) return undefined;
+    const id = receipt.pluginId, authority = await this.captureOrcaAuthority(params.leadSessionId);
+    const task = await this.service!.get(id, params.leadSessionId), config = this.config(id), check = this.capture(id);
+    if (params.executionDeviceId !== undefined) fail('PERMISSION_DENIED', 'Plugin-owned tasks cannot create Workers on another device');
+    const lead = await this.options.tasks.storage.get(params.leadSessionId);
+    if (params.agentDeviceId && params.agentDeviceId !== lead?.agentDeviceId) fail('PERMISSION_DENIED', 'Plugin-owned tasks cannot change the Worker Agent location');
+    const resolve = (requested: string) => resolvePluginWorkerDirectory({ requested, leadDirectory: task.workingDir,
+      configuredDirectory: config.workingDir, isPickedDirectory: () => false, assertCurrent: check });
+    const directory = await resolve(params.workingDir ?? task.workingDir ?? '');
+    if (resolvedDirectory !== undefined && directory !== await resolve(resolvedDirectory)) fail('PERMISSION_DENIED', 'Worker directory changed');
+    await this.service!.get(id, params.leadSessionId);
+    const latest = await store.get(params.leadSessionId);
+    if (!latest || !ownsTaskReceipt(latest, id)) fail('PERMISSION_DENIED', 'Task ownership changed');
+    const data = readPluginTaskPlanReceipt(latest!.payload), item = data.teamPlan?.items.find(item => item.label === params.label);
+    const plannedDirectory = item && resolvedRoute ? await resolve(item.workingDir) : undefined;
+    const fresh = await this.service!.get(id, params.leadSessionId);
+    await authority.assertCurrent(); await current?.(); check();
+    if (fresh.revision !== task.revision) fail('STALE_REVISION', 'Task changed during Worker admission');
+    assertPluginWorkerDirectoryScope({ requested: directory, leadDirectory: fresh.workingDir,
+      configuredDirectory: this.config(id).workingDir, isPickedDirectory: () => false });
+    if (!data.teamPlan) return undefined;
+    if (!item || data.settledLabels?.includes(params.label)) fail('INVALID_REQUEST', 'Worker is not pending in the registered plan');
+    if (resolvedRoute && (directory !== plannedDirectory || resolvedRoute.model !== item!.route.model
+      || resolvedRoute.providerId !== item!.route.providerId || (resolvedRoute.effort ?? '') !== item!.route.effort
+      || resolvedRoute.fastMode !== item!.route.fastMode || params.agent !== (item!.route.agentKind === 'cc' ? 'claude-code' : item!.route.agentKind))) {
+      fail('INVALID_REQUEST', 'Worker configuration differs from registered plan');
+    }
+    return data.teamPlan.concurrency;
+  };
   async accept(
     id: string,
     taskId: string,
@@ -693,70 +835,53 @@ export class TerminalPluginSessions implements TerminalPluginSessionHooks {
   async review(request: AutoReviewRequest) {
     await this.ready;
     return createPluginTaskReviewResolver(async (id) => {
+      const tasks = this.options.tasks.storage, orca = this.options.tasks.orcaStore;
+      const raw = await tasks.get(id);
+      if (!raw) throw new Error('TASK_NOT_FOUND');
+      const link = raw.orcaRole === 'worker' ? await orca.getWorkerLink({ workerSessionId: id }) : null;
+      const leadId = link?.leadSessionId ?? id, leadRow = await tasks.get(leadId);
+      if (leadRow?.source !== 'plugin') return null;
       const store = await this.store.get();
-      await this.options.tasks.storage.flush();
-      const storeRevision = this.store.revision(),
-        historyRevision = this.options.tasks.storage.historyRevision(id);
-      const receipt = await store.get(id);
-      if (!receipt || receipt.operation !== "create")
-        throw new Error("PLUGIN_TASK_RECEIPT_UNAVAILABLE");
+      await tasks.flush();
+      const storeRevision = this.store.revision(), historyRevision = tasks.historyRevision(id), leadHistoryRevision = tasks.historyRevision(leadId);
+      const receipt = await store.get(leadId);
+      if (!receipt || receipt.operation !== 'create') throw new Error('PLUGIN_TASK_RECEIPT_UNAVAILABLE');
       await this.refresh(receipt.pluginId);
       const check = this.capture(receipt.pluginId);
-      const session = await this.service!.get(receipt.pluginId, id),
-        history = await this.port.history(id);
-      const latest = await this.service!.get(receipt.pluginId, id),
-        currentReceipt = await store.get(id);
-      await this.options.tasks.storage.flush();
-      check();
-      if (
-        this.store.revision() !== storeRevision ||
-        this.options.tasks.storage.historyRevision(id) !== historyRevision
-      )
-        throw new Error("PLUGIN_TASK_CHANGED");
-      if (
-        session.revision !== latest.revision ||
-        JSON.stringify(receipt) !== JSON.stringify(currentReceipt)
-      )
-        throw new Error("PLUGIN_TASK_CHANGED");
-      const data = readPluginTaskPlanReceipt(receipt.payload),
-        projection = createAutoReviewIntentProjection();
-      const state = {
-        workingDir: session.workingDir!,
-        permissionMode: session.permissionMode!,
-        planModeEnabled: session.planModeEnabled,
-        status: session.status,
-        route: session.resolvedConfig,
-      };
+      const lead = await this.service!.get(receipt.pluginId, leadId);
+      const ownHistory = await this.port.history(id), leadHistory = link ? await this.port.history(leadId) : [];
+      const history = [...ownHistory, ...leadHistory].sort((a, b) => (Number(a.createdAt) - Number(b.createdAt)) || String(a.clientId).localeCompare(String(b.clientId)));
+      const data = readPluginTaskPlanReceipt(receipt.payload), projection = createAutoReviewIntentProjection();
+      const workers = link ? await orca.listWorkersByLead(leadId) : [], worker = workers.find(row => row.id === link?.workerId);
+      const planItem = worker ? data.teamPlan?.items.find(item => item.label === worker.label) : undefined;
+      const team = link ? await orca.getActiveTeamByLead(leadId) : null;
+      const latestLead = await this.service!.get(receipt.pluginId, leadId), currentReceipt = await store.get(leadId);
+      const [latestRaw, latestLeadRow, latestLink, latestTeam] = await Promise.all([
+        tasks.get(id), tasks.get(leadId), link ? orca.getWorkerLink({ workerSessionId: id }) : null,
+        link ? orca.getActiveTeamByLead(leadId) : null,
+      ]);
+      await tasks.flush(); check();
+      if (this.store.revision() !== storeRevision || tasks.historyRevision(id) !== historyRevision
+        || tasks.historyRevision(leadId) !== leadHistoryRevision || lead.revision !== latestLead.revision
+        || JSON.stringify([raw, leadRow, link, team, receipt]) !== JSON.stringify([latestRaw, latestLeadRow, latestLink, latestTeam, currentReceipt])) {
+        throw new Error('PLUGIN_TASK_CHANGED');
+      }
+      const leadState = { permissionMode: lead.permissionMode!, planModeEnabled: lead.planModeEnabled, status: lead.status };
+      const state = link ? { workingDir: raw.workDir, permissionMode: raw.permissionMode ?? 'ask', planModeEnabled: raw.planMode,
+        status: raw.deleted ? 'deleted' : raw.archived ? 'archived' : 'active',
+        route: { agentKind: raw.agentKind === 'claude-code' ? 'cc' as const : raw.agentKind, providerId: raw.providerId ?? '',
+          model: raw.model, effort: raw.effort ?? '', fastMode: raw.fastMode ?? false } }
+        : { ...leadState, workingDir: lead.workingDir!, route: lead.resolvedConfig };
       return {
-        pluginId: receipt.pluginId,
-        authorized:
-          policy(this.config(receipt.pluginId).permissionMode) === "auto",
-        revision: [
-          receipt.revision,
-          session.revision,
-          ghostInstallApprovalToken(
-            this.options.host.installed(receipt.pluginId)!.approval,
-          ),
-        ],
-        registeredRoute: data.route,
-        plan: data.teamPlan,
-        settledLabels: data.settledLabels,
-        session: state,
-        lead: state,
-        history: [],
-        sessionHistory: [],
-        historyComplete: true,
-        projection: {
-          revision: Number.parseInt(
-            createHash("sha256")
-              .update(JSON.stringify(history))
-              .digest("hex")
-              .slice(0, 12),
-            16,
-          ),
-          sessionIntent: projection.restore(history),
-          reviewIntent: projection.review(history, true),
-        },
+        pluginId: receipt.pluginId, authorized: policy(this.config(receipt.pluginId).permissionMode) === 'auto',
+        revision: [receipt.revision, lead.revision, raw.updatedAt, team, link, ghostInstallApprovalToken(this.options.host.installed(receipt.pluginId)!.approval)],
+        registeredRoute: data.route, plan: data.teamPlan, settledLabels: data.settledLabels,
+        session: state, lead: leadState,
+        ...(link ? { worker: { label: worker?.label ?? '', activeTeam: team?.id === link.teamId,
+          directoryMatches: !!planItem && planItem.workingDir === raw.workDir } } : {}),
+        history: [], sessionHistory: [], historyComplete: true,
+        projection: { revision: Number.parseInt(createHash('sha256').update(JSON.stringify(history)).digest('hex').slice(0, 12), 16),
+          sessionIntent: projection.restore(ownHistory), reviewIntent: projection.review(history, true) },
       };
     })(request);
   }
