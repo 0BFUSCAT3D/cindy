@@ -2967,7 +2967,8 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
         sections={sections}
         ListHeaderComponent={<>
         {embedded ? null : <HomeTeammatesSection context={teammatesSectionContext} active={active} refreshKey={teammatesRefreshKey}
-          visible={indexedSearch.activeFilterCount === 0 && statusFilter !== 'archived' && !showRemoteGuide}
+          // Independent of the computer-connection guide: server group chats and cloud companions need no computer.
+          visible={indexedSearch.activeFilterCount === 0 && statusFilter !== 'archived'}
           query={searchQuery}
           // Shared group and project blocks draw their own full-width top line.
           showFooter={sharedRows.length === 0 && !isBlockHomeRow(sections[0]?.data[0])}
