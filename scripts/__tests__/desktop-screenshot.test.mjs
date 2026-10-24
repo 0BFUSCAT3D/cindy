@@ -116,6 +116,7 @@ test('capture failure still restores, collection failure never captures, residua
   for (const failure of ['capture', 'collection', 'residual']) {
     let restored = false, captured = false;
     const client = { evaluate: async expression => {
+      if (expression.includes('__cindyDesktopScreenshotLock')) return true;
       if (expression.includes('collectIdentities')) {
         if (failure === 'collection') throw new Error('collection');
         return { rules: 1, avatars: 0, loggedIn: false };
@@ -159,4 +160,13 @@ test('short known names match Chinese sentences but not unrelated longer words',
     { source: 'A', replacement: '用户 B', category: 'person' }]);
   assert.equal(r.replace('移除小王？正在复制到小王；小王子；移除A？API'), '移除用户 A？正在复制到用户 A；小王子；移除用户 B？API');
   assert.equal(r.count('移除小王？'), 1);
+});
+
+test('explicit example text is stable when it contains the original text', () => {
+  const r = createReplacer([{ source: '内部项目', replacement: '示例内部项目', category: 'custom' }]);
+  const first = r.replace('内部项目');
+  assert.equal(first, '示例内部项目');
+  assert.equal(r.replace(first), first);
+  assert.equal(r.count(first), 0);
+  assert.equal(r.count('内部项目'), 1);
 });

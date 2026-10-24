@@ -87,6 +87,7 @@ async function selectPage(port, targetId) {
 
 export async function screenshot(client, options, local, { capture = params => client.send('Page.captureScreenshot', params) } = {}) {
   const key = `__cindyScreenshot_${randomUUID().replaceAll('-', '')}`;
+  let lockAttempted = false;
   let installed = false;
   let restored = false;
   const evalPage = expression => client.evaluate(expression);
@@ -97,6 +98,18 @@ export async function screenshot(client, options, local, { capture = params => c
     restored = true;
   };
   try {
+    lockAttempted = true;
+    const acquired = await evalPage(`(() => {
+      const name = '__cindyDesktopScreenshotLock';
+      if (window[name]) return false;
+      const key = ${JSON.stringify(key)};
+      const lock = { key, timer: setTimeout(() => {
+        try { window[key]?.restore(); } finally { if (window[name] === lock) delete window[name]; }
+      }, 60000) };
+      window[name] = lock;
+      return true;
+    })()`);
+    if (!acquired) throw new Error('该窗口已有截图正在进行；请等它完成后重试。');
     if (options.mask) {
       // Set the cleanup obligation before injection: even an evaluation timeout must
       // attempt restoration. Only counts and booleans leave the renderer.
@@ -139,16 +152,30 @@ export async function screenshot(client, options, local, { capture = params => c
     const result = await capture({ format: 'png', fromSurface: true, captureBeyondViewport: false, clip: captureClip(bounds, options.padding) });
     await audit();
     await restore();
+    if (!await evalPage(`window.__cindyDesktopScreenshotLock?.key === ${JSON.stringify(key)}`)) throw new Error('截图已超过窗口锁时限；未写出图片，请重试。');
     return { data: Buffer.from(result.data, 'base64'), dpr: bounds.dpr };
   } finally {
-    if (installed && !restored) {
-      // Missing state means collection failed before any mutation, or navigation
-      // already discarded it. Neither case should hide the original failure.
-      try {
-        const exists = await evalPage(`Boolean(window[${JSON.stringify(key)}])`);
-        if (exists) await restore();
-      } catch {
-        throw new Error('无法确认页面已还原，请刷新该开发版窗口（也有 60 秒自动还原）；未写出截图。');
+    try {
+      if (installed && !restored) {
+        // A pending collector is cancelled too, so a timed-out request cannot
+        // install its mask later after the command has already failed.
+        try {
+          const exists = await evalPage(`Boolean(window[${JSON.stringify(key)}])`);
+          if (exists) await restore();
+        } catch {
+          throw new Error('无法确认页面已还原，请刷新该开发版窗口（也有 60 秒自动还原）；未写出截图。');
+        }
+      }
+    } finally {
+      if (lockAttempted) {
+        try {
+          await evalPage(`(() => {
+            const lock = window.__cindyDesktopScreenshotLock;
+            if (lock?.key === ${JSON.stringify(key)}) { clearTimeout(lock.timer); delete window.__cindyDesktopScreenshotLock; }
+          })()`);
+        } catch {
+          throw new Error('截图连接已断开，无法确认还原与解锁；请刷新目标窗口或等待 60 秒后重试。');
+        }
       }
     }
   }

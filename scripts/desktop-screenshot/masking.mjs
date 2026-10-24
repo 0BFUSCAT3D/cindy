@@ -27,8 +27,7 @@ export function createReplacer(entries, keep = []) {
   // Generated examples are semantic placeholders, even when a one-letter name
   // occurs inside them (e.g. real nickname A -> 用户 A). Protect the complete
   // placeholder on subsequent observer scans; never exempt the raw name itself.
-  const protectedValues = [...new Set(rules.filter(r => r.category !== 'custom'
-    && r.replacement && !rules.some(other => other.source === r.replacement)).map(r => r.replacement))];
+  const protectedValues = [...new Set(rules.filter(r => r.replacement && !rules.some(other => other.source === r.replacement)).map(r => r.replacement))];
   const protectedPatterns = [...protectedValues.sort((a, b) => b.length - a.length).map(escape),
     String.raw`contact-\d+@example\.com`, String.raw`https://example\.com/share/demo`, '<示例目录>'];
   const regex = new RegExp([...protectedPatterns, ...patterns, ...automatic].map(p => `(${p})`).join('|'), 'gu');
@@ -179,6 +178,63 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
   const replacer = makeReplacer(entries, keep);
   const avatarSet = new Set(avatars.filter(v => !keep.includes(v)));
   const originals = new Map();
+  const editors = new Map();
+  const editorStyle = document.createElement('style');
+  editorStyle.textContent = '[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"] { opacity: 0 !important; }';
+  const originalEditor = node => {
+    if (!node) return null;
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    let editor = element?.closest('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]');
+    let outer;
+    while (editor && (outer = editor.parentElement?.closest('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'))) editor = outer;
+    return editor;
+  };
+  const syncEditors = () => {
+    // Opacity keeps the live editor focused. Temporarily disable our stylesheet
+    // during this synchronous measurement (no paint), so real preview/hover styles
+    // remain observable instead of copying our own opacity override.
+    editorStyle.disabled = true;
+    try {
+      for (const [source, entry] of editors) if (!source.isConnected) { entry.clone.remove(); editors.delete(source); }
+      for (const source of document.querySelectorAll('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]')) {
+        if (originalEditor(source.parentElement)) continue;
+        const previous = editors.get(source);
+        const content = source.innerHTML;
+        const box = [source.offsetLeft, source.offsetTop, source.offsetWidth, source.offsetHeight, source.scrollTop, source.scrollLeft].join(',');
+        const computed = getComputedStyle(source);
+        const style = [...computed].map(name => `${name}:${computed.getPropertyValue(name)}`).join(';');
+        if (previous?.clone.isConnected && previous.clone.parentElement === source.parentElement
+          && previous.content === content && previous.box === box && previous.style === style) continue;
+        previous?.clone.remove();
+        const clone = source.cloneNode(true);
+        clone.style.cssText = style;
+        clone.setAttribute('contenteditable', 'false');
+        clone.removeAttribute('id');
+        for (const child of clone.querySelectorAll('[id], [contenteditable]')) {
+          child.removeAttribute('id');
+          if (child.hasAttribute('contenteditable')) child.setAttribute('contenteditable', 'false');
+        }
+        Object.assign(clone.style, { position: 'absolute', left: `${source.offsetLeft}px`, top: `${source.offsetTop}px`,
+          width: `${source.offsetWidth}px`, height: `${source.offsetHeight}px`, margin: '0',
+          boxSizing: 'border-box', pointerEvents: 'none' });
+        source.after(clone);
+        clone.scrollTop = source.scrollTop;
+        clone.scrollLeft = source.scrollLeft;
+        editors.set(source, { clone, content, box, style });
+      }
+      if (editors.size && !editorStyle.isConnected) document.head.append(editorStyle);
+    } finally { editorStyle.disabled = false; }
+  };
+  const renderedText = node => {
+    if (originalEditor(node)) return '';
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue;
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(node.tagName)) return '';
+    if (node.tagName === 'BR') return '\n';
+    const content = [...node.childNodes].map(renderedText).join('');
+    const display = node.nodeType === Node.ELEMENT_NODE ? getComputedStyle(node).display : 'contents';
+    return display === 'contents' || display.startsWith('inline') ? content : `\n${content}\n`;
+  };
+
   const attributes = ['title', 'aria-label', 'aria-description', 'alt', 'placeholder', 'value'];
   const initials = new Set(entries.filter(e => e.category === 'person' && !keep.includes(e.source)).map(e => e.source.charAt(0).toUpperCase()));
   let running = true;
@@ -214,6 +270,8 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
     let node = root;
     while (node) {
+      const editor = originalEditor(node);
+      if (editor) { if (!editors.has(editor)) fault = true; node = walker.nextNode(); continue; }
       if (node.nodeType === Node.TEXT_NODE && !['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(node.parentElement?.tagName)) {
         const avatarInitial = initials.has(node.nodeValue) && node.parentElement?.classList.contains('rounded-full');
         if (apply) change(node, '#text', avatarInitial ? '●' : replacer.replace(node.nodeValue));
@@ -256,7 +314,7 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
   const scan = () => {
     if (!running) return;
     observer.disconnect();
-    try { visit(document.documentElement, true); } catch { fault = true; }
+    try { syncEditors(); visit(document.documentElement, true); } catch { fault = true; }
     finally { observe(); }
   };
   const tick = () => { scan(); if (running) frame = requestAnimationFrame(tick); };
@@ -271,6 +329,9 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
       try { if (get(node, field) === value.masked) put(node, field, value.original); } catch { failures++; }
     }
     originals.clear();
+    for (const { clone } of editors.values()) clone.remove();
+    editors.clear();
+    editorStyle.remove();
     delete window[key];
     return { failures };
   };
@@ -304,7 +365,12 @@ export function installMask({ entries, avatars, keep, key }, makeReplacer, readR
   };
   const watchdog = setTimeout(restore, 60000);
   window[key] = {
-    audit() { scan(); return { residual: visit(document.documentElement, false), fault: fault || renderedChanged() }; },
+    audit() {
+      scan();
+      // Check continuous inline text too, excluding the untouched editors behind
+      // the visual copies. Per-node checks miss Alice <strong>Smith</strong>.
+      return { residual: visit(document.documentElement, false) + replacer.count(renderedText(document.body)), fault: fault || renderedChanged() };
+    },
     restore,
   };
   scan();

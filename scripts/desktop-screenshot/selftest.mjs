@@ -22,6 +22,10 @@ let child, client;
 const fixtures = `
 import React from ${JSON.stringify(require.resolve('react'))};
 import {createRoot} from ${JSON.stringify(require.resolve('react-dom/client'))};
+import {Schema} from ${JSON.stringify(require.resolve('@tiptap/pm/model'))};
+import {EditorState} from ${JSON.stringify(require.resolve('@tiptap/pm/state'))};
+import {EditorView} from ${JSON.stringify(require.resolve('@tiptap/pm/view'))};
+import {history,undoDepth} from ${JSON.stringify(require.resolve('@tiptap/pm/history'))};
 import {flushSync} from ${JSON.stringify(require.resolve('react-dom'))};
 const root=createRoot(document.getElementById('root'));
 window.electronAPI={authListAccounts:async()=>({accounts:[{displayName:'Synthetic Alice',email:'alice@private.test',avatarUrl:'https://example.invalid/avatar.png',isCurrent:true}]}),deviceLink:{listDevices:async()=>({devices:[{name:'Synthetic Laptop'}]})},providerShare:{command:async c=>c.action==='owned'?{shares:[]}:{received:[]}},sharedTask:{account:async()=>[]}};
@@ -38,6 +42,14 @@ function Page({version}){const [tip,setTip]=React.useState(false);return React.c
  React.createElement('span',{id:'link'},'https://relay.example.test/provider-share/join#synthetic-secret'))}
 window.renderFixture=(version)=>flushSync(()=>root.render(React.createElement(Page,{version})));
 window.renderFixture(1);
+const editorHost=document.createElement('div');document.body.append(editorHost);
+const schema=new Schema({nodes:{doc:{content:'paragraph+'},paragraph:{content:'text*',toDOM:()=>['p',0]},text:{inline:true}}});
+window.editorChanges=0;
+window.editor=new EditorView(editorHost,{state:EditorState.create({schema,doc:schema.node('doc',null,[schema.node('paragraph',null,[schema.text('Synthetic Alice')])]),plugins:[history()]}),dispatchTransaction(transaction){window.editorChanges++;this.updateState(this.state.apply(transaction))}});
+window.editorState=()=>({text:editor.state.doc.textContent,changes:editorChanges,undo:undoDepth(editor.state)});
+window.editorBlurs=0;editor.dom.addEventListener('blur',()=>editorBlurs++);editor.focus();
+const previewStyle=document.createElement('style');previewStyle.textContent='.preview-mode .ProseMirror{opacity:0}';document.head.append(previewStyle);
+
 window.electronAPI.providerShare.onReceivedChanged=fn=>{window.refreshReceived=()=>fn([{owner:{displayName:'Synthetic Alice',avatarUrl:'https://example.invalid/avatar.png'}}]);return ()=>{delete window.refreshReceived}};
 `;
 try {
@@ -56,6 +68,7 @@ try {
       if (port && output.includes('FIXTURE_READY')) { clearTimeout(timer); resolve(port); }
     };
     child.stdout.on('data', read); child.stderr.on('data', read);
+    child.once('error', () => { clearTimeout(timer); reject(new Error('selftest Electron failed to start')); });
     child.once('exit', () => { clearTimeout(timer); reject(new Error('selftest Electron exited')); });
   });
   const [target] = await cdpJson(port, 'list');
@@ -72,6 +85,13 @@ try {
   assert.equal(state.input, 'user-1@example.com');
   assert.ok(state.src.startsWith('data:image/svg+xml'));
   assert.equal(state.amount, '60% / 12.50');
+  assert.deepEqual(await client.evaluate('editorState()'), { text: 'Synthetic Alice', changes: 0, undo: 0 });
+  assert.equal(await client.evaluate("document.querySelector('.ProseMirror[contenteditable=false]').textContent.includes('Synthetic Alice')"), false);
+  assert.deepEqual(await client.evaluate('({focused:document.activeElement===editor.dom,blurs:editorBlurs})'), { focused: true, blurs: 0 });
+  await client.evaluate("document.body.classList.add('preview-mode')");
+  await client.evaluate(`window.${key}.audit()`);
+  assert.equal(await client.evaluate("getComputedStyle(document.querySelector('.ProseMirror[contenteditable=false]')).opacity"), '0');
+  await client.evaluate("document.body.classList.remove('preview-mode')");
   await client.evaluate("renderFixture(2); document.getElementById('hover').dispatchEvent(new MouseEvent('mouseover',{bubbles:true})); document.getElementById('input').value='new@private.test';");
   // Force the same synchronous final audit the production capture invokes; hidden
   // Electron windows do not promise requestAnimationFrame delivery.
@@ -86,6 +106,8 @@ try {
   assert.equal(state.title, 'Synthetic Alice');
   assert.equal(state.input, 'new@private.test');
   assert.equal(state.src, 'https://example.invalid/avatar.png');
+  assert.deepEqual(await client.evaluate('editorState()'), { text: 'Synthetic Alice', changes: 0, undo: 0 });
+  console.log('PASS 富文本编辑器内容、回调与撤销历史不变');
   console.log('PASS React 重绘、悬停提示、属性、输入值、头像、分享链接、数值保留、最新状态还原');
 
   const result = await screenshot(client, parseArgs(['--selector', '#fixture', '--padding', '4']), local, { capture: async params => {
@@ -112,6 +134,13 @@ try {
     return client.send('Page.captureScreenshot', params);
   } });
   console.log('PASS --mask、--keep、--no-mask');
+  await screenshot(client, parseArgs([]), local, { capture: async params => {
+    await assert.rejects(screenshot(client, parseArgs(['--no-mask']), local), /已有截图正在进行/);
+    return client.send('Page.captureScreenshot', params);
+  } });
+  assert.equal(await client.evaluate('Boolean(window.__cindyDesktopScreenshotLock)'), false);
+  assert.ok((await view()).text.includes('Synthetic Alice'));
+  console.log('PASS 同窗口并发截图拒绝，原截图还原并解锁');
   await client.evaluate("document.getElementById('number').value='700'");
   await screenshot(client, parseArgs(['--mask', '700=示例']), local);
   assert.equal(await client.evaluate("document.getElementById('number').value"), '700');
@@ -122,6 +151,10 @@ try {
   } }), /身份自查未通过/);
   assert.equal(await client.evaluate("Object.keys(window).filter(k=>k.startsWith('__cindyScreenshot_')).length"), 0);
   console.log('PASS 收集后出现新成员时拒绝输出并还原');
+  await client.evaluate("const split=document.createElement('p'); split.id='split-secret'; split.innerHTML='Synthetic <strong>Alice</strong>';document.body.append(split)");
+  await assert.rejects(screenshot(client, parseArgs([]), local), /身份自查未通过/);
+  await client.evaluate("document.getElementById('split-secret').remove()");
+  console.log('PASS 跨文字节点残留拒绝输出');
   await client.evaluate('electronAPI.authListAccounts=async()=>{throw Error("synthetic collection error")};');
   let captured = false;
   await assert.rejects(screenshot(client, parseArgs([]), local, { capture: async () => { captured = true; } }));
@@ -130,6 +163,6 @@ try {
   console.log('PASS 收集失败不截图、不改界面');
 } finally {
   client?.close();
-  if (child && child.exitCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; }
+  if (child?.pid && child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; }
   await fs.rm(dir, { recursive: true, force: true });
 }
