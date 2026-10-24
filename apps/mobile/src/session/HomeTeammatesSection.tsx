@@ -16,6 +16,7 @@ import { ChevronDown, ChevronRight, ChevronUp, Plus, RefreshCw, UsersRound } fro
 import { resolveRemoteText } from '@cindy/device-link';
 import { useAuth } from '@/auth/AuthContext';
 import { Text } from '@/components/AppText';
+import { useDelayedConnectionNotice } from '@/components/ConnectionNoticeOverlay';
 import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
 import { RemoteCompanionAvatar } from '@/components/RemoteCompanionAvatar';
 import { CLOUD_ROW_REVISION, cloudActorForRow, cloudCompanionRows } from '@/chat/cloudCompanion';
@@ -139,12 +140,14 @@ function SectionContent({ shared, active, refreshKey, visible, query, showFooter
     preferredDeviceId: navigation.lastTeammate?.deviceId,
     onCreated: (host, ref) => { void navigation.openCreatedTeammate(host, ref); },
     onGroupCreated: (host, groupId) => push(botGroupRoute(host, groupId)) });
-  // Read failures keep the cached rows and say so, with the same retry as a home pull-to-refresh.
+  // Keep cached rows during recovery. A lasting failure only adds a header action,
+  // never a notice row that changes the list's height.
   const error = groups.error ?? roster.error;
   const errorKey = error === 'CHAT_ENDPOINT_UNAVAILABLE' ? 'groupChat.server.endpointUnavailable'
     : error === 'CHAT_LIST_FAILED' ? 'groupChat.server.loadFailed'
     : entries.length ? 'devices.companions.stale' : 'devices.resources.loadFailed';
   const retrying = roster.refreshing || groups.refreshing;
+  const showError = useDelayedConnectionNotice(!!error && focused && visible && !search);
   const retry = () => {
     void roster.refresh();
     if (groups.supported) void groups.refresh();
@@ -171,19 +174,17 @@ function SectionContent({ shared, active, refreshKey, visible, query, showFooter
         <Text style={[list.projectTitle, styles.headerTitle]} numberOfLines={1}>{title}</Text>
         {collapsed || !entries.length ? null : <Text style={[list.projectCount, styles.count]} numberOfLines={1}>{entries.length}</Text>}
       </Pressable>
+      {showError ? <Pressable accessibilityRole="button" accessibilityLabel={`${t(errorKey)} ${t('devices.resources.retry')}`}
+        disabled={retrying} onPress={retry} hitSlop={spacing.xs}
+        style={({ pressed }) => [styles.headerAdd, pressed && mobileInteractionStyles.pressed]} testID="home.teammatesRetry">
+        {retrying ? <ActivityIndicator color={colors.textTertiary} /> : <RefreshCw size={iconSize.sm} color={colors.textTertiary} strokeWidth={iconStroke.regular} />}
+      </Pressable> : null}
       {/* Folded, the strip's last cell is the create entry; the header keeps only one. */}
       {collapsed || !entries.length ? null : create((press, label) => <Pressable accessibilityRole="button" accessibilityLabel={label}
         onPress={press} hitSlop={spacing.xs} style={({ pressed }) => [styles.headerAdd, pressed && mobileInteractionStyles.pressed]} testID="home.teammatesCreate">
         <Plus color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
       </Pressable>)}
     </View>
-    {error && !search ? <View style={styles.noticeRow}>
-      <Text accessibilityRole="alert" style={styles.notice} testID="home.teammatesError">{t(errorKey)}</Text>
-      <Pressable accessibilityRole="button" accessibilityLabel={t('devices.resources.retry')} disabled={retrying}
-        onPress={retry} style={({ pressed }) => [styles.retry, pressed && mobileInteractionStyles.pressed]} testID="home.teammatesRetry">
-        {retrying ? <ActivityIndicator color={colors.textSecondary} /> : <RefreshCw size={iconSize.sm} color={colors.textSecondary} strokeWidth={iconStroke.regular} />}
-      </Pressable>
-    </View> : null}
     {!entries.length ? <DisclosureItem exit>{create((press, label) => <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={press}
       style={({ pressed }) => [styles.addRow, pressed && mobileInteractionStyles.pressed]} testID="home.teammatesAdd">
       <View style={[styles.addCircle, styles.addCircleRow]}><Plus color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} /></View>
@@ -283,9 +284,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   addCircle: { borderRadius: radius.pill, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
   addCircleStrip: { width: STRIP_AVATAR_SIZE, height: STRIP_AVATAR_SIZE },
   addCircleRow: { width: COMPANION_ROW_AVATAR_SIZE, height: COMPANION_ROW_AVATAR_SIZE },
-  noticeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingLeft: spacing.lg, paddingRight: spacing.sm },
-  notice: { flex: 1, color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
-  retry: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   addRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, height: ADD_ROW_HEIGHT, paddingLeft: spacing.lg, paddingRight: spacing.lg },
   addText: { flexShrink: 1, color: colors.textSecondary, fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.regular },
   // Text column of the rows above (16 inset + 44 avatar + 12 gap).
