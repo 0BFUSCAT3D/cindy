@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 /**
  * AskUserQuestionPrompt
  * ---------------------------------------------------------------------------
@@ -254,27 +255,16 @@ function AskUserQuestionForm({
   });
   const dictationRef = useRef(dictation);
   dictationRef.current = dictation;
-  const pendingVoiceSubmitRef = useRef<((text: string) => void) | null>(null);
-  const submitAfterDictation = useCallback((submit: (text: string) => void) => {
-    if (pendingVoiceSubmitRef.current) return;
-    if (!dictationRef.current.isBusy) {
-      submit(answerTextRef.current.trim());
-      return;
-    }
-    pendingVoiceSubmitRef.current = submit;
-    void dictationRef.current.stop().catch((error: unknown) => {
-      pendingVoiceSubmitRef.current = null;
-      toast.error(error instanceof Error ? error.message : String(error));
-    });
-  }, []);
+  const [voiceSubmitting, setVoiceSubmitting] = useState(false);
+  const voiceSubmitRef = useRef(false);
+  const voiceLocked = dictation.isBusy || voiceSubmitting;
+  const mountedRef = useRef(true);
   useEffect(() => {
-    if (dictation.isBusy) return;
-    const submit = pendingVoiceSubmitRef.current;
-    pendingVoiceSubmitRef.current = null;
-    // stop() can return before refinement. Only the terminal event means the
-    // final text has landed; errors/cancellation keep the answer editable.
-    if (dictation.state === 'done') submit?.(answerTextRef.current.trim());
-  }, [dictation.isBusy, dictation.state]);
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const voiceSubmitLabel = t(dictation.state === 'refining'
+    ? 'voiceInputOverlay.status.refining' : 'voiceInputOverlay.status.submitting');
   const pendingVoiceStartRef = useRef(false);
   const voiceShortcutAtRef = useRef(0);
   // A shortcut press emits `start` then, on release, `tap`. The flag lives in a
@@ -453,6 +443,7 @@ function AskUserQuestionForm({
   // ── Single-select: click option -> advance ──
   const handleSingleSelect = useCallback(
     (label: string) => {
+      if (voiceSubmitRef.current) return;
       markStarted();
       advance(label);
     },
@@ -461,6 +452,7 @@ function AskUserQuestionForm({
 
   // ── Multi-select: toggle checkbox ──
   const handleToggle = useCallback((label: string) => {
+    if (voiceSubmitRef.current) return;
     markStarted();
     setSelectedLabels((prev) => {
       const next = new Set(prev);
@@ -471,20 +463,39 @@ function AskUserQuestionForm({
   }, [markStarted]);
 
   // ── Multi-select: Next button → encode as JSON array string ──
-  const handleNext = useCallback(() => submitAfterDictation((text) => {
-    if (selectedLabels.size === 0 && !text) return;
-    // Maintain UI visual order: filter options by selected state, then append custom text
-    const parts: string[] = options.filter((o) => selectedLabels.has(o.label)).map((o) => o.label);
-    if (text) {
-      // Custom text is an additional selected item
-      parts.push(text);
+  const submitWithDictation = useCallback(async (encode: (text: string) => string | null) => {
+    if (voiceSubmitRef.current || isAnimating) return;
+    if (!dictationRef.current.isBusy) {
+      const answer = encode(answerTextRef.current);
+      if (answer !== null) advance(answer);
+      return;
     }
-    advance(JSON.stringify(parts));
-  }), [selectedLabels, options, advance, submitAfterDictation]);
+    voiceSubmitRef.current = true;
+    setVoiceSubmitting(true);
+    try {
+      const ok = await dictationRef.current.stop();
+      if (!ok || !mountedRef.current) return;
+      const answer = encode(answerTextRef.current);
+      if (answer !== null) advance(answer);
+    } finally {
+      voiceSubmitRef.current = false;
+      if (mountedRef.current) setVoiceSubmitting(false);
+    }
+  }, [advance, isAnimating]);
+
+  const handleNext = useCallback(() => {
+    void submitWithDictation((text) => {
+      if (selectedLabels.size === 0 && !text.trim()) return null;
+      // Keep option order, followed by the finalized free-text answer.
+      const parts = options.filter((o) => selectedLabels.has(o.label)).map((o) => o.label);
+      if (text.trim()) parts.push(text.trim());
+      return JSON.stringify(parts);
+    });
+  }, [options, selectedLabels, submitWithDictation]);
 
   // ── Back ──
   const handleBack = useCallback(() => {
-    if (currentIndex === 0) return;
+    if (voiceSubmitRef.current || currentIndex === 0) return;
     ++voiceRevision.current;
     setVoiceFeedback('hint');
     snapshotButtons();
@@ -506,17 +517,20 @@ function AskUserQuestionForm({
 
   // ── Skip ──
   const handleSkip = useCallback(() => {
+    if (voiceSubmitRef.current) return;
     advance('');
   }, [advance]);
 
   // ── Custom input toggle ──
   const handleCustomOptionClick = useCallback(() => {
+    if (voiceSubmitRef.current) return;
     setShowCustomInput(true);
     setTimeout(() => inputRef.current?.focus(), 0);
   }, []);
 
   const beginVoiceInput = useCallback(() => {
     if (voiceBridge) return;
+    if (voiceSubmitRef.current) return;
     const session = dictationRef.current;
     if (session.isBusy) {
       void session.stop();
@@ -607,24 +621,25 @@ function AskUserQuestionForm({
   }, [beginVoiceInput, hostVisible, viewerState, voiceBridge, voiceShortcutOrder, voiceShortcutPreferred]);
 
   // ── Custom input submit (single-select mode) ──
-  const handleCustomSubmit = useCallback(() => submitAfterDictation((trimmed) => {
-    if (!trimmed) return;
+  const handleCustomSubmit = useCallback(() => {
     if (isMultiSelect) {
       // In multi-select, custom text is part of the selection — click Next to submit
       return;
     }
-    advance(trimmed);
+    void submitWithDictation((text) => text.trim() || null);
     // advance restores the next page when navigating. On the final page keep
     // this field retryable until the host confirms and removes the card.
-  }), [isMultiSelect, advance, submitAfterDictation]);
+  }, [isMultiSelect, submitWithDictation]);
 
   // ── Direct free-text answer when no option rows render ──
   // Multi-select keeps the documented JSON-array encoding (`["text"]`), otherwise
   // the answer cannot be parsed back when the user returns to edit this question.
-  const submitDirectAnswer = useCallback(() => submitAfterDictation((trimmed) => {
-    if (!trimmed) return;
-    advance(isMultiSelect ? JSON.stringify([trimmed]) : trimmed);
-  }), [isMultiSelect, advance, submitAfterDictation]);
+  const submitDirectAnswer = useCallback(() => {
+    void submitWithDictation((text) => {
+      const trimmed = text.trim();
+      return trimmed ? (isMultiSelect ? JSON.stringify([trimmed]) : trimmed) : null;
+    });
+  }, [isMultiSelect, submitWithDictation]);
 
   const voiceHandler = useRef<(text: string) => void>(() => {});
   const voiceTarget = useMemo<VoiceQuestionTarget>(() => {
@@ -636,7 +651,7 @@ function AskUserQuestionForm({
   }, [voiceBridge, currentIndex, voiceRevision.current, selectedLabels, customInput, showCustomInput, voiceFeedback]);
   useLayoutEffect(() => {
     voiceHandler.current = (text) => {
-      if (isAnimating || referencePreviewOpen || !currentQ || dictationRef.current.isBusy) return;
+      if (isAnimating || referencePreviewOpen || !currentQ || dictationRef.current.isBusy || voiceSubmitRef.current) return;
       onViewerStateChange('expanded');
       const result = parseVoiceQuestionSelection(text, options.map((option) => option.label));
       if (result.kind === 'cancel') {
@@ -675,12 +690,12 @@ function AskUserQuestionForm({
     };
   });
   useLayoutEffect(() => {
-    if (!voiceBridge || isAnimating || referencePreviewOpen || dictation.isBusy) return;
+    if (!voiceBridge || isAnimating || referencePreviewOpen || voiceLocked) return;
     voiceBridge.current = voiceTarget;
     return () => {
       if (voiceBridge.current === voiceTarget) voiceBridge.current = null;
     };
-  }, [voiceBridge, voiceTarget, isAnimating, referencePreviewOpen, dictation.isBusy]);
+  }, [voiceBridge, voiceTarget, isAnimating, referencePreviewOpen, voiceLocked]);
 
   const voiceNotice = voiceBridge ? (
     <div className="flex flex-wrap items-center gap-2 text-13 leading-5 text-[var(--text-secondary)]">
@@ -706,7 +721,7 @@ function AskUserQuestionForm({
 
       // Dictation owns the answer field until it stops: switching questions
       // would write the rest of the transcript into a different answer.
-      if (dictationRef.current.isBusy) return;
+      if (dictationRef.current.isBusy || voiceSubmitRef.current) return;
 
       // If custom input is focused in single-select mode, handle Escape only
       if (showCustomInput && !isMultiSelect) {
@@ -779,7 +794,7 @@ function AskUserQuestionForm({
     <div className="flex gap-2.5">
       {pending.delivery === 'async' && startedRef.current && (
         <Button variant="secondary" palette="confirmation" size="lg" compact
-          type="button" onClick={() => onAnswer(requestId, {})}>
+          type="button" disabled={voiceLocked} onClick={() => { if (!voiceSubmitRef.current) onAnswer(requestId, {}); }}>
           {t('chat.askUserQuestion.close')}
         </Button>
       )}
@@ -794,7 +809,7 @@ function AskUserQuestionForm({
               size="lg"
               compact
               type="button"
-              disabled={dictation.isBusy}
+              disabled={voiceLocked}
               onClick={handleBack}
             >
               <span className="flex items-center gap-1.5">
@@ -810,7 +825,7 @@ function AskUserQuestionForm({
             size="lg"
             compact
             type="button"
-            disabled={dictation.isBusy}
+            disabled={voiceLocked}
             onClick={handleSkip}
           >
             {t('chat.askUserQuestion.skip')}
@@ -824,18 +839,20 @@ function AskUserQuestionForm({
               size="lg"
               compact
               type="button"
+              loading={voiceSubmitting}
               onClick={() => {
+                if (voiceSubmitRef.current) return;
                 if (isMultiSelect) {
                   handleNext();
                 } else {
-                  submitAfterDictation((text) => advance(text || existingAnswer || ''));
+                  advance(existingAnswer ?? '');
                 }
               }}
               disabled={
-                !dictation.isBusy &&
+                voiceSubmitting ||
                 (isMultiSelect
-                  ? selectedLabels.size === 0 && !customInput.trim()
-                  : existingAnswer === undefined)
+                  ? !dictation.isBusy && selectedLabels.size === 0 && !customInput.trim()
+                  : dictation.isBusy || existingAnswer === undefined)
               }
             >
               {isLastQuestion ? t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit') : t('chat.askUserQuestion.next')}
@@ -884,7 +901,7 @@ function AskUserQuestionForm({
             <AutoGrowingAnswerTextarea
               textareaRef={inputRef}
               value={answerValue}
-              readOnly={dictation.isBusy}
+              readOnly={voiceLocked}
               onCompositionStart={markStarted}
               onChange={(e) => { markStarted(); setAnswerText(e.target.value); }}
               onKeyDown={(e) => {
@@ -896,7 +913,7 @@ function AskUserQuestionForm({
                 if (e.key === 'Escape') {
                   // Closing the row mid-dictation would leave the rest of the
                   // transcript writing into a hidden field.
-                  if (dictation.isBusy) return;
+                  if (voiceSubmitRef.current || dictation.isBusy) return;
                   e.preventDefault();
                   setShowCustomInput(false);
                   setAnswerText('');
@@ -917,18 +934,20 @@ function AskUserQuestionForm({
                 size="md"
                 label={voiceButtonLabel}
                 busy={dictation.isBusy}
+                disabled={voiceSubmitting}
                 onClick={beginVoiceInput}
               />)}
               {!isMultiSelect && (
-                <Tip text={isLastQuestion ? null : t('chat.askUserQuestion.next')}>
+                <Tip text={voiceSubmitting ? voiceSubmitLabel : isLastQuestion ? null : t('chat.askUserQuestion.next')}>
                   <button
                     type="button"
                     onClick={handleCustomSubmit}
-                    disabled={!customInput.trim() && !dictation.isBusy}
+                    disabled={voiceSubmitting || (!dictation.isBusy && !customInput.trim())}
+                    aria-busy={voiceSubmitting}
                     data-testid={isLastQuestion ? undefined : 'ask-user-custom-next'}
                     aria-label={isLastQuestion ? undefined : t('chat.askUserQuestion.next')}
                     className={cn(
-                      'shrink-0 rounded-[9999px] text-13 font-medium',
+                      'relative shrink-0 rounded-[9999px] text-13 font-medium',
                       isLastQuestion
                         ? 'px-[16px] py-[6px]'
                         : 'flex h-8 w-8 items-center justify-center',
@@ -937,10 +956,17 @@ function AskUserQuestionForm({
                         : 'bg-[var(--ask-send-disabled-bg)] text-[var(--ask-send-disabled-text)]',
                     )}
                   >
-                    {isLastQuestion ? (
-                      t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit')
-                    ) : (
-                      <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
+                    <span className={cn('inline-flex items-center justify-center', voiceSubmitting && 'opacity-0')}>
+                      {isLastQuestion ? (
+                        t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit')
+                      ) : (
+                        <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
+                      )}
+                    </span>
+                    {voiceSubmitting && (
+                      <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center">
+                        <Spinner size={14} />
+                      </span>
                     )}
                   </button>
                 </Tip>
@@ -958,6 +984,7 @@ function AskUserQuestionForm({
                 'flex min-w-0 flex-1 items-center gap-3 py-[6px] text-left',
                 'transition-colors hover:bg-[var(--ask-option-hover)]',
               )}
+              disabled={voiceLocked}
               onClick={handleCustomOptionClick}
             >
               {isMultiSelect && (
@@ -970,7 +997,7 @@ function AskUserQuestionForm({
                   button for screen readers, as the option rows do. */}
               <span className="sr-only">{options.length + 1}</span>
             </button>
-            {!voiceBridge && (<AskUserVoiceButton label={voiceButtonLabel} busy={dictation.isBusy} onClick={beginVoiceInput} />)}
+            {!voiceBridge && (<AskUserVoiceButton label={voiceButtonLabel} busy={dictation.isBusy} disabled={voiceSubmitting} onClick={beginVoiceInput} />)}
             {/* Pointer shortcut only: the row button above already carries the
                 action and its number for keyboard and screen-reader users. */}
             <div
@@ -981,6 +1008,7 @@ function AskUserQuestionForm({
             >
               {options.length + 1}
             </div>
+
           </div>
         )}
       </div>
@@ -1041,7 +1069,7 @@ function AskUserQuestionForm({
                 {idx > 0 && <div className="h-px bg-[var(--ask-option-divider)]" />}
                 <button
                   type="button"
-                  disabled={dictation.isBusy}
+                  disabled={voiceLocked}
                   className={cn(
                     'flex w-full items-center justify-between px-[16px] py-[14px] text-left',
                     'transition-colors hover:bg-[var(--ask-option-hover)]',
@@ -1107,7 +1135,7 @@ function AskUserQuestionForm({
             <AutoGrowingAnswerTextarea
               textareaRef={inputRef}
               value={answerValue}
-              readOnly={dictation.isBusy}
+              readOnly={voiceLocked}
               onCompositionStart={markStarted}
               onChange={(e) => { markStarted(); setAnswerText(e.target.value); }}
               onKeyDown={(e) => {
@@ -1116,7 +1144,7 @@ function AskUserQuestionForm({
                   submitDirectAnswer();
                 }
                 if (e.key === 'Escape') {
-                  if (dictation.isBusy) return;
+                  if (voiceSubmitRef.current || dictation.isBusy) return;
                   e.preventDefault();
                   handleSkip();
                 }
@@ -1134,27 +1162,36 @@ function AskUserQuestionForm({
                 size="md"
                 label={voiceButtonLabel}
                 busy={dictation.isBusy}
+                disabled={voiceSubmitting}
                 onClick={beginVoiceInput}
               />)}
-              <Tip text={isLastQuestion ? null : t('chat.askUserQuestion.next')}>
+              <Tip text={voiceSubmitting ? voiceSubmitLabel : isLastQuestion ? null : t('chat.askUserQuestion.next')}>
                 <button
                   type="button"
                   onClick={submitDirectAnswer}
-                  disabled={!customInput.trim() && !dictation.isBusy}
+                  disabled={voiceSubmitting || (!dictation.isBusy && !customInput.trim())}
+                  aria-busy={voiceSubmitting}
                   data-testid={isLastQuestion ? undefined : 'ask-user-custom-next'}
                   aria-label={isLastQuestion ? undefined : t('chat.askUserQuestion.next')}
                   className={cn(
-                    'h-10 rounded-[9999px] text-14 font-medium transition-colors',
+                    'relative h-10 rounded-[9999px] text-14 font-medium transition-colors',
                     isLastQuestion ? 'px-4' : 'flex w-10 items-center justify-center',
                     customInput.trim() || dictation.isBusy
                       ? 'bg-[var(--ask-send-bg)] text-[var(--ask-send-text)]'
                       : 'bg-[var(--ask-send-disabled-bg)] text-[var(--ask-send-disabled-text)]',
                   )}
                 >
-                  {isLastQuestion ? (
-                    t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit')
-                  ) : (
-                    <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
+                  <span className={cn('inline-flex items-center justify-center', voiceSubmitting && 'opacity-0')}>
+                    {isLastQuestion ? (
+                      t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit')
+                    ) : (
+                      <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
+                    )}
+                  </span>
+                  {voiceSubmitting && (
+                    <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center">
+                      <Spinner size={14} />
+                    </span>
                   )}
                 </button>
               </Tip>
@@ -1171,9 +1208,11 @@ function AskUserVoiceButton({
   busy,
   onClick,
   size = 'sm',
+  disabled = false,
 }: {
   label: string;
   busy: boolean;
+  disabled?: boolean;
   onClick: () => void;
   /**
    * md matches the answer row's send button (32px) so the two share one center
@@ -1187,6 +1226,7 @@ function AskUserVoiceButton({
       data-testid="ask-user-voice"
       aria-label={label}
       aria-pressed={busy}
+      disabled={disabled}
       onMouseDown={(event) => {
         // Keep the caret in the answer field so dictation replaces the selection
         // the user was editing, instead of jumping after the button takes focus.
