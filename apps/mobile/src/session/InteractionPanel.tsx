@@ -923,6 +923,9 @@ function PermissionEvidence({
       <Text style={styles.companionMeta}><Text style={styles.companionMetaLabel}>{`${t('interaction.companion.operation')}  `}</Text>{presentation.toolName}</Text>
       {presentation.sourceDescription ? <Text selectable style={styles.body}>{presentation.sourceDescription}</Text> : null}
       {presentation.autoReviewUnavailable ? <Text style={styles.body}>{t('interaction.permission.autoReviewUnavailable')}</Text> : null}
+      {presentation.autoReviewReason ? <Text selectable style={styles.body} testID="interaction.permission.autoReviewReason">
+        {t('interaction.permission.autoReviewReason', { reason: presentation.autoReviewReason })}
+      </Text> : null}
       {riskWarningText ? <View style={[styles.permissionRiskRow, armed && styles.permissionRiskRowArmed]} testID="interaction.permission.riskWarning">
         <Text style={styles.permissionRiskLabel}>{t('interaction.permission.highRisk')}</Text><Text style={styles.permissionRiskText}>{riskWarningText}</Text>
       </View> : null}
@@ -962,6 +965,11 @@ function PermissionEvidence({
           {presentation.autoReviewUnavailable
             ? t('interaction.permission.autoReviewUnavailable')
             : presentation.description}
+        </Text>
+      ) : null}
+      {presentation.autoReviewReason ? (
+        <Text selectable style={styles.permissionDescription} testID="interaction.permission.autoReviewReason">
+          {t('interaction.permission.autoReviewReason', { reason: presentation.autoReviewReason })}
         </Text>
       ) : null}
       {riskWarningText ? (

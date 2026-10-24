@@ -1810,6 +1810,19 @@ describe('new session model', () => {
     ]);
   });
 
+  // #6916, unit: the production picker must display host metadata without changing its path.
+  it('uses the selected host alias for recent workspace quick picks', () => {
+    const sessions = [remoteSession('app', { workingDir: '/repo/app', deviceLinkDeviceId: 'mac-a' })];
+    const aliases = new Map([
+      ['device:mac-a:/repo/app', 'Customer Portal'],
+      ['device:mac-b:/repo/app', 'Other Portal'],
+    ]);
+    expect(buildRecentWorkspaceOptions(sessions, 'mac-a', 6, aliases)[0]).toMatchObject({
+      title: 'Customer Portal', workingDir: '/repo/app',
+    });
+    expect(buildRecentWorkspaceOptions(sessions, 'mac-a', 6, new Map())[0].title).toBe('app');
+  });
+
   // Remote path strings deliberately model the host OS, not the test runner's filesystem.
   it.each([
     ['slash direction', 'D:\\projects\\cindy', 'D:/projects/cindy'],

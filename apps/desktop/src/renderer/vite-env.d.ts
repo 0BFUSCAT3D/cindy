@@ -787,6 +787,8 @@ interface CCAgentPermissionRequestPayload {
   description?: string;
   suggestions?: unknown[];
   autoReviewUnavailable?: boolean;
+  /** Auto-review's reason for asking; shown as the card's "why". */
+  autoReviewReason?: string;
 }
 
 interface CCAgentPermissionResult {

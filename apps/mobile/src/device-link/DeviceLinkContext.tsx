@@ -261,6 +261,11 @@ export function subscribeRemoteTaskTagsChanged(
   };
 }
 const remoteFavoritesChangedListeners = new Set<(deviceId: string) => void>();
+const remoteProjectAliasesChangedListeners = new Set<(deviceId: string) => void>();
+export function subscribeRemoteProjectAliasesChanged(listener: (deviceId: string) => void): () => void {
+  remoteProjectAliasesChangedListeners.add(listener);
+  return () => { remoteProjectAliasesChangedListeners.delete(listener); };
+}
 export function subscribeRemoteFavoritesChanged(listener: (deviceId: string) => void): () => void {
   remoteFavoritesChangedListeners.add(listener);
   return () => { remoteFavoritesChangedListeners.delete(listener); };
@@ -1729,6 +1734,11 @@ export function routeFrame(env: Envelope, handlers: RouteFrameHandlers = {}): vo
   }
   if (push.channel === 'maker:model-favorites:changed') {
     for (const listener of remoteFavoritesChangedListeners) listener(env.src);
+    return;
+  }
+  if (push.channel === 'local-db:project-aliases:changed') {
+    // Invalidation only: reread through the current authenticated invoke boundary.
+    for (const listener of remoteProjectAliasesChangedListeners) listener(env.src);
     return;
   }
   if (push.channel === 'maker:provider:changed') {
