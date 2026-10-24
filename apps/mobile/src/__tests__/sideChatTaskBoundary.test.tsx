@@ -200,7 +200,7 @@ describe('side chat task lifecycle', () => {
       session: { id: 'next', canonicalDeviceId: 'canonical-host', deviceLinkDeviceId: 'old-host', deviceLinkDeviceName: 'Mac' },
       searchFocusClientId: 'message-42',
     } as unknown as RemoteSessionListItem;
-    act(() => state.sidebar!.onSelectSession(target));
+    act(() => state.sidebar!.onSelectSession!(target));
     expect(order).toEqual(['discard', 'navigate']);
     expect(state.replaceParams).toHaveBeenCalledExactlyOnceWith({
       deviceId: 'canonical-host', deviceName: 'Mac', sessionId: 'next', focusClientId: 'message-42',
