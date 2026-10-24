@@ -203,7 +203,10 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
     <GestureDetector gesture={panGesture}>
       <Animated.View style={[styles.panel, { paddingLeft: insets.left, paddingTop: topInset ?? insets.top, width: panelWidth },
         !persistent && panelStyle]} testID="sessionDrawer.panel">
-        <View ref={homeContentRef} style={styles.content}>
+        {/* The host keeps the first navigation intent. Stop all list input during exit so a
+            second selection cannot change preferences while its route is discarded. */}
+        <View ref={homeContentRef} style={styles.content} pointerEvents={open ? 'auto' : 'none'}
+          accessibilityElementsHidden={!open} importantForAccessibility={open ? 'auto' : 'no-hide-descendants'}>
           <MobileHome newSessionActionRef={newSessionActionRef} width={width} currentSessionId={currentSessionId}
             newSessionInSystemBar={newSessionInSystemBar} newSessionInHeader={!persistent}
             onSelectSession={onSelectSession} runNavigation={runNavigation} />
