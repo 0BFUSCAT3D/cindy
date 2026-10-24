@@ -50,6 +50,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tip, Tooltip } from '@/components/ui/tooltip';
+import { Spinner } from '@/components/ui/spinner';
 import {
   FolderPickerPopover,
   addRecentFolder,
@@ -870,11 +871,7 @@ export function BranchWorktreeChip({
                 {sync.done ? (
                   <Check size={14} aria-hidden />
                 ) : (
-                  <RefreshCw
-                    size={14}
-                    aria-hidden
-                    className={sync.busy ? 'animate-spin' : undefined}
-                  />
+                  <Spinner icon={RefreshCw} size={14} spinning={sync.busy} aria-hidden />
                 )}
               </button>
             </span>
