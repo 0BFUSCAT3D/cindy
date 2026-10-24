@@ -155,7 +155,8 @@ function projectWindow(
   let sealedRun = false;
   for (let index = expanded.length - 1; index >= 0; index -= 1) {
     const item = expanded[index];
-    if (!isProse(item) || !item.message.content.trim() || item.message.failedSamplingAttempt) {
+    if (!isProse(item) || !item.message.content.trim() || item.message.failedSamplingAttempt
+      || item.message.assistantPhase === 'commentary') {
       sealedRun = false;
       continue;
     }

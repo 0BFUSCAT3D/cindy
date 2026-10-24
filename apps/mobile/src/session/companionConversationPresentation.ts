@@ -47,7 +47,8 @@ export function companionConversationItems(items: readonly MobileMessageRenderIt
   let sealedRun = false;
   let nextAssistantAt: number | null = null;
   for (const item of expandWorkGroups(items).reverse()) {
-    if (item.type !== 'message' || item.message.kind !== 'assistant' || item.message.failedSamplingAttempt || !item.message.body.trim() || item.message.systemCardType) {
+    if (item.type !== 'message' || item.message.kind !== 'assistant' || item.message.failedSamplingAttempt || !item.message.body.trim() || item.message.systemCardType
+      || item.message.source.agentMeta?.assistantPhase === 'commentary') {
       sealedRun = false;
       nextAssistantAt = null;
     } else {

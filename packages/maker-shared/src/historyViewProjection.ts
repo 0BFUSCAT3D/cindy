@@ -271,6 +271,8 @@ function projectHistorySourceView<T extends HistoryMessageSource>(
     isAnswer: (item) => item.type === 'source' && item.row.role === 'assistant'
       && typeof item.row.content === 'string' && !!item.row.content.trim(),
     isSealedAnswer: (item) => item.type === 'source' && completesHistoryTurn(item.row),
+    canPrependToAnswer: (item) => item.type !== 'source'
+      || (item.row.agentMeta as Record<string, unknown> | null | undefined)?.assistantPhase !== 'commentary',
     isCompactBoundary: (item) => item.type === 'source' && item.row.role === 'system',
     isActivity: (item): item is SourceItem<T> => item.type === 'source' && item.activity,
     isArchivable: (item): item is SourceItem<T> => item.type === 'source' && item.archivable,

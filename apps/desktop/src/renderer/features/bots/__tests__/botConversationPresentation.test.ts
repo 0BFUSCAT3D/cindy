@@ -339,7 +339,12 @@ describe('provider final streaming', () => {
       expect(proseIds(project([...prefix, final], true))).toEqual(['process', 'answer']);
       expect(proseIds(project([...prefix, { ...final, message: { ...final.message, isStreaming: false } }], true))).toEqual(['process', 'answer']);
     }
-    expect(proseIds(project([...prefix, message('answer', 'assistant', 'Answer', { assistantPhase: 'final_answer', turnCompleted: true })], false))).toEqual(['process', 'answer']);
+    for (const streaming of [false, true]) {
+      const completed = project([...prefix, message('answer', 'assistant', 'Answer', { assistantPhase: 'final_answer', turnCompleted: true })], streaming);
+      expect(proseIds(completed)).toEqual(['answer']);
+      expect(allKeys(completed)).toContain('msg-process');
+      expect(completed.find(item => item.type === 'work_group')).toMatchObject({ isStreaming: false });
+    }
   });
 });
 

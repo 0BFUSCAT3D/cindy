@@ -80,6 +80,19 @@ it('keeps all contiguous blocks of a sealed final answer', () => {
   const text = items.filter(item => item.type === 'message').map(item => item.message.body);
   expect(text).toEqual(['Help', 'Part one', 'Part two']);
 });
+// #7081 review: no tool/thinking boundary exists between progress and the final.
+// Unit: real normalize → shared grouping → companion projection, including a late running status.
+it.each([false, true])('folds commentary before a directly adjacent sealed answer (running=%s)', (running) => {
+  const progress = row('a1', 'assistant', 'Checking', { assistantPhase: 'commentary' });
+  const final = row('a2', 'assistant', 'Done', { assistantPhase: 'final_answer', turnCompleted: true });
+  expect(bodies([base[0], progress, { ...final, agentMeta: { assistantPhase: 'final_answer', isStreaming: true } }], true)
+    .filter(item => item.type === 'message').map(item => item.message.body)).toEqual(['Help', 'Checking', 'Done']);
+  const complete = bodies([base[0], progress, final], running);
+  expect(complete.filter(item => item.type === 'message').map(item => item.message.body)).toEqual(['Help', 'Done']);
+  const work = complete.find(item => item.type === 'work_group');
+  expect(work).toMatchObject({ isStreaming: false });
+  expect(JSON.stringify(work)).toContain('Checking');
+});
 it('keeps every sealed reply block after a continuation even when the main timeline folds earlier seals', () => {
   const items = bodies([...base,
     row('a4', 'assistant', 'First block'), row('a5', 'assistant', 'First reply', { turnCompleted: true }),
