@@ -18,11 +18,12 @@ export type TerminalTaskMeta = SessionMeta & {
   pendingHandoff?: { id: string; text: string; createdAt: number } | null;
   goalContinuation?: import('@cindy/im-runtime/goalInactiveNote').GoalContinuationState | null;
   thinkingEnabled?: boolean; hiddenAt?: number | null;
+  orcaRemoteLead?: import('@cindy/maker-shared/orca-remote-worker').OrcaRemoteLead;
   usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number };
 };
 export type NewTerminalTaskMeta = Omit<TerminalTaskMeta, 'createdAt' | 'updatedAt'>;
 type ChannelRotation = { version: 1; rows: TerminalTaskMeta[]; bindings: ImBindingRow[] };
-export type Submission = { requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; plugin?: { id: string; name: string }; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
+export type Submission = { orca?: import('./orca-remote.js').RemoteWorkerAssignment; requestId: string; sessionId: string; fingerprint: string; sendAtMs?: number; plugin?: { id: string; name: string }; sender?: {sessionId:string;title?:string}; status: 'queued' | 'sending' | 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: number; updatedAt: number; error?: string; finalText?: string; message?: UserMessage; source?: 'local' | 'remote'; deviceId?: string; sourceDevice?: import('../contracts.js').InvocationContext['sourceDevice']; ownerId?: string; deliveryProof?: import('./handoff.js').TaskDeliveryProof; scheduler?: {kind:'scheduler';scheduleId:string;scheduleName:string;runId:string;firedAt?:number}; sharedTask?: import('../contracts.js').InvocationContext['sharedTask'] };
 export type ContextRebuild = Parameters<import('@cindy/im-runtime/contextOverflowRollover').ContextOverflowRolloverDeps['commitRebuild']>[2] & { handoff: string };
 export type HistoryRecord = { sequence: number; timestamp: number; kind: 'event' | 'user' | 'user-meta' | 'boundary' | 'boundary-meta' | 'context-rebuild'; event?: AgentEvent; message?: UserMessage; origin?: 'local' | 'remote'; agentMeta?: Record<string, unknown>; clientId?: string; boundary?: import('@cindy/im-runtime/sessionAgentSwitch').AgentSwitchBoundaryContent; contextRebuild?: ContextRebuild };
 type RouteCommit = { version: 1; row: TerminalTaskMeta; record: HistoryRecord };
@@ -74,11 +75,13 @@ export class TerminalTaskStorage implements SessionStorage {
     this.writes.set(id, result.catch(() => undefined));
     return result;
   }
-  async create(meta: NewTerminalTaskMeta): Promise<TerminalTaskMeta> {
+  async create(meta: NewTerminalTaskMeta, guard: () => void = () => {}): Promise<TerminalTaskMeta> {
     return this.enqueue(meta.id, async () => {
+      guard();
       if (this.rows.has(meta.id)) throw new Error('TASK_ALREADY_EXISTS');
       await privateDirectory(this.directory(meta.id));
       const row = { ...meta, createdAt: Date.now(), updatedAt: Date.now() };
+      guard();
       await atomicPrivateWrite(this.file(meta.id), JSON.stringify(row));
       this.rows.set(meta.id, row);
       return structuredClone(row);
@@ -350,7 +353,7 @@ export class TerminalTaskStorage implements SessionStorage {
     taskId(id); await this.writes.get(id);
     return structuredClone(this.submissions.get(id)?.find(item => item.requestId === requestId) ?? null);
   }
-  claimSubmission(id: string, requestId: string, fingerprint: string, guard: () => void, payload?: Pick<Submission, 'message' | 'source' | 'deviceId' | 'sourceDevice' | 'ownerId' | 'sharedTask' | 'scheduler' | 'sendAtMs' | 'deliveryProof' | 'sender' | 'plugin'>): Promise<{ receipt: Submission; created: boolean }> {
+  claimSubmission(id: string, requestId: string, fingerprint: string, guard: () => void, payload?: Pick<Submission, 'message' | 'source' | 'deviceId' | 'sourceDevice' | 'ownerId' | 'sharedTask' | 'scheduler' | 'sendAtMs' | 'deliveryProof' | 'sender' | 'plugin' | 'orca'>): Promise<{ receipt: Submission; created: boolean }> {
     return this.enqueue(id, async () => {
       guard();
       if (!this.rows.has(id)) throw new Error('TASK_NOT_FOUND');

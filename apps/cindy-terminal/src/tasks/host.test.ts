@@ -183,6 +183,57 @@ async function auxiliaryFixture(host: TerminalTaskHost, reply: () => Promise<str
 }
 
 describe('terminal task host', () => {
+  // Integration: the execution host must persist the authenticated Lead together
+  // with the selected route before starting Maker. A duplicate open, restart,
+  // local queue edit and release exercise identities absent from ordinary tasks.
+  it('receives remote workers with durable ownership and revocable Lead assignments', async () => {
+    let persistedBeforeStart: Record<string, unknown> | undefined;
+    const native = engine(async (input, options) => {
+      persistedBeforeStart = JSON.parse(await readFile(path.join(input.profileDir, 'tasks', options.sessionId!, 'task.json'), 'utf8'));
+    });
+    const { host, root, create } = await setup(native, { deviceId: 'execution-pc' });
+    const context = { source: 'remote' as const, deviceId: 'lead-pc', ownerId: 'owner', assertCurrent() {}, sourceDevice: { deviceId: 'lead-pc', name: 'Lead computer', platform: 'desktop' as const } };
+    const request = { sessionId: 'remote-worker', agentKind: 'claude-code', permissionMode: 'auto', title: 'Remote worker', workingDir: root,
+      lead: { leadSessionId: 'lead-task', leadTitle: 'Lead task', workerLabel: 'Research', leadDeviceId: 'spoofed' } };
+    const open = (target: TerminalTaskHost, input = request) => target.invoke('maker:orca:remote-worker:open', [input], context);
+    await expect(host.invoke('maker:orca:remote-worker:caps')).rejects.toThrow(/PRECONDITION_FAILED/);
+    await expect(host.invoke('maker:orca:remote-worker:open', [request], { ...context, sharedTask: { sharedTaskId: 'share', sessionId: 'remote-worker', memberId: 'guest', accountId: 'guest' } })).rejects.toThrow(/SHARED_TASK_PERMISSION_DENIED/);
+    const [first, duplicate] = await Promise.all([open(host), open(host)]);
+    expect(duplicate).toEqual(first);
+    expect(native.starts).toHaveLength(1);
+    expect(persistedBeforeStart).toMatchObject({ providerId: 'fixture', model: 'test-model', orcaRemoteLead: { leadDeviceId: 'lead-pc', leadSessionId: 'lead-task' } });
+    await expect(host.invoke('maker:orca:remote-worker:open', [request], { ...context, deviceId: 'another-pc' })).rejects.toThrow(/ALREADY_EXISTS/);
+    await expect(host.invoke('maker:orca:remote-worker:models', [{ agent: 'claude-code', agentDeviceId: 'execution-pc' }], context)).resolves.toMatchObject({ agentDeviceId: null, claude_code: [{ id: 'test-model', providers: [{ id: 'fixture' }] }] });
+
+    const item = (clientId: string) => ({ clientId, text: 'Lead assignment', origin: { kind: 'orca', senderLabel: 'Spoofed label', displayText: 'Research this.' } });
+    await host.invoke('maker:input:enqueue', ['remote-worker', item('assigned')], context);
+    await host.invoke('terminal:tasks:wait', ['remote-worker', 'assigned']);
+    const history = (await host.storage.history('remote-worker')).records;
+    expect(history.find(row => row.clientId === 'assigned')?.agentMeta).toMatchObject({ origin: { kind: 'orca', senderLabel: 'Lead', displayText: 'Research this.' }, autoReviewUserText: { kind: 'delegated-continuation' } });
+
+    await host.invoke('maker:input:stop', ['remote-worker']);
+    await host.invoke('maker:input:enqueue', ['remote-worker', item('edited')], context);
+    await host.invoke('maker:input:update-text', ['remote-worker', 'edited', 'My own request']);
+    expect((await host.storage.submission('remote-worker', 'edited'))?.orca).toBeUndefined();
+    await host.close();
+    const resumed = create();
+    expect(await open(resumed)).toEqual(first);
+    expect((await resumed.storage.get('remote-worker'))?.orcaRemoteLead?.leadDeviceId).toBe('lead-pc');
+    await resumed.invoke('maker:input:resume', ['remote-worker']);
+    await resumed.invoke('terminal:tasks:wait', ['remote-worker', 'edited']);
+    expect((await resumed.storage.history('remote-worker')).records.find(row => row.clientId === 'edited')?.agentMeta?.origin).toBeUndefined();
+
+    await resumed.invoke('maker:input:stop', ['remote-worker']);
+    await resumed.invoke('maker:input:enqueue', ['remote-worker', item('released')], context);
+    await resumed.invoke('maker:orca:remote-worker:release', [{ sessionId: 'remote-worker' }], context);
+    await resumed.invoke('maker:input:resume', ['remote-worker']);
+    await resumed.invoke('terminal:tasks:wait', ['remote-worker', 'released']);
+    expect(await resumed.storage.submission('remote-worker', 'released')).toMatchObject({ status: 'failed', error: 'REMOTE_WORKER_RELEASED' });
+    expect((await resumed.storage.history('remote-worker')).records.some(row => row.clientId === 'released')).toBe(false);
+    expect(await resumed.storage.get('remote-worker')).not.toBeNull();
+    await expect(open(resumed)).rejects.toThrow(/ALREADY_EXISTS/);
+  });
+
   // Integration: without the host delegate Auto fell back to an unavailable
   // reviewer. Exercise real candidate HTTP and the core authority fence; a
   // closed task must revoke its pending result and abort the network request.

@@ -152,6 +152,9 @@ importers:
       '@cindy/model-providers':
         specifier: workspace:*
         version: link:../../packages/model-providers
+      '@cindy/orca-workflow':
+        specifier: workspace:*
+        version: link:../../packages/orca-workflow
       '@cindy/plugin-runtime':
         specifier: workspace:*
         version: link:../../packages/plugin-runtime
@@ -1706,6 +1709,9 @@ importers:
 
   packages/orca-workflow:
     dependencies:
+      '@cindy/device-link':
+        specifier: workspace:*
+        version: link:../device-link
       '@cindy/im-runtime':
         specifier: workspace:*
         version: link:../im-runtime
@@ -15552,7 +15558,9 @@ snapshots:
       metro-runtime: 0.84.5
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 

@@ -29,7 +29,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.0.0",
     "@cindy/im-runtime": "workspace:*",
-    "@cindy/model-providers": "workspace:*"
+    "@cindy/model-providers": "workspace:*",
+    "@cindy/device-link": "workspace:*"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

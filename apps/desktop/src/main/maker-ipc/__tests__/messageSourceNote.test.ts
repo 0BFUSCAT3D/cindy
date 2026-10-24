@@ -102,7 +102,7 @@ describe('delivery-path wiring (source contract)', () => {
   const register = read('src/main/maker-ipc/register.ts');
   const coordinator = read('src/main/maker-ipc/agent-input-coordinator.ts');
   const transaction = read('src/main/maker-ipc/makerSendTransaction.ts');
-  const queue = read('src/shared/agentInputQueue.ts');
+  const queue = read('../../packages/maker-shared/src/agentInputQueue.ts');
 
   const between = (source: string, start: string, end: string) => {
     const from = source.indexOf(start);

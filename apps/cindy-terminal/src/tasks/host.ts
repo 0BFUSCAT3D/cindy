@@ -1,3 +1,5 @@
+import { createTerminalRemoteWorkerHost, REMOTE_WORKER_CHANNELS, readRemoteWorkerAssignment, assertRemoteWorkerAssignment, type RemoteWorkerAssignment } from './orca-remote.js';
+import type { OrcaRemoteLead } from '@cindy/maker-shared/orca-remote-worker';
 import { isSameSessionExecution } from '@cindy/plugin-runtime/sessionExecutionOwnership';
 import type { TerminalPluginSessionPort, TerminalPluginSessionHooks } from '../plugins/session-contract.js';
 import type { TerminalPluginTask } from '../plugins/mcp.js';
@@ -84,6 +86,7 @@ export const TERMINAL_TASK_CHANNELS = [
   'maker:get-pending-interactions', 'maker:resolve-interaction', 'maker:set-model', 'maker:set-effort',
   'maker:set-permission-mode', 'maker:set-plan-mode', 'maker:set-fast-mode', 'maker:compact-session',
   'maker:get-plugin-write-access-recovery', 'maker:retry-plugin-write-access',
+  ...REMOTE_WORKER_CHANNELS,
   'maker:list-available-agents', 'maker:agent:status', 'maker:provider:list',
   'maker:provider:presets', 'maker:provider:test-connection', 'maker:provider:models-fetch', 'maker:provider:models-refresh', 'maker:provider:models-rediscover', 'maker:provider:models-auto-refresh', 'maker:provider:custom:disconnect', 'maker:model-disable:set',
   'maker:provider:custom:create', 'maker:provider:custom:update', 'maker:provider:custom:delete',
@@ -96,6 +99,8 @@ export const TERMINAL_TASK_CHANNELS = [
 
 export interface TerminalTaskHostOptions extends InputHost {
   profileDir: string;
+  deviceId?: string;
+  remoteWorkerLocations?: () => Promise<Array<{ agentDeviceId: string; name: string }>>;
   logger: Logger;
   secretStore: TerminalSecrets;
   emit(channel: string, args: unknown[]): void;
@@ -118,7 +123,7 @@ export interface TerminalTaskHostOptions extends InputHost {
   nativeStatus?: (kind: AgentKind, binary: string | null) => ReturnType<typeof nativeAuthState>;
 }
 type ScheduledOrigin = { kind: 'scheduler'; scheduleId: string; scheduleName: string; runId: string; firedAt?: number };
-type TaskInvocationContext = InvocationContext & { scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; plugin?: {id:string;name:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
+type TaskInvocationContext = InvocationContext & { orca?: RemoteWorkerAssignment; scheduler?: ScheduledOrigin; sender?: {sessionId:string;title?:string}; plugin?: {id:string;name:string}; normalizedInput?: boolean; deliveryProof?: TaskDeliveryProof };
 type LiveTask = { revoke():void; plugin?:TerminalPluginTask; capabilityRevision: number; modelRevision: number; maker: Maker; session: Session; selection: ModelSelection; dispose: Array<() => void | Promise<void>> };
 type Pending = { sessionId: string; sourceRequestId: string; request: InteractionRequest; settle: (decision: InteractionDecision) => void; decide: (decision:InteractionDecision)=>boolean; deferred?:InteractionDecision; shared?: SharedPermission; migrated?: boolean };
 
@@ -148,6 +153,7 @@ export class TerminalTaskHost {
   readonly channelRecovery: ReturnType<typeof createRuntimeRecoveryNotices>;
   readonly taskContext: TerminalTaskContext;
   readonly routes: TerminalTaskRoutes;
+  private readonly remoteWorkers: ReturnType<typeof createTerminalRemoteWorkerHost>;
   private readonly routeClosures = new Set<string>();
   private readonly permissionChanges = createSessionPermissionChanges();
   private readonly utilityAbort = new AbortController();
@@ -304,6 +310,20 @@ export class TerminalTaskHost {
       replay: (...args) => this.replayRecoveredTask(...args),
       hasExternalOwner: id => Boolean(this.channelBindings.store.findByTarget(id) || this.pluginSetup?.surface.isHeadlessGhostSetupTurn(id)),
     });
+    this.remoteWorkers = createTerminalRemoteWorkerHost({
+      storage: this.storage, deviceId: options.deviceId,
+      guard: context => this.guard(context), withLock: (id, work) => this.routes.withLock(id, work),
+      providers: deviceId => deviceId
+        ? options.remoteInvoke ? readDeviceProviderViews(options.remoteInvoke, deviceId) : Promise.reject(new Error('REMOTE_AGENT_UNAVAILABLE'))
+        : this.models.views(),
+      locations: () => options.remoteWorkerLocations?.() ?? Promise.resolve([]),
+      create: async (request, lead, guard) => {
+        await this.create({ ...request }, guard, undefined, { id: request.sessionId, lead });
+        guard(); const row = await this.storage.get(request.sessionId); guard();
+        if (!row) throw new Error('TASK_NOT_FOUND'); return row;
+      },
+      changed: row => { this.emit('terminal:tasks:changed', { sessionId: row.id }); this.emit('local-db:sessions:patched', { sessionId: row.id, patch: this.guiSession(row) }); },
+    });
     this.channelControl = new TerminalImControl({ tasks: this, logger: options.logger,
       assertCurrent: () => this.guard({ source: 'local' }),
       readDeviceProviders: id => {
@@ -333,7 +353,7 @@ export class TerminalTaskHost {
       if (row.queuePaused) this.queuePaused.add(row.id);
       if (row.groupBinding) this.groupBindings.set(row.id, row.groupBinding);
       const queued = await this.storage.queued(row.id);
-      for (const receipt of queued) if (receipt.message) this.enqueueSubmission(row.id, receipt.message, receipt.requestId, { source: receipt.source ?? 'local', deviceId: receipt.deviceId, sourceDevice: receipt.sourceDevice, ownerId: receipt.ownerId, scheduler: receipt.scheduler, sender:receipt.sender, plugin:receipt.plugin, deliveryProof: receipt.deliveryProof, ...(receipt.sharedTask ? { sharedTask: receipt.sharedTask, assertCurrent: () => { throw new Error('SHARED_TASK_REVALIDATION_REQUIRED'); } } : {}) }, receipt.sendAtMs);
+      for (const receipt of queued) if (receipt.message) this.enqueueSubmission(row.id, receipt.message, receipt.requestId, { source: receipt.source ?? 'local', deviceId: receipt.deviceId, sourceDevice: receipt.sourceDevice, ownerId: receipt.ownerId, scheduler: receipt.scheduler, sender:receipt.sender, plugin:receipt.plugin, orca:receipt.orca, deliveryProof: receipt.deliveryProof, ...(receipt.sharedTask ? { sharedTask: receipt.sharedTask, assertCurrent: () => { throw new Error('SHARED_TASK_REVALIDATION_REQUIRED'); } } : {}) }, receipt.sendAtMs);
     }
   }
   private async authState(kind: AgentKind) {
@@ -990,6 +1010,10 @@ export class TerminalTaskHost {
       throw new Error('REMOTE_MODEL_ROUTE_UNAVAILABLE');
     }
     if (input.model && input.providerId && input.agentKind) return this.models.select({ agentKind: input.agentKind, providerId: input.providerId, model: input.model, ...(input.effort ? { effort: input.effort } : {}) });
+    if (input.agentKind && !input.model && !input.providerId) {
+      const preferred = (await this.models.snapshot()).defaultSelection;
+      if (preferred?.agentKind === input.agentKind) return this.models.select({ ...preferred, ...(input.effort ? { effort: input.effort } : {}) });
+    }
     if (input.agentKind || input.providerId || input.model) {
       const providers = await this.models.views();
       const kinds = input.agentKind ? [input.agentKind as AgentKind] : [...ENGINES];
@@ -1034,8 +1058,8 @@ export class TerminalTaskHost {
       warn: message => this.options.logger.warn(message),
     }, config, namespace, options);
   }
-  private async create(input: Record<string, unknown>, guard: () => void, plugin?: {id:string;hidden?:boolean;onPersistenceStarted():void}) {
-    const id = plugin?.id ?? randomUUID();
+  private async create(input: Record<string, unknown>, guard: () => void, plugin?: {id:string;hidden?:boolean;onPersistenceStarted():void}, remoteWorker?: {id:string;lead:OrcaRemoteLead}) {
+    const id = plugin?.id ?? remoteWorker?.id ?? randomUUID();
     const admitted = await this.admitTask(input, id, guard);
     const { resolved } = admitted;
     // Plugin task roots become authorization facts for later worker plans.
@@ -1045,10 +1069,19 @@ export class TerminalTaskHost {
     if (input.fastMode !== undefined && typeof input.fastMode !== 'boolean' && input.fastMode !== 'ultrafast') throw new Error('INVALID_ARGUMENT');
     if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== 'boolean') throw new Error('INVALID_ARGUMENT');
     guard(); plugin?.onPersistenceStarted();
-    await this.storage.create({ ...(plugin ? {source:'plugin',hiddenAt:plugin.hidden?Date.now():null} : {}), id, agentKind: resolved.selection.agentKind, model: resolved.selection.model, workDir: cwd, title: typeof input.title === 'string' ? input.title : typeof this.options.defaultTitle === 'function' ? this.options.defaultTitle() : this.options.defaultTitle ?? 'New task', permissionMode: input.permissionMode ? permission(input.permissionMode) : 'default', ...(typeof input.planMode === 'boolean' ? { planMode: input.planMode } : {}), ...(input.fastMode !== undefined ? { fastMode: input.fastMode as boolean | 'ultrafast' } : {}), ...(typeof input.thinkingEnabled === 'boolean' ? { thinkingEnabled: input.thinkingEnabled } : {}) });
+    await this.storage.create({
+      ...(plugin ? { source: 'plugin', hiddenAt: plugin.hidden ? Date.now() : null } : {}),
+      ...(remoteWorker ? { orcaRemoteLead: remoteWorker.lead } : {}),
+      id, ...resolved.selection, workDir: cwd,
+      title: typeof input.title === 'string' ? input.title : typeof this.options.defaultTitle === 'function' ? this.options.defaultTitle() : this.options.defaultTitle ?? 'New task',
+      permissionMode: input.permissionMode ? permission(input.permissionMode) : 'default',
+      ...(typeof input.planMode === 'boolean' ? { planMode: input.planMode } : {}),
+      ...(input.fastMode !== undefined ? { fastMode: input.fastMode as boolean | 'ultrafast' } : {}),
+      ...(typeof input.thinkingEnabled === 'boolean' ? { thinkingEnabled: input.thinkingEnabled } : {}),
+      ...(input.agentDeviceId ? { agentDeviceId: string(input.agentDeviceId) } : {}),
+      ...(input.groupBinding ? { groupBinding: input.groupBinding as TerminalTaskMeta['groupBinding'] } : {}),
+    }, guard);
     guard();
-    await this.storage.setSelection(id, resolved.selection);
-    if (input.agentDeviceId || input.groupBinding) await this.storage.update(id, { ...(input.agentDeviceId ? {agentDeviceId: string(input.agentDeviceId)} : {}), ...(input.groupBinding ? {groupBinding: input.groupBinding as import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding} : {}) });
     if(input.groupBinding)this.groupBindings.set(id,input.groupBinding as import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding);
     guard();
     await this.ensureLive(id, resolved);
@@ -1363,6 +1396,7 @@ export class TerminalTaskHost {
       const target = channel==='maker:provider:list'||channel==='maker:get-capabilities' ? context.sharedTask.sessionId : channel === 'maker:resolve-interaction' ? this.pending.get(string(args[0]))?.sessionId : channel === 'local-db:history:messages' ? record(args[0]).sessionId : args[0];
       if (target !== context.sharedTask.sessionId) throw new Error('SHARED_TASK_SCOPE_MISMATCH');
     }
+    if (REMOTE_WORKER_CHANNELS.includes(channel as typeof REMOTE_WORKER_CHANNELS[number])) return this.remoteWorkers(channel, args, context);
     if(CAPABILITY_CHANNELS.includes(channel))return this.capabilities.invoke(channel,args,context);
     switch (channel) {
       case 'maker:generate-title': {
@@ -1382,7 +1416,7 @@ export class TerminalTaskHost {
       case 'maker:input:update-text':case 'maker:input:update-content': {
         const id=string(args[0]),clientId=string(args[1]);const previous=await this.requireQueued(id,clientId,context);this.queueMutations.add(id);
         try {const incoming=channel.endsWith('update-text')?{type:'user',content:typeof previous.message?.content==='string'?string(args[2]):[{type:'text',text:string(args[2])},...(previous.message?.content??[]).filter(block=>block.type!=='text')]}:args[2];
-          const message=await this.message(id,incoming,context);this.guard(context);await this.storage.editQueuedSubmission(id,clientId,{message,sharedTask:context.sharedTask,deviceId:context.deviceId,source:context.source,deliveryProof:undefined},()=>this.guard(context));
+          const message=await this.message(id,incoming,context);this.guard(context);await this.storage.editQueuedSubmission(id,clientId,{message,sharedTask:context.sharedTask,deviceId:context.deviceId,source:context.source,deliveryProof:undefined,orca:undefined},()=>this.guard(context));
           const item=this.queuedSubmissions.get(id)?.find(item=>item.requestId===clientId);if(item){item.message=message;item.context={...context,plugin:previous.plugin,signal:undefined};}
         }finally{this.queueMutations.delete(id);this.drain(id);}return this.projection(id);
       }
@@ -1448,6 +1482,8 @@ export class TerminalTaskHost {
       case 'maker:input:get-projection': return this.projection(string(args[0]), args[1] === undefined ? {} : record(args[1]));
       case 'maker:input:enqueue': {
         const id = string(args[0]); const item = record(args[1]);
+        const orca = await readRemoteWorkerAssignment(this.storage, id, item, context);
+        context = { ...context, orca };
         await this.submit(id, item, { ...(args[2] ? record(args[2]) : {}), requestId: string(item.clientId) }, context);
         return this.projection(id);
       }
@@ -1505,10 +1541,11 @@ export class TerminalTaskHost {
           this.guard(context);
           if(context.deliveryProof){await validateTaskDelivery(this.options.remoteInvoke,context.deliveryProof);this.guard(context);}
           if(context.plugin){if(!this.pluginSessions)throw new Error('PLUGIN_TASKS_UNAVAILABLE');await this.pluginSessions.assertDispatch(context.plugin.id,id);this.guard(context);}
-          const agentMeta = context.plugin ? {sourcePlugin:{pluginId:context.plugin.id,name:context.plugin.name}} : context.deliveryProof ? {origin:{kind:'session' as const,senderSessionId:`${context.deliveryProof.controllerDeviceId}::${context.deliveryProof.sessionId}`,senderSessionTitle:context.deliveryProof.senderTitle,displayText:context.deliveryProof.message}} : context.sender ? {origin:{kind:'session' as const,senderSessionId:context.sender.sessionId,senderSessionTitle:context.sender.title,displayText:inputPlainText(message)}} : context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.sourceDevice ? { sourceDevice: context.sourceDevice } : undefined;
+          if (context.orca) { await assertRemoteWorkerAssignment(this.storage, id, context.orca); this.guard(context); }
+          const agentMeta = context.orca ? { origin: context.orca.origin } : context.plugin ? {sourcePlugin:{pluginId:context.plugin.id,name:context.plugin.name}} : context.deliveryProof ? {origin:{kind:'session' as const,senderSessionId:`${context.deliveryProof.controllerDeviceId}::${context.deliveryProof.sessionId}`,senderSessionTitle:context.deliveryProof.senderTitle,displayText:context.deliveryProof.message}} : context.sender ? {origin:{kind:'session' as const,senderSessionId:context.sender.sessionId,senderSessionTitle:context.sender.title,displayText:inputPlainText(message)}} : context.scheduler ? { origin: context.scheduler } : context.sharedTask ? { sharedTaskAuthor: { memberId: context.sharedTask.memberId, accountId: context.sharedTask.accountId, displayName: context.sharedTask.name ?? context.sharedTask.memberId } } : context.source === 'remote' && context.sourceDevice ? { sourceDevice: context.sourceDevice } : undefined;
           const projection=createAutoReviewIntentProjection();
           const authoredText=projection.readText(persistedInput(message))??'';
-          const authorityMeta={...agentMeta,delivery:'turn',autoReviewUserText:context.scheduler?{kind:'scheduled-continuation'}:context.plugin||context.sender||context.deliveryProof||context.sharedTask?{kind:'delegated-continuation'}:authoredText};
+          const authorityMeta={...agentMeta,delivery:'turn',autoReviewUserText:context.scheduler?{kind:'scheduled-continuation'}:context.orca||context.plugin||context.sender||context.deliveryProof||context.sharedTask?{kind:'delegated-continuation'}:authoredText};
           this.changes.assertCanDispatch(task.session.workDir);
           const stored=await this.storage.append(id, { kind: 'user', message, clientId: this.activeSubmissions.get(id) ?? randomUUID(), origin: context.source, agentMeta:authorityMeta });
           this.emit('local-db:messages:created',{sessionId:id,message:{id:`${id}:${stored.sequence}`,clientId:stored.clientId??`${id}:${stored.sequence}`,sessionId:id,role:'user',content:persistedInput(message),createdAt:new Date(stored.timestamp).toISOString(),agentKind:task.selection.agentKind==='claude-code'?'cc':task.selection.agentKind,agentMeta:authorityMeta}});
@@ -1518,7 +1555,7 @@ export class TerminalTaskHost {
           try {
             const outgoing = await this.taskContext.prepareHandoff(id, payload);
             const history=await this.contextMessages(id,Infinity);
-            const intent=projection.restore(history.map(message=>({...message,agentMeta:message.agentMeta??null})),context.plugin||context.scheduler||context.sender||context.deliveryProof?undefined:{clientId:stored.clientId!,content:persistedInput(message),authoredText});
+            const intent=projection.restore(history.map(message=>({...message,agentMeta:message.agentMeta??null})),context.orca||context.plugin||context.scheduler||context.sender||context.deliveryProof?undefined:{clientId:stored.clientId!,content:persistedInput(message),authoredText});
             this.guard(context);
             const result = await this.channelSignals.withChannelTurnSource(id, this.channelSignals.channelTurnSourceFor(agentMeta?.origin, false), () => task.session.send(outgoing.message, {
               ...(context.scheduler ? { origin: context.scheduler } : {}),
@@ -1617,8 +1654,8 @@ export class TerminalTaskHost {
     if (!(context.plugin ? /^plugin-task:[a-zA-Z0-9_-]{1,100}$/ : /^[a-zA-Z0-9_-]{1,100}$/).test(requestId)) throw new Error('INVALID_REQUEST_ID');
     const sendAtMs = options.sendAtMs === undefined ? undefined : Number(options.sendAtMs);
     if (sendAtMs !== undefined && (!Number.isFinite(sendAtMs) || sendAtMs < 0)) throw new Error('INVALID_SEND_TIME');
-    const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId, pluginId:context.plugin?.id, sendAtMs })).digest('hex');
-    const claimed = await this.permissionChanges.withSessionPermissionChange(id,()=>this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, sourceDevice: context.sourceDevice, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, plugin:context.plugin, deliveryProof:context.deliveryProof, sendAtMs }));
+    const fingerprint = createHash('sha256').update(JSON.stringify({ message, memberId: context.sharedTask?.memberId, pluginId:context.plugin?.id, orca:context.orca, sendAtMs })).digest('hex');
+    const claimed = await this.permissionChanges.withSessionPermissionChange(id,()=>this.storage.claimSubmission(id, requestId, fingerprint, () => this.guard(context), { message, source: context.source, deviceId: context.deviceId, sourceDevice: context.sourceDevice, ownerId: context.ownerId, sharedTask: context.sharedTask, scheduler: context.scheduler, sender:context.sender, plugin:context.plugin, orca:context.orca, deliveryProof:context.deliveryProof, sendAtMs }));
     for(const accepted of lifecycle.accepted) await accepted().catch(()=>this.options.logger.warn('ATTACHMENT_RELAY_CLEANUP_FAILED'));
     if (!claimed.created) return claimed.receipt;
     // Acceptance is durable before work begins; reconnecting with the same key
@@ -1667,7 +1704,7 @@ export class TerminalTaskHost {
     const persisted = await this.storage.queued(id);
     const order = this.queuedSubmissions.get(id)??[];const queued = [...persisted].sort((a,b)=>order.findIndex(item=>item.requestId===a.requestId)-order.findIndex(item=>item.requestId===b.requestId));
     return { sessionId: id, terminalTurnReceiptsVersion: 1, ...(deliveryReceipts ? {deliveryReceipts} : {}), turnInProgress: this.activeSubmissions.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning() === true,
-      pendingQueue: queued.map(item => ({ clientId: item.requestId, ...(item.sendAtMs ? {sendAtMs:item.sendAtMs} : {}), text: inputPlainText(item.message), persistedContent: item.message ? persistedInput(item.message) : '', model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir,
+      pendingQueue: queued.map(item => ({ clientId: item.requestId, ...(item.orca ? { origin: item.orca.origin } : {}), ...(item.sendAtMs ? {sendAtMs:item.sendAtMs} : {}), text: inputPlainText(item.message), persistedContent: item.message ? persistedInput(item.message) : '', model: row.model, effort: row.effort ?? '', permissionMode: row.permissionMode ?? 'default', workingDir: row.workDir,
         chatMessage: { clientId: item.requestId, role: 'user', content: item.message ? persistedInput(item.message) : '', createdAt: new Date(item.createdAt).toISOString() },
         createOpts: { agentKind: row.agentKind, workingDir: row.workDir, model: row.model, providerId: row.providerId },
       })), steeringQueueClientIds: [], queuePaused: this.queuePaused.has(id), queueExpanded: row.queueExpanded!==false, queueInteractionLocks: [...(this.queueLocks.get(id)??[])], queueEditLocks: [...(this.queueEditLocks.get(id)??[])], queueAbortPending: false, error: null, errorReason: null, recovery: null, errorRetryText: null, credentialSwitchWait: null };
@@ -1680,7 +1717,7 @@ export class TerminalTaskHost {
       // These dispatchers own their retry and source metadata. Generic replay
       // deliberately leaves them alone, including task-to-task inputs whose
       // source is persisted but is not a Maker SendOrigin.
-      if (context.plugin || context.scheduler || context.sender || context.deliveryProof) this.externalSubmissions.set(id, requestId);
+      if (context.orca || context.plugin || context.scheduler || context.sender || context.deliveryProof) this.externalSubmissions.set(id, requestId);
       else this.externalSubmissions.delete(id);
       if (!await this.updateReceipt(id, requestId, 'sending')) throw new Error('SUBMISSION_PERSISTENCE_FAILED');
       const result = await this.invoke('maker:send', [id, message], {...context, normalizedInput:true}) as { accepted: boolean; reason?: string };

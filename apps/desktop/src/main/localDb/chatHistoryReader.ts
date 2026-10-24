@@ -1,3 +1,5 @@
+import type { HistoryCursor, HistoryPage, HistoryMessage } from '@cindy/maker-shared/history-query';
+export type { HistoryCursor, HistoryPage, HistoryMessage } from '@cindy/maker-shared/history-query';
 /**
  * chatHistoryReader.ts —— 给 cindy_helper 的 history 类 MCP 工具用的纯查询层。
  *
@@ -37,19 +39,6 @@ function remoteOrcaHistoryIdentity(raw: unknown): { orcaRemoteLead?: OrcaRemoteL
 
 export type HistoryOrder = 'asc' | 'desc';
 export type HistoryAgentKind = 'cc' | 'codex' | 'pi';
-
-export interface HistoryCursor {
-  createdAt: number; // unix ms
-  id: string;
-  /** SQLite insertion-order tie-breaker for message history cursors. */
-  rowid?: number;
-}
-
-export interface HistoryPage<T> {
-  items: T[];
-  nextCursor: HistoryCursor | null;
-  hasMore: boolean;
-}
 
 // ── list_workdirs ───────────────────────────────────────────────────────────
 
@@ -333,22 +322,6 @@ export interface GetMessagesParams {
   limit: number;
   cursor: HistoryCursor | null; // (messages.createdAt(ms), messages.rowid); id remains for legacy cursors
   order: HistoryOrder;
-}
-
-export interface HistoryMessage {
-  id: string;
-  /** Stable send/terminal identity, distinct from the storage row ID. */
-  clientId?: string;
-  sessionId: string;
-  sessionWorkingDir: string | null;
-  sessionAgentKind: string;
-  sessionTitle: string;
-  role: string;
-  content: unknown; // JSON.parse 后原样
-  toolUseId: string | null;
-  agentMeta: unknown; // JSON.parse 后原样 (可能 null)
-  createdAt: number; // unix ms
-  rewindAt: number | null;
 }
 
 /**
