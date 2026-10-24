@@ -1,6 +1,6 @@
 /* global document, NodeFilter, MutationObserver */
 // 通过 CDP 执行本文件，再保存 restore = __cindyScreenshotMask({ 原文: '示例' })。
-// 截完（或失败）调用 restore()；输入值／编辑区不改，远程 img 模糊。
+// 截完（或失败）调用 restore()；输入值／编辑区不改，远程／缓存 img 模糊。
 // 不覆盖 canvas、嵌入内容、窗口标题栏和系统弹窗；发出前人工检查。
 globalThis.__cindyScreenshotMask = (pairs) => {
   const entries = Object.entries(pairs).filter(([key]) => key).sort((a, b) => b[0].length - a[0].length);
@@ -21,7 +21,7 @@ globalThis.__cindyScreenshotMask = (pairs) => {
     write(node, key, after);
   };
   const blur = document.createElement('style');
-  blur.textContent = 'img[src^="https://"],img[src^="http://"] { filter: blur(12px) !important; }';
+  blur.textContent = 'img[src^="https://"],img[src^="http://"],img[src^="cindy-media://"],img[src^="cindy-remote-media://"] { filter: blur(12px) !important; }';
   document.head.append(blur);
   const scan = () => {
     observer.disconnect(); // 不观察自己的改动，避免循环。
