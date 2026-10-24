@@ -245,6 +245,8 @@ import {
   hasDeliveryNamespace,
   deliveryNamespaceFields,
 } from '../../shared/pluginIdentity.js';
+import { LEGACY_SIMULATOR_ID, validSimulatorMigration } from '../../shared/simulatorIdentityMigration.js';
+import type { GhostInstallReceipt } from './ghostInstallReceipt.js';
 import { allocateArchiveInstanceKey, selectMarketPluginIdForInstance } from './pluginInstanceRegistry.js';
 import {
   createNamespaceMigrationHost,
@@ -7391,6 +7393,8 @@ export async function installOrUpdateMarketGhostPackage(
   cindyFilePath: string,
   expected: {
     ghostId: string;
+    simulatorPreviousRelId?: string;
+    simulatorMarketRelease?: GhostInstallReceipt['simulatorMarketRelease'];
     version: string;
     namespace?: string | null;
     sourceChanged?: boolean;
@@ -7432,7 +7436,9 @@ export async function installOrUpdateMarketGhostPackage(
   // 都经此出口,调用方漏取锁也被兜住;调用方已持有时按可重入 no-op(它们会把
   // 复核与账本写入一起纳入同一把锁,范围比这里更大)。
   return withGhostInstallLock(expected.ghostId, () =>
-    installOrUpdateMarketGhostPackageLocked(cindyFilePath, expected),
+    expected.simulatorPreviousRelId
+      ? withGhostInstallLock(LEGACY_SIMULATOR_ID, () => installOrUpdateMarketGhostPackageLocked(cindyFilePath, expected))
+      : installOrUpdateMarketGhostPackageLocked(cindyFilePath, expected),
   );
 }
 
@@ -7440,6 +7446,8 @@ async function installOrUpdateMarketGhostPackageLocked(
   cindyFilePath: string,
   expected: {
     ghostId: string;
+    simulatorPreviousRelId?: string;
+    simulatorMarketRelease?: GhostInstallReceipt['simulatorMarketRelease'];
     version: string;
     namespace?: string | null;
     sourceChanged?: boolean;
@@ -7498,7 +7506,18 @@ async function installOrUpdateMarketGhostPackageLocked(
     // Manifest 只用于展示，不参与这里的安装准入。
     const marketNamespace: string | null = hasDeliveryNamespace(expected) ? expected.namespace : null;
     const installIdentity = createPluginLogicalIdentity(marketNamespace, expected.ghostId);
-    const installed = findInstalledGhostByIdentity(manager.list(), installIdentity);
+    const allInstalled = manager.list();
+    const directInstalled = findInstalledGhostByIdentity(allInstalled, installIdentity);
+    const previousRelId = expected.simulatorPreviousRelId;
+    if (previousRelId !== undefined && (!validSimulatorMigration(previousRelId, expected.ghostId, marketNamespace) ||
+        expected.pendingMarketRecord?.scope !== 'public' || !expected.pluginId || expected.sourceChanged || directInstalled ||
+        expected.simulatorMarketRelease?.pluginId !== expected.pluginId)) {
+      throwIpcError('PRECONDITION_FAILED', 'Simulator migration target changed');
+    }
+    const installed = previousRelId
+      ? allInstalled.find(ghost => installedGhostPhysicalRelId(ghost) === previousRelId && ghost.namespace == null)
+      : directInstalled;
+    if (previousRelId && !installed) throwIpcError('PRECONDITION_FAILED', 'Simulator migration source disappeared');
     const placementError = organizationMarketPlacementError({
       scope: expected.pendingMarketRecord?.scope ?? null,
       requestedNamespace: marketNamespace,
@@ -7619,6 +7638,8 @@ async function installOrUpdateMarketGhostPackageLocked(
           targetCapabilityApproved: confirmedTaskCapability(expected.consent, installed, inspected.manifest, 'targets'),
           expectedPackageSha256: inspected.packageSha256,
           expectedInstalledApproval: expected.expectedInstalledApproval!,
+          ...(previousRelId ? { simulatorPreviousRelId: previousRelId } : {}),
+          ...(previousRelId ? { simulatorMarketRelease: expected.simulatorMarketRelease } : {}),
           ...(expected.sourceChanged ? { sourceStateArchiveId: ghostSourceStateArchiveId(installed) } : {}),
           ...(trustOverride ? { trustOverride } : {}),
           namespace: marketNamespace,

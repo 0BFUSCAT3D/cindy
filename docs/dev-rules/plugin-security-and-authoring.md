@@ -655,6 +655,17 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 
 `instanceKey` 由安装目录推出，不另分配：旧 root 是 `helper`，新 root 是 `_root__helper`，企业是 `_ns__<namespace>__<ghostId>`。注册表丢失或损坏时按目录重建，KV、密钥和 OAuth 仍挂在这个键上。
 
+设备模拟器的官方 ID 迁移是单项例外：`baguette-simulator` → `cindy-simulator` 只接受
+同一 public 市场资源、root 实例、当前批准和已验证包。更新事务更换包目录、清单与 receipt，
+保留原 `instanceKey`；KV、凭据、Library、历史任务等继续使用原键，不复制数据。
+Host receipt 的 `simulatorPreviousRelId` 只允许这对 ID 和 root 路径，注册表重建仍取原键；
+作者清单不能声明该字段。后续同 ID 更新继续保留此存储身份。
+事务在移走旧包前记录旧路径，receipt 提交前中断则恢复旧包，提交后清理旧包与旧 receipt。
+提交期间两端保持隔离。新 receipt 同时记录已验证的市场资源、版本资源和旧包 SHA；
+若进程在市场账本写入前中断，现有市场维护流程核对批准、现存清单和原账本后补写。
+此恢复证据不跨下一次包更新继承。组织同名插件、自定义来源、目标已占用及来源证据不符不自动迁移。
+权限确认仍使用正常更新判据，不能借改名扩大权限；`BaguetteCindy` 底层数据目录不变。
+
 `namespaceState`：
 
 - `confirmed`：身份已确认，可以按该 namespace 使用 Broker、OIDC 等新权限。
