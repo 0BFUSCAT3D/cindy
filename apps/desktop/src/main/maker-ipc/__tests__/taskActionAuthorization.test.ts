@@ -15,6 +15,7 @@ import { createOrcaMcpServer } from '../../../../../../packages/lizi-mcps/src/or
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
 import {
   approvedTaskDelegation,
+  assertTaskActionCurrent,
   bindTaskActionInput,
   createTaskActionAuthorizer,
   taskActionInputGuard,
@@ -880,5 +881,62 @@ describe('teammate turn principal', () => {
     live(h);
     h.activeInput.ownerContinuation = true;
     expect(await withToolCallAuthority(h.authorize, ownerTaskWrites[0], async () => 'changed')).toBe('changed');
+  });
+});
+
+// A bare allow must not reuse an outer action's authority, even through the
+// in-process MCP path. Existing Desktop fixtures called the gate at top level.
+// Production Desktop admission + guards; unit tier, in-memory Host facts.
+describe('independent Desktop tool invocation', () => {
+  it('rechecks an ordinary call without inheriting stale authorization or forcing its queue', async () => {
+    const outer = fixture(true);
+    const h = desktopFixture('private');
+    h.caller.botId = null;
+    h.caller.source = 'desktop';
+    await withToolCallAuthority(outer.authorize, call('start_session_task'), async () => {
+      outer.revoke();
+      const result = await withToolCallAuthority(h.authorize, {
+        ...call('send_to_session'), sessionId: 'ordinary-task',
+      }, async () => {
+        await assertTaskActionCurrent();
+        expect(hasTaskActionAuthorization()).toBe(false);
+        expect(approvedTaskDelegation('companion')).toBeUndefined();
+        return 'sent';
+      });
+      expect(result).toBe('sent');
+      // Isolation must not clear the outer scope or its revocation checks.
+      await expect(assertTaskActionCurrent()).rejects.toThrow('revoked');
+    });
+    expect(h.confirm).not.toHaveBeenCalled();
+  });
+
+  it('keeps concurrent admitted callers separate across awaits', async () => {
+    const h = desktopFixture('private');
+    let release!: () => void;
+    const bothEntered = new Promise<void>((resolve) => { release = resolve; });
+    let entered = 0;
+    await Promise.all(['first-task', 'second-task'].map((sessionId) =>
+      withToolCallAuthority(h.authorize, { ...call('send_to_session'), sessionId }, async () => {
+        if (++entered === 2) release();
+        await bothEntered;
+        await assertTaskActionCurrent();
+        expect(hasTaskActionAuthorization(sessionId)).toBe(true);
+        expect(hasTaskActionAuthorization(sessionId === 'first-task' ? 'second-task' : 'first-task')).toBe(false);
+      }),
+    ));
+    expect(entered).toBe(2);
+    expect(hasTaskActionAuthorization()).toBe(false);
+  });
+
+  it('does not use a valid outer grant to bypass rejection of the current caller', async () => {
+    const outer = fixture(true);
+    const h = desktopFixture('automatic');
+    const effect = vi.fn(async () => 'sent');
+    await withToolCallAuthority(outer.authorize, call('start_session_task'), async () => {
+      const result = await withToolCallAuthority(h.authorize, call('send_to_session'), effect);
+      expect(JSON.stringify(result)).toContain('NEEDS_OWNER_REQUEST');
+      expect(effect).not.toHaveBeenCalled();
+      expect(approvedTaskDelegation('companion')).toBeDefined();
+    });
   });
 });
