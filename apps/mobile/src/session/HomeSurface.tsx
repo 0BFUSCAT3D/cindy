@@ -474,6 +474,8 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
   const residentList = useResidentHomeList(embedded);
   // Captured here: Android draws the list above the route, outside its roster and navigation context.
   const teammatesSectionContext = useHomeTeammatesSectionContext();
+  // Bumped by a manual home refresh so the teammate section also re-reads its cloud companions.
+  const [teammatesRefreshKey, setTeammatesRefreshKey] = useState(0);
   const activeHomeSession = useContext(ActiveHomeSession);
   const rememberTask = rememberRecentTask;
   const viewSession = getHomeViewSession();
@@ -1306,6 +1308,15 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
       if (visible && homeAccountGenerationRef.current === accountGenerationAtStart) setRefreshing(false);
     });
   }, [accountGeneration, readDeviceList, deviceIdentityCacheReady, homeCacheUserId, hydrateDeviceSessions, reconcileDeviceViews, reconcileHomeDeviceSyncScope, revokedDevices, softInvalidateDeviceMirror]);
+  // A manual refresh also recovers the teammate section: roster, group chats and cloud companions.
+  const homeRoster = teammatesSectionContext.shared;
+  const refreshHome = useCallback(() => {
+    void loadHome({ visible: true });
+    if (embedded || !homeRoster) return;
+    void homeRoster.roster.refresh();
+    if (homeRoster.groups.supported) void homeRoster.groups.refresh();
+    setTeammatesRefreshKey(key => key + 1);
+  }, [embedded, homeRoster, loadHome]);
   loadHomeRef.current = loadHome;
 
   // 冷启动先画缓存:上次 loadHome 成功的设备+会话快照种入 store,先把列表画出来(消除首屏强制
@@ -2955,7 +2966,7 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
         }}
         sections={sections}
         ListHeaderComponent={<>
-        {embedded ? null : <HomeTeammatesSection context={teammatesSectionContext} active={active}
+        {embedded ? null : <HomeTeammatesSection context={teammatesSectionContext} active={active} refreshKey={teammatesRefreshKey}
           visible={indexedSearch.activeFilterCount === 0 && statusFilter !== 'archived' && !showRemoteGuide}
           query={searchQuery}
           // Shared group and project blocks draw their own full-width top line.
@@ -3036,7 +3047,7 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
           <RefreshControl
             progressViewOffset={residentList.enabled ? 0 : chromeHeight}
             refreshing={refreshing}
-            onRefresh={() => void loadHome({ visible: true })}
+            onRefresh={refreshHome}
             tintColor={colors.textSecondary}
           />
         }
@@ -3327,7 +3338,7 @@ function HomeScreenContent({ active = true, width, newSessionInSystemBar = false
             disabled={refreshing}
             // 视觉 28pt,hitSlop 把命中区补到 44pt(§5 触控目标)。
             hitSlop={(navigationChrome.target - CONNECTION_ICON_BUTTON_SIZE) / 2}
-            onPress={() => void loadHome({ visible: true })}
+            onPress={refreshHome}
             style={({ pressed }) => [
               styles.connectionIconButton,
               pressed && styles.pressed,

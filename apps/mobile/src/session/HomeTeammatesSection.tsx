@@ -9,10 +9,10 @@
  * 再由本段重新提供。
  */
 import { useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from 'react';
-import { Keyboard, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Keyboard, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { NavigationContext, NavigationRouteContext, useIsFocused } from 'expo-router/react-navigation';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronRight, ChevronUp, Plus, UsersRound } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, ChevronUp, Plus, RefreshCw, UsersRound } from 'lucide-react-native';
 import { resolveRemoteText } from '@cindy/device-link';
 import { useAuth } from '@/auth/AuthContext';
 import { Text } from '@/components/AppText';
@@ -57,10 +57,12 @@ export function useHomeTeammatesSectionContext() {
   return useMemo(() => ({ navigation, route, shared }), [navigation, route, shared]);
 }
 
-export function HomeTeammatesSection({ context, active, visible, query, showFooter, runDisclosure, prepareDisclosure }: {
+export function HomeTeammatesSection({ context, active, refreshKey, visible, query, showFooter, runDisclosure, prepareDisclosure }: {
   context: ReturnType<typeof useHomeTeammatesSectionContext>;
   /** The home is the screen in front. */
   active: boolean;
+  /** Changes on each manual home refresh; the section then re-reads its cloud companions. */
+  refreshKey: number;
   /** Hidden while filtering or browsing archived tasks; the hooks stay mounted. */
   visible: boolean;
   /** The home search text: lists every matching teammate, expanded, without create entries. */
@@ -73,14 +75,14 @@ export function HomeTeammatesSection({ context, active, visible, query, showFoot
   const { navigation, route, shared } = context;
   if (!shared) return null;
   return <NavigationContext.Provider value={navigation}><NavigationRouteContext.Provider value={route}>
-    <SectionContent shared={shared} active={active} visible={visible} query={query} showFooter={showFooter}
+    <SectionContent shared={shared} active={active} refreshKey={refreshKey} visible={visible} query={query} showFooter={showFooter}
       runDisclosure={runDisclosure} prepareDisclosure={prepareDisclosure} />
   </NavigationRouteContext.Provider></NavigationContext.Provider>;
 }
 
-function SectionContent({ shared, active, visible, query, showFooter, runDisclosure, prepareDisclosure }: {
+function SectionContent({ shared, active, refreshKey, visible, query, showFooter, runDisclosure, prepareDisclosure }: {
   shared: NonNullable<ReturnType<typeof useHomeRoster>>;
-  active: boolean; visible: boolean; query: string; showFooter: boolean;
+  active: boolean; refreshKey: number; visible: boolean; query: string; showFooter: boolean;
   runDisclosure(apply: () => void): void; prepareDisclosure(): void;
 }) {
   const { t, i18n } = useTranslation();
@@ -97,7 +99,7 @@ function SectionContent({ shared, active, visible, query, showFooter, runDisclos
     [cloud.actors, cloud.deviceNames, cloud.supported, roster.items]);
   const listedCompanions = roster.items.map(row => `${row.key}\t${row.item.revision}`).sort().join('\n');
   const refreshCloud = cloud.refresh;
-  useEffect(() => { if (cloud.supported) void refreshCloud(); }, [cloud.supported, listedCompanions, refreshCloud]);
+  useEffect(() => { if (cloud.supported) void refreshCloud(); }, [cloud.supported, listedCompanions, refreshCloud, refreshKey]);
   const cloudActor = (row: HostedRemoteCollectionItem) => cloud.supported && row.item.revision === CLOUD_ROW_REVISION ? cloudActorForRow(cloud.actors, row) : null;
   const quietPresence = (row: HostedRemoteCollectionItem) => cloud.supported && !!cloudActorForRow(cloud.actors, row);
   const showGroups = groups.supported || groups.items.length > 0;
@@ -137,8 +139,19 @@ function SectionContent({ shared, active, visible, query, showFooter, runDisclos
     preferredDeviceId: navigation.lastTeammate?.deviceId,
     onCreated: (host, ref) => { void navigation.openCreatedTeammate(host, ref); },
     onGroupCreated: (host, groupId) => push(botGroupRoute(host, groupId)) });
+  // Read failures keep the cached rows and say so, with the same retry as a home pull-to-refresh.
+  const error = groups.error ?? roster.error;
+  const errorKey = error === 'CHAT_ENDPOINT_UNAVAILABLE' ? 'groupChat.server.endpointUnavailable'
+    : error === 'CHAT_LIST_FAILED' ? 'groupChat.server.loadFailed'
+    : entries.length ? 'devices.companions.stale' : 'devices.resources.loadFailed';
+  const retrying = roster.refreshing || groups.refreshing;
+  const retry = () => {
+    void roster.refresh();
+    if (groups.supported) void groups.refresh();
+    if (cloud.supported) void refreshCloud();
+  };
   // A first read with nothing cached stays out of the way instead of flashing an empty section.
-  const shown = visible && (search ? entries.length > 0 : !(!entries.length && (!canCreate || roster.loading)));
+  const shown = visible && (search ? entries.length > 0 : !!error || !(!entries.length && (!canCreate || roster.loading)));
   const title = t('devices.companions.title');
   const create = (trigger: (press: () => void, label: string) => ReactElement) => showCreate
     ? creator.renderTrigger(trigger(creator.press, creator.label)) : null;
@@ -164,6 +177,13 @@ function SectionContent({ shared, active, visible, query, showFooter, runDisclos
         <Plus color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
       </Pressable>)}
     </View>
+    {error && !search ? <View style={styles.noticeRow}>
+      <Text accessibilityRole="alert" style={styles.notice} testID="home.teammatesError">{t(errorKey)}</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel={t('devices.resources.retry')} disabled={retrying}
+        onPress={retry} style={({ pressed }) => [styles.retry, pressed && mobileInteractionStyles.pressed]} testID="home.teammatesRetry">
+        {retrying ? <ActivityIndicator color={colors.textSecondary} /> : <RefreshCw size={iconSize.sm} color={colors.textSecondary} strokeWidth={iconStroke.regular} />}
+      </Pressable>
+    </View> : null}
     {!entries.length ? <DisclosureItem exit>{create((press, label) => <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={press}
       style={({ pressed }) => [styles.addRow, pressed && mobileInteractionStyles.pressed]} testID="home.teammatesAdd">
       <View style={[styles.addCircle, styles.addCircleRow]}><Plus color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} /></View>
@@ -263,6 +283,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   addCircle: { borderRadius: radius.pill, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
   addCircleStrip: { width: STRIP_AVATAR_SIZE, height: STRIP_AVATAR_SIZE },
   addCircleRow: { width: COMPANION_ROW_AVATAR_SIZE, height: COMPANION_ROW_AVATAR_SIZE },
+  noticeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingLeft: spacing.lg, paddingRight: spacing.sm },
+  notice: { flex: 1, color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
+  retry: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   addRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, height: ADD_ROW_HEIGHT, paddingLeft: spacing.lg, paddingRight: spacing.lg },
   addText: { flexShrink: 1, color: colors.textSecondary, fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.regular },
   // Text column of the rows above (16 inset + 44 avatar + 12 gap).

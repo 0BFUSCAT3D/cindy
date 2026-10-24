@@ -785,8 +785,10 @@ describe('mobile home desktop-first surface', () => {
     expect(source).toContain('markPresenceFresh(presenceFreshnessRef.current, lastPresenceSnapshot.deviceId);');
     expect(source).toContain('collectFreshPresenceDeviceIds(presenceFreshnessRef.current, presenceEpochAtFetchStart)');
     expect(source).toContain('progressViewOffset={residentList.enabled ? 0 : chromeHeight}');
-    expect(source).toContain('onRefresh={() => void loadHome({ visible: true })}');
-    expect(source).toContain('onPress={() => void loadHome({ visible: true })}');
+    // 下拉刷新与同步按钮都走可见的 loadHome,并一起刷新伙伴段。
+    expect(source).toMatch(/const refreshHome = useCallback\(\(\) => \{\n    void loadHome\(\{ visible: true \}\);/);
+    expect(source).toContain('onRefresh={refreshHome}');
+    expect(source).toContain('onPress={refreshHome}');
     expect(source).toContain('patchDeviceViewsWithPresence(');
     expect(source).toContain('result.becameControllable');
     expect(source).toContain('remoteSessionStore.registerReseedHandler(item.device.deviceId');
