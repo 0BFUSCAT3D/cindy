@@ -330,6 +330,7 @@
       "openAutomationLatest": "자동화 작업 {{title}}의 최근 세션 열기",
       "automationTask": "자동화 작업 {{title}}",
       "openConversation": "세션 {{title}} 열기",
+      "followedBy": ", 담당: {{names}}",
       "collapse": "{{title}} 접기",
       "expand": "{{title}} 펼치기",
       "taskError": "작업 오류",
