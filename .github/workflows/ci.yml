@@ -76,6 +76,8 @@ jobs:
         run: pnpm --filter desktop exec vitest run src/main/downloader/__tests__/download.test.ts src/main/downloader/__tests__/scheduler.test.ts src/main/downloader/__tests__/requestInjection.test.ts src/main/cindy-brain/__tests__/downloadSlot.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing plugin quick answers and model preferences
         run: pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/cindySlot.test.ts src/main/cindy-brain/__tests__/pluginModelPrefsIpc.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Existing plugin task ownership, storage, attachments and model selection
+        run: pnpm --filter desktop exec vitest run src/main/maker-ipc/__tests__/pluginTaskService.test.ts src/main/maker-ipc/__tests__/sessionExecutionOwnership.test.ts src/main/maker-ipc/__tests__/pluginTaskReviewContext.test.ts src/main/cindy-brain/__tests__/taskCapability.test.ts src/main/cindy-brain/__tests__/taskSlot.test.ts src/main/cindy-media/__tests__/pluginMessageAttachments.test.ts src/main/maker-ipc/__tests__/pluginTaskStoreBudget.test.ts src/main/maker-ipc/__tests__/pluginTaskStorePagination.test.ts src/main/maker-ipc/__tests__/appDefaultModelControl.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing automatic permission review and model fallback
         run: pnpm --filter desktop exec vitest run src/main/maker-host/__tests__/autoPermissionReviewer.test.ts src/main/maker-host/__tests__/autoReviewModelRouter.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing remote plugin pages and encrypted settings

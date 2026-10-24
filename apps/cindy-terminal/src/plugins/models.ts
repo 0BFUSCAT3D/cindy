@@ -18,6 +18,8 @@ function selection(config: PluginTaskConfig): string | null {
 /** Uses the installed plugin's existing model preference and capability ABI.
  * Credentials and paid dispatch remain behind the owner's auxiliary runtime. */
 export class TerminalPluginModels {
+  private configs: Record<string, PluginTaskConfig> = {};
+  currentConfig(id: string): PluginTaskConfig { this.guard(); return structuredClone(this.configs[id] ?? {}); }
   private readonly inflight = new Map<string, number>();
   private writes: Promise<unknown> = Promise.resolve();
   private readonly abort = new AbortController();
@@ -63,6 +65,7 @@ export class TerminalPluginModels {
       await atomicPrivateWrite(legacyFile, JSON.stringify(legacy));
       this.guard();
     }
+    this.configs = structuredClone(prefs.errand);
     return { prefs, legacy, file };
   }
   config(id: string): Promise<PluginTaskConfig> {
@@ -94,6 +97,7 @@ export class TerminalPluginModels {
       const latest = this.options.installed(id);
       if (!latest || latest.dir !== ghost.dir || ghostInstallApprovalToken(latest.approval) !== approval) throw new Error('PLUGIN_CHANGED');
       await atomicPrivateWrite(file, JSON.stringify(prefs));
+      this.configs = structuredClone(prefs.errand);
       this.guard(); current(); this.options.changed();
     });
   }

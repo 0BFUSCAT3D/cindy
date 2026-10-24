@@ -41,7 +41,8 @@
     "./providerOrder": "./src/providerOrder.ts",
     "./provider-auth/*": "./src/provider-auth/*.ts",
     "./local-runtime/*": "./src/local-runtime/*.ts",
-    "./llamaCppCatalog": "./src/llamaCppCatalog.ts"
+    "./llamaCppCatalog": "./src/llamaCppCatalog.ts",
+    "./availableTaskModels": "./src/availableTaskModels.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

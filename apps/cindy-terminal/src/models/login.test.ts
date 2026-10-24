@@ -802,3 +802,28 @@ it('keeps two protected SuperGrok device logins and model catalogs independent',
   expect(wire).not.toContain('grok-private-'); expect(wire).not.toContain('CODE-');
   f.revoke(); expect(retained.canDispatch()).toBe(false);
 });
+
+// Native Linux CI: a fresh independent account raced its directory recovery,
+// so successful discovery failed while publishing openai-models.json. Behavior
+// tier: delay the real directory creation, without timers or a native login.
+it('waits for new account storage before publishing model discovery', async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'cindy-account-discovery-'));
+  const root = path.join(parent, 'new-account'), entered = deferred(), release = deferred();
+  const original = platform.privateDirectory;
+  const mkdir = vi.spyOn(platform, 'privateDirectory').mockImplementation(async directory => {
+    if (directory === path.join(root, 'provider-login')) { entered.resolve(); await release.promise; }
+    return original(directory);
+  });
+  const discovery = vi.fn(async () => new Response(JSON.stringify({models:[{slug:'gpt-5.4-mini',display_name:'Fixture',visibility:'list',supported_in_api:true,context_window:128000}]}), {headers:{'content-type':'application/json'}}));
+  const account = new TerminalNativeAccounts({root,assertCurrent(){},changed(){},binary:async()=>null,fetch:discovery,
+    secrets:{getSync:()=>JSON.stringify({tokens:{access_token:'synthetic-account',account_id:'fixture-owner'}}),setSync(){},deleteSync(){}}});
+  const result=account.models();
+  void result.catch(()=>{});
+  try{
+    await entered.promise;await new Promise<void>(resolve=>setImmediate(resolve));
+    expect(discovery).not.toHaveBeenCalled();
+    release.resolve();
+    expect(await result).toEqual(expect.arrayContaining([expect.objectContaining({id:'gpt-5.4-mini'})]));
+    expect(JSON.parse(await readFile(path.join(root,'openai-models.json'),'utf8')).models).toEqual(await result);
+  }finally{release.resolve();await result.catch(()=>{});await account.close();mkdir.mockRestore();await rm(parent,{recursive:true,force:true});}
+});

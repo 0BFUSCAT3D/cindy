@@ -1,3 +1,4 @@
+import { TerminalPluginSessions } from '../plugins/sessions.js';
 import { encodeCatalogModelPin } from '@cindy/model-providers/catalogModelPin';
 import { enqueueMessage, waitForTurn } from '../client-operations.js';
 import type { TerminalClient } from '../contracts.js';
@@ -131,6 +132,7 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
         getUsageSnapshot: () => ({ tokenUsage: 0, contextTokens: 0, contextWindow: input.route.model.contextWindow, costUsd: 0, ...usageByModel.get(options.model!) }),
         setInteractionResolver: value => { resolver = value; },
         async setPermissionMode(mode) { permissionModes.push(mode); },
+        getPlanMode: () => options.planMode ?? false,
         isTurnRunning: () => running,
       };
       return handle;
@@ -1237,9 +1239,9 @@ describe('terminal task host', () => {
   // were wired. The full plugin composition must precede native session startup
   // without eagerly requiring its not-yet-created incarnation.
   it('starts and sends a task with the full plugin market composition installed',async()=>{
-    const {host,root,vault}=await setup();
+    const {host,root,vault,native}=await setup();
     const account=new TerminalPluginAccount({endpoints:()=>({authApiBaseUrl:'https://auth.example.invalid',pluginApiBaseUrl:'https://plugins.example.invalid'}),membership:()=>null,token:()=>null,refresh:async()=>{},assertCurrent:()=>{}});
-    const plugins=new TerminalPlugins({root,runtimeDirectory:root,executablePath:'unused',account,assertCurrent:()=>{},locale:()=> 'en',changed:()=>{},receive:async()=>({}),
+    const plugins=new TerminalPlugins({root,runtimeDirectory:root,executablePath:'unused',account,models:{models:host.models,utility:host.utility},assertCurrent:()=>{},locale:()=> 'en',changed:()=>{},receive:async()=>({}),
       secrets:{get:async key=>vault.get(key)??null,set:async(key,value)=>{vault.set(key,value);},delete:async key=>{vault.delete(key);},getSync:key=>vault.get(key)??null,setSync:(key,value)=>{vault.set(key,value);},deleteSync:key=>{vault.delete(key);},setManySync:entries=>{for(const [key,value] of Object.entries(entries))if(value===null)vault.delete(key);else vault.set(key,value);}},
       cards:{persist:async()=>{},broadcast:()=>{}},fs:{getSessionSnapshot:async()=>null,requestWriteConfirm:async()=>({confirmed:false,reason:'cancelled'}),writeSaveDeposit:async()=>null},
     });
@@ -1247,11 +1249,56 @@ describe('terminal task host', () => {
     const tasks=new TerminalPluginTasks({root,runtimeDirectory:root,host:plugins,account,market,tasks:host,protectedInput:{configurePlugins:()=>{}},deposits:new DirDepositVault(),saves:new SaveDepositVault(),owner:()=>({mode:'local',dataOwnerId:'test',generation:1}),signedIn:()=>false,remoteAvailable:()=>false,locale:()=> 'en',assertCurrent:()=>{},emit:()=>{}});
     try{
       await plugins.ready;await tasks.ready;
+      // Integration tier: task ownership, durable replay, terminal input source
+      // and cancellation were previously unavailable behind the plugin pipe.
+      const installed = {dir:path.join(root,'fixture-plugin'),enabled:true,approval:{state:'approved',revision:'fixture-approved'},taskCapabilityApproved:true,
+        manifest:{id:'fixture-plugin',name:'Task fixture',version:'1.0.0',agent:{tasks:true,hiddenTasks:true}}} as unknown as import('@cindy/plugin-runtime/shared/ghost').InstalledGhost;
+      const lookup=vi.spyOn(plugins,'installed').mockImplementation(id=>id==='fixture-plugin'?installed:null);
+      const call=async(kind:string,args:Record<string,unknown>={})=>{
+        const result=await plugins.receive('fixture-plugin',{type:'tasks-request',kind,...args}) as {ok:boolean;data:any;error?:{code:string;message?:string}};
+        if(!result.ok)throw new Error(`${result.error?.code}: ${result.error?.message}`);return result.data;
+      };
+      let created=await call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true});
+      expect(await call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true})).toMatchObject({taskId:created.taskId,hidden:true});
+      expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(false);
+      expect((await call('models')).models).toEqual(expect.arrayContaining([expect.objectContaining({route:expect.objectContaining({model:'test-model'})})]));
+      const provider=host.models.snapshot().providers.find(p=>p.id==='fixture')!;
+      await host.models.saveProvider({...provider,runtimes:{'claude-code':{...provider.runtimes['claude-code']!,models:[...provider.runtimes['claude-code']!.models,{id:'test-second',name:'Second',contextWindow:200000}]}}});
+      const previous=created;
+      created=(await call('setModel',{taskId:created.taskId,expectedRevision:created.revision,route:{...created.resolvedConfig,model:'test-second'}})).task;
+      expect(created.resolvedConfig.model).toBe('test-second');
+      await expect(call('setModel',{taskId:created.taskId,expectedRevision:previous.revision,route:'plugin-default'})).rejects.toThrow('STALE_REVISION');
+      created=(await call('setModel',{taskId:created.taskId,expectedRevision:created.revision,route:'plugin-default'})).task;
+      expect(created.resolvedConfig.model).toBe('test-model');
+      const run=await call('send',{taskId:created.taskId,requestKey:'send-1',expectedRevision:created.revision,text:'plugin-owned-input'});
+      await vi.waitFor(async()=>expect(await call('getRun',{runId:run.runId})).toMatchObject({status:'completed'}));
+      const firstPage=await call('readMessages',{taskId:created.taskId,limit:1});expect(firstPage.items[0]).toMatchObject({role:'user',content:'plugin-owned-input'});
+      const secondPage=await call('readMessages',{taskId:created.taskId,limit:1,after:firstPage.nextCursor});expect(secondPage.items[0].role).toBe('assistant');
+      const sent=native.sent.length;
+      expect(await call('send',{taskId:created.taskId,requestKey:'send-1',expectedRevision:created.revision,text:'plugin-owned-input'})).toMatchObject({runId:run.runId,status:'completed'});
+      expect(native.sent).toHaveLength(sent);
+      expect(native.sends.at(-1)?.[AUTO_REVIEW_USER_INTENT]).toBe('');
+      const history=await host.invoke('local-db:messages:list',[created.taskId,{limit:20}]) as Array<{role:string;agentMeta?:any}>;
+      expect(history.find(row=>row.role==='user')?.agentMeta).toMatchObject({sourcePlugin:{pluginId:'fixture-plugin'},autoReviewUserText:{kind:'delegated-continuation'}});
+      await host.invoke('maker:input:stop',[created.taskId]);
+      const cancelled=await call('send',{taskId:created.taskId,requestKey:'queued-1',expectedRevision:created.revision,text:'never-dispatched'});
+      expect(await call('cancel',{runId:cancelled.runId,requestKey:'cancel-1'})).toMatchObject({status:'cancelled'});
+      expect(native.sent).toHaveLength(sent);
+      await tasks.sessions.close();
+      const reopened=new TerminalPluginSessions({root,host:plugins,tasks:host,guard:()=>{}});plugins.configureTaskSessions(reopened);
+      try{
+        await reopened.ready;
+        expect(await call('getRun',{runId:run.runId})).toMatchObject({status:'completed'});
+        await reopened.withUninstall('fixture-plugin',async()=>{});
+        expect((await host.invoke('terminal:tasks:list',[]) as Array<{id:string}>).some(row=>row.id===created.taskId)).toBe(true);
+        await expect(call('get',{taskId:created.taskId})).rejects.toThrow('TASK_NOT_FOUND');
+        await expect(call('create',{title:'Plugin-owned',requestKey:'create-1',hidden:true})).rejects.toThrow('TASK_NOT_FOUND');
+      }finally{await reopened.close();lookup.mockRestore();}
       const task=await host.invoke('maker:create-session',[{title:'Plugin composition'}]) as {id:string};
       await host.invoke('maker:send',[task.id,{text:'plugin-ready'}]);
-      const history=await host.invoke('local-db:messages:list',[task.id,{limit:10}]) as Array<{content:string}>;
-      expect(history.map(item=>item.content)).toContain('Echo: plugin-ready');
-    }finally{await host.close();tasks.close();await market.close();await plugins.close();account.close();}
+      const normalHistory=await host.invoke('local-db:messages:list',[task.id,{limit:10}]) as Array<{content:string}>;
+      expect(normalHistory.map(item=>item.content)).toContain('Echo: plugin-ready');
+    }finally{await host.close();await tasks.close();await market.close();await plugins.close();account.close();}
   });
   it('persists user/assistant history and resumes the original native task after a daemon restart', async () => {
     const { host, root, create, native } = await setup();

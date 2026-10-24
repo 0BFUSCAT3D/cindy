@@ -35,16 +35,6 @@ export interface BlobDirListing {
 }
 
 /** Host-scoped root; the byte safety and content addressing match Desktop. */
-export function createBlobStore(getUserDataDirectory: () => string) {
-const SCHEME = 'cindy-media';
-const HOST_BLOBS = 'blobs';
-/** Client-owned wallpaper bytes never share deletion ownership with account-ledger blobs. */
-
-const destLocks = new Map<string, Promise<unknown>>();
-
-/** 指纹形状:SHA-256 十六进制,恰 64 位小写。 */
-const HASH_RE = /^[0-9a-f]{64}$/;
-
 /**
  * 扩展名白名单(含点)→ mime。新增媒体类型 = 加一行;后缀由主机按真实
  * mime 落盘时定死(决定渲染端 img/video/audio 分流),插件伪造不了。
@@ -80,7 +70,29 @@ const EXT_BY_MIME: Record<string, string> = {
   'model/gltf-binary': '.glb',
 };
 
+/** Canonical extension used both when planning and writing a content-addressed file. */
+export function extForMime(mimeType: string): string | null {
+  return EXT_BY_MIME[mimeType] ?? null;
+}
 
+export function supportedMime(mimeType: string): boolean {
+  return Boolean(EXT_BY_MIME[mimeType]);
+}
+
+/** 白名单扩展名(含点)→ mime;白名单外返回 null(调用方自行拒绝)。 */
+export function mimeForExt(ext: string): string | null {
+  return MIME_BY_EXT[ext] ?? null;
+}
+
+export function createBlobStore(getUserDataDirectory: () => string) {
+const SCHEME = 'cindy-media';
+const HOST_BLOBS = 'blobs';
+/** Client-owned wallpaper bytes never share deletion ownership with account-ledger blobs. */
+
+const destLocks = new Map<string, Promise<unknown>>();
+
+/** 指纹形状:SHA-256 十六进制,恰 64 位小写。 */
+const HASH_RE = /^[0-9a-f]{64}$/;
 
 function getBlobsRoot(scope: BlobScope = 'blobs'): string {
   if (scope !== 'blobs' && scope !== 'client-wallpaper') throw new Error('cindy-media: invalid scope');
@@ -89,20 +101,6 @@ function getBlobsRoot(scope: BlobScope = 'blobs'): string {
 
 function blobUrl(hash: string, ext: string, scope: BlobScope = 'blobs'): string {
   return `${SCHEME}://${scope}/${hash}${ext}`;
-}
-
-/** Canonical extension used both when planning and writing a content-addressed file. */
-function extForMime(mimeType: string): string | null {
-  return EXT_BY_MIME[mimeType] ?? null;
-}
-
-function supportedMime(mimeType: string): boolean {
-  return Boolean(EXT_BY_MIME[mimeType]);
-}
-
-/** 白名单扩展名(含点)→ mime;白名单外返回 null(调用方自行拒绝)。 */
-function mimeForExt(ext: string): string | null {
-  return MIME_BY_EXT[ext] ?? null;
 }
 
 /** File sources are private Host-owned downloads, never plugin-supplied paths. */

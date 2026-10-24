@@ -1,3 +1,4 @@
+import type { TerminalPluginSessions } from './sessions.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import { classifyGhostLocalUpdateSource } from '@cindy/plugin-runtime/ghostLocalUpdateSource';
@@ -70,6 +71,8 @@ export class TerminalPlugins {
   readonly library:TerminalPluginLibrary;
   readonly downloads:PluginDownloadSlot;
   readonly models?:TerminalPluginModels;
+  private taskSessions?: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'>;
+  configureTaskSessions(service: Pick<TerminalPluginSessions,'receive'|'withUninstall'|'relocate'>) { this.guard();this.taskSessions=service; }
   readonly setupChanges=new GhostSetupChangeBus();
   private readonly pending = new Map<string,PendingInstall>();
   private readonly removing=new Set<string>();
@@ -139,6 +142,7 @@ export class TerminalPlugins {
   }
   async receive(id:string,payload:unknown):Promise<unknown>{
     this.guard();const type=(payload as {type?:unknown}|null)?.type;
+    if(type==='tasks-request'&&this.taskSessions)return this.taskSessions.receive(id,payload);
     if(type==='fetch-request'&&this.network)return this.network.handleFetchRequest(id,payload);
     if(type==='fs-request')return this.fs.handleFsRequest(id,payload);
     if(type==='library-request')return this.library.slot.handleLibraryRequest(id,payload);
@@ -279,7 +283,7 @@ export class TerminalPlugins {
     }
     const file=path.join(this.options.root,'ghost-workdir-prefs.json'),bytes=await readPrivateFile(file);this.guard();
     if(bytes){const prefs=normalizeGhostWorkdirPrefs(JSON.parse(bytes.toString()));for(const key of Object.keys(prefs.disabledByWorkdir))prefs.disabledByWorkdir[key]=[...new Set(prefs.disabledByWorkdir[key].map(id=>id===from?to:id))];await atomicPrivateWrite(file,JSON.stringify(prefs));}
-    this.guard();await this.cards.relocateGhost(from,to);this.guard();await this.models?.relocate(from,to);this.guard();await this.options.archiveUserState?.(from,to);this.guard();
+    this.guard();await this.cards.relocateGhost(from,to);this.guard();await this.models?.relocate(from,to);this.guard();await this.taskSessions?.relocate(from,to);this.guard();await this.options.archiveUserState?.(from,to);this.guard();
   }
   pendingFor(controller:string){this.guard();return [...this.pending].filter(([,p])=>p.controller===controller&&p.expiresAt>=Date.now()).map(([id,p])=>({id,facts:p.facts}));}
   pendingInstall(id:string,controller:string){
@@ -366,6 +370,10 @@ export class TerminalPlugins {
     }
   }
   async uninstall(id:string) {
+    if(this.taskSessions)return this.taskSessions.withUninstall(id,async()=>{await this.removeInstalled(id);});
+    return this.removeInstalled(id);
+  }
+  private async removeInstalled(id:string) {
     return this.mutate(async()=>{
       const ghost=await this.get(id);this.removing.add(id);
       this.credentials.oauth.invalidateGhost(id);

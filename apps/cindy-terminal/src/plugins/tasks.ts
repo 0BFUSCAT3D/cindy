@@ -1,3 +1,4 @@
+import { TerminalPluginSessions } from './sessions.js';
 import path from 'node:path';
 import { isCindyAccountGhostId } from '@cindy/plugin-runtime/shared/ghost';
 import type { GhostVisibilityDeps } from '@cindy/plugin-runtime/ghostVisibility';
@@ -17,6 +18,7 @@ import translations from './translations.json';
 
 /** Owner-scoped wiring; no process-global Desktop singleton is borrowed. */
 export class TerminalPluginTasks {
+  readonly sessions:TerminalPluginSessions;
   readonly setup:TerminalPluginSetup;
   readonly pages:TerminalPluginPages;
   readonly preferences:TerminalPluginPreferences;
@@ -32,6 +34,8 @@ export class TerminalPluginTasks {
   }){
     const guard=()=>{if(this.closed)throw new Error('PLUGIN_TASKS_CLOSED');options.assertCurrent();};
     const translate=(key:string)=>((translations as Record<string,Record<string,string>>)[options.locale()]??translations.en)[key]??(translations.en as Record<string,string>)[key]??key;
+    this.sessions=new TerminalPluginSessions({root:options.root,host:options.host,tasks:options.tasks,guard});
+    options.host.configureTaskSessions(this.sessions);
     this.preferences=new TerminalPluginPreferences(options.root,guard);
     const visibility:GhostVisibilityDeps={translate,listGhosts:()=>{guard();return options.host.native.list();},
       isAvailableForActiveSession:id=>{guard();const ghost=options.host.installed(id);return !!ghost&&(!isCindyAccountGhostId(ghost.manifest.id)||options.signedIn());},
@@ -55,7 +59,7 @@ export class TerminalPluginTasks {
         forge:createTerminalPluginForge({...options,context:scoped,media:options.tasks.media,publisher:this.publisher,requestPermission:options.tasks.requestHostPermission,translate}),
       });
     },this.setup);
-    this.ready=this.preferences.refresh();
+    this.ready=Promise.all([this.preferences.refresh(),this.sessions.ready]).then(()=>undefined);
   }
-  close(){if(this.closed)return;this.closed=true;this.pages.close();this.setup.close();this.publisher.close();}
+  async close(){if(this.closed)return;this.closed=true;this.pages.close();this.setup.close();this.publisher.close();await this.sessions.close();}
 }

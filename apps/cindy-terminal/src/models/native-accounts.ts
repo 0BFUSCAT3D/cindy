@@ -107,6 +107,9 @@ export class TerminalNativeAccounts {
     return Boolean(this.read());
   }
   async models(force = false): Promise<CatalogModel[]> {
+    // The first request can arrive immediately after adding an account. Its
+    // private cache directory must exist before discovery publishes the cache.
+    await this.ready;
     this.current();
     if (this.discovery) return this.discovery;
     if (!force && this.discovered) return this.discovered;
