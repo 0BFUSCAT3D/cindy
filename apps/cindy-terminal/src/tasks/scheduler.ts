@@ -10,11 +10,17 @@ import { preRun, runScript } from './schedule-process.js';
 import type { TerminalCompanionHost } from '../remote/companions/host.js';
 import type { TerminalTaskHost } from './host.js';
 import { scheduleForm, scheduleFormInput, scheduleText } from './schedule-resources.js';
+import { createScheduledWorkdirResolver } from '@cindy/worktree-core/scheduledWorkdir';
+import type { TerminalWorktrees } from '../worktrees/host.js';
+import type { WorktreeRuntimeLease } from '@cindy/worktree-core/runtimeLeases';
+
+type ScheduledRunScope = { sessionId?: string; worktreeSessionId?: string; keepAlive?: boolean; worktreeLease?: WorktreeRuntimeLease | null };
 
 export const TERMINAL_SCHEDULE_CHANNELS = ['list','get','create','update','delete','pause','resume','run-now','list-runs','delete-run','get-inflight-count','get-runtime-state','get-unread-count','mark-run-read','mark-all-runs-read','mark-schedule-runs-read','list-sidebar-index-runs','list-templates','create-from-template','script-capability-status'].map(action=>`maker:schedule:${action}`);
 export interface TerminalSchedulerOptions {
   profileDir: string;
   tasks: TerminalTaskHost;
+  worktrees?: TerminalWorktrees;
   companions?(): TerminalCompanionHost | undefined;
   logger: Logger;
   emit(channel: string, args: unknown[]): void;
@@ -56,9 +62,24 @@ export class TerminalSchedulerHost {
     if((notify?.feishu || notify?.wecomGroup)&&!this.options.notify)throw new Error('SCHEDULE_NOTIFICATION_CONNECTION_REQUIRED');
     const script=input.scriptConfig as Schedule['scriptConfig'];
     if(script?.capabilities.some(capability=>capability!=='sessions.dispatch')&&!this.options.scriptCall)throw new Error('SCRIPT_CAPABILITY_CONNECTION_REQUIRED');
-    if(input.useWorktree)throw new Error('SCHEDULE_WORKTREE_NOT_CONFIGURED');
+    if(input.useWorktree && !this.options.worktrees)throw new Error('SCHEDULE_WORKTREE_NOT_CONFIGURED');
   }
   private async fire(schedule:Schedule,ctx:FireContext){
+    const holder: ScheduledRunScope = {};
+    try { return await this.fireInner(schedule, ctx, holder); }
+    finally {
+      if (!holder.keepAlive && (!holder.sessionId || ctx.signal.aborted || !this.options.tasks.isTurnRunning(holder.sessionId))) {
+        try {
+          if (holder.sessionId) await this.options.tasks.invoke('maker:close-session', [holder.sessionId]);
+          if (holder.worktreeLease) { await this.options.worktrees!.runtime.releaseWorktreeRuntimeLease(holder.worktreeLease); holder.worktreeLease = null; }
+          if (holder.worktreeSessionId) await this.options.worktrees!.pool.releaseWorktree(holder.worktreeSessionId);
+        } catch { this.options.logger.warn('SCHEDULE_WORKTREE_RELEASE_DEFERRED'); }
+      } else if (holder.worktreeLease) {
+        await this.options.worktrees!.runtime.releaseWorktreeRuntimeLease(holder.worktreeLease);
+      }
+    }
+  }
+  private async fireInner(schedule:Schedule,ctx:FireContext,holder:ScheduledRunScope){
     this.guard();ctx.signal.throwIfAborted();
     const companion=this.options.companions?.();
     if(schedule.targetSessionId&&companion&&await companion.owns(schedule.targetSessionId))return this.fireCompanion(companion,schedule,ctx);
@@ -67,7 +88,19 @@ export class TerminalSchedulerHost {
     if(sessionId&&(!row||row.deleted)){if(!schedule.persistentSession)throw new Error('SCHEDULE_TARGET_UNAVAILABLE');sessionId=undefined;row=null;}
     if(row && this.options.tasks.isTurnRunning(row.id))return {sessionId:row.id,deferred:true,deferRetryMs:15_000};
     if(row?.archived)await this.options.tasks.invoke('local-db:sessions:patch-meta',[row.id,{status:'active'}]);
-    const cwd=row?.workDir??schedule.workingDir??path.join(this.options.profileDir,'scheduled-workspaces',ctx.runId);
+    const newSessionId = randomUUID();
+    let cwd=row?.workDir??schedule.workingDir??path.join(this.options.profileDir,'scheduled-workspaces',ctx.runId);
+    if (!row && schedule.useWorktree) {
+      if (schedule.executionMode === 'script') throw new Error('SCRIPT_WORKTREE_UNSUPPORTED');
+      const host = this.options.worktrees; if (!host) throw new Error('SCHEDULE_WORKTREE_NOT_CONFIGURED');
+      const resolved = await createScheduledWorkdirResolver({ WorktreeManager: host.manager, WorktreePool: host.pool, resolveFreshSourceBranch: host.freshBase.resolveFreshSourceBranch })(schedule, newSessionId);
+      if (!resolved.ok || !resolved.path) throw new Error('SCHEDULE_WORKTREE_CREATE_FAILED');
+      holder.worktreeSessionId = resolved.worktreeSessionId;
+      cwd = resolved.path;
+      holder.worktreeLease = await host.runtime.acquireWorktreeRuntimeLease(newSessionId, cwd);
+      await host.manager.awaitBackgroundCheckout(newSessionId);
+      this.guard(); ctx.signal.throwIfAborted();
+    }
     if(!row&&!schedule.workingDir)await privateDirectory(cwd);
     const hook=await preRun(schedule,ctx,cwd);this.guard();ctx.signal.throwIfAborted();
     if(hook){await ctx.onPreRunHookCompleted?.(hook);if(hook.decision==='skip')return {sessionId:sessionId??'',skipped:true,resultText:hook.stdout};if(hook.decision!=='run')throw new Error('PRE_RUN_HOOK_FAILED');}
@@ -77,8 +110,10 @@ export class TerminalSchedulerHost {
       if(result.sessionId)await ctx.onSessionBound?.(result.sessionId);return result;
     }
     if(!sessionId){
-      const created=await this.options.tasks.invoke('maker:create-session',[{title:schedule.name,workingDir:cwd,agentKind:schedule.modelAgentKind??schedule.agentKind,...(schedule.providerId?{providerId:schedule.providerId}:{}),...(schedule.model?{model:schedule.model}:{}),...(schedule.agentDeviceId?{agentDeviceId:schedule.agentDeviceId}:{}),...(schedule.effort?{effort:schedule.effort}:{})}]) as {id:string};
+      holder.sessionId = newSessionId;
+      const created=await this.options.tasks.invoke('maker:create-session',[{id:newSessionId,title:schedule.name,workingDir:cwd,agentKind:schedule.modelAgentKind??schedule.agentKind,...(schedule.providerId?{providerId:schedule.providerId}:{}),...(schedule.model?{model:schedule.model}:{}),...(schedule.agentDeviceId?{agentDeviceId:schedule.agentDeviceId}:{}),...(schedule.effort?{effort:schedule.effort}:{})}]) as {id:string};
       sessionId=created.id;if(schedule.persistentSession)await this.engine.update(schedule.id,{targetSessionId:sessionId});
+      holder.keepAlive = schedule.persistentSession;
     }
     const id=sessionId;await ctx.onSessionBound?.(id);this.guard();ctx.signal.throwIfAborted();
     const abort=()=>{void this.options.tasks.invoke('maker:abort-session',[id]).catch(()=>{});};ctx.signal.addEventListener('abort',abort,{once:true});
@@ -90,7 +125,7 @@ export class TerminalSchedulerHost {
         if(receipt.status==='completed')return {sessionId:id,resultText:receipt.finalText??''};
         if(receipt.status==='failed'||receipt.status==='interrupted')throw new Error(receipt.error??'SCHEDULE_TURN_FAILED');
       }
-    } finally {unobserve();ctx.signal.removeEventListener('abort',abort);if(!schedule.targetSessionId&&!schedule.persistentSession)await this.options.tasks.invoke('maker:close-session',[id]).catch(()=>{});}
+    } finally {unobserve();ctx.signal.removeEventListener('abort',abort);}
   }
   private async fireCompanion(host:TerminalCompanionHost,schedule:Schedule,ctx:FireContext){
     const profile=await host.profileForSession(schedule.targetSessionId!);
@@ -173,7 +208,7 @@ export class TerminalSchedulerHost {
       get:async(context,request)=>{
         await this.ready;this.guard();context.assertCurrent?.();const row=await this.engine.get(request.ref.id);if(!row)throw new Error('SCHEDULE_NOT_FOUND');
         return {...item(row),blocks:[{id:'prompt',primitive:'text',fallbackMarkdown:row.prompt},{id:'configuration',primitive:'text',fallbackMarkdown:[row.workingDir,row.model,row.timezone].filter(Boolean).join(' · ')},
-          {id:'edit',primitive:'form',fallbackMarkdown:'',data:{actionId:'edit',values:{name:row.name,prompt:row.prompt,workingDir:row.workingDir,agentKind:row.agentKind,providerId:row.providerId??'',model:row.model??'',kind:row.intervalMs?'interval':'cron',cronExpr:row.cronExpr,intervalSeconds:row.intervalMs?String(row.intervalMs/1000):'',timezone:row.timezone,__revision:String(row.updatedAt)}}}]};
+          {id:'edit',primitive:'form',fallbackMarkdown:'',data:{actionId:'edit',values:{name:row.name,prompt:row.prompt,workingDir:row.workingDir,agentKind:row.agentKind,providerId:row.providerId??'',model:row.model??'',kind:row.intervalMs?'interval':'cron',cronExpr:row.cronExpr,intervalSeconds:row.intervalMs?String(row.intervalMs/1000):'',timezone:row.timezone,useWorktree:row.useWorktree,__revision:String(row.updatedAt)}}}]};
       },
       invoke:async(context,request)=>{
         await this.ready;this.guard();context.assertCurrent?.();

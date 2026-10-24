@@ -47,6 +47,13 @@ function taskId(value: string): string {
 /** Per-task atomic metadata and append-only history. Live status is never persisted. */
 export class TerminalTaskStorage implements SessionStorage {
   private readonly rows = new Map<string, TerminalTaskMeta>();
+  private worktreeReferences?: { beforeWrite(row: TerminalTaskMeta): Promise<void>; afterWrite(row: TerminalTaskMeta | null, id: string): Promise<void> };
+  configureWorktreeReferences(hooks: NonNullable<TerminalTaskStorage['worktreeReferences']>) { this.worktreeReferences = hooks; }
+  private async persistMetadata(row: TerminalTaskMeta) {
+    await this.worktreeReferences?.beforeWrite(row);
+    await atomicPrivateWrite(this.file(row.id), JSON.stringify(row));
+    await this.worktreeReferences?.afterWrite(row, row.id);
+  }
   private readonly submissions = new Map<string, Submission[]>();
   private readonly nextSequences = new Map<string, number>();
   private readonly writes = new Map<string, Promise<unknown>>();
@@ -94,7 +101,7 @@ export class TerminalTaskStorage implements SessionStorage {
       await privateDirectory(this.directory(meta.id));
       const row = { ...meta, createdAt: Date.now(), updatedAt: Date.now() };
       guard();
-      await atomicPrivateWrite(this.file(meta.id), JSON.stringify(row));
+      await this.persistMetadata(row);
       this.rows.set(meta.id, row);
       return structuredClone(row);
     });
@@ -154,7 +161,7 @@ export class TerminalTaskStorage implements SessionStorage {
   private async materializeRotation(rotation: ChannelRotation) {
     for (const row of rotation.rows) {
       await privateDirectory(this.directory(row.id));
-      await atomicPrivateWrite(this.file(row.id), JSON.stringify(row));
+      await this.persistMetadata(row);
     }
     await atomicPrivateWrite(path.join(path.dirname(this.root), 'channel-bindings.json'), JSON.stringify(rotation.bindings));
     await rm(this.rotationFile(), { force: true });
@@ -164,7 +171,7 @@ export class TerminalTaskStorage implements SessionStorage {
       const row = this.rows.get(id);
       if (!row) throw new Error('TASK_NOT_FOUND');
       const next = { ...row, ...patch, id: row.id, createdAt: row.createdAt, updatedAt: Date.now() };
-      await atomicPrivateWrite(this.file(id), JSON.stringify(next));
+      await this.persistMetadata(next);
       this.rows.set(id, next);
       return structuredClone(next);
     });
@@ -175,7 +182,7 @@ export class TerminalTaskStorage implements SessionStorage {
       if (!row || row.sdkSessionId !== expected) return false;
       const next = { ...row, updatedAt: Date.now() };
       delete next.sdkSessionId;
-      await atomicPrivateWrite(this.file(id), JSON.stringify(next));
+      await this.persistMetadata(next);
       this.rows.set(id, next);
       return true;
     });
@@ -188,7 +195,7 @@ export class TerminalTaskStorage implements SessionStorage {
       const row = this.rows.get(id);
       if (!row || !predicate(row)) return null;
       const next = { ...row, ...patch, id: row.id, createdAt: row.createdAt, updatedAt: Date.now() };
-      await atomicPrivateWrite(this.file(id), JSON.stringify(next));
+      await this.persistMetadata(next);
       this.rows.set(id, next);
       return structuredClone(next);
     });
@@ -197,6 +204,7 @@ export class TerminalTaskStorage implements SessionStorage {
     return this.enqueue(id, async () => {
       // Atomic rename is not needed for deletion: the host first closes the runtime.
       await rm(this.directory(id), { force: true, recursive: true });
+      await this.worktreeReferences?.afterWrite(null, id);
       this.rows.delete(id);
       this.nextSequences.delete(id);
     });
@@ -225,7 +233,7 @@ export class TerminalTaskStorage implements SessionStorage {
       if (last?.sequence !== record.sequence || JSON.stringify(existing) !== JSON.stringify(record)) throw new Error('TASK_ROUTE_JOURNAL_CONFLICT');
       this.nextSequences.set(id, record.sequence);
     }
-    await atomicPrivateWrite(this.file(id), JSON.stringify(transaction.row));
+    await this.persistMetadata(transaction.row);
     await rm(this.routeCommitFile(id), { force: true, maxRetries: 5, retryDelay: 100 });
     this.rows.set(id, transaction.row);
   }

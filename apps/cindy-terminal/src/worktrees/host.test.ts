@@ -178,6 +178,13 @@ it("exposes native occupancy to the existing GUI lease reader and preserves unre
     notifyWorktreeRecycleOpportunity() {},
     isGitProcessTreeAlive: async () => false,
   });
+  // The retained task remains visible even with no native process running.
+  expect(await gui.readWorktreeRuntimePaths()).toContain(f.meta.path);
+  f.host.close();
+  expect(await gui.readWorktreeRuntimePaths()).toContain(f.meta.path);
+  const before = await readFile(path.join(f.owner, "worktree-task-references.json"), "utf8");
+  await f.create();
+  expect(await readFile(path.join(f.owner, "worktree-task-references.json"), "utf8")).toBe(before);
   const lease = await f.host.runtime.acquireWorktreeRuntimeLease(
     "task",
     f.meta.path,

@@ -1,3 +1,7 @@
+import { createTerminalWorktrees } from '../worktrees/host.js';
+import { registerWorktreeResources } from '../worktrees/resources.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { TerminalPluginSessions } from '../plugins/sessions.js';
 import { registerPluginResources } from '../plugins/resources.js';
 import { runResourceCommand } from '../resource-commands.js';
@@ -202,6 +206,78 @@ async function auxiliaryFixture(host: TerminalTaskHost, reply: () => Promise<str
 }
 
 describe('terminal task host', () => {
+  // Integration: GUI precreation must be claimed by the same persisted task,
+  // cancellation must fence late creation, and native runtime closure must
+  // precede the actual encrypted worktree recycler.
+  it('claims GUI worktree precreation and restores it after native task archival', async () => {
+    const profile = await realpath(await mkdtemp(path.join(os.tmpdir(), 'terminal-worktree-task-'))); roots.push(profile);
+    const owner = path.join(profile, 'owners', 'b'.repeat(32));
+    const f = await setup(engine(), { profileDir: owner });
+    const worktrees = await createTerminalWorktrees({ profile, root: owner, tasks: f.host.storage, logger, guard() {},
+      appDataRoot: path.join(profile, 'app-data'), readSessionTransfer: async () => undefined,
+      secrets: { getSync: key => f.vault.get(key) ?? null, setSync: (key, value) => { f.vault.set(key, value); } },
+    });
+    await f.host.connectWorktrees(worktrees);
+    const repo = path.join(profile, 'repo'); await mkdir(repo);
+    const git = (...args: string[]) => promisify(execFile)('git', args, { cwd: repo, windowsHide: true,
+      env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(profile, 'git-global'), GIT_CONFIG_NOSYSTEM: '1' } });
+    await git('init', '-b', 'main'); await git('config', 'user.name', 'Worktree Test'); await git('config', 'user.email', 'worktree-test@localhost');
+    await writeFile(path.join(repo, 'file.txt'), 'original'); await git('add', '.'); await git('commit', '-m', 'fixture');
+    const id = 'gui-precreated';
+    const remote = { source: 'remote' as const, ownerId: 'owner', deviceId: 'controller', assertCurrent() {} };
+    const created = await f.host.invoke('worktree:create', [{ sessionId: id, baseRepo: repo, name: 'gui', sourceBranch: 'main', recoveryKey: 'gui-recovery-key-0001' }], remote) as { ok: boolean; meta: { path: string } };
+    expect(created, JSON.stringify(created)).toMatchObject({ ok: true });
+    const task = await f.host.invoke('maker:create-session', [{ id, workingDir: created.meta.path }], remote) as { sessionId: string };
+    expect(task.sessionId).toBe(id);
+    expect(f.native.starts.at(-1)?.workingDir).toBe(created.meta.path);
+    expect(await f.host.invoke('local-db:sessions:get', [id])).toMatchObject({ id, worktreePath: created.meta.path });
+    await expect(f.host.invoke('worktree:cancel-precreated', [{ sessionId: id, recoveryKey: 'gui-recovery-key-0001' }], remote)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await writeFile(path.join(created.meta.path, 'file.txt'), 'retained user changes');
+    const recycled = f.nextPush('worktree:changed');
+    await f.host.invoke('local-db:sessions:patch-meta', [id, { status: 'archived' }]);
+    await recycled;
+    await expect(access(created.meta.path)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await f.host.invoke('worktree:restore-for-session', [id], remote)).toMatchObject({ ok: true, snapshotApplied: true });
+    expect(await readFile(path.join(created.meta.path, 'file.txt'), 'utf8')).toBe('retained user changes');
+    await f.host.invoke('worktree:cancel-precreated', [{ sessionId: 'cancelled-task', path: path.join(repo, '.cindy-worktrees', 'cancelled') }], remote);
+    await expect(f.host.invoke('maker:create-session', [{ id: 'cancelled-task', workingDir: repo }])).rejects.toThrow('creation was cancelled');
+    expect(await f.host.storage.get('cancelled-task')).toBeNull();
+    const lead = await f.host.invoke('maker:create-session', [{ workingDir: repo }], remote) as { id: string };
+    const worker = await f.host.invoke('maker:session:enable-orca', [lead.id, { workerAgent: 'claude-code', label: 'Isolated', worktree: { sourceBranch: 'main' } }], remote) as { workerId: string; workerSessionId: string };
+    const workerRow = await f.host.storage.get(worker.workerSessionId);
+    expect(workerRow?.worktreePath).toBeTruthy();
+    expect(workerRow?.workDir).toBe(workerRow?.worktreePath);
+    expect(workerRow?.workDir).not.toBe(repo);
+    expect(f.native.starts.at(-1)?.workingDir).toBe(workerRow?.workDir);
+    await worktrees.manager.awaitBackgroundCheckout(worker.workerSessionId);
+    expect(await readFile(path.join(workerRow!.workDir, 'file.txt'), 'utf8')).toBe('original');
+    await writeFile(path.join(workerRow!.workDir, 'worker.txt'), 'worker changes');
+    const workerRecycled = f.nextPush('worktree:changed');
+    await f.host.invoke('maker:worker:archive', [{ leadSessionId: lead.id, workerId: worker.workerId }], remote);
+    await workerRecycled;
+    await expect(access(workerRow!.workDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await f.host.invoke('worktree:restore-for-session', [worker.workerSessionId], remote)).toMatchObject({ ok: true, snapshotApplied: true });
+    expect(await readFile(path.join(workerRow!.workDir, 'worker.txt'), 'utf8')).toBe('worker changes');
+    const registry = new RemoteResourceRegistry(); registerWorktreeResources(registry, worktrees, f.host);
+    const context = { controllerDeviceId: 'terminal-controller', assertCurrent() {} }, client = { protocolVersion: 1, primitives: ['text', 'actions'], locale: 'zh-CN' };
+    const formTask = await registry.invoke(context, { client, collectionId: 'worktrees', actionId: 'create', input: { baseRepo: repo, name: 'terminal' } });
+    const formId = (formTask.result as { sessionId: string }).sessionId;
+    expect((await f.host.storage.get(formId))?.worktreePath).toContain('terminal');
+    expect(await registry.list(context, { client, collectionId: 'worktrees' })).toMatchObject({ items: expect.arrayContaining([expect.objectContaining({ ref: { collectionId: 'worktrees', kind: 'worktree', id: formId } })]) });
+    await expect(registry.invoke({ ...context, assertCurrent() { throw new Error('CONTROLLER_REVOKED'); } }, { client, collectionId: 'worktrees', actionId: 'create', input: { baseRepo: repo } })).rejects.toThrow('CONTROLLER_REVOKED');
+    const scheduler = new TerminalSchedulerHost({ profileDir: owner, tasks: f.host, worktrees, logger, emit() {} }); schedulers.push(scheduler);
+    const schedule = await scheduler.invoke('maker:schedule:create', [{ name: 'Worktree schedule', prompt: 'scheduled hello', kind: 'cron', cronExpr: '0 * * * *', timezone: 'UTC', recurring: true, manual: true, agentKind: 'claude-code', providerId: 'fixture', model: 'test-model', workspaceKind: 'project', workingDir: repo, useWorktree: true, persistentSession: true, notify: { desktop: false, feishu: false } }]) as { id: string };
+    await scheduler.invoke('maker:schedule:run-now', [schedule.id]);
+    const runs = await scheduler.invoke('maker:schedule:list-runs', [schedule.id]) as Array<{ status: string; sessionId: string }>;
+    expect(runs[0]).toMatchObject({ status: 'success' });
+    const scheduledTask = await f.host.storage.get(runs[0]!.sessionId);
+    expect(scheduledTask?.worktreePath).toBe(scheduledTask?.workDir);
+    expect(scheduledTask?.workDir).not.toBe(repo);
+    expect(await readFile(path.join(scheduledTask!.workDir, 'file.txt'), 'utf8')).toBe('original');
+    await scheduler.invoke('maker:schedule:run-now', [schedule.id]);
+    expect(await scheduler.invoke('maker:schedule:list-runs', [schedule.id])).toMatchObject([{ status: 'success', sessionId: scheduledTask!.id }, { status: 'success', sessionId: scheduledTask!.id }]);
+  });
+
   it('discovers remote worker computers through the shared controller without exposing the account directory to guests', async () => {
     const device = (id: string, patch: Record<string, unknown> = {}) => ({ deviceId: id, name: id, platform: 'linux',
       appVersion: null, lastSeenAt: null, online: true, busy: false, remoteControlEnabled: true, controlEnabled: true, isSelf: false, ...patch });

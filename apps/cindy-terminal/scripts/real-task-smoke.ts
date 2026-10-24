@@ -8,7 +8,7 @@ import { connectTerminal } from '../src/transport.js';
 // Explicit, opt-in acceptance: uses the installed vendor CLI's existing login.
 // Does not read/copy its credentials or change its configuration.
 const directory = await mkdtemp(path.join(os.tmpdir(), 'cindy-terminal-acceptance-'));
-const service = new TerminalService(path.join(directory, 'profile'));
+const service = new TerminalService(path.join(directory, 'profile'), 'global', { worktreeAppDataRoot: path.join(directory, 'worktree-app-data') });
 let dispose = () => {};
 const timer = setTimeout(() => { process.stderr.write('REAL_TASK_TIMEOUT\n'); void service.close(); process.exitCode = 1; }, 120_000);
 try {

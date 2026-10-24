@@ -59,7 +59,7 @@ describe('terminal private host', () => {
   // its lock, before initialize() had assigned tasks. Hold that exact boundary;
   // the real authenticated status request must wait and then return a full host.
   it('holds early authenticated requests until the host is initialized', async () => {
-    const root=path.join(directory,'startup-barrier'),service=new TerminalService(root);
+    const root=path.join(directory,'startup-barrier'),service=new TerminalService(root, 'global', { worktreeAppDataRoot: path.join(directory, 'worktree-app-data') });
     let publish!:()=>void,release!:()=>void,entered!:()=>void;
     const published=new Promise<void>(resolve=>{publish=resolve;});
     const releasing=new Promise<void>(resolve=>{release=resolve;});
@@ -87,7 +87,7 @@ describe('terminal private host', () => {
   // Integration: stopping the daemon must join its managed work and children,
   // not only do so on account changes. A live Node child catches orphan leaks.
   it('stops managed downloads and local runtime children on daemon shutdown', async () => {
-    const root = path.join(directory, 'owned-runtime-close'), service = new TerminalService(root);
+    const root = path.join(directory, 'owned-runtime-close'), service = new TerminalService(root, 'global', { worktreeAppDataRoot: path.join(directory, 'worktree-app-data') });
     await service.start();
     const internals = service as unknown as {
       engines: {install(kind: string, options?: {signal?: AbortSignal}): Promise<unknown>};
@@ -116,7 +116,7 @@ describe('terminal private host', () => {
     const root=path.join(directory,'failed-start'),owner=path.join(root,'owners',createHash('sha256').update('guest').digest('hex').slice(0,32));
     await privateDirectory(owner);await fs.writeFile(path.join(owner,'models.json'),'{invalid json', {mode:0o600});
     const listeners=()=>((process as unknown as {_getActiveHandles():Array<{address?:()=>unknown}>})._getActiveHandles()).flatMap(handle=>{const address=handle.address?.();return typeof address==='string'&&address.includes('cindy-ih-')?[address]:[];});
-    const before=new Set(listeners()),service=new TerminalService(root);let stopped=false;void service.stopped.then(()=>{stopped=true;});
+    const before=new Set(listeners()),service=new TerminalService(root, 'global', { worktreeAppDataRoot: path.join(directory, 'worktree-app-data') });let stopped=false;void service.stopped.then(()=>{stopped=true;});
     try{
       await expect(service.start()).rejects.toThrow();
       await new Promise<void>(resolve=>setImmediate(resolve));
@@ -129,7 +129,7 @@ describe('terminal private host', () => {
   // A plugin close error previously skipped the task input listener and other
   // owner stores. No sign-in/network fake is needed to exercise this teardown.
   it('revokes every owner service when one plugin cleanup fails during account change',async()=>{
-    const root=path.join(directory,'owner-cleanup'),service=new TerminalService(root);
+    const root=path.join(directory,'owner-cleanup'),service=new TerminalService(root, 'global', { worktreeAppDataRoot: path.join(directory, 'worktree-app-data') });
     await service.start();
     const internals=service as unknown as {
       auth:{options:{beforeAccountChange():Promise<void>}};

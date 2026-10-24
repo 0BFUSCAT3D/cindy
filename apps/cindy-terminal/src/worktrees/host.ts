@@ -1,3 +1,5 @@
+import { createWorkerWorktreeProjects } from '@cindy/worktree-core/workerProject';
+import { TerminalWorktreeTaskLeases } from './task-leases.js';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BRAND_IDENTITY } from "@cindy/maker-shared/brand-identity";
@@ -120,6 +122,9 @@ export async function createTerminalWorktrees(options: {
       publishShared,
     });
   const runtime = runtimeFor(options.root, true);
+  const taskLeases = new TerminalWorktreeTaskLeases({ root: options.root, appDataRoot, runtime, physicalWorktreeKey: locks.physicalWorktreeKey, guard: options.guard, warn: message => log.warn(message) });
+  await taskLeases.reconcile(await options.tasks.list());
+  options.tasks.configureWorktreeReferences(taskLeases);
   const references = new TerminalWorktreeReferences({
     profile: options.profile,
     ownerRoot: options.root,
@@ -303,6 +308,8 @@ export async function createTerminalWorktrees(options: {
     getReferenceSource: () => source,
   });
   return {
+    taskLeases,
+    cancellation,
     manager,
     restore,
     pool,
@@ -312,6 +319,7 @@ export async function createTerminalWorktrees(options: {
     maintenance,
     references,
     store,
+    workerProjects: createWorkerWorktreeProjects({ ...common, WorktreeManager: manager }),
     freshBase: createFreshWorktreeBase(common),
     close: () => {
       maintenance.stopWorktreeRecycleMaintenance();

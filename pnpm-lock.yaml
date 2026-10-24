@@ -2061,6 +2061,9 @@ importers:
       '@cindy/maker-shared':
         specifier: workspace:*
         version: link:../maker-shared
+      tar:
+        specifier: ^7.5.21
+        version: 7.5.22
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

@@ -167,6 +167,9 @@ export class TerminalWorktreeReferences {
       .ownerRoots) {
       const engines = path.join(root, "engines", "pi");
       for (const task of names(engines)) homes.add(path.join(engines, task));
+      const guests = path.join(root, "remote-agent", "guest-homes");
+      for (const guest of names(guests))
+        homes.add(path.join(guests, guest, "pi"));
     }
     for (const home of (await this.options.extraPiHomes?.()) ?? [])
       homes.add(home);

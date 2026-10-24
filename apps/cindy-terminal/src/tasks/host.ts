@@ -1,3 +1,6 @@
+import type { TerminalWorktrees } from '../worktrees/host.js';
+import { createTerminalWorktreeIpc, WORKTREE_CHANNELS } from '../worktrees/ipc.js';
+import type { WorktreeRuntimeLease } from '@cindy/worktree-core/runtimeLeases';
 import { preparePersistedOrcaSessionStart } from '@cindy/orca-workflow/host/orcaSessionStartOptions';
 import { createOrcaRemoteWorkers } from '@cindy/orca-workflow/host/orcaRemoteWorkers';
 import { createOrcaTeamService, type OrcaTeamService, type OrcaManualInterruptSnapshot } from '@cindy/orca-workflow/host/orcaTeamService';
@@ -170,7 +173,32 @@ function decisionForDismissal(request: InteractionRequest): InteractionDecision 
 /** Persistent, UI-independent task service. Each live task delegates its loop,
  * cancellation and native transcript resume to the unchanged Maker adapters. */
 export class TerminalTaskHost {
-  readonly channels = TERMINAL_TASK_CHANNELS;
+  private worktrees?: TerminalWorktrees;
+  private worktreeIpc?: ReturnType<typeof createTerminalWorktreeIpc>;
+  get channels(): readonly string[] { return this.worktrees ? [...TERMINAL_TASK_CHANNELS, ...WORKTREE_CHANNELS] : TERMINAL_TASK_CHANNELS; }
+  async connectWorktrees(host: TerminalWorktrees): Promise<void> {
+    this.guard({ source: 'local' });
+    if (this.worktrees) throw new Error('WORKTREE_HOST_ALREADY_CONNECTED');
+    this.worktrees = host;
+    this.worktreeIpc = createTerminalWorktreeIpc({ host: () => host, guard: context => this.guard(context),
+      task: id => this.storage.get(id), withTaskLock: (id, work) => this.routes.withLock(id, work),
+      changed: id => this.emit('worktree:changed', { sessionId: id }),
+    });
+    await host.manager.reconcilePendingSafeDirectoryCleanups();
+    this.retryWorktrees();
+  }
+  private retryWorktrees() {
+    const host = this.worktrees; if (!host || this.closed) return;
+    host.maintenance.startWorktreeRecycleMaintenance({ isReady: () => !this.closed,
+      recycleCurrentSession: async id => {
+        await host.manager.removeWorktreeForSession(id, {
+          isSessionRuntimeAlive: taskId => this.live.has(taskId) || this.starts.has(taskId),
+          canRemove: async () => { if (this.closed) return false; const row = await this.storage.get(id); return Boolean(row?.archived || row?.deleted); },
+        });
+        this.emit('worktree:changed', { sessionId: id });
+      },
+    });
+  }
   readonly models: TerminalModelConfig;
   readonly storage: TerminalTaskStorage;
   private pluginTargetValidator?: (taskId: string, clientId: string) => Promise<void>;
@@ -534,7 +562,7 @@ export class TerminalTaskHost {
     });
     this.orcaLifecycle = createTerminalOrcaLifecycle({
       store: this.orcaStore, tasks: this.storage, models: this.models, team: this.orcaTeamService, remote: this.orcaRemoteController,
-      remoteInvoke: options.remoteInvoke, selfDeviceId: () => options.deviceId,
+      remoteInvoke: options.remoteInvoke, selfDeviceId: () => options.deviceId, worktrees: () => this.worktrees,
       guard: () => { this.guard({ source: 'local' }); this.orcaAction.getStore()?.(); },
       withLock: (id, work) => this.routes.withLock(id, work),
       authority: id => this.captureOrcaAuthority(id),
@@ -1662,14 +1690,17 @@ export class TerminalTaskHost {
       return ordinary;
     },reviewAbort.signal);
     const agent = await (this.options.createAgent ?? createTerminalAgent)({ reviewAutoPermissionAction, profileDir: this.options.profileDir, taskId: input.hostSessionId, selection: chosen.selection, route: chosen.route, binaryPath: binary, models: this.models, logger: this.options.logger, authorizeRequest, ...(input.guest ? {guestHome:input.guestHome} : {}) });
+    let runtimeLease: WorktreeRuntimeLease | null = null;
     try {
+      if (this.worktrees) runtimeLease = await this.worktrees.runtime.acquireWorktreeRuntimeLease(input.hostSessionId, input.shadowDir);
+      guardReview();
       const handle = await agent.startSession(hostedStartOptions(input));
       const close = handle.close.bind(handle);
-      handle.close = async () => { active=false;reviewAbort.abort();this.hosted.delete(handle); try { await close(); } finally { await agent.dispose(); } };
+      handle.close = async () => { active=false;reviewAbort.abort();this.hosted.delete(handle); try { await close(); } finally { await agent.dispose(); } if (runtimeLease) { await this.worktrees!.runtime.releaseWorktreeRuntimeLease(runtimeLease); runtimeLease = null; } };
       if (this.closed) { await handle.close(); throw new Error('TASK_HOST_CLOSED'); }
       this.hosted.add(handle);
       return handle;
-    } catch (error) { active=false;reviewAbort.abort();await agent.dispose(); throw error; }
+    } catch (error) { active=false;reviewAbort.abort();await agent.dispose(); if (runtimeLease) await this.worktrees!.runtime.releaseWorktreeRuntimeLease(runtimeLease); throw error; }
   }
   private async selection(input: Record<string, unknown>) {
     if (input.agentDeviceId) {
@@ -1735,7 +1766,8 @@ export class TerminalTaskHost {
     }, config, namespace, options);
   }
   private async create(input: Record<string, unknown>, guard: () => void, plugin?: {id:string;hidden?:boolean;onPersistenceStarted():void}, remoteWorker?: {id:string;lead:OrcaRemoteLead}, collaboration?: { id: string; role: 'worker' }) {
-    const id = plugin?.id ?? remoteWorker?.id ?? collaboration?.id ?? randomUUID();
+    const id = plugin?.id ?? remoteWorker?.id ?? collaboration?.id ?? (input.id === undefined ? randomUUID() : string(input.id));
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new Error('INVALID_TASK_ID');
     const admitted = await this.admitTask(input, id, guard);
     const { resolved } = admitted;
     // Plugin task roots become authorization facts for later worker plans.
@@ -1745,12 +1777,13 @@ export class TerminalTaskHost {
     if (input.fastMode !== undefined && typeof input.fastMode !== 'boolean' && input.fastMode !== 'ultrafast') throw new Error('INVALID_ARGUMENT');
     if (input.thinkingEnabled !== undefined && typeof input.thinkingEnabled !== 'boolean') throw new Error('INVALID_ARGUMENT');
     guard(); plugin?.onPersistenceStarted();
-    await this.storage.create({
+    const persist = () => this.storage.create({
       ...(plugin ? { source: 'plugin', hiddenAt: plugin.hidden ? Date.now() : null } : {}),
       ...(remoteWorker ? { orcaRemoteLead: remoteWorker.lead } : {}),
       ...(collaboration ? { orcaRole: collaboration.role } : {}),
       ...(input.workspaceKind === 'dialogue' || input.workspaceKind === 'project' ? { workspaceKind: input.workspaceKind } : {}),
       id, ...resolved.selection, workDir: cwd,
+      ...(this.worktrees?.manager.getForSession(id)?.path ? { worktreePath: this.worktrees.manager.getForSession(id)!.path } : {}),
       title: typeof input.title === 'string' ? input.title : typeof this.options.defaultTitle === 'function' ? this.options.defaultTitle() : this.options.defaultTitle ?? 'New task',
       permissionMode: input.permissionMode ? permission(input.permissionMode) : 'default',
       ...(typeof input.planMode === 'boolean' ? { planMode: input.planMode } : {}),
@@ -1759,6 +1792,8 @@ export class TerminalTaskHost {
       ...(input.agentDeviceId ? { agentDeviceId: string(input.agentDeviceId) } : {}),
       ...(input.groupBinding ? { groupBinding: input.groupBinding as TerminalTaskMeta['groupBinding'] } : {}),
     }, guard);
+    if (this.worktrees) await this.worktrees.cancellation.withPrecreatedSessionOperationLock(id, async () => { guard(); this.worktrees!.manager.assertPrecreatedSessionNotCancelled(id); await persist(); });
+    else await persist();
     guard();
     if(input.groupBinding)this.groupBindings.set(id,input.groupBinding as import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding);
     guard();
@@ -1788,6 +1823,10 @@ export class TerminalTaskHost {
     if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
     const binary = this.binaries.get(chosen.selection.agentKind);
     if (!binary && !row.agentDeviceId) throw new Error('ENGINE_NOT_INSTALLED');
+    if (this.worktrees?.runtime.managedWorktreeRoot(row.workDir)) {
+      const readiness = await this.worktrees.restore.getManagedWorktreeReadinessForSession(id, row.workDir);
+      if (readiness !== 'ready') throw new Error(readiness === 'gone' ? 'WORKTREE_GONE' : 'WORKTREE_RECOVERY_PENDING');
+    }
     const capability = await this.capabilities.runtime({workingDir:row.workDir,agentKind:chosen.selection.agentKind});
     const knowledge = await this.knowledge?.createRuntime({ sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind });
     let lease:LiveTask|undefined,revoked=false;
@@ -1830,6 +1869,7 @@ export class TerminalTaskHost {
     let agent;
     try { agent = await (this.options.createAgent ?? createTerminalAgent)({ reviewAutoPermissionAction, profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, turnChangeCapture: this.changes.capture, taskShellEnv:()=>this.options.protectedInput?.envFor(id)??{}, remote: Boolean(row.agentDeviceId), capabilities:capability,getGhostRosterPrompt:plugin?.getGhostRosterPrompt, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { revoked=true;reviewAbort.abort();plugin?.close();await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
     const startDeviceAgentSession = row.agentDeviceId && this.options.remoteInvoke ? createDeviceAgentStarter({ captureKnownFileBefore: this.changes.capture.beforeKnownFileWrite, noteOpaqueTurnChange: this.changes.capture.noteOpaqueWrite, remoteInvoke: this.options.remoteInvoke, rgPath: () => 'rg', codexPath: () => this.binaries.get('codex') ?? undefined, mcpProviders: () => tools.providers, prepareMcpBridge: async (_providers, _logger, context) => tools.pi(context), makerMemory: () => knowledge?.memory, logger: this.options.logger }) : undefined;
+    let runtimeWorktreeLease: WorktreeRuntimeLease | null = null;
     const maker = new Maker({ agents: { [chosen.selection.agentKind]: agent }, storage: this.storage, logger: this.options.logger, ...(knowledge ? {makerMemory:knowledge.memory} : {}), ...(startDeviceAgentSession ? { startDeviceAgentSession } : {}) });
     const stopObservingMaker = maker.on(event => {
       for (const observer of this.makerObservers) {
@@ -1848,6 +1888,10 @@ export class TerminalTaskHost {
         warn: (message, fields) => this.options.logger.warn(message, fields),
       });
       assertCurrent();
+      if (this.worktrees) {
+        runtimeWorktreeLease = await this.worktrees.runtime.acquireWorktreeRuntimeLease(id, row.workDir);
+        assertCurrent(); this.worktrees.manager.assertPrecreatedSessionNotCancelled(id);
+      }
       const session = await maker.createSession(createOptions);
       if (modelRevision !== this.models.revision() || this.models.isMutating()) throw new Error('MODEL_CONFIGURATION_CHANGED');
       const task: LiveTask = { didInjectOrcaInstructions, revoke:()=>{revoked=true;reviewAbort.abort();plugin?.close();},plugin,capabilityRevision:capability.revision,modelRevision, maker, session, selection: chosen.selection, dispose: [() => {revoked=true;reviewAbort.abort();plugin?.close();}, () => tools.close(), () => knowledge?.close(), () => capability.close()] };
@@ -1858,11 +1902,12 @@ export class TerminalTaskHost {
       task.dispose.push(this.turnLifecycle.bind(session));
       task.dispose.push(session.onEvent(event => this.onEvent(id, event)));
       task.dispose.push(session.onStatusChange(status => this.emit('maker:status-changed', { sessionId: id, status })));
+      if (runtimeWorktreeLease) { const worktreeLease = runtimeWorktreeLease, worktrees = this.worktrees!; task.dispose.push(() => worktrees.runtime.releaseWorktreeRuntimeLease(worktreeLease)); }
       task.dispose.push(stopObservingMaker);
       lease=task;this.live.set(id, task);
       if (this.closed) { await this.closeTask(id); throw new Error('TASK_HOST_CLOSED'); }
       return task;
-    } catch (error) { revoked=true;reviewAbort.abort();plugin?.close();try { await maker.shutdown(); } finally { stopObservingMaker(); } await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
+    } catch (error) { revoked=true;reviewAbort.abort();plugin?.close();try { await maker.shutdown(); if (runtimeWorktreeLease) await this.worktrees!.runtime.releaseWorktreeRuntimeLease(runtimeWorktreeLease); } finally { stopObservingMaker(); } await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
   }
   private onEvent(id: string, event: AgentEvent) {
     const runtime = this.live.get(id)?.session;
@@ -2124,6 +2169,10 @@ export class TerminalTaskHost {
       await this.orcaReports.suppress(string(args[0]), this.activeSubmissions.get(string(args[0])));
     }
     if (REMOTE_WORKER_CHANNELS.includes(channel as typeof REMOTE_WORKER_CHANNELS[number])) return this.remoteWorkers(channel, args, context);
+    if (WORKTREE_CHANNELS.includes(channel as typeof WORKTREE_CHANNELS[number])) {
+      if (!this.worktreeIpc) throw new Error('WORKTREE_HOST_UNAVAILABLE');
+      return this.worktreeIpc(channel, args, context);
+    }
     if (ORCA_CONTROL_CHANNELS.includes(channel as typeof ORCA_CONTROL_CHANNELS[number])) {
       if (context.source === 'remote' && (!context.deviceId || !context.ownerId || !context.assertCurrent)) throw new Error('AUTHENTICATED_OWNER_REQUIRED');
       return this.orcaAction.run(() => this.guard(context), () => this.orcaIpc.invoke(channel, args));
@@ -2249,7 +2298,7 @@ export class TerminalTaskHost {
       case 'terminal:tasks:get': { const row = await this.storage.get(string(args[0])); if (!row) throw new Error('TASK_NOT_FOUND'); return this.view(row); }
       case 'terminal:tasks:history': { const page = args[1] === undefined ? {} : record(args[1]); return this.storage.history(string(args[0]), Number(page.after ?? 0), Number(page.limit ?? 200)); }
       case 'terminal:tasks:rename': { const row = await this.storage.update(string(args[0]), { title: string(args[1]) }); this.emit('terminal:tasks:changed', { sessionId: row.id }); return this.view(row); }
-      case 'terminal:tasks:delete': { const id = string(args[0]); await this.cancelTaskRecovery(id); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.options.beforeTaskUnavailable?.(id); this.guard(context); await this.closeTask(id); const channelFilesRoot=this.channelFiles.imAttachmentsRoot(); const channelIdentity=this.channelBindings.store.findByTarget(id); if(channelIdentity)await this.channelBindings.store.detachIfTarget(channelIdentity,id); await this.storage.delete(id); await this.media.removeSession(id); await this.channelFiles.removeImSessionAttachmentDirs(id,channelFilesRoot); this.channelVendorOptions.delete(id); this.emit('terminal:tasks:changed', { sessionId: id }); return { success: true }; }
+      case 'terminal:tasks:delete': { const id = string(args[0]); await this.cancelTaskRecovery(id); if (this.starts.has(id)) throw new Error('TASK_STARTING'); await this.options.beforeTaskUnavailable?.(id); this.guard(context); await this.closeTask(id); const channelFilesRoot=this.channelFiles.imAttachmentsRoot(); const channelIdentity=this.channelBindings.store.findByTarget(id); if(channelIdentity)await this.channelBindings.store.detachIfTarget(channelIdentity,id); if (this.worktrees?.manager.getForSession(id) || (await this.storage.get(id))?.worktreePath) await this.patchMeta(id, { status: 'deleted' }, () => this.guard(context)); else await this.storage.delete(id); await this.media.removeSession(id); await this.channelFiles.removeImSessionAttachmentDirs(id,channelFilesRoot); this.channelVendorOptions.delete(id); this.emit('terminal:tasks:changed', { sessionId: id }); return { success: true }; }
       case 'maker:list-active': { const sessions = [...this.live.values()].map(({ session }) => ({ sessionId: session.id, agentKind: session.agentKind, workDir: session.workDir, capabilities: session.capabilities, isTurnRunning: session.isTurnRunning() })); return args[0] && record(args[0]).snapshotVersion === 2 ? { format: 'active-sessions-v2', sessions } : sessions; }
       case 'maker:any-session-in-turn': return [...this.live.values()].some(task => task.session.isTurnRunning());
       case 'maker:session:turn-active': return { inTurn: this.isTurnRunning(string(args[0])) };
@@ -2661,7 +2710,7 @@ export class TerminalTaskHost {
       if (!['active', 'archived', 'deleted'].includes(String(patch.status))) throw new Error('INVALID_SESSION_STATUS');
       if (patch.status !== 'active' && (this.starts.has(id) || this.sending.has(id) || this.live.get(id)?.session.isTurnRunning())) throw new Error('SESSION_RUNNING');
       update.archived = patch.status === 'archived'; update.deleted = patch.status === 'deleted';
-      if (patch.status !== 'active') { await this.cancelTaskRecovery(id); await this.options.beforeTaskUnavailable?.(id); guard(); await this.closeTask(id); }
+      if (patch.status !== 'active') { await this.cancelTaskRecovery(id); await this.options.beforeTaskUnavailable?.(id); guard(); await this.closeTask(id); const row = await this.storage.get(id); guard(); await this.worktrees?.recycle.requestWorktreeRecycle(id, row ? [row.workDir, ...(row.worktreePath ? [row.worktreePath] : [])] : []); }
     }
     if (patch.pinnedAt !== undefined) {
       const at = patch.pinnedAt === null ? null : typeof patch.pinnedAt === 'number' ? patch.pinnedAt : Date.parse(string(patch.pinnedAt));
@@ -2669,6 +2718,7 @@ export class TerminalTaskHost {
       update.pinnedAt = at;
     }
     guard();const row = await this.storage.update(id, update);
+    if (update.archived || update.deleted) this.retryWorktrees();
     this.emit('local-db:sessions:patched', { sessionId: id, patch: this.guiSession(row) });
     return this.guiSession(row);
   }
@@ -2678,6 +2728,7 @@ export class TerminalTaskHost {
   }
   private async shutdown() {
     this.closed = true;
+    this.worktrees?.close();
     this.orcaIdle.stop();
     this.orcaRemoteController.stop();
     await this.orcaReports.close();
@@ -2708,5 +2759,6 @@ export class TerminalTaskHost {
     await this.capabilities.close();
     await Promise.allSettled([...this.hosted].map(handle => handle.close()));
     await Promise.all([this.storage.flush(), this.models.flush(), this.media.close(), this.changes.close()]);
+    await this.worktrees?.taskLeases.flush();
   }
 }

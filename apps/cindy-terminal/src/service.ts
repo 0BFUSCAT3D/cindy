@@ -1,3 +1,5 @@
+import { registerWorktreeResources } from './worktrees/resources.js';
+import { createTerminalWorktrees } from './worktrees/host.js';
 import { TerminalLocalModels } from './local-models/service.js';
 import { TerminalClaudeAuthorization } from './models/claude-terminal.js';
 import { TerminalClaudeLogin } from './models/claude-login.js';
@@ -142,7 +144,7 @@ export class TerminalService {
   readonly stopped = new Promise<void>(resolve => { this.stopWait = resolve; });
   private closing?: Promise<void>;
 
-  constructor(readonly profileDir: string, readonly region: AuthRegion = 'global') {
+  constructor(readonly profileDir: string, readonly region: AuthRegion = 'global', private readonly runtimePaths: { worktreeAppDataRoot?: string } = {}) {
     this.pluginBrowser=new TerminalBrowserRuntime({root:path.join(profileDir,'browser-runtime'),changed:status=>this.transport?.publish('terminal:browser:status',[status])});
     this.settings = new SettingsStore(profileDir);
     this.secrets = new TerminalSecretStore(profileDir);
@@ -350,6 +352,14 @@ export class TerminalService {
       if(channel==='maker:status-changed')this.remote?.refreshPresence();
     }});
     await this.tasks.ready;
+    const worktrees = await createTerminalWorktrees({ profile: this.profileDir, root: ownerDir, tasks: this.tasks.storage, logger, appDataRoot: this.runtimePaths.worktreeAppDataRoot,
+      guard: () => { if (this.ownerKey !== owner || this.ownerGeneration !== generation || this.closing) throw new Error('OWNER_CHANGED'); },
+      secrets: { getSync: key => this.secrets.getSync(`${owner}:${key}`), setSync: (key, value) => this.secrets.setSync(`${owner}:${key}`, value) },
+      // No delegation journal exists on this host yet; unknown ownership stays
+      // protective until the companion delegation adapter is connected.
+      readSessionTransfer: async () => undefined,
+    });
+    await this.tasks.connectWorktrees(worktrees);
     const endpoints=()=>((this.auth.snapshot().session?.realm??this.region)==='cn'?chinaEndpoints:globalEndpoints);
     this.gateway = new TerminalGateway({ models: this.tasks.models, root: ownerDir,
       endpoint: () => endpoints().modelAccessApiBaseUrl, fallbackEndpoint: () => endpoints().cdnBaseUrl,
@@ -500,6 +510,7 @@ export class TerminalService {
 
     this.projects=new TerminalProjects(ownerDir,{guard:guardKnowledge,createSession:async(workingDir,title)=>{const created=await this.tasks.invoke('maker:create-session',[{workingDir,title}],{source:'local',assertCurrent:guardKnowledge}) as {sessionId?:string;id?:string};const id=created.sessionId??created.id;if(!id)throw new Error('SESSION_CREATE_FAILED');return id;}});
     await this.projects.ready;this.projects.register(this.resources.registry);
+    registerWorktreeResources(this.resources.registry,worktrees,this.tasks);
     registerRemoteManagementResources(this.resources.registry,{agent:this.agents,groups:this.groups,membership:this.membership,modelGrants:this.modelGrants,account:this.account,deviceId:this.settings.deviceId,apiBaseUrl:()=>endpoints().deviceLinkApiBaseUrl,remoteEnabled:()=>this.settings.snapshot().effective.remoteEnabled});
     registerShareResources(this.resources.registry,{account:this.account,membership:this.membership,cross:this.crossShares,agent:this.agents,grants:this.modelGrants,reshares:this.reshares,sharedTasks:this.sharedTasks,deviceId:this.settings.deviceId,apiBaseUrl:()=>endpoints().deviceLinkApiBaseUrl,listTasks:()=>this.tasks.storage.list()});
     this.ssh=new TerminalSshService(this.profileDir,(channel,payload)=>{if(scope()===`${owner}:${generation}`&&!this.ownerSuspended)this.transport.publish(channel,[payload]);});
@@ -507,14 +518,14 @@ export class TerminalService {
     this.ssh.registerResources(this.resources.registry);
     const binaries=await this.engines.allStatus();
     await this.tasks.refreshBinaries(Object.fromEntries(binaries.filter(status=>status.binary).map(status=>[status.kind,status.binary!])));
-    this.scheduler=new TerminalSchedulerHost({profileDir:ownerDir,tasks:this.tasks,logger,companions:()=>this.companions, notify:(schedule,run)=>im.notify(schedule,run),
+    this.scheduler=new TerminalSchedulerHost({worktrees,profileDir:ownerDir,tasks:this.tasks,logger,companions:()=>this.companions, notify:(schedule,run)=>im.notify(schedule,run),
       canDispatch:()=>this.ownerKey===owner&&this.ownerGeneration===generation&&!this.ownerSuspended&&!this.closing,
       emit:(channel,args)=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.ownerSuspended||this.closing)return;this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});
     this.scheduler.registerResources(this.resources.registry);
     // The new owner initializes while public RPC remains suspended. Generation
     // fences reject the old owner; the suspension gate is lifted only after setup.
     const guardCompanion=()=>{if(this.ownerKey!==owner||this.ownerGeneration!==generation||this.closing)throw new Error('OWNER_CHANGED');};
-    this.companions=new TerminalCompanionHost({root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,protectedInput:this.protectedInput,attachments:this.tasks.attachmentHost(),
+    this.companions=new TerminalCompanionHost({worktrees,root:path.join(ownerDir,'companions'),profileDir:ownerDir,models:this.tasks.models,logger,guard:guardCompanion,protectedInput:this.protectedInput,attachments:this.tasks.attachmentHost(),
       binary:async kind=>(await this.engines.allStatus()).find(status=>status.kind===kind)?.binary??null,
       helper:input=>this.tasks.helperDeps(input),
       emit:(channel,args)=>{guardCompanion();if(this.ownerSuspended)return;this.transport.publish(channel,args);void this.remote.publish(channel,args[0]).catch(()=>{});}});

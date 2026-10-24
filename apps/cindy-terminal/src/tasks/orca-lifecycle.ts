@@ -1,3 +1,4 @@
+import type { TerminalWorktrees } from '../worktrees/host.js';
 import { realpath, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { AgentKind, Session } from '@cindy/maker-core';
@@ -20,6 +21,7 @@ export function createTerminalOrcaLifecycle(deps: {
   team: OrcaTeamService; remote: ReturnType<typeof createOrcaRemoteWorkers>;
   remoteInvoke?: Parameters<typeof readDeviceProviderViews>[0];
   selfDeviceId(): string | undefined;
+  worktrees?(): TerminalWorktrees | undefined;
   guard(): void;
   withLock<T>(id: string, work: () => Promise<T>): Promise<T>;
   authority(id: string): Promise<{ permissionMode?: 'auto'; assertCurrent(): Promise<void> }>;
@@ -63,6 +65,22 @@ export function createTerminalOrcaLifecycle(deps: {
       if (!(await stat(resolved)).isDirectory()) throw new Error('WORKDIR_NOT_DIRECTORY');
       deps.guard(); return resolved;
     },
+    resolveWorkerWorktreeSource: async (directory, sourceBranch) => {
+      const host = deps.worktrees?.(); if (!host) throw new Error('WORKTREE_HOST_UNAVAILABLE');
+      deps.guard(); return host.workerProjects.resolveWorkerWorktreeSource(directory, sourceBranch);
+    },
+    getWorkerWorktree: id => deps.worktrees?.()?.workerProjects.getWorkerOwnedWorktree(id),
+    createWorkerWorktree: async (id, directory, sourceBranch) => {
+      const host = deps.worktrees?.(); if (!host) throw new Error('WORKTREE_HOST_UNAVAILABLE');
+      deps.guard(); return host.workerProjects.createWorkerWorktree(id, directory, sourceBranch);
+    },
+    discardWorkerWorktree: id => deps.withLock(id, async () => {
+      const host = deps.worktrees?.(); if (!host) throw new Error('WORKTREE_HOST_UNAVAILABLE');
+      await host.manager.awaitBackgroundCheckout(id);
+      await host.manager.cancelPrecreatedWorktree(id, { path: host.manager.getForSession(id)?.path }, {
+        canRemove: async () => { deps.guard(); if (deps.live(id)) return false; const row = await deps.tasks.get(id); return !row || Boolean(row.archived); },
+      });
+    }),
     getAvailableModels: localModels,
     getProviderRoutingContext: async (kind, _remoteHostId, deviceId) => {
       if (deviceId) {

@@ -24,6 +24,7 @@ const labels = {
   timezone: ['Time zone', '时区', '時區', 'タイムゾーン', '시간대'],
   persistent: ['Continue in the same task', '持续使用同一任务', '持續使用同一任務', '同じタスクを継続', '같은 작업에서 계속'],
   notify: ['Notify when finished', '完成时通知', '完成時通知', '完了時に通知', '완료 시 알림'],
+  worktree: ['Use worktree', '使用 worktree', '使用 worktree', 'worktree を使用', 'worktree 사용'],
   cronKind: ['Calendar (cron)', '日历时间（cron）', '日曆時間（cron）', 'カレンダー（cron）', '달력(cron)'],
   intervalKind: ['Fixed interval', '固定间隔', '固定間隔', '一定間隔', '고정 간격'],
 } as const;
@@ -43,6 +44,7 @@ export function scheduleForm(row?: Schedule): RemoteActionDescriptor {
         options: [...(row ? [{ value: '__keep', label: row.agentKind }] : []), ...['claude-code', 'codex', 'pi'].map(value => ({ value, label: value }))] },
       field('providerId', 'provider', false, row?.providerId), field('model', 'model', false, row?.model),
       field('workingDir', 'directory', !row, row?.workingDir), field('prompt', 'prompt', !row, row?.prompt),
+      { id: 'useWorktree', label: scheduleText('worktree'), kind: 'toggle' },
       { id: 'kind', label: scheduleText('timing'), kind: 'select', required: true, options: [
         ...(row ? [{ value: '__keep', label: scheduleText(!!row.intervalMs ? 'intervalKind' : 'cronKind') }] : []),
         { value: 'cron', label: scheduleText('cronKind') }, { value: 'interval', label: scheduleText('intervalKind') },
@@ -75,11 +77,12 @@ export function scheduleFormInput(input: Record<string, unknown>, row?: Schedule
   const cronExpr = read('cronExpr', row?.cronExpr) ?? '';
   if (kind === 'interval' && (!Number.isSafeInteger(intervalMs) || intervalMs! <= 0)) throw new Error('INVALID_INTERVAL');
   if (kind === 'cron' && !cronExpr.trim()) throw new Error('INVALID_CRON');
-  for (const key of ['persistentSession', 'notify']) if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new Error('INVALID_SCHEDULE_INPUT');
+  for (const key of ['persistentSession', 'notify', 'useWorktree']) if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new Error('INVALID_SCHEDULE_INPUT');
   return { name, prompt, workingDir, kind: 'cron', cronExpr: cronExpr || '0 9 * * *', timezone,
     agentKind: agentKind as CreateScheduleInput['agentKind'], modelAgentKind: agentKind as CreateScheduleInput['agentKind'],
     providerId: read('providerId', row?.providerId), model: read('model', row?.model),
     intervalMs: kind === 'interval' ? intervalMs : undefined,
-    ...(!row ? { recurring: true, workspaceKind: 'project' as const, useWorktree: false, persistentSession: input.persistentSession === true, notify: { desktop: input.notify === true, feishu: false } } : {}),
+    useWorktree: typeof input.useWorktree === 'boolean' ? input.useWorktree : row?.useWorktree ?? false,
+    ...(!row ? { recurring: true, workspaceKind: 'project' as const, persistentSession: input.persistentSession === true, notify: { desktop: input.notify === true, feishu: false } } : {}),
   };
 }
