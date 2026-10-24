@@ -1,49 +1,40 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Alert } from 'react-native';
-import { Stack } from 'expo-router';
-import { nativeToolbarMenuItems } from '@/platform/chrome/nativeToolbarMenuItems';
-import { Plus } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import type { RemoteResourceRef } from '@cindy/device-link';
 import { useAuth } from '@/auth/AuthContext';
 import type { RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { NativePullDownMenu, usesNativePullDownMenu, type NativePullDownAction } from '@/platform/chrome/NativePullDownMenu';
-import { useTheme } from '@/theme';
-import { iconSize, iconStroke } from '@/theme/tokens';
 import { BotGroupCreateSheet } from './BotGroupCreateSheet';
 import { CompanionCreateSheet } from './CompanionProfileSheet';
-import { MainWindowActionButton } from '@/components/MobilePrimitives';
 import { CompanionSettingsRow } from './CompanionSettingsRow';
 import { CompanionSheet } from './CompanionSheet';
-import { HomeHeaderGlassButton } from './HomeHeaderGlassButton';
 import { TEAMMATE_COLLECTION_ID } from './useTeammateRoster';
 
 type CreateKind = 'bot' | 'group';
 type Choice = { kind: CreateKind; host: RemoteResourceHostTarget };
 
-/**
- * 伙伴页顶栏的「+」。支持群聊时是一个菜单：新建伙伴 / 新建群聊（多台电脑时再选电脑）；
- * 旧版电脑不支持群聊时保持原来的直接新建伙伴。表单关闭后才回报创建结果，避免两个 Modal 叠加。
- */
-export function TeammateCreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance = 'glass' }: {
+type CreateOptions = {
   targets: readonly RemoteResourceHostTarget[];
-  /** `cta`: the empty list's primary button; it only creates a teammate. */
-  appearance?: 'glass' | 'cta' | 'toolbar';
   /** Online computers that support group chats; empty keeps the single-purpose button. */
   groupTargets?: readonly RemoteResourceHostTarget[];
   preferredDeviceId?: string;
   onCreated(host: RemoteResourceHostTarget, ref: RemoteResourceRef): void;
   onGroupCreated?(host: RemoteResourceHostTarget, groupId: string): void;
-}) {
-  const { accountGeneration } = useAuth();
-  // Account changes discard both native menu selections and dismissal receipts.
-  return <CreateButton key={accountGeneration} {...{ targets, groupTargets, preferredDeviceId, onCreated, onGroupCreated, appearance }} account={accountGeneration} />;
-}
+};
 
-function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance, account }: Parameters<typeof TeammateCreateButton>[0] & { account: number }) {
+/**
+ * 新建伙伴 / 新建群聊的菜单与表单。支持群聊时是一个菜单（多台电脑时再选电脑）；旧版电脑不支持
+ * 群聊时直接新建伙伴。表单关闭后才回报创建结果，避免两个 Modal 叠加。
+ * The trigger is drawn by the caller: the task home's teammate section moves it between states, and
+ * a moving trigger must not unmount an open form or drop its receipt. It starts over on an account
+ * switch by itself: the root-hosted home list (Android, wide screens) keeps its state across the
+ * account-keyed route.
+ */
+export function useTeammateCreateController({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated }: CreateOptions) {
   const { t } = useTranslation();
-  const { colors } = useTheme();
   const { accountGeneration } = useAuth();
+  const [account, setAccount] = useState(accountGeneration);
   const currentAccount = useRef(accountGeneration); currentAccount.current = accountGeneration;
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -53,8 +44,12 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
   const pendingChoice = useRef<Choice | null>(null);
   const receipt = useRef<RemoteResourceRef | null>(null);
   const groupReceipt = useRef<string | null>(null);
-  const cta = appearance === 'cta';
-  const withGroups = !cta && groupTargets.length > 0 && !!onGroupCreated;
+  // Callbacks already handed out keep the old account and stay fenced; new ones serve the new account.
+  if (account !== accountGeneration) {
+    setAccount(accountGeneration); setOpen(null); setVisible(false); setChoosing(false);
+  }
+  useEffect(() => { pendingChoice.current = null; receipt.current = null; groupReceipt.current = null; }, [accountGeneration]);
+  const withGroups = groupTargets.length > 0 && !!onGroupCreated;
   const order = (hosts: readonly RemoteResourceHostTarget[]) => [...hosts]
     .sort((a, b) => Number(b.deviceId === preferredDeviceId) - Number(a.deviceId === preferredDeviceId));
   const ordered = order(targets);
@@ -64,7 +59,7 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
     if (!mounted.current || currentAccount.current !== account || !target) return;
     setOpen({ kind, host: target }); setVisible(true);
   };
-  const botLabel = t(withGroups || cta ? 'devices.companions.createTeammate' : 'devices.companionProfile.create');
+  const botLabel = t(withGroups ? 'devices.companions.createTeammate' : 'devices.companionProfile.create');
   const groupLabel = t('groupChat.create.title');
   const entry = (kind: CreateKind, hosts: readonly RemoteResourceHostTarget[]): NativePullDownAction => ({
     id: hosts.length === 1 ? `${kind}:${hosts[0]!.deviceId}` : kind,
@@ -86,13 +81,8 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
     // The empty state names the next step instead of only reporting that nothing is available.
     if (!withGroups && !targets.length) Alert.alert(label, t('devices.companions.noCreateHosts'));
     else if (!needsMenu) start('bot', targets[0]!.deviceId);
-    else if (cta || !usesNativePullDownMenu()) setChoosing(true);
+    else if (!usesNativePullDownMenu()) setChoosing(true);
   };
-  const button = cta
-    ? <MainWindowActionButton action={{ label: botLabel, tone: 'primary', onPress: press, testID: 'teammates.emptyCreate' }} />
-    : <HomeHeaderGlassButton accessibilityLabel={label} testID="teammates.create" onPress={press}>
-      <Plus color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
-    </HomeHeaderGlassButton>;
   const fallbackChoices: Choice[] = [
     ...ordered.map((host) => ({ kind: 'bot' as const, host })),
     ...(withGroups ? orderedGroups.map((host) => ({ kind: 'group' as const, host })) : []),
@@ -104,14 +94,11 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
   };
   const groupOpen = open?.kind === 'group' ? open : null;
   const menu = needsMenu && menuActions.length > 0;
-  let trigger = button;
-  if (appearance === 'toolbar') trigger = <Stack.Toolbar placement="right">
-    {menu ? <Stack.Toolbar.Menu icon="plus" accessibilityLabel={label}>{nativeToolbarMenuItems(menuActions, onMenu)}</Stack.Toolbar.Menu>
-      : <Stack.Toolbar.Button icon="plus" accessibilityLabel={label} onPress={press} />}
-  </Stack.Toolbar>;
-  else if (!cta && menu) trigger = <NativePullDownMenu actions={menuActions} onAction={onMenu} testID="teammates.createMenu">{button}</NativePullDownMenu>;
-  return <>
-    {trigger}
+  /** Wraps the caller's button in the native menu when one is needed. */
+  const renderTrigger = (button: ReactElement) => menu
+    ? <NativePullDownMenu actions={menuActions} onAction={onMenu} testID="teammates.createMenu">{button}</NativePullDownMenu>
+    : button;
+  const sheets = <>
     <CompanionSheet visible={choosing} title={label} testID="teammates.createChooser" onClose={() => { pendingChoice.current = null; setChoosing(false); }}
       onClosed={() => { const choice = pendingChoice.current; pendingChoice.current = null; if (choice) start(choice.kind, choice.host.deviceId); }}>
       {/* Same choice as the header's native menu: one plain row per choice, not full-width buttons. */}
@@ -135,4 +122,5 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
         if (groupId && groupOpen && mounted.current && currentAccount.current === account) onGroupCreated?.(groupOpen.host, groupId);
       }} /> : null}
   </>;
+  return { press, label, renderTrigger, sheets };
 }
