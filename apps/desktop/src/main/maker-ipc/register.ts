@@ -15506,20 +15506,19 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     };
     const sessionAtCapture = await readSessionRow();
     const liveAtCapture = maker.getSession(leadSessionId);
-    // Permission baselines are persisted semantics: instance generation counters restart on
-    // rehydrate, so they can never be compared across a released runtime. Fall back to the row
-    // when the runtime has no stable snapshot at admission.
-    const permissionAtCapture = liveAtCapture?.stablePermissionModeState && liveAtCapture.stablePlanModeState
+    // Two baselines, each compared against its own source: a resumed runtime can run a
+    // permission mode the row does not carry (and the row is not rewritten for it), so mixing
+    // them would cancel a valid dispatch after the runtime is released. Instance generation
+    // counters restart on rehydrate, so only the semantics are ever compared.
+    const livePermissionAtCapture = liveAtCapture?.stablePermissionModeState && liveAtCapture.stablePlanModeState
       ? {
           mode: liveAtCapture.stablePermissionModeState.mode,
           planEnabled: liveAtCapture.stablePlanModeState.enabled,
         }
-      : sessionAtCapture
-        ? {
-            mode: sessionAtCapture.permissionMode,
-            planEnabled: sessionAtCapture.planModeEnabled,
-          }
-        : null;
+      : null;
+    const persistedPermissionAtCapture = sessionAtCapture
+      ? { mode: sessionAtCapture.permissionMode, planEnabled: sessionAtCapture.planModeEnabled }
+      : null;
     return async () => {
       if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED', 'Account changed');
       if (isAppSessionBoundaryPending()) throw new PluginTaskError('HOST_NOT_READY', 'Account is switching');
@@ -15537,12 +15536,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // snapshot while the owner is changing it.
         if (!permission || !plan)
           throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions are changing');
-        if (permissionAtCapture && (permission.mode !== permissionAtCapture.mode
-          || plan.enabled !== permissionAtCapture.planEnabled))
+        if (!livePermissionAtCapture
+          || permission.mode !== livePermissionAtCapture.mode
+          || plan.enabled !== livePermissionAtCapture.planEnabled)
           throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions changed before delivery');
-      } else if (permissionAtCapture
-        && (row.permissionMode !== permissionAtCapture.mode
-          || row.planModeEnabled !== permissionAtCapture.planEnabled)) {
+      } else if (!persistedPermissionAtCapture
+        || row.permissionMode !== persistedPermissionAtCapture.mode
+        || row.planModeEnabled !== persistedPermissionAtCapture.planEnabled) {
         // An absent runtime is released or not rehydrated yet, not a revocation by itself —
         // but the persisted row is then the only authority left to compare against.
         throw new PluginTaskError('PERMISSION_DENIED', 'Task permissions changed before delivery');

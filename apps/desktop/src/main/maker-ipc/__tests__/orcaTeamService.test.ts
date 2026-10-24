@@ -3878,6 +3878,17 @@ return captureOrcaDeliveryAuthority;`, {
     await expect(assertDelivery()).resolves.toBeUndefined();
   });
 
+  it('keeps a resumed runtime mode that the persisted row does not carry', async () => {
+    // A cold resume can run a stricter/looser mode than the row without rewriting it.
+    const h = compile(row({ permissionMode: 'ask' }));
+    h.setLive(permission('bypassPermissions', 1));
+    const assertDelivery = await h.authorize();
+
+    // Idle release: the row still says ask, and the user changed nothing.
+    h.setLive(null);
+    await expect(assertDelivery()).resolves.toBeUndefined();
+  });
+
   it('rejects delivery while the owner is switching permissions or when the mode changed', async () => {
     const h = compile(row());
     h.setLive(permission('bypassPermissions', 3));
