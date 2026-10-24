@@ -85,6 +85,22 @@ function readStoredRealms(key: string): string[] {
 }
 
 describe('push notification realm routing', () => {
+  it('compensates both endpoints when first enable partially fails, retaining retry state if DELETE fails', async () => {
+    let failDelete = true;
+    const apiFetch = vi.fn(async (path: string, opts: { method?: string }) => {
+      if (path === '/v1/push-token' && (opts.method === 'PUT' || failDelete)) throw new Error('offline');
+      return {};
+    });
+    await expect(syncPushRegistration({ enabled: true, apiFetch: apiFetch as any })).rejects.toThrow('offline');
+    expect(apiFetch.mock.calls.filter(call => call[1].method === 'DELETE').map(call => call[0]))
+      .toEqual(['/api/device-link/push-token', '/v1/push-token']);
+    expect(readStoredRealms(PENDING_KEY)).toEqual(['cn']);
+    expect(readStoredRealms(REGISTERED_KEY)).toEqual(['cn']);
+    failDelete = false;
+    await retryPendingUnregister(apiFetch as any);
+    expect(readStoredRealms(PENDING_KEY)).toEqual([]);
+    expect(readStoredRealms(REGISTERED_KEY)).toEqual([]);
+  });
   // Same group, another thread must still be noticeable while reading the main timeline.
   it('passes the thread route to the foreground visibility gate', async () => {
     const room = '00000000-0000-4000-8000-000000000001';

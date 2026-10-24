@@ -59,6 +59,9 @@ export function getDesktopNotificationsEnabled(): boolean {
 /** Chat uses the same system permission and global desktop preference as task notifications. */
 export async function showDesktopChatMessage(payload: ChatMessageNotification, current: () => boolean): Promise<void> {
   const visible = () => {
+    // A group URL cannot tell which side-panel thread is being read. Thread
+    // notifications rely on the consumer's authoritative read-receipt check.
+    if (payload.threadRootId) return false;
     const window = getDeepLinkMainWindow();
     if (!window?.isFocused() || !window.isVisible()) return false;
     try { return new URL(window.webContents.getURL()).hash.split('?')[0] === `#/bots/groups/${payload.groupId}`; }

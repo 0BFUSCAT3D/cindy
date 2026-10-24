@@ -382,6 +382,16 @@ async function syncPushRegistrationInternal(
       await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope).catch(
         () => undefined,
       );
+    } else if (!await readPushEnabled()) {
+      // A failed first enable must not leave either endpoint subscribed while
+      // Settings still shows off. DELETE both: a lost PUT response is ambiguous.
+      await addPushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
+      try {
+        if (lifecycleGeneration !== pushLifecycleGeneration) throw error;
+        await mutatePushTokens(opts.apiFetch, realm, 'DELETE', { token: body.token });
+        await removePushRealm(PUSH_REGISTERED_KEY, realm, stateScope);
+        await removePushRealm(PUSH_PENDING_UNREGISTER_KEY, realm, stateScope);
+      } catch { /* Keep the existing same-realm compensation marker for reconnect. */ }
     }
     throw error;
   }

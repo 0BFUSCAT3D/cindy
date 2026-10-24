@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { i18n } from '@/i18n';
+import { botGroupNewMessageCount } from '@cindy/maker-shared/botGroupPresentation';
 import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatPage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
 import { botGroupQuoteFromMessage, resolveBotGroupQuote, buildBotGroupQuoteCard, buildBotGroupTaskCard } from '@cindy/maker-shared/botGroupChat';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -13,6 +14,12 @@ const snapshot = (): ChatSnapshot => ({ room: room(), cursor: '9007199254741099'
 ] });
 
 describe('direct Chat Server client', () => {
+  it('preserves thread identity through projection into the history new-message counter', () => {
+    const view = chatGroupView({ snapshot: snapshot(), before: null, messages: [message(20),
+      { ...message(21), threadRootId: id(20) }, { ...message(22), threadRootId: id(99) }] }, id(11));
+    expect(botGroupNewMessageCount(view.messages, message(20).seq, id(20))).toBe(1);
+    expect(botGroupNewMessageCount(view.messages, message(20).seq)).toBe(0);
+  });
   it('reads a 引用回复 card as the quote, keeps it out of text and previews, and marks a deleted original', () => {
     const card = buildBotGroupQuoteCard({ messageId: id(20), authorName: 'Other member', authorKind: 'user', excerpt: 'original words',
       attachmentCount: 0, attachmentName: null, sequence: 20 });

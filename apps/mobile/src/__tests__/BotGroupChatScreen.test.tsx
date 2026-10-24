@@ -1381,8 +1381,8 @@ describe('direct server group presentation', () => {
 });
 
 
-it('acknowledges other humans only once their messages reach the measured visible tail', async () => {
-  h.chat.server = true;
+it.each([true, false])('acknowledges other humans at the measured visible tail (direct: %s)', async server => {
+  h.chat.server = server;
   h.chat.markRead = vi.fn(async () => {});
   await render(group({ messages: [message('incoming-human', 12, { authorKind: 'user', isSelf: false, content: 'hello' }),
     message('mine', 13, { authorKind: 'user', isSelf: true, content: 'reply' })], plans: [], openPlan: null }));
@@ -1393,7 +1393,8 @@ it('acknowledges other humans only once their messages reach the measured visibl
     h.scroll.onContentSizeChange(400, 400);
   });
   expect(h.chat.markRead).toHaveBeenLastCalledWith(['incoming-human']);
-  expect(h.markRead).not.toHaveBeenCalled();
+  if (server) expect(h.markRead).not.toHaveBeenCalled();
+  else expect(h.markRead).toHaveBeenCalled();
 });
 
 // #6550: screen + real mobile Markdown parser, with RN host primitives simulated in jsdom.

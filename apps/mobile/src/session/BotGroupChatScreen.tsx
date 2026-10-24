@@ -186,6 +186,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
     if (chat.server && chat.markRead) { void chat.markRead(incoming.map(message => message.id)); return; }
     const at = incoming.reduce((latest, message) => Math.max(latest, message.createdAt), 0);
     if (at > 0) void markRemoteResourceRead(user?.id ?? '', deviceId, groupId, at);
+    if (chat.markRead) void chat.markRead(incoming.map(message => message.id));
   }, [focused, group, user?.id, deviceId, groupId, viewportOwner, latestSequence, chat.server, chat.markRead]);
   useEffect(() => {
     const frame = requestAnimationFrame(acknowledge);
