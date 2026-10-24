@@ -24,7 +24,8 @@ export function SessionListDrawer({ currentSessionId, persistent = false, newSes
   newSessionInSystemBar?: boolean;
   onClose(): void;
   onClosed?(): void;
-  onSelectSession(item: RemoteSessionListItem): void;
+  /** Without an override, Home uses its normal navigation and task history. */
+  onSelectSession?(item: RemoteSessionListItem): void;
   runNavigation(action: () => void): void;
   newSessionActionRef?: MutableRefObject<(() => void) | null>;
   open: boolean;
