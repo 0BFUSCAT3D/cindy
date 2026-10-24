@@ -1363,13 +1363,62 @@ describe('session context window budget reconciler', () => {
     expect(pending.has('task-1')).toBe(true);
   });
 
-  it('replays a budget at the send boundary only when a rebuild is still pending', () => {
+  it.each([
+    ['no boundary replay without a pending intent', false, 0],
+    ['replays at the send boundary when an intent is pending', true, 1],
+  ] as const)('replay gate: %s', async (_label, intentPending, expectedReconciles) => {
     // 任务启动时 create opts 已带上偏好预算（applySessionContextWindowBudgetToCreateOpts），
     // 此时 dedup 还没有条目 —— 若按「dedup 缺失」重放，首条直发会把刚配置好的实例再关一次
-    // （首条消息多等一次冷启动；Greptile P2，2026-10-24）。
-    const boundary = source.slice(source.indexOf("stage = 'direct-send:"));
-    expect(boundary).toContain('if (pendingSessionContextWindowBudgetReconciles.has(sessionId)) {');
-    expect(boundary.indexOf('pendingSessionContextWindowBudgetReconciles.has(sessionId)'))
-      .toBeLessThan(boundary.indexOf('reconcileSessionContextWindowBudgetUnderLock('));
+    // （Greptile P2，2026-10-24）。执行真实的 replay 函数，而不是断言源码文本。
+    const { js } = loadBudgetReconciler();
+    const applied = new Map<string, number | null>();
+    const pending = new Set<string>(intentPending ? ['task-1'] : []);
+    const applyRuntimeSetModelChange = vi.fn(async () => ({ status: 'applied' as const }));
+    const deps = {
+      getMakerIfReady: () => ({ getSession: () => ({ model: 'grok-4.6' }) }),
+      getDbClient: () => ({
+        drizzle: {
+          select: () => ({
+            from: () => ({ where: () => ({ limit: async () => [{ agentKind: 'cc', model: 'grok-4.6', providerId: 'xd' }] }) }),
+          }),
+        },
+      }),
+      sessions: { agentKind: 'agentKind', model: 'model', providerId: 'providerId', id: 'id' },
+      eq: () => ({}),
+      dbToMakerAgentKind: () => 'claude-code',
+      getSessionProvider: () => 'xd',
+      getActiveCatalog: () => ({}),
+      readStoredSessionContextWindowBudget: async () => 300_000,
+      appliedContextWindowBudgets: applied,
+      pendingSessionContextWindowBudgetReconciles: pending,
+      contextWindowBudgetChangesEffectiveWindow: () => true,
+      getPendingCredentialSwitchTarget: () => null,
+      registerPendingCredentialSwitchForSession: vi.fn(),
+      applyRuntimeSetModelChange,
+      runtimeMutationDeps: () => ({}),
+      withSendToSessionLock: (_id: string, fn: () => Promise<void>) => fn(),
+      log: { debug: vi.fn(), info: vi.fn() },
+    };
+    const replay = new Function(
+      ...Object.keys(deps),
+      `${js}; return replayPendingSessionContextWindowBudgetUnderLock;`,
+    )(...Object.values(deps)) as (sessionId: string, before?: () => void) => Promise<void>;
+
+    const before = vi.fn();
+    await replay('task-1', before);
+    expect(applyRuntimeSetModelChange).toHaveBeenCalledTimes(expectedReconciles);
+    expect(before).toHaveBeenCalledTimes(expectedReconciles);
+  });
+
+  it('replays the budget from the desktop send transaction, not only from direct sends', () => {
+    // 桌面 UI 发送（createMakerSendTransaction 的 applyPendingAgentSwitch）必须与直发
+    // 边界共用同一条重放：只挂直发的话，「回合中改预算 → 选择器点选清掉 pending → 从界面
+    // 发消息」这条最普通的路径永远等不到预算生效（GLM-5.3 独立审查，2026-10-24）。
+    const desktopSend = source.slice(
+      source.indexOf('applyPendingAgentSwitch: async (sessionId, options) => {'),
+      source.indexOf('providerGroupService?.beforeSend(', source.indexOf('applyPendingAgentSwitch: async (sessionId, options) => {')),
+    );
+    expect(desktopSend).toContain('applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId)');
+    expect(desktopSend).toContain('replayPendingSessionContextWindowBudgetUnderLock(sessionId)');
   });
 });

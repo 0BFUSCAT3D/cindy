@@ -905,9 +905,6 @@ export async function persistSessionFields(
   const previousContextWindowBudget: number | null = hasBudgetChange
     ? readSessionContextWindowBudget(sessionId)
     : null;
-  const nextContextWindowBudget: number | null = hasBudgetChange
-    ? writeSessionContextWindowBudget(sessionId, (clean.contextWindowBudget as number | null) ?? null)
-    : null;
   const rowPatch = { ...clean };
   delete rowPatch.contextWindowBudget;
   const setObj = sessionPatchToRow(rowPatch as Parameters<typeof sessionPatchToRow>[0], {
@@ -917,6 +914,23 @@ export async function persistSessionFields(
     await db.update(sessions).set(setObj).where(eq(sessions.id, sessionId));
   } else if (!hasBudgetChange) {
     return;
+  }
+  // 预算写偏好文件放在行更新**之后**：偏好文件不可读时 store 会拒绝写（保留坏文件给
+  // 人工修），若先写就会让同一个 patch 里的其它字段（改名、归档…）整包失败。
+  let budgetWritten = false;
+  let nextContextWindowBudget: number | null = null;
+  if (hasBudgetChange) {
+    try {
+      nextContextWindowBudget = writeSessionContextWindowBudget(
+        sessionId, (clean.contextWindowBudget as number | null) ?? null,
+      );
+      budgetWritten = true;
+    } catch (error) {
+      console.warn('[sessions] write context window budget failed; other fields already saved', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   let runtimeProjection = {};
   if (['model', 'providerId', 'effort', 'fastMode'].some((key) => key in clean)) {
@@ -931,7 +945,7 @@ export async function persistSessionFields(
   }
   if (isOwnerScopeCurrent(ownerScope)) broadcastSessionPatched(sessionId, { ...clean, ...runtimeProjection }, ownerScope);
   // 远程 set-* 落库后同样要把新预算应用到被控端活实例（语义与 updateSessionInDb 一致）。
-  if (hasBudgetChange && registeredSessionIpcOpts.applyContextWindowBudget) {
+  if (budgetWritten && registeredSessionIpcOpts.applyContextWindowBudget) {
     try {
       await registeredSessionIpcOpts.applyContextWindowBudget(sessionId, {
         previous: previousContextWindowBudget,
@@ -2499,8 +2513,21 @@ export async function updateSessionInDb(
     // 这条过期请求会把原任务的预算写进新账号的文件，原账号反而没保存
     // （Greptile P1，2026-10-24；相邻广播本来就是同一口径）。
     if (hasContextWindowBudgetChange && isOwnerScopeCurrent(ownerScope)) {
-      const nextContextWindowBudget = writeSessionContextWindowBudget(sid, p.contextWindowBudget ?? null);
-      if (opts.applyContextWindowBudget) {
+      // 偏好文件不可读时 store 会拒绝写：行更新与广播都已提交，这里只能降级为
+      // 「预算未保存」（不回滚其它字段、也不让 IPC 报错盖掉已生效的改名等）——
+      // 用户在档位卡上会看到旧值，重设一次即可（GLM-5.3 独立审查，2026-10-24）。
+      let nextContextWindowBudget: number | null = null;
+      let budgetWritten = false;
+      try {
+        nextContextWindowBudget = writeSessionContextWindowBudget(sid, p.contextWindowBudget ?? null);
+        budgetWritten = true;
+      } catch (error) {
+        console.warn('[sessions] write context window budget failed; row update already applied', {
+          sessionId: sid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (budgetWritten && opts.applyContextWindowBudget) {
         try {
           await opts.applyContextWindowBudget(sid, {
             previous: previousContextWindowBudget,

@@ -6620,6 +6620,24 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       reconcileSessionContextWindowBudgetUnderLock(sessionId, change.previous)
     ));
   };
+  /**
+   * 预算重放（**锁内**，调用方持 send 锁）：只在有未完成意图时跑一次对账。
+   *
+   * 两条发送边界共用：直发（IM / Goal / 定时任务）与**桌面 UI 发送事务**
+   * （createMakerSendTransaction 的 applyPendingAgentSwitch）。只做直发那一处的话，
+   * 回合中改预算、随后在模型选择器里点选而清掉 pending 的用户——也就是最普通的那条
+   * 操作路径——永远等不到预算生效（GLM-5.3 独立审查，2026-10-24）。
+   */
+  const replayPendingSessionContextWindowBudgetUnderLock = async (
+    sessionId: string,
+    before?: () => void,
+  ): Promise<void> => {
+    if (!pendingSessionContextWindowBudgetReconciles.has(sessionId)) return;
+    before?.();
+    await reconcileSessionContextWindowBudgetUnderLock(
+      sessionId, appliedContextWindowBudgets.get(sessionId) ?? null,
+    );
+  };
 
   setModelContextRuntimeRefreshListener(() => {
     if (!getMakerIfReady()) return;
@@ -11462,13 +11480,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 只在**有未完成意图**时重放：任务启动本就把偏好预算带进了 create opts，此
       // 时 dedup 还没有条目，按「dedup 缺失」判断会把刚配置好的实例再关一次
       // （Greptile P2，2026-10-24）。
-      if (pendingSessionContextWindowBudgetReconciles.has(sessionId)) {
+      await replayPendingSessionContextWindowBudgetUnderLock(sessionId, () => {
         stage = 'direct-send:reconcileContextWindowBudget';
-        await reconcileSessionContextWindowBudgetUnderLock(
-          sessionId,
-          appliedContextWindowBudgets.get(sessionId) ?? null,
-        );
-      }
+      });
       let resolvedSelection: ScheduledModelSelection | undefined;
       if (selection) {
         stage = 'direct-send:applyScheduledModelSelection';
@@ -17977,6 +17991,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     applyPendingAgentSwitch: async (sessionId, options) => {
       if (!options?.scheduled) await scheduledModelScope.restore(sessionId);
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
+      // 桌面发送也是「消息真正发出去」的边界：回合中登记、随后被模型选择器取消的预算
+      // 重建必须在这里补一次（调用方已持 send 锁）。
+      await replayPendingSessionContextWindowBudgetUnderLock(sessionId);
       // Queued Orca delivery and resume both use this transaction. A failed
       // cross-engine preparation may retain its intent without throwing.
       if (agentSwitchPending.get(sessionId)) {

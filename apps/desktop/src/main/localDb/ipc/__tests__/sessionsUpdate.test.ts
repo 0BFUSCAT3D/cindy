@@ -27,6 +27,7 @@ import { isWorktreeMoveBlockedError } from '../../../../shared/worktreeMoveGuard
 import {
   isSessionContextWindowBudgetCustomized,
   readSessionContextWindowBudget,
+  writeSessionContextWindowBudget,
 } from '../../../maker-host/session-context-budget-store.js';
 
 type SessionRouteLockMock = SessionRouteLock &
@@ -178,6 +179,11 @@ vi.mock('../../../turn-change-set/store.js', () => ({
 vi.mock('../../../cindy-brain/index.js', () => ({
   notifyGhostSessionEvent: vi.fn(),
 }));
+// 偏好文件不可读时 store 会拒绝写（保留坏文件给人工修）：个别用例需要让它抛错。
+vi.mock('../../../maker-host/session-context-budget-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../maker-host/session-context-budget-store.js')>();
+  return { ...actual, writeSessionContextWindowBudget: vi.fn(actual.writeSessionContextWindowBudget) };
+});
 
 import {
   applyAgentSwitchToSessionRow,
@@ -913,6 +919,20 @@ describe('local-db:sessions:update handler wiring', () => {
     await invokeUpdate('cc-local', { contextWindowBudget: null });
     expect(readSessionContextWindowBudget('cc-local')).toBeNull();
     expect(isSessionContextWindowBudgetCustomized('cc-local')).toBe(false);
+  });
+
+  it('keeps the row update when the budget store refuses to write', async () => {
+    // 偏好文件不可读时 store 拒绝写（保留坏文件给人工修）。行更新与广播都已提交，
+    // 预算失败不能带走同一个 patch 里的其它字段，也不能让 IPC 抛错盖掉已生效的改名
+    // （GLM-5.3 独立审查，2026-10-24）。
+    vi.mocked(writeSessionContextWindowBudget).mockImplementationOnce(() => {
+      throw new Error('session context budget settings file is unreadable');
+    });
+    await expect(invokeUpdate('cc-local', {
+      contextWindowBudget: 300_000,
+      title: 'renamed-despite-budget-failure',
+    })).resolves.toBeDefined();
+    expect(readSessionContextWindowBudget('cc-local')).toBeNull();
   });
 
   it('does not write the context window budget into the next account after an owner change', async () => {
