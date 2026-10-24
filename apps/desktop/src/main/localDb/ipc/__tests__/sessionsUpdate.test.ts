@@ -915,6 +915,15 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(isSessionContextWindowBudgetCustomized('cc-local')).toBe(false);
   });
 
+  it('does not write the context window budget into the next account after an owner change', async () => {
+    // 偏好文件按「当前」账号的 userData 解析，而 DB 更新是 await 出来的：保存期间切账号
+    // 时，过期请求不得把原任务的预算写进新账号的文件（Greptile P1，2026-10-24）。
+    h.captureOwnerScope = true;
+    h.ownerCurrent = false;
+    await invokeUpdate('cc-local', { contextWindowBudget: 300_000 });
+    expect(readSessionContextWindowBudget('cc-local')).toBeNull();
+  });
+
   it.each(['model', 'harness'])('projects the saved owner choice during an automatic %s switch', async (kind) => {
     const baseline = JSON.stringify({ scopeId: 'run', agentKind: 'pi', model: 'owner-model',
       providerId: 'owner-provider', effort: 'high', fastMode: true });

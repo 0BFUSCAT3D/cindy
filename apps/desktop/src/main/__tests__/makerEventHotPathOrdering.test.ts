@@ -24,6 +24,19 @@ const bootstrapSource = readFileSync(bootstrapSourcePath, 'utf8').replace(/\r\n?
 const goalStorageSourcePath = resolve(__dirname, '..', 'goal-host', 'storage.ts');
 const goalStorageSource = readFileSync(goalStorageSourcePath, 'utf8').replace(/\r\n?/g, '\n');
 
+/**
+ * 任务窗口预算的对账函数（源切片，供下面两条用例直接执行）：
+ * 依赖全部注入，避免为了两个记账断言去搭整套 register harness。
+ */
+function loadBudgetReconciler() {
+  const start = source.indexOf('  const reconcileSessionContextWindowBudgetUnderLock = async (');
+  const end = source.indexOf('  sessionContextWindowBudgetApplier = async (sessionId, change) => {', start);
+  if (start < 0 || end < 0) throw new Error('budget reconciler source changed');
+  const code = source.slice(start, end);
+  const js = transpileModule(code, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
+  return { code, js };
+}
+
 describe('maker:event hot path ordering', () => {
   it('finishes mandatory runtime cleanup when optional remote refresh throws at an owner boundary', () => {
     const start = source.indexOf('function cleanupClosedSessionRuntime(');
@@ -1204,3 +1217,50 @@ function readEventModule(name: string): string {
     .replace(/\r\n?/g, '\n')
     .replaceAll('deps.', '');
 }
+
+describe('session context window budget reconciler', () => {
+  it.each([
+    ['applied', true],
+    ['deferred', false],
+  ] as const)('records the applied budget only after %s reaches the live session', async (status, recorded) => {
+    // 回合中登记的重建会返回 deferred（只挂了 pending）。这时若就记 dedup，之后的同值
+    // 对账全被挡掉；而 pending 又可能被「重选当前模型」清掉（SET_MODEL 成功路径会
+    // agentSwitchPending.clear），预算就永久不生效（Greptile P1，2026-10-24）。
+    const { code, js } = loadBudgetReconciler();
+    const applied = new Map<string, number | null>();
+    const applyRuntimeSetModelChange = vi.fn(async () => ({ status }));
+    const deps = {
+      getMakerIfReady: () => ({ getSession: () => ({ model: 'grok-4.6' }) }),
+      getDbClient: () => ({
+        drizzle: {
+          select: () => ({
+            from: () => ({ where: () => ({ limit: async () => [{ agentKind: 'cc', model: 'grok-4.6', providerId: 'xd' }] }) }),
+          }),
+        },
+      }),
+      sessions: { agentKind: 'agentKind', model: 'model', providerId: 'providerId', id: 'id' },
+      eq: () => ({}),
+      dbToMakerAgentKind: () => 'claude-code',
+      getSessionProvider: () => 'xd',
+      getActiveCatalog: () => ({}),
+      readStoredSessionContextWindowBudget: async () => 300_000,
+      appliedContextWindowBudgets: applied,
+      contextWindowBudgetChangesEffectiveWindow: () => true,
+      getPendingCredentialSwitchTarget: () => null,
+      registerPendingCredentialSwitchForSession: vi.fn(),
+      applyRuntimeSetModelChange,
+      runtimeMutationDeps: () => ({}),
+      log: { debug: vi.fn(), info: vi.fn() },
+    };
+    expect(code).toContain("result.status === 'applied'");
+    const reconcile = new Function(
+      ...Object.keys(deps),
+      `${js}; return reconcileSessionContextWindowBudgetUnderLock;`,
+    )(...Object.values(deps)) as (sessionId: string, previous: number | null) => Promise<void>;
+
+    await reconcile('task-1', null);
+    expect(applyRuntimeSetModelChange).toHaveBeenCalledOnce();
+    if (recorded) expect(applied.get('task-1')).toBe(300_000);
+    else expect(applied.has('task-1')).toBe(false);
+  });
+});

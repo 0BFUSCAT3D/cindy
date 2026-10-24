@@ -2493,7 +2493,12 @@ export async function updateSessionInDb(
     // 广播之后再把新预算应用到活实例：UI 先看到新选择，重建/延迟登记失败也不回滚设置。
     // 只有本函数会写这份偏好，不存在平行写入链路；回调缺失（宿主未注入）时静默跳过，
     // 新值在下次启动/恢复时按 start options 生效。
-    if (hasContextWindowBudgetChange) {
+    //
+    // 账号边界必须在这里**重新**核对：偏好文件按「当前」账号的 userData 解析
+    // （ownerScopedUserDataPath），而 DB 更新是 await 出来的 —— 期间切账号的话，
+    // 这条过期请求会把原任务的预算写进新账号的文件，原账号反而没保存
+    // （Greptile P1，2026-10-24；相邻广播本来就是同一口径）。
+    if (hasContextWindowBudgetChange && isOwnerScopeCurrent(ownerScope)) {
       const nextContextWindowBudget = writeSessionContextWindowBudget(sid, p.contextWindowBudget ?? null);
       if (opts.applyContextWindowBudget) {
         try {
