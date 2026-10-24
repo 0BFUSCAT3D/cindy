@@ -1,5 +1,13 @@
 const authoredStyleAttribute = 'data-cindy-mail-authored-style';
 
+/** Mail readers share the chat browser policy only for ordinary web links. */
+export function mailPreviewLinkUrl(value: string | null): string | undefined {
+  try {
+    const url = new URL(value || '');
+    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url.href;
+  } catch { /* Unsupported targets remain inert mail content. */ }
+}
+
 /** Restore both live nodes and browser-created clones from the same preview
  * metadata. The mail sanitizer strips this attribute from incoming/outgoing HTML. */
 export function restoreMailPreviewPaint(root: Element): void {
@@ -16,8 +24,20 @@ export function restoreMailPreviewPaint(root: Element): void {
 }
 
 /** Preview-only paint. Source HTML, CID images and editing spans stay intact. */
-export function followMailPreviewTheme(doc: Document, host: Document): () => void {
+export function followMailPreviewTheme(doc: Document, host: Document, reading = false): () => void {
   const restore = () => restoreMailPreviewPaint(doc.documentElement);
+  const paintLinks = () => {
+    if (!reading) return;
+    for (const link of doc.querySelectorAll<HTMLElement>('a')) {
+      for (const el of [link, ...link.querySelectorAll<HTMLElement>('*')]) {
+        if (!el.hasAttribute(authoredStyleAttribute)) el.setAttribute(authoredStyleAttribute, JSON.stringify(el.getAttribute('style')));
+        el.style.setProperty('color', 'inherit', 'important');
+      }
+      const clickable = Boolean(mailPreviewLinkUrl(link.getAttribute('href')));
+      link.style.setProperty('text-decoration', clickable ? 'underline' : 'none', 'important');
+      link.style.setProperty('cursor', clickable ? 'pointer' : 'text', 'important');
+    }
+  };
   let previous = '';
   const paint = () => {
     const root = host.documentElement;
@@ -32,7 +52,7 @@ export function followMailPreviewTheme(doc: Document, host: Document): () => voi
     restore();
     // Light mode preserves authored paper, colors and decoration. Recoloring
     // white backgrounds there exposes seams around images and signature tables.
-    if (!dark || !surface || !text || !doc.defaultView) return;
+    if (!dark || !surface || !text || !doc.defaultView) { paintLinks(); return; }
 
     // Read all authored colors before changing inheritance. Keep the original
     // inline attributes so theme changes and cleanup are lossless, even after typing.
@@ -73,6 +93,7 @@ export function followMailPreviewTheme(doc: Document, host: Document): () => voi
     }
     doc.documentElement.style.setProperty('color-scheme', 'dark', 'important');
     doc.documentElement.style.setProperty('background-color', surface, 'important');
+    paintLinks();
   };
   paint();
   const observer = new MutationObserver(paint);

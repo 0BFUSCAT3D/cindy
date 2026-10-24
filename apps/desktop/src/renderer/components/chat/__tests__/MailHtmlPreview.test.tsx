@@ -49,7 +49,7 @@ it('opens reader links with chat preferences and modifiers but never navigates t
   vi.stubGlobal('electronAPI', { openExternal });
   localStorage.setItem('chat.webLinkOpenPreference', 'sidebar');
   _resetLinkOpenPreferenceForTests();
-  const value = '<a href="https://example.test/page"><b>Open</b></a><a href="javascript:alert(1)">Unsafe</a>';
+  const value = '<a href="https://example.test/page"><b>Open</b></a><a href="javascript:alert(1)">Unsafe</a><a href="mailto:person@example.test">Email</a>';
   const view = render(<ChatSessionFileProvider value={{ sessionId: 'mail-task', workingDir: '', origin: { kind: 'local' } }}>
     <MailHtmlPreview value={value} reading />
   </ChatSessionFileProvider>);
@@ -73,11 +73,60 @@ it('opens reader links with chat preferences and modifiers but never navigates t
   expect(doc.querySelectorAll('a')[1].hasAttribute('href')).toBe(false);
   await act(async () => { fireEvent.click(doc.querySelectorAll('a')[1]); });
   expect(openExternal).toHaveBeenCalledTimes(4);
+  for (const preference of ['sidebar', 'external']) {
+    localStorage.setItem('chat.webLinkOpenPreference', preference);
+    _resetLinkOpenPreferenceForTests();
+    await act(async () => {
+      fireEvent.click(doc.querySelectorAll('a')[2]);
+      doc.querySelectorAll('a')[2].dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }));
+    });
+  }
+  expect(openExternal).toHaveBeenCalledTimes(4);
+  expect(openUrlInSidebarBrowser).toHaveBeenCalledTimes(1);
   view.rerender(<ChatSessionFileProvider value={{ sessionId: 'mail-task', workingDir: '', origin: { kind: 'local' } }}>
     <MailHtmlPreview value={value} reading onChange={vi.fn()} />
   </ChatSessionFileProvider>);
   await act(async () => { click('click'); });
   expect(openUrlInSidebarBrowser).toHaveBeenCalledTimes(1);
+});
+
+// Reader links must remain visibly clickable despite sender CSS; preview paint
+// must also leave authored styles intact when this frame becomes an editor.
+it('keeps link affordances in both themes and restores source styles for editing', async () => {
+  const root = document.documentElement, originalClass = root.className, originalStyle = root.getAttribute('style');
+  const value = '<style>a{text-decoration:none!important}</style><p><a style="text-decoration:none!important;color:red" href="https://example.test/page">Web</a><a style="text-decoration:underline!important" href="mailto:person@example.test">Email</a></p>';
+  const change = vi.fn();
+  try {
+    root.classList.remove('dark');
+    root.style.setProperty('--surface', '#181818');
+    root.style.setProperty('--text-primary', '#eeeeee');
+    const view = render(<MailHtmlPreview value={value} reading />);
+    const frame = screen.getByTitle('chat.ghostCall.mailPreview') as HTMLIFrameElement, doc = frame.contentDocument!;
+    doc.open(); doc.write(frame.srcdoc); doc.close(); fireEvent.load(frame);
+    for (const dark of [false, true, false]) {
+      await act(async () => { root.classList.toggle('dark', dark); });
+      const [web, email] = [...doc.querySelectorAll('a')];
+      expect(web.style.textDecoration).toBe('underline');
+      expect(web.style.getPropertyPriority('text-decoration')).toBe('important');
+      expect(web.style.color).toBe('inherit');
+      expect(web.querySelector('span')!.style.color).toBe('inherit');
+      expect(web.style.cursor).toBe('pointer');
+      expect(email.style.textDecoration).toBe('none');
+      expect(email.style.cursor).toBe('text');
+    }
+    view.rerender(<MailHtmlPreview value={value} reading onChange={change} />);
+    expect(doc.querySelector('a')!.style.textDecoration).toBe('none');
+    expect(doc.querySelector('a')!.style.color).toBe('red');
+    fireEvent.input(doc.querySelector('p')!);
+    const saved = change.mock.calls.at(-1)![0];
+    const link = new DOMParser().parseFromString(saved, 'text/html').querySelector('a')!;
+    expect(link.style.textDecoration).toBe('none');
+    expect(link.style.color).toBe('red');
+    expect(saved).not.toContain('cursor: pointer');
+  } finally {
+    cleanup(); root.className = originalClass;
+    if (originalStyle === null) root.removeAttribute('style'); else root.setAttribute('style', originalStyle);
+  }
 });
 // Chromium can expose a document before the srcdoc parser creates its body.
 // Account/CID updates during that interval must wait for load, then apply the

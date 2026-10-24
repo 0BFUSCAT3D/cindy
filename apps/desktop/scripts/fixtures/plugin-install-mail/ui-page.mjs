@@ -93,6 +93,15 @@ export default {
       await page.locator('iframe[aria-busy="false"]').waitFor();
       const frame = page.frameLocator('iframe');
       if (await frame.locator('img').getAttribute('src') !== null) throw new Error('Image requested before consent');
+      const decorations = await page.evaluate(() => {
+        const doc = document.querySelector('iframe').contentDocument;
+        return [...doc.querySelectorAll('a')].map(node => doc.defaultView.getComputedStyle(node).textDecorationLine);
+      });
+      if (!decorations[0].includes('underline')) throw new Error('Sender CSS hid the web link underline');
+      const email = frame.getByText('person@example.test', { exact: true });
+      if (decorations[1].includes('underline')) throw new Error('Unsupported mailto looks clickable');
+      await email.click();
+      if (await page.getByTestId('opened-link').textContent()) throw new Error('Unsupported mailto reached web navigation');
       await ui.capture('images-blocked');
       await page.getByRole('button', { name: await ui.t('mailReader.showExternalImages') }).click();
       await page.locator('iframe[aria-busy="false"]').waitFor();

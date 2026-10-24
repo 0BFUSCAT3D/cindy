@@ -30,7 +30,7 @@ function MailTwoViewsFixture() {
 
 function MailReadFixture() {
   return <section className="p-4">
-    <MailHtmlPreview reading value={`<p>Hello Alex,</p><p>Here is the image from our latest update.</p><img src="${new URL(previewImage, location.href).href}" alt="Preview image" width="160" height="160"><p><a href="https://example.test/details">View details</a></p>`} />
+    <MailHtmlPreview reading value={`<style>a{text-decoration:none!important}</style><p>Hello Alex,</p><p>Here is the image from our latest update.</p><img src="${new URL(previewImage, location.href).href}" alt="Preview image" width="160" height="160"><p><a style="text-decoration:none!important" href="https://example.test/details">View details</a></p><p><a style="text-decoration:underline!important" href="mailto:person@example.test">person@example.test</a></p>`} />
     <output data-testid="opened-link" hidden />
   </section>;
 }

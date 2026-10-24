@@ -3190,6 +3190,10 @@ no referrer and bounded load fallbacks; they do not enable remote images in the 
 Domain icons are presentation, not authenticated sender identity. Other clients may
 continue displaying addresses alone. Provider contact enrichment must remain optional
 when new contact scopes are missing; Gmail bounds its lookup budget and account cache.
+Desktop activates only HTTP(S) body links through the chat opening policy and keeps
+their underline visible despite sender CSS. Unsupported targets, including mailto,
+stay inert; this does not widen the system shell protocol allowlist. Reader paint
+is transient and restored before editing or serializing a draft.
 Credentials and MIME parsing remain with the provider. Cindy validates the data
 and reuses its inert HTML/CID/recipient renderers for delivered mail. Multiple
 matching providers/accounts cannot silently select the first. Host setup metadata

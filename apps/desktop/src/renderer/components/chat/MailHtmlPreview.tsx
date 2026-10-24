@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { useSidebarTargetSessionId } from '@/features/cc-agent/embeddedSessionNavigation';
 import { useChatSessionFile } from './ChatSessionFileContext';
 import { activateMessageUrl } from './useOpenWithMenu';
-import { followMailPreviewTheme } from './mailPreviewAppearance';
+import { followMailPreviewTheme, mailPreviewLinkUrl } from './mailPreviewAppearance';
 import { mailBodySerializer } from './mailBodyEditing';
 
 export const safeMailHtml = safeMailDocument;
@@ -74,7 +74,7 @@ function PreviewFrame({ value, images = [], enlarged = false, reading = false, d
       doc.body.replaceChildren(...[...next.body.childNodes].map(node => doc.importNode(node, true)));
     }
     serialize.current = mailBodySerializer(doc, model.current.emitted, () => current.current.images);
-    stopTheme.current = followMailPreviewTheme(doc, document);
+    stopTheme.current = followMailPreviewTheme(doc, document, current.current.reading && !current.current.onChange);
     bodyResize.current?.disconnect();
     if (!enlarged && typeof ResizeObserver !== 'undefined') {
       bodyResize.current = new ResizeObserver(fit);
@@ -83,7 +83,7 @@ function PreviewFrame({ value, images = [], enlarged = false, reading = false, d
     refresh(); fit();
     doc.documentElement.scrollTop = scroll[0]; doc.body.scrollTop = scroll[1];
   };
-  useLayoutEffect(applySource, [revision]);
+  useLayoutEffect(applySource, [revision, reading, Boolean(onChange)]);
   useEffect(refresh, [disabled, Boolean(onChange), JSON.stringify(images)]);
   useEffect(() => {
     if (!frame.current || typeof ResizeObserver === 'undefined') return;
@@ -120,8 +120,8 @@ function PreviewFrame({ value, images = [], enlarged = false, reading = false, d
         const link = (event.target as Element).closest('a');
         if (!link) return;
         event.preventDefault();
-        const href = link.getAttribute('href');
-        if (current.current.reading && !current.current.onChange && href && /^(https?:|mailto:)/i.test(href)) {
+        const href = mailPreviewLinkUrl(link.getAttribute('href'));
+        if (current.current.reading && !current.current.onChange && href) {
           void activateMessageUrl(event, current.current.sidebarTargetSessionId, href, current.current.t);
         }
       };
