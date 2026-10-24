@@ -3784,13 +3784,18 @@ assertRouteCurrent();
     const eventQueue: AsyncQueue<AgentEvent> = createAsyncQueue<AgentEvent>();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
-    const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
-      tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
-      outputTokens: usageTracker.getTurnUsage().output,
-      durationMs: translatorRt.generationOutputDurationMs,
-      openStartedAt: translatorRt.generationStartedAt,
-      reliable: translatorRt.generationTimingReliable,
-    });
+    const liveUsageSnapshot = () => {
+      const speed = translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined;
+      return attachLiveGeneration(usageTracker.snapshot(), {
+        tokenSpeed: speed,
+        // Legacy clients use these fields: they must share the speed snapshot's
+        // measured numerator/denominator, never the billing ledger's lifetime.
+        outputTokens: speed?.tokens ?? translatorRt.generationOutputTokens,
+        durationMs: speed?.elapsedMs ?? 0,
+        openStartedAt: translatorRt.generationStartedAt,
+        reliable: speed !== undefined,
+      });
+    };
     /**
      * 本 turn 用于**目录查找**的模型 id, 在构造 turnParams 时快照(取 mutableCatalogModel,
      * 不是送上游的 wire 值 —— 见该变量注释)。
@@ -8730,7 +8735,7 @@ assertRouteCurrent();
         }
       }
 
-      resetCodexGenerationTiming(translatorRt);
+      resetCodexGenerationTiming(translatorRt, true);
       turnDiffSnapshots.clear();
       translatorRt.samplingSegments.clear();
       proposedPlanText = null;
@@ -11189,7 +11194,8 @@ assertRouteCurrent();
       const realTurnUsageSegments = usageTracker.getTurnUsageSegments();
       finalizeCodexGenerationTurn(translatorRt, turn.id);
       translatorRt.tokenSpeed.stop();
-      const generationDurationMs = codexGenerationDurationMs(translatorRt);
+      const generationDurationMs = translatorRt.tokenSpeed.isSegmentComplete()
+        ? codexGenerationDurationMs(translatorRt) : undefined;
       const codexDoneUsage = {
         promptTokens: realTurnUsage.input,
         completionTokens: realTurnUsage.output,
@@ -11414,13 +11420,7 @@ assertRouteCurrent();
           type: 'status',
           data: {
             status: 'Done',
-            ...attachLiveGeneration(endSnap, {
-              tokenSpeed: translatorRt.generationTimingReliable ? translatorRt.tokenSpeed.snapshot() : undefined,
-              outputTokens: realTurnUsage.output,
-              durationMs: translatorRt.generationOutputDurationMs,
-              openStartedAt: null,
-              reliable: translatorRt.generationTimingReliable,
-            }),
+            ...liveUsageSnapshot(),
             isRunning: false,
           },
           source: 'codex',
@@ -12477,13 +12477,14 @@ assertRouteCurrent();
           // Input/cache-only segments still belong in the ledger, but cannot
           // pair already reported output with a later generation denominator.
           if (last.outputTokens > 0) {
+            translatorRt.generationOutputTokens += last.outputTokens;
             translatorRt.generationOutputDurationMs = sampleGenerationDuration(
               translatorRt.generationDurationMs,
               translatorRt.generationStartedAt,
             );
             if (translatorRt.generationTimingReliable) {
               translatorRt.tokenSpeed.recordUsage(
-                usageTracker.getTurnUsage().output,
+                translatorRt.generationOutputTokens,
                 translatorRt.generationOutputDurationMs,
               );
             } else {
@@ -13328,6 +13329,7 @@ assertRouteCurrent();
         // 不再影响判定, 也不会再被别的 turn(含被 Stop 的旧 send 的孤儿)污染。
         const mySendGen = ++sendGeneration;
         isTurnStartPending = true;
+        if (!isContinuation) translatorRt.tokenSpeed.reset();
         usageTracker.beginTurn();
         log.debug('send ▶ user message', {
           model: mutableModel,
