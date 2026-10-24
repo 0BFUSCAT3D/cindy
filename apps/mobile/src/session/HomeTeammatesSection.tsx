@@ -4,10 +4,12 @@
  * 收起 = 段头 + 56pt 头像条（名字 12/18，可横滑，最后一格新建）。收起状态按账号记住。
  * 伙伴与群聊按最近活动混排；不跟随顶栏的电脑范围筛选（与桌面一致）。点开伙伴不切换首页模式，
  * 返回仍回到任务。只在首页（有共享伙伴名册）出现；没有伙伴也没有能新建的电脑时整段不显示。
+ * Android 把首页列表挂到根节点渲染（ResidentHomeList），所以名册与路由的导航上下文要在路由里取，
+ * 再由本段重新提供。
  */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from 'react';
 import { Keyboard, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { useIsFocused } from 'expo-router';
+import { NavigationContext, NavigationRouteContext, useIsFocused } from 'expo-router/react-navigation';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronRight, ChevronUp, Plus, UsersRound } from 'lucide-react-native';
 import { resolveRemoteText } from '@cindy/device-link';
@@ -32,7 +34,7 @@ import { CompanionPresenceRing } from './CompanionPresenceRing';
 import { homeListStyles } from './HomeListVisuals';
 import { useHomeRoster } from './HomeUnreadContext';
 import { DisclosureItem } from './listDisclosureTransition';
-import { TeammateCreateButton } from './TeammateCreateButton';
+import { useTeammateCreateController } from './TeammateCreateButton';
 import { useTeammateEntries, useTeammateRowRenderer, type TeammateListEntry } from './TeammateList';
 import { cloudCompanionRoute } from './teammateNavigation';
 import { useTeammateNavigation } from './useTeammateNavigation';
@@ -46,7 +48,16 @@ const STRIP_CELL_WIDTH = STRIP_AVATAR_SIZE + spacing.sm;
 const SHOW_ALL_ROW_HEIGHT = 48;
 const ADD_ROW_HEIGHT = 64;
 
-export function HomeTeammatesSection({ active, visible, showFooter, runDisclosure, prepareDisclosure }: {
+/** Read at the route: the list may be drawn above the route (Android's resident home list). */
+export function useHomeTeammatesSectionContext() {
+  const navigation = useContext(NavigationContext);
+  const route = useContext(NavigationRouteContext);
+  const shared = useHomeRoster();
+  return useMemo(() => ({ navigation, route, shared }), [navigation, route, shared]);
+}
+
+export function HomeTeammatesSection({ context, active, visible, showFooter, runDisclosure, prepareDisclosure }: {
+  context: ReturnType<typeof useHomeTeammatesSectionContext>;
   /** The tasks pane is the visible home pane. */
   active: boolean;
   /** Hidden while searching or browsing archived tasks; the hooks stay mounted. */
@@ -56,10 +67,12 @@ export function HomeTeammatesSection({ active, visible, showFooter, runDisclosur
   runDisclosure(apply: () => void): void;
   prepareDisclosure(): void;
 }) {
-  const shared = useHomeRoster();
+  const { navigation, route, shared } = context;
   if (!shared) return null;
-  return <SectionContent shared={shared} active={active} visible={visible} showFooter={showFooter}
-    runDisclosure={runDisclosure} prepareDisclosure={prepareDisclosure} />;
+  return <NavigationContext.Provider value={navigation}><NavigationRouteContext.Provider value={route}>
+    <SectionContent shared={shared} active={active} visible={visible} showFooter={showFooter}
+      runDisclosure={runDisclosure} prepareDisclosure={prepareDisclosure} />
+  </NavigationRouteContext.Provider></NavigationContext.Provider>;
 }
 
 function SectionContent({ shared, active, visible, showFooter, runDisclosure, prepareDisclosure }: {
@@ -111,18 +124,21 @@ function SectionContent({ shared, active, visible, showFooter, runDisclosure, pr
   const createTargets = useStableValue(roster.createTargets, sameHosts);
   const groupCreateTargets = useStableValue(roster.groupTargets.filter(groups.isOnline), sameHosts);
   const canCreate = createTargets.length > 0 || groupCreateTargets.length > 0;
+  // One controller for every trigger placement: the first teammate arriving while its form closes
+  // swaps the empty row for the rows, and must not take the form or its receipt with it.
+  const creator = useTeammateCreateController({ targets: createTargets, groupTargets: groupCreateTargets,
+    preferredDeviceId: navigation.lastTeammate?.deviceId,
+    onCreated: (host, ref) => { void navigation.openCreatedTeammate(host, ref, { keepMode: true }); },
+    onGroupCreated: (host, groupId) => push(botGroupRoute(host, groupId)) });
   // A first read with nothing cached stays out of the way instead of flashing an empty section.
-  if (!visible || (!entries.length && (!canCreate || roster.loading))) return null;
+  const shown = visible && !(!entries.length && (!canCreate || roster.loading));
   const title = t('devices.companions.title');
   const create = (trigger: (press: () => void, label: string) => ReactElement) => canCreate
-    ? <TeammateCreateButton targets={createTargets} groupTargets={groupCreateTargets} preferredDeviceId={navigation.lastTeammate?.deviceId}
-      onCreated={(host, ref) => { void navigation.openCreatedTeammate(host, ref, { keepMode: true }); }}
-      onGroupCreated={(host, groupId) => push(botGroupRoute(host, groupId))} trigger={trigger} />
-    : null;
+    ? creator.renderTrigger(trigger(creator.press, creator.label)) : null;
   const preview = entries.slice(0, HOME_TEAMMATE_PREVIEW_LIMIT);
   const extra = entries.slice(HOME_TEAMMATE_PREVIEW_LIMIT);
   const hasMore = extra.length > 0;
-  return <DisclosureItem clip testID="home.teammates">
+  const body = shown ? <DisclosureItem clip testID="home.teammates">
     <View style={styles.header}>
       <Pressable accessibilityRole="button" accessibilityState={{ expanded: !collapsed }}
         accessibilityLabel={t(collapsed ? 'devices.list.a11y.expand' : 'devices.list.a11y.collapse', { title })}
@@ -175,7 +191,8 @@ function SectionContent({ shared, active, visible, showFooter, runDisclosure, pr
         </Pressable> : null}
       </DisclosureItem>}
     {showFooter ? <View style={styles.footer} /> : null}
-  </DisclosureItem>;
+  </DisclosureItem> : null;
+  return <>{body}{creator.sheets}</>;
 }
 
 function StripCell({ entry, online, connected, quiet, onPress }: {

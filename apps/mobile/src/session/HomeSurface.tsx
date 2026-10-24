@@ -71,7 +71,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useAuth } from '@/auth/AuthContext';
-import { HomeTeammatesSection } from './HomeTeammatesSection';
+import { HomeTeammatesSection, useHomeTeammatesSectionContext } from './HomeTeammatesSection';
 import { createDisclosureListCell, DisclosureGroupView, DisclosureItem, ListDisclosureScope, useDisclosurePrepare, useListDisclosureTransition } from './listDisclosureTransition';
 import { useGuardedPush } from '@/utils/useGuardedPush';
 import { useHomeMenuFadeTiming } from '@/session/homeMenuFadeTiming';
@@ -476,6 +476,8 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
   const HOME_LIST_SUBSCRIPTION_OWNER = `device-list:${useId()}`;
   const embedded = width !== undefined;
   const residentList = useResidentHomeList(embedded);
+  // Captured here: Android draws the list above the route, outside its roster and navigation context.
+  const teammatesSectionContext = useHomeTeammatesSectionContext();
   const activeHomeSession = useContext(ActiveHomeSession);
   const rememberTask = rememberRecentTask;
   const viewSession = getHomeViewSession();
@@ -2961,7 +2963,7 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
         }}
         sections={sections}
         ListHeaderComponent={<>
-        {embedded ? null : <HomeTeammatesSection active={active}
+        {embedded ? null : <HomeTeammatesSection context={teammatesSectionContext} active={active}
           visible={!searchQuery.trim() && indexedSearch.activeFilterCount === 0 && statusFilter !== 'archived' && !showRemoteGuide}
           // Shared group and project blocks draw their own full-width top line.
           showFooter={sharedRows.length === 0 && !isBlockHomeRow(sections[0]?.data[0])}

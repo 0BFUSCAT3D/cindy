@@ -21,14 +21,8 @@ import { TEAMMATE_COLLECTION_ID } from './useTeammateRoster';
 type CreateKind = 'bot' | 'group';
 type Choice = { kind: CreateKind; host: RemoteResourceHostTarget };
 
-/**
- * 伙伴页顶栏的「+」。支持群聊时是一个菜单：新建伙伴 / 新建群聊（多台电脑时再选电脑）；
- * 旧版电脑不支持群聊时保持原来的直接新建伙伴。表单关闭后才回报创建结果，避免两个 Modal 叠加。
- */
-export function TeammateCreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance = 'glass', trigger }: {
+type CreateOptions = {
   targets: readonly RemoteResourceHostTarget[];
-  /** Replaces the glass button (the task home's teammate section); menus and sheets stay the same. */
-  trigger?(press: () => void, label: string): ReactElement;
   /** `cta`: the empty list's primary button; it only creates a teammate. */
   appearance?: 'glass' | 'cta' | 'toolbar';
   /** Online computers that support group chats; empty keeps the single-purpose button. */
@@ -36,16 +30,40 @@ export function TeammateCreateButton({ targets, groupTargets = [], preferredDevi
   preferredDeviceId?: string;
   onCreated(host: RemoteResourceHostTarget, ref: RemoteResourceRef): void;
   onGroupCreated?(host: RemoteResourceHostTarget, groupId: string): void;
-}) {
+};
+
+/**
+ * 伙伴页顶栏的「+」。支持群聊时是一个菜单：新建伙伴 / 新建群聊（多台电脑时再选电脑）；
+ * 旧版电脑不支持群聊时保持原来的直接新建伙伴。表单关闭后才回报创建结果，避免两个 Modal 叠加。
+ */
+export function TeammateCreateButton(props: CreateOptions) {
   const { accountGeneration } = useAuth();
   // Account changes discard both native menu selections and dismissal receipts.
-  return <CreateButton key={accountGeneration} {...{ targets, groupTargets, preferredDeviceId, onCreated, onGroupCreated, appearance, trigger }} account={accountGeneration} />;
+  return <CreateButton key={accountGeneration} {...props} />;
 }
 
-function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance, trigger: customTrigger, account }: Parameters<typeof TeammateCreateButton>[0] & { account: number }) {
-  const { t } = useTranslation();
+function CreateButton(props: CreateOptions) {
   const { colors } = useTheme();
+  const create = useTeammateCreateController(props);
+  return <>
+    {create.renderTrigger(props.appearance === 'cta'
+      ? <MainWindowActionButton action={{ label: create.label, tone: 'primary', onPress: create.press, testID: 'teammates.emptyCreate' }} />
+      : <HomeHeaderGlassButton accessibilityLabel={create.label} testID="teammates.create" onPress={create.press}>
+        <Plus color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
+      </HomeHeaderGlassButton>)}
+    {create.sheets}
+  </>;
+}
+
+/**
+ * The create menu and forms, separate from where the trigger is drawn: the task home's teammate
+ * section moves its trigger between states, and a moving trigger must not unmount an open form or
+ * drop its creation receipt. Callers remount it on account changes (the route is keyed by account).
+ */
+export function useTeammateCreateController({ targets, groupTargets = [], preferredDeviceId, onCreated, onGroupCreated, appearance = 'glass' }: CreateOptions) {
+  const { t } = useTranslation();
   const { accountGeneration } = useAuth();
+  const [account] = useState(accountGeneration);
   const currentAccount = useRef(accountGeneration); currentAccount.current = accountGeneration;
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -90,11 +108,6 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
     else if (!needsMenu) start('bot', targets[0]!.deviceId);
     else if (cta || !usesNativePullDownMenu()) setChoosing(true);
   };
-  const button = customTrigger && !cta ? customTrigger(press, label) : cta
-    ? <MainWindowActionButton action={{ label: botLabel, tone: 'primary', onPress: press, testID: 'teammates.emptyCreate' }} />
-    : <HomeHeaderGlassButton accessibilityLabel={label} testID="teammates.create" onPress={press}>
-      <Plus color={colors.textPrimary} size={iconSize.action} strokeWidth={iconStroke.regular} />
-    </HomeHeaderGlassButton>;
   const fallbackChoices: Choice[] = [
     ...ordered.map((host) => ({ kind: 'bot' as const, host })),
     ...(withGroups ? orderedGroups.map((host) => ({ kind: 'group' as const, host })) : []),
@@ -106,14 +119,14 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
   };
   const groupOpen = open?.kind === 'group' ? open : null;
   const menu = needsMenu && menuActions.length > 0;
-  let trigger = button;
-  if (appearance === 'toolbar') trigger = <Stack.Toolbar placement="right">
+  /** Wraps a visible button in the native menu when one is needed; the toolbar draws its own. */
+  const renderTrigger = (button: ReactElement) => appearance === 'toolbar' ? <Stack.Toolbar placement="right">
     {menu ? <Stack.Toolbar.Menu icon="plus" accessibilityLabel={label}>{nativeToolbarMenuItems(menuActions, onMenu)}</Stack.Toolbar.Menu>
       : <Stack.Toolbar.Button icon="plus" accessibilityLabel={label} onPress={press} />}
-  </Stack.Toolbar>;
-  else if (!cta && menu) trigger = <NativePullDownMenu actions={menuActions} onAction={onMenu} testID="teammates.createMenu">{button}</NativePullDownMenu>;
-  return <>
-    {trigger}
+  </Stack.Toolbar>
+    : !cta && menu ? <NativePullDownMenu actions={menuActions} onAction={onMenu} testID="teammates.createMenu">{button}</NativePullDownMenu>
+    : button;
+  const sheets = <>
     <CompanionSheet visible={choosing} title={label} testID="teammates.createChooser" onClose={() => { pendingChoice.current = null; setChoosing(false); }}
       onClosed={() => { const choice = pendingChoice.current; pendingChoice.current = null; if (choice) start(choice.kind, choice.host.deviceId); }}>
       {/* Same choice as the header's native menu: one plain row per choice, not full-width buttons. */}
@@ -137,4 +150,5 @@ function CreateButton({ targets, groupTargets = [], preferredDeviceId, onCreated
         if (groupId && groupOpen && mounted.current && currentAccount.current === account) onGroupCreated?.(groupOpen.host, groupId);
       }} /> : null}
   </>;
+  return { press, label, renderTrigger, sheets };
 }
