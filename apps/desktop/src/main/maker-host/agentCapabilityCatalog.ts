@@ -36,7 +36,8 @@ export async function readAgentCapabilityCatalog(
   availability: (provider: McpProvider) => string | null = () => null,
   readHarnessTools?: HarnessMcpToolsReader,
 ) {
-  const declarations = [...providers.map((provider) => {
+  const harness = getHarnessMcpCatalog(context);
+  const declarations = [...providers.filter((provider) => !harness.some((entry) => entry.name === provider.name)).map((provider) => {
     let reason: string | null = null;
     try {
       const mounted = context.vendorOptions?.[RUNTIME_MCP_NAMES_KEY];
@@ -53,8 +54,7 @@ export async function readAgentCapabilityCatalog(
       ...(reason ? { reason } : {}),
       ...(provider.capability?.discovery ? { discovery: provider.capability.discovery } : {}),
     };
-  }), ...getHarnessMcpCatalog(context)
-    .filter((entry) => !providers.some((provider) => provider.name === entry.name))
+  }), ...harness
     .map((entry) => ({
       server: entry.name, title: entry.title, description: entry.description, source: entry.source,
       status: entry.available ? 'engine-managed' : 'unavailable',

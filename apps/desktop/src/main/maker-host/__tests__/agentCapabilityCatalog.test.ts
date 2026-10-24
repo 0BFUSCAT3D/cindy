@@ -31,6 +31,20 @@ describe('shared runtime capability discovery', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
+  // P1: a custom provider silently replaced native metadata in both catalogs.
+  it('keeps native Apps authoritative when a provider has the same name', async () => {
+    const runtime = { ...context, agentKind: 'codex' as const };
+    const factory = vi.fn();
+    const providers = [{ name: 'codex_apps', toClaudeSdkConfig: factory }];
+    const catalog = buildBotMcpCatalog({ ...runtime, providers, builtinNames: [],
+      customServers: [{ id: 'codex_apps', transport: 'http', updatedAt: 1 }] });
+    expect(catalog).toEqual([expect.objectContaining({ name: 'codex_apps', source: 'harness' })]);
+    expect(await readAgentCapabilityCatalog(providers, runtime, {})).toMatchObject({ capabilities: [
+      { server: 'codex_apps', source: 'harness', status: 'engine-managed' },
+    ] });
+    expect(factory).not.toHaveBeenCalled();
+  });
+
   it.each(['claude-code', 'codex', 'pi'] as const)('does not advertise the retired simulator in the %s provider catalog', async (agentKind) => {
     const providers = createLiziMcpProviders({
       android: {} as never, browser: {} as never, computer: {} as never,

@@ -143,14 +143,17 @@ async function catalog(input: Input, ctx: Pick<Awaited<ReturnType<typeof context
     const available = new Set(runtimeCatalog
       .filter((entry) => entry.source === 'custom' && entry.available !== false)
       .map((entry) => entry.name));
+    const harness = runtimeCatalog.filter((entry) => entry.source === 'harness');
+    // Legacy collisions remain in custom settings, but cannot replace or duplicate
+    // the engine-owned capability in this selection list.
     // Project only display metadata. URLs, headers and tokens never enter tool results.
-    items = (await listCustomMcpServers()).map((mcp) => ({
+    items = (await listCustomMcpServers()).filter((mcp) => !harness.some((entry) => entry.name === mcp.id)).map((mcp) => ({
       id: mcp.id,
       name: mcp.name,
       description: mcp.transport,
       available: available.has(mcp.id),
     }));
-    items.push(...runtimeCatalog.filter((entry) => entry.source === 'harness').map((entry) => ({
+    items.push(...harness.map((entry) => ({
       id: entry.name, name: entry.name,
       description: 'Engine-provided connectors; not Cindy tasks, routines or plugins.',
       available: entry.available !== false,

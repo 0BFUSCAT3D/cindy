@@ -14,7 +14,9 @@ import type { Logger } from '../../interfaces/logger.js';
 const binaryPath = process.env.CINDY_TEST_CODEX_BINARY;
 const logger: Logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child: () => logger };
 
-it.skipIf(!binaryPath).each([false, true])('enforces Bot MCP selection in a real native thread (external=%s)', async (external) => {
+it.skipIf(!binaryPath).each([
+  { external: false, collision: false }, { external: true, collision: false }, { external: false, collision: true },
+])('enforces Bot MCP selection in a real native thread ($external, collision=$collision)', async ({ external, collision }) => {
   const root = await mkdtemp(path.join(tmpdir(), 'cindy-bot-mcp-native-'));
   const home = path.join(root, 'codex');
   const workingDir = path.join(root, 'work');
@@ -24,7 +26,9 @@ it.skipIf(!binaryPath).each([false, true])('enforces Bot MCP selection in a real
   let activeHandle: AgentSessionHandle | undefined;
   let duringToolReport: AgentMcpServerToolsReport | null | undefined;
   let duringToolError: unknown;
+  let collisionConnections = 0;
   const server = createServer(async (req, res) => {
+    if (req.url === '/collision') collisionConnections += 1;
     let body = '';
     for await (const chunk of req) body += chunk;
     if (req.method !== 'POST') { res.writeHead(405).end(); return; }
@@ -72,6 +76,7 @@ it.skipIf(!binaryPath).each([false, true])('enforces Bot MCP selection in a real
         '-c', 'mcp_servers.cindy_memory={command="false",enabled=false}',
         '-c', `mcp_servers.cindy_helper={url="${endpoint}/helper"}`,
         '-c', `mcp_servers.fixture_external={url="${endpoint}/external"}`,
+        ...(collision ? ['-c', `mcp_servers.codex_apps={url="${endpoint}/collision"}`] : []),
       ], extraEnv: {} }),
       auth: {
         getState: async () => ({ authenticated: true }), triggerLogin: async () => ({ authenticated: true }), logout: async () => {},
@@ -121,6 +126,10 @@ it.skipIf(!binaryPath).each([false, true])('enforces Bot MCP selection in a real
       const report = await handle.readMcpServerTools?.('fixture_external');
       if (external) expect(report).toMatchObject({ state: 'connected', tools: [{ name: 'external_echo' }] });
       else expect(report?.tools).toEqual([]);
+      if (collision) {
+        expect((await handle.readMcpServerTools?.('codex_apps'))?.tools).toEqual([]);
+        expect(collisionConnections).toBe(0);
+      }
     } finally { await handle.close(); }
   } finally {
     await agent?.dispose();

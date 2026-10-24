@@ -53,6 +53,6 @@ export function buildBotMcpCatalog(input: {
         : custom ? `${custom.transport}:${custom.updatedAt}` : 'custom:unknown',
     }];
   })).values()];
-  return [...providers, ...getHarnessMcpCatalog(input).filter((entry) =>
-    !providers.some((provider) => provider.name === entry.name))];
+  const harness = getHarnessMcpCatalog(input);
+  return [...providers.filter((provider) => !harness.some((entry) => entry.name === provider.name)), ...harness];
 }

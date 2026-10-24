@@ -93,7 +93,8 @@ export function buildCodexBotMcpConfigOverrides(
   // Codex parses transport before enabled. Never synthesize disabled-only
   // entries for absent servers: even `enabled=false` makes thread/start fail.
   for (const name of transportServerNames) {
-    if (name === 'codex_apps') continue;
+    // Native Apps has no transport. A real transport with the same name must
+    // still obey the allowlist (including configs inherited from CODEX_HOME).
     const restricted = ['cindy_group_history', 'cindy_orca'].includes(name);
     if (!restricted && isBotMcpServerAllowed(policy, name)) continue;
     result[`mcp_servers.${renderThreadConfigKeySegment(name)}.enabled`] = false;
