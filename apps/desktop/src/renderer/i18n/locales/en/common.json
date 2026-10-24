@@ -11379,6 +11379,44 @@
           "prompt": "Draft a reply to this email, taking the conversation and my thoughts into account. Don't send it yet."
         }
       }
+    },
+    "branchSync": {
+      "multiple-checkouts": "{{branch}} is open in multiple directories. Cannot update",
+      "changed": "The branch state changed. Please retry.",
+      "action": "Pull the latest commits from {{remote}}/{{remoteBranch}}",
+      "remoteAction": "Pull the latest commits from {{remote}}/{{remoteBranch}}",
+      "checkedOut": "Also updates committed files on this branch; uncommitted changes are kept",
+      "fetching": "Pulling…",
+      "updated_one": "Pulled {{count}} new commit",
+      "updated_other": "Pulled {{count}} new commits",
+      "current": "Already up to date",
+      "keptAhead_one": "{{count}} unpushed local commit. No update needed",
+      "keptAhead_other": "{{count}} unpushed local commits. No update needed",
+      "failed": "Pull failed: {{reason}}",
+      "diverged": "Local and {{remote}} have diverged. Cannot update automatically",
+      "conflict": "Uncommitted changes conflict with remote updates. Commit or stash first",
+      "missing-remote": "{{remoteBranch}} does not exist on {{remote}}",
+      "no-remote": "No remote repository configured",
+      "not-local": "Select a local branch or the remote default branch",
+      "ahead_one": "{{count}} commit ahead of {{remote}}",
+      "ahead_other": "{{count}} commits ahead of {{remote}}",
+      "behind_one": "{{count}} commit behind {{remote}}",
+      "behind_other": "{{count}} commits behind {{remote}}",
+      "dirty_one": "{{count}} uncommitted file",
+      "dirty_other": "{{count}} uncommitted files",
+      "diverging_one": "{{ahead}} ahead, {{behind}} behind {{remote}}",
+      "diverging_other": "{{ahead}} ahead, {{behind}} behind {{remote}}",
+      "remoteGroup": "Remote",
+      "localGroup": "Local branches",
+      "errors": {
+        "git": "Git could not update the branch. Check repository access and retry.",
+        "timeout": "Git timed out. Check the connection and retry.",
+        "auth": "Git authentication failed. Check remote credentials.",
+        "network": "Could not connect to the remote repository. Check the connection.",
+        "missing": "The remote branch no longer exists.",
+        "busy": "Repository is busy. Try again later",
+        "changed": "The checked-out branch changed. Retry."
+      }
     }
   },
   "onboarding": {
