@@ -27,6 +27,7 @@ const DUE_DOT = 7;
  * 有没看过的到期待办时头像右上亮小红点，打开近况即灭。
  */
 export function CompanionHeader(props: {
+  nativeHeader?: boolean;
   resource: RemoteResource; deviceId: string; deviceName: string; online: boolean; controlsReady?: boolean;
   /** The companion is working on a reply (the avatar breathes). */
   working?: boolean;
@@ -45,7 +46,7 @@ export function CompanionHeader(props: {
   return <CompanionHeaderContent key={accountGeneration} {...props} />;
 }
 
-function CompanionHeaderContent({ resource, deviceId, deviceName, online, controlsReady = true, working = false, sessionId, onQuoteTodo, onAskCompanion, askCompanionReady = true, onSearch, onBack, settingsRequest }: Parameters<typeof CompanionHeader>[0]) {
+function CompanionHeaderContent({ nativeHeader, resource, deviceId, deviceName, online, controlsReady = true, working = false, sessionId, onQuoteTodo, onAskCompanion, askCompanionReady = true, onSearch, onBack, settingsRequest }: Parameters<typeof CompanionHeader>[0]) {
   const { t, i18n } = useTranslation();
   const styles = useThemedStyles(makeStyles);
   const navigation = useTeammateNavigation();
@@ -70,7 +71,7 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
   // contact); a message that cannot get through is what asks to switch computers.
   const connection = online || homed ? '' : t('devices.resources.hostOffline');
   return <>
-    <ChatIdentityHeader testIDPrefix="companion"
+    <ChatIdentityHeader testIDPrefix="companion" nativeHeader={nativeHeader}
       mark={<>
         <RemoteCompanionAvatar avatar={resource.display.avatar} name={name} deviceId={deviceId} online={online} size={CHAT_HEADER_MARK_SIZE} framed />
         <CompanionPresenceRing active={working} width={1.5} />
