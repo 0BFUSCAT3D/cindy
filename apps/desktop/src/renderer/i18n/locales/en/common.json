@@ -9137,6 +9137,7 @@
       "descriptionOn": "{{name}} checks summaries when sessions change and keeps you informed.",
       "movedFrom": "Moved here from {{name}}",
       "heldBy": "{{name}} handles this now. Switch it on to move it here.",
+      "routineScopeHint": "Include sessions you create yourself. The built-in follow-up below responds to changes in assigned sessions.",
       "heldByNobody": "Not enabled",
       "restoreDefault": "Restore Default ({{name}})",
       "saveFailed": "Couldn't save. Try again.",
@@ -14049,6 +14050,13 @@
     },
     "builtinTemplates": {
       "schedule": {
+        "everyMinute": "Every minute",
+        "hourlyAt": "Hourly at minute {{minutes}}",
+        "atTimes": "At {{times}}",
+        "atHoursMinutes": "Hours {{hours}}, minutes {{minutes}}",
+        "monthDays": "Days {{days}} of the month",
+        "daysOrWeekdays": "{{days}} or {{weekdays}}",
+        "inMonths": "In {{months}}",
         "daily": "Daily at {{time}}",
         "weekdays": "Weekdays at {{time}}",
         "weekly": "{{weekday}} at {{time}}",
@@ -16121,6 +16129,9 @@
     "compression": "For condensing lengthy content."
   },
   "routines": {
+    "onEvent": "Event: {{source}} · {{event}}",
+    "triggerDetails": "View triggers ({{count}}; any can start a run)",
+    "noTriggers": "No triggers set",
     "unsavedTitle": "Unsaved Changes",
     "unsavedDescription": "Leaving will discard these changes to the routine.",
     "discard": "Discard Changes",
@@ -16192,8 +16203,8 @@
     "timeoutMs": "Check timeout (ms, blank for no limit)",
     "advancedSettings": "Advanced settings",
     "builtinFollowUp": {
-      "name": "Follow-up (built-in)",
-      "hint": "Wakes it when a session is stuck, waiting for you, errors out, hits the usage limit, or finishes. Built in, so it can only be paused or resumed."
+      "name": "Follow assigned sessions (built-in)",
+      "hint": "Follow assigned sessions when they stall, need you, fail, reach a usage limit or finish."
     },
     "builtinTodoCheck": {
       "name": "Daily todo check (built-in)",
