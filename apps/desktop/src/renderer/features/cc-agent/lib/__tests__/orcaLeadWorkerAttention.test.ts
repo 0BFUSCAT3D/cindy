@@ -208,6 +208,29 @@ describe('整表合并', () => {
 });
 
 describe('模块级派生快照', () => {
+  // PR #7048 P1：原用例都先加载投影，漏掉了订阅空集合 → pending → 投影 → 确认结束。
+  // unit：通过真实订阅入口观察 Lead 提醒变化；只用内存 fake，无 IPC 或计时等待。
+  // 独立文件实测：21 tests，墙钟 2.00 秒（2026-10-24）；修复前此用例失败。
+  it('已有 pending 的 Worker 后加载投影，处理确认后仍通知 Lead 清除提醒', () => {
+    const observed: Array<string | undefined> = [];
+    const unsubscribe = subscribeOrcaLeadWorkerAttention(() => {
+      observed.push(getOrcaLeadWorkerAttention().get('lead'));
+    });
+    try {
+      // 订阅时 Worker 集合为空；确认状态先到，任务 awaiting 已被清除。
+      setPending('worker', { hasPendingAskUser: true });
+      expect(getSessionAttentionKinds().size).toBe(0);
+      setProjections([['lead', snapshot('worker')]]);
+      expect(observed).toEqual(['awaiting']);
+
+      // 直接检查订阅消费者，避免主动 getSnapshot 刷新缓存掩盖漏通知。
+      setPending('worker', {});
+      expect(observed).toEqual(['awaiting', undefined]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it.each([
     'hasPendingAskUser',
     'hasPendingPermission',

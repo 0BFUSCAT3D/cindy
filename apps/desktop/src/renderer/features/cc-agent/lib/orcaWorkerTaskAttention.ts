@@ -38,16 +38,16 @@ export function localOrcaWorkerSessionIds(
     .map((worker) => worker.sessionId);
 }
 
-/** 流式消息会频繁广播；只在指定 Worker 的 pending 布尔值变化时通知消费方。 */
+/** 流式消息会频繁广播；只在 Worker 集合或其 pending 布尔值变化时通知消费方。 */
 export function subscribeOrcaWorkerPendingInteractions(
   getSessionIds: () => readonly string[],
   listener: () => void,
 ): () => void {
   const getKey = () => {
     const statuses = makerChatStore.getRunningSnapshot();
-    return JSON.stringify(
-      getSessionIds().filter((id) => hasPendingWorkerInteraction(statuses.get(id))),
-    );
+    const ids = getSessionIds();
+    // 投影可能在两次 chat 广播之间才加载；集合变化也要失效，避免漏掉新 Worker 的 pending 下降沿。
+    return JSON.stringify([ids, ids.filter((id) => hasPendingWorkerInteraction(statuses.get(id)))]);
   };
   let previous = getKey();
   return makerChatStore.subscribeAll(() => {
