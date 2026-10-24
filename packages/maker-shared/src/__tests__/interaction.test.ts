@@ -285,7 +285,7 @@ describe('interaction shared model', () => {
     });
     expect(exec).toMatchObject({
       title: '允许运行这条命令？',
-      code: 'xcrun simctl delete all',
+      code: 'xcrun simctl delete all\n# cwd: /repo',
       autoReviewReason: '这会删除电脑上的所有 iOS 模拟器，你只让我排查键盘问题。',
     });
 
@@ -308,6 +308,8 @@ describe('interaction shared model', () => {
     expect(describePermissionAction('mcp:cindy_browser:call_tool', {
       name: 'browser', args: { action: 'recipe', recipeId: 'post-reply', site: 'x.com', text: 'hello' },
     }).preview).toBe('recipe {"recipeId":"post-reply","site":"x.com","text":"hello"}');
+    expect(describePermissionAction('exec', { command: 'rm -rf build', cwd: '/repo/app' }).preview)
+      .toBe('rm -rf build\n# cwd: /repo/app');
     expect(describePermissionAction('Grep', { pattern: 'AKIA', path: '/Users/me' }).preview).toBe('AKIA \u2192 /Users/me');
     expect(describePermissionAction('grep', { pattern: 'TODO' }).preview).toBe('TODO');
     // call_tool.args stringified by the caller (issue #350) is parsed like the approval policy does.

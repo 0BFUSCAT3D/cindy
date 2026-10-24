@@ -973,7 +973,9 @@ export function describePermissionAction(toolName: string, input: Record<string,
   }
   if (COMMAND_TOOLS.has(name)) {
     const command = commandText(input);
-    if (command) return { kind: 'command', preview: command };
+    // The same relative command in two repositories is not the same operation: keep the cwd.
+    const cwd = readString(input.cwd) ?? readString(input.workdir);
+    if (command) return { kind: 'command', preview: cwd ? `${command}\n# cwd: ${cwd}` : command };
   }
   if (FILE_READ_TOOLS.has(name) || FILE_WRITE_TOOLS.has(name)) {
     const paths = filePaths(input, FILE_READ_TOOLS.has(name) && name !== 'read');

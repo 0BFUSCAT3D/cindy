@@ -32,7 +32,7 @@ describe('formatToolInput (harness-agnostic)', () => {
 
   it('shows MCP and Codex exec calls as the operation, not JSON', () => {
     expect(formatToolInput('mcp__x__y', { a: 1 })).toBe('y {"a":1}');
-    expect(formatToolInput('exec', { command: 'git status', cwd: '/repo' })).toBe('git status');
+    expect(formatToolInput('exec', { command: 'git status', cwd: '/repo' })).toBe('git status\n# cwd: /repo');
   });
 
   it('falls back to truncated JSON for unknown tools / missing fields', () => {
