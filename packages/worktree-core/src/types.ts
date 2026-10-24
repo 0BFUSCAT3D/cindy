@@ -11,7 +11,11 @@
  */
 export interface WorktreeMeta {
   /** Durable intent; DB delegation ownership decides whether to finish or discard it. */
-  pendingSessionTransfer?: { sessionId: string; delegationId: string; requestingBotId: string };
+  pendingSessionTransfer?: {
+    sessionId: string;
+    delegationId: string;
+    requestingBotId: string;
+  };
   /** New physical contents at the same path invalidate old recycle requests. */
   generation?: string;
   sessionId: string;
@@ -42,13 +46,13 @@ export interface WorktreeMeta {
 }
 
 export type WorktreeErrorKind =
-  | 'permission-denied'
-  | 'git-crypt-locked'
-  | 'dubious-ownership'
-  | 'lfs-error'
-  | 'not-a-git-repo'
-  | 'git-not-installed'
-  | 'unknown';
+  | "permission-denied"
+  | "git-crypt-locked"
+  | "dubious-ownership"
+  | "lfs-error"
+  | "not-a-git-repo"
+  | "git-not-installed"
+  | "unknown";
 
 export interface WorktreeError {
   kind: WorktreeErrorKind;

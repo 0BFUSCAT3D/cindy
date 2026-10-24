@@ -10,6 +10,7 @@ import type { ImBindingRow } from '@cindy/im-runtime/binding';
 import { validateImBindingRow } from '../im/bindings.js';
 
 export type TerminalTaskMeta = SessionMeta & {
+  worktreePath?: string;
   providerId?: string; archived?: boolean; deleted?: boolean; pinnedAt?: number | null; agentDeviceId?: string;
   groupBinding?: import('@cindy/remote-agent/groups/bindings').ProviderGroupBinding;
   queuePaused?: boolean; queueExpanded?: boolean; clearedAt?: number; source?: string;

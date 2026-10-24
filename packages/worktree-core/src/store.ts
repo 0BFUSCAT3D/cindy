@@ -15,6 +15,7 @@ export interface WorktreeStorePorts {
     path: string,
     options: { label: string; waitMs?: number },
     task: (status: { held: boolean }) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T>;
 }
 

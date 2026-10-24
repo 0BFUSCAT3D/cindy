@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@cindy/maker-shared": "workspace:*",
-    "@cindy/maker-scheduler": "workspace:*"
+    "@cindy/maker-scheduler": "workspace:*",
+    "tar": "^7.5.22"
   }
 }

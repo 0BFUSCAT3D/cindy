@@ -3,7 +3,6 @@ export interface GitExecResult {
   stderr: string;
 }
 
-
 export class GitExecError extends Error {
   /** 原 git 命令(args 数组)。 */
   readonly args: readonly string[];
@@ -25,11 +24,13 @@ export class GitExecError extends Error {
     timedOut?: boolean;
   }) {
     super(
-      `git ${opts.args.join(' ')} failed${
-        opts.exitCode === null ? ' (spawn error)' : ` with exit code ${opts.exitCode}`
-      }: ${opts.stderr.trim() || opts.cause?.message || '<no stderr>'}`,
+      `git ${opts.args.join(" ")} failed${
+        opts.exitCode === null
+          ? " (spawn error)"
+          : ` with exit code ${opts.exitCode}`
+      }: ${opts.stderr.trim() || opts.cause?.message || "<no stderr>"}`,
     );
-    this.name = 'GitExecError';
+    this.name = "GitExecError";
     this.args = opts.args;
     this.exitCode = opts.exitCode;
     this.stderr = opts.stderr;
@@ -38,7 +39,6 @@ export class GitExecError extends Error {
     this.timedOut = opts.timedOut ?? false;
   }
 }
-
 
 export interface GitExecOpts {
   /** 额外的环境变量, 会与 process.env 合并(后者优先级低)。常见: { LC_ALL: 'C' } */

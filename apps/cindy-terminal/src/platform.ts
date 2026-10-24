@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { promises as fs, openSync, writeFileSync, fsyncSync, closeSync, renameSync, rmSync } from 'node:fs';
+import { promises as fs, openSync, writeFileSync, fsyncSync, closeSync, renameSync, rmSync, readFileSync, fstatSync, lstatSync } from 'node:fs';
 import { restrictWindowsDirectory } from './windows-acl.js';
 export const VERSION = '0.1.0';
 
@@ -88,6 +88,24 @@ export async function atomicPrivateWrite(file: string, data: string | Buffer): P
     }
   }
   finally { await fs.rm(temp, { force: true }); }
+}
+
+/** Synchronous counterpart for shared registries whose read-modify-write is
+ * already protected by a cross-process lock. Same private-file read boundary. */
+export function readPrivateFileSync(file: string): Buffer | null {
+  try {
+    const handle = openSync(file, 'r');
+    try {
+      const stat = fstatSync(handle), link = lstatSync(file);
+      if (!stat.isFile() || link.isSymbolicLink() || link.ino !== stat.ino) throw new Error('UNSAFE_PRIVATE_FILE');
+      if (process.platform !== 'win32' && (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)) throw new Error('PRIVATE_FILE_PERMISSIONS');
+      if (stat.size > 16 * 1024 * 1024) throw new Error('PRIVATE_FILE_TOO_LARGE');
+      return readFileSync(handle);
+    } finally { closeSync(handle); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 /** Synchronous transaction boundary for the shared plugin credential managers.

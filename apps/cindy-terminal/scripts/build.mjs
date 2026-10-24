@@ -20,6 +20,8 @@ await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/l
 await build({ entryPoints:[path.join(appDir,'../../packages/plugin-runtime/src/forgeScaffoldWorkerProcess.ts')], outfile:path.join(appDir,'dist/plugin-scaffold-worker.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
 await build({ entryPoints:[path.join(appDir,'src/service-supervisor-entry.ts')], outfile:path.join(appDir,'dist/service-supervisor.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
 
+await build({ entryPoints:[path.join(appDir,'src/worktrees/recovery-worker.ts')], outfile:path.join(appDir,'dist/worktree-recovery-worker.cjs'), platform:'node', target:'node22', format:'cjs', bundle:true, sourcemap:true });
+
 await copyFile(path.join(appDir,'../../packages/plugin-runtime/src/mailComposeRuntime.js'),path.join(appDir,'dist/plugin-mail-runtime.js'));
 // Embed the exact authoring references, in the same order as Desktop's view.
 const guideSource=path.join(appDir,'../desktop/src/main/cindy-brain/forgeGuide.ts');

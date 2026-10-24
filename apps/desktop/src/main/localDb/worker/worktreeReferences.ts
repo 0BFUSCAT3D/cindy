@@ -1,3 +1,5 @@
+import { worktreeReferenceQuery } from '@cindy/worktree-core/databaseReferences';
+import { readTerminalWorktreeReferences } from '@cindy/worktree-core/terminalReferences';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -12,26 +14,6 @@ export interface LocalWorktreeReference {
   workingDir: string | null;
   worktreePath: string | null;
   currentDatabase: boolean;
-}
-
-function referenceQuery(db: Database.Database): string {
-  const info = db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
-  const columns = new Set(info.map((column) => column.name));
-  const hasWorktree = columns.has('worktree_path');
-  const hasSource = columns.has('source');
-  const hasRemote = columns.has('remote_host_id');
-  // These columns were added in 0005, 0007 and 0038 respectively. Unknown
-  // layouts must not silently become an incomplete set of deletion evidence.
-  if (!['id', 'status', 'working_dir'].every((name) => columns.has(name))
-    || (hasSource && !hasWorktree) || (hasRemote && !hasSource)) {
-    throw new Error('unsupported task reference schema');
-  }
-  // Keep every legacy row protective, including terminal rows: missing metadata
-  // is not evidence that a directory can be deleted. No other owner's DB is migrated.
-  const status = hasRemote ? 'status' : 'NULL';
-  return `SELECT id, ${status} AS status, ${hasSource ? 'source' : 'NULL'} AS source, `
-    + `working_dir AS workingDir, ${hasWorktree ? 'worktree_path' : 'NULL'} AS worktreePath `
-    + `FROM sessions${hasRemote ? ' WHERE remote_host_id IS NULL' : ''}`;
 }
 
 /**
@@ -64,7 +46,7 @@ export function readLocalWorktreeReferences(
     });
     try {
       // Inspect columns and rows in one read snapshot if another instance upgrades the DB.
-      const references = db.transaction(() => db.prepare(referenceQuery(db)).all())() as Omit<LocalWorktreeReference, 'currentDatabase'>[];
+      const references = db.transaction(() => db.prepare(worktreeReferenceQuery(db)).all())() as Omit<LocalWorktreeReference, 'currentDatabase'>[];
       rows.push(...references.map((row) => ({ ...row, currentDatabase: isCurrent })));
     } finally {
       if (!isCurrent) db.close();
@@ -75,5 +57,6 @@ export function readLocalWorktreeReferences(
   if (after.length !== names.length || after.some((name) => !names.includes(name))) {
     throw new Error('task database catalog changed during scan');
   }
+  rows.push(...readTerminalWorktreeReferences(path.dirname(root)).rows.map(row => ({ id: row.id, status: row.status ?? null, source: row.source ?? null, workingDir: row.workingDir ?? null, worktreePath: row.worktreePath ?? null, currentDatabase: false })));
   return rows;
 }

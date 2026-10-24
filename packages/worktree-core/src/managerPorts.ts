@@ -52,6 +52,7 @@ export type WorktreeManagerPorts = typeof import("./nameGenerator.js") & {
   applyWorktreeIncludeFile(
     baseRepo: string,
     worktree: string,
+    options?: { overwriteExisting?: boolean },
   ): Promise<Array<{ relpath: string; status: string; error?: string }>>;
   listChangedWorktreeIncludeFiles(
     baseRepo: string,
