@@ -15,6 +15,9 @@ import {
 import { supportsManagedOllamaInstall } from "./ollamaRelease.js";
 
 export const OLLAMA_START_TIMEOUT_MS = 15_000;
+// First GPU discovery runs before Ollama serves HTTP. Upstream allows 30s per
+// library (90s on Windows) plus validation; headless jobs can await that work.
+const HEADLESS_START_TIMEOUT_MS = 180_000;
 export const OLLAMA_START_POLL_MS = 400;
 
 export interface OllamaRuntimeDeps {
@@ -32,6 +35,7 @@ export interface OllamaRuntimeDeps {
   /** Headless hosts execute a server binary, never the desktop application. */
   headless?: boolean;
   installedBinary?: () => string | null;
+  sidecarRunning?: () => boolean;
 }
 export interface OllamaRuntimeHost {
   log: { warn(message: string, fields?: Record<string, unknown>): void };
@@ -258,13 +262,16 @@ export function createOllamaRuntime(host: OllamaRuntimeHost) {
     }
     const sleep = deps.sleep ?? defaultSleep;
     const now = deps.now ?? Date.now;
-    const deadline = now() + OLLAMA_START_TIMEOUT_MS;
+    const deadline = now() + (deps.headless ? HEADLESS_START_TIMEOUT_MS : OLLAMA_START_TIMEOUT_MS);
     while (now() < deadline) {
       if (deps.signal?.aborted) throw new Error("aborted");
       await sleepUntilAborted(sleep, OLLAMA_START_POLL_MS, deps.signal);
       if (deps.signal?.aborted) throw new Error("aborted");
       const next = await probeOllamaStatus(deps);
       if (next.kind === "ready" || next.kind === "port-conflict") return next;
+      if (deps.sidecarRunning && !deps.sidecarRunning()) {
+        return { ...next, kind: "error", message: "LOCAL_OLLAMA_PROCESS_EXITED" };
+      }
     }
     return {
       runtime: "ollama",

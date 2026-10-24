@@ -13,6 +13,7 @@ const copy={
   enable:['Enable','启用','啟用','有効にする','활성화'],disable:['Disable','停用','停用','無効にする','비활성화'],
   remove:['Uninstall','卸载','解除安裝','アンインストール','제거'],removeConfirm:['Uninstall this plugin?','卸载此插件？','解除安裝此外掛？','このプラグインを削除しますか？','이 플러그인을 제거할까요?'],
   credentials:['Credentials','凭证','憑證','認証情報','인증 정보'],key:['Credential','凭证','憑證','認証情報','인증 정보'],value:['New value','新值','新值','新しい値','새 값'],
+  model:['Model','模型','模型','モデル','모델'],automatic:['Automatic','自动','自動','自動','자동'],
 } as const;
 const label=(key:keyof typeof copy):RemoteLocalizedText=>{const [fallback,cn,tw,ja,ko]=copy[key];return {fallback,translations:{en:fallback,'zh-CN':cn,'zh-TW':tw,ja,ko}};};
 const ref=(id:string)=>({collectionId:'plugins',kind:'plugin',id});
@@ -54,7 +55,14 @@ export function registerPluginResources(registry:RemoteResourceRegistry,host:Ter
     },
     get:async(context,request)=>{
       if(request.ref.id.startsWith('install:'))return prepared(request.ref.id.slice(8),context.controllerDeviceId,request.client.locale);
-      const resource=installed(await host.get(request.ref.id),request.client.locale);
+      const ghost=await host.get(request.ref.id),resource=installed(ghost,request.client.locale);
+      if(host.models&&ghost.manifest.cindy?.text?.includes('oneshot')){
+        const state=await host.models.state(request.ref.id);context.assertCurrent?.();
+        const options=state.options.map(option=>({value:option.id,label:option.label}));
+        if(state.selected&&!options.some(option=>option.value===state.selected))options.unshift({value:state.selected,label:[state.config.providerId,state.config.agentKind,state.config.model].filter(Boolean).join(' / ')});
+        resource.actions?.push({id:'model',label:label('model'),fields:[{id:'model',kind:'select',label:label('model'),options:[{value:'',label:label('automatic')},...options]}]});
+        resource.blocks?.push({id:'model',primitive:'form',fallbackMarkdown:state.selected?options.find(option=>option.value===state.selected)?.label??state.config.model??'':label('automatic').translations?.[request.client.locale??'en']??label('automatic').fallback,data:{actionId:'model',values:{model:state.selected??''}}});
+      }
       if(!pages)return resource;
       const shared=await pages.provider.get!(context,request);
       return {...shared,actions:[...resource.actions??[],...shared.actions?.filter(action=>action.id.startsWith('open:'))??[]],blocks:[...shared.blocks??[],...resource.blocks??[]]};
@@ -73,6 +81,9 @@ export function registerPluginResources(registry:RemoteResourceRegistry,host:Ter
         else throw new Error('INVALID_ACTION');
       }else if(['enable','disable'].includes(request.actionId))await host.setEnabled(id,request.actionId==='enable');
       else if(request.actionId==='remove')await host.uninstall(id);
+      else if(request.actionId==='model'&&host.models){
+        await host.setModel(id,request.input?.model===''?null:request.input?.model,context.assertCurrent);
+      }
       else if(request.actionId==='credentials'){
         throw new Error('PROTECTED_INPUT_REQUIRED');
       }else if(pages)return pages.provider.invoke!(context,request);

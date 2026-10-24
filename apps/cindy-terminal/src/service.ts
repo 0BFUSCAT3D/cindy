@@ -468,6 +468,7 @@ export class TerminalService {
     const deposits=new DirDepositVault(),saves=new SaveDepositVault();
     this.plugins=new TerminalPlugins({root:ownerDir,runtimeDirectory:path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../dist'),
       account:this.pluginAccount,
+      models:{models:this.tasks.models,utility:this.tasks.utility},
       executablePath:()=>this.pluginBrowser.resolve(),locale:()=>this.settings.snapshot().effective.language,assertCurrent:guardPlugin,log:logger,onClose:()=>pluginAbort.abort(),
       secrets:{get:key=>this.secrets.get(`${owner}:${key}`),set:(key,value)=>this.secrets.set(`${owner}:${key}`,value),delete:key=>this.secrets.delete(`${owner}:${key}`),getSync:key=>this.secrets.getSync(`${owner}:${key}`),setSync:(key,value)=>this.secrets.setSync(`${owner}:${key}`,value),deleteSync:key=>this.secrets.deleteSync(`${owner}:${key}`),setManySync:entries=>this.secrets.setManySync(Object.fromEntries(Object.entries(entries).map(([key,value])=>[`${owner}:${key}`,value])))},
       changed:()=>{if(this.ownerSuspended||this.closing)return;this.transport.publish('ghosts:changed',[]);void this.remote.publish('maker:remote-resources:changed',{collectionId:'plugins'}).catch(()=>{});},

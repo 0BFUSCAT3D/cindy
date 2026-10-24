@@ -71,6 +71,8 @@ jobs:
         run: pnpm --filter cindy-terminal exec vitest run src/plugins/host.integration.test.ts --testTimeout=30000 --maxWorkers=1 --minWorkers=1
       - name: Existing verified downloads and plugin download policy
         run: pnpm --filter desktop exec vitest run src/main/downloader/__tests__/download.test.ts src/main/downloader/__tests__/scheduler.test.ts src/main/downloader/__tests__/requestInjection.test.ts src/main/cindy-brain/__tests__/downloadSlot.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Existing plugin quick answers and model preferences
+        run: pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/cindySlot.test.ts src/main/cindy-brain/__tests__/pluginModelPrefsIpc.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing remote plugin pages and encrypted settings
         run: pnpm --filter desktop exec vitest run src/main/cindy-brain/__tests__/mobilePageService.test.ts src/main/cindy-brain/__tests__/remotePluginSettings.test.ts src/main/cindy-brain/__tests__/mobilePageRelay.test.ts src/main/cindy-brain/__tests__/mobilePageAssets.test.ts src/main/cindy-brain/__tests__/mobilePluginConfiguration.test.ts src/main/cindy-brain/__tests__/mobilePluginUsage.test.ts src/main/cindy-brain/__tests__/mobilePreview.test.ts --maxWorkers=1 --minWorkers=1
       - name: Existing message ingress, permissions and reply lifecycle

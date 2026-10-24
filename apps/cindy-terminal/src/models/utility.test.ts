@@ -7,6 +7,9 @@ import { encodeCatalogModelPin } from '@cindy/model-providers/catalogModelPin';
 import { TerminalModelConfig } from './config.js';
 import { TerminalUtilityModels } from './utility.js';
 import { TerminalSecretStore } from '../secrets.js';
+import { TerminalPluginModels } from '../plugins/models.js';
+import type { InstalledGhost } from '@cindy/plugin-runtime/shared/ghost';
+import { atomicPrivateWrite } from '../platform.js';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -178,4 +181,55 @@ it('does not dispatch the next candidate after configuration or owner revocation
     utility.request('Do not send for a replaced owner'),
   ).rejects.toThrow('OWNER_CHANGED');
   expect(f.requests).toEqual(['first']);
+});
+
+// Integration: plugin quick answers previously reached UNSUPPORTED_CAPABILITY
+// in the terminal host. Exercise the production handler with real settings,
+// encrypted model credentials and HTTP; exact pins must never fall back.
+it('dispatches plugin quick answers with migrated preferences and exact model selection', async () => {
+  const f = await fixture(), utility = f.create();
+  await utility.update({ models: [f.pin('first'), f.pin('second')] });
+  const ghost: InstalledGhost = { manifest: { schemaVersion: 3, id: 'utility-plugin', name: 'Utility plugin', version: '1.0.0', kind: 'chip', entry: 'main.js', cindy: { text: ['oneshot'] } }, dir: f.root, enabled: true, approval: { state: 'approved', revision: 'receipt-a' } };
+  const plugins = new TerminalPluginModels({root:f.root,models:f.models,utility,installed:id=>id===ghost.manifest.id?ghost:null,guard(){},changed(){}});
+  cleanup.push(()=>plugins.close());
+  const request={type:'cindy-request',kind:'oneshot_text',prompt:'A plugin quick answer'};
+  expect(await plugins.receive(ghost.manifest.id,request)).toMatchObject({ok:true,text:'UTILITY_OK'});
+  expect(f.requests).toEqual(['first','second']);
+  await atomicPrivateWrite(path.join(f.root,'ghost-errand-prefs.json'),JSON.stringify({errand:{[ghost.manifest.id]:{permissionMode:'ask',workingDir:f.root}},sessions:{[`${ghost.manifest.id}#existing`]:'existing-task'}}));
+  await atomicPrivateWrite(path.join(f.root,'ghost-cindy-prefs.json'),JSON.stringify({overrides:{[ghost.manifest.id]:{'text.oneshot':f.pin('first')}},inflightLimits:{[ghost.manifest.id]:1}}));
+  expect((await plugins.state(ghost.manifest.id)).selected).toBe(f.pin('first'));
+  expect(await plugins.receive(ghost.manifest.id,request)).toMatchObject({ok:false,errorCode:'INTERNAL'});
+  expect(f.requests).toEqual(['first','second','first']);
+  await plugins.setModel(ghost.manifest.id,f.pin('second'));
+  expect(await plugins.receive(ghost.manifest.id,request)).toMatchObject({ok:true});
+  await plugins.setModel(ghost.manifest.id,null);
+  expect(await plugins.config(ghost.manifest.id)).toEqual({permissionMode:'ask',workingDir:f.root});
+  const saved=JSON.parse(await readFile(path.join(f.root,'ghost-errand-prefs.json'),'utf8'));
+  expect(saved.sessions).toEqual({[`${ghost.manifest.id}#existing`]:'existing-task'});
+  expect(JSON.parse(await readFile(path.join(f.root,'ghost-cindy-prefs.json'),'utf8'))).toEqual({inflightLimits:{[ghost.manifest.id]:1}});
+  ghost.manifest.cindy!.oneshotModel='second';
+  expect(await plugins.receive(ghost.manifest.id,request)).toMatchObject({ok:true});
+  expect(f.requests).toEqual(['first','second','first','second','second']);
+  ghost.enabled=false;
+  expect(await plugins.receive(ghost.manifest.id,request)).toMatchObject({ok:false,errorCode:'PERMISSION_DENIED'});
+  expect(f.requests).toHaveLength(5);
+});
+
+it('revokes a plugin fallback on package replacement and aborts in-flight model requests on shutdown',async()=>{
+  const f=await fixture(),utility=f.create();
+  await utility.update({models:[f.pin('first'),f.pin('second')]});
+  const ghost:InstalledGhost={manifest:{schemaVersion:3,id:'revocable-plugin',name:'Revocable plugin',version:'1.0.0',kind:'chip',entry:'main.js',cindy:{text:['oneshot']}},dir:f.root,enabled:true,approval:{state:'approved',revision:'receipt-a'}};
+  const plugins=new TerminalPluginModels({root:f.root,models:f.models,utility,installed:()=>ghost,guard(){},changed(){}});
+  cleanup.push(()=>plugins.close());
+  const request={type:'cindy-request',kind:'oneshot_text',prompt:'A revocable plugin quick answer'};
+  f.intercept(async()=>{ghost.approval={state:'approved',revision:'receipt-b'};});
+  expect(await plugins.receive(ghost.manifest.id,request)).toMatchObject({ok:false});
+  expect(f.requests).toEqual(['first']);
+  let entered!:()=>void,release!:()=>void;
+  const started=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+  f.intercept(async()=>{entered();await gate;});
+  const pending=plugins.receive(ghost.manifest.id,request);
+  await started;
+  try{await plugins.close();expect(await pending).toMatchObject({ok:false});}finally{release();}
+  expect(f.requests).toEqual(['first','first']);
 });

@@ -168,6 +168,7 @@ export class TerminalLocalModels {
           ...options.deps?.runtime,
           headless: true,
           installedBinary: binary,
+          sidecarRunning: () => this.sidecar.managedSidecarRunning(),
           signal: this.controller.signal,
         },
         onStatus: (status) => {

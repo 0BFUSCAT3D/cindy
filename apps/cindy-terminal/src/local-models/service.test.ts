@@ -457,6 +457,11 @@ it("extracts zstd runtime archives without a system decompressor and rejects esc
         entry("bin/ollama", "File", "#!/bin/sh\n"),
         entry("lib/runtime.so", "File", "library"),
         entry("lib/current.so", "SymbolicLink", "", "runtime.so"),
+        // Official Linux x64 libraries contain chains of versioned symlinks.
+        entry("lib/public.so", "SymbolicLink", "", "current.so"),
+        entry("lib/hard.so", "Link", "", "lib/public.so"),
+        entry("lib/forward.so", "SymbolicLink", "", "later.so"),
+        entry("lib/later.so", "SymbolicLink", "", "runtime.so"),
         Buffer.alloc(1024),
       ]),
     ),
@@ -467,6 +472,11 @@ it("extracts zstd runtime archives without a system decompressor and rejects esc
   );
   expect(
     await readFile(path.join(destination, "lib", "current.so"), "utf8"),
+  ).toBe("library");
+  for (const file of ["hard.so", "forward.so"])
+    expect(await readFile(path.join(destination, "lib", file), "utf8")).toBe("library");
+  expect(
+    await readFile(path.join(destination, "lib", "public.so"), "utf8"),
   ).toBe("library");
   await writeFile(
     archive,
@@ -481,4 +491,11 @@ it("extracts zstd runtime archives without a system decompressor and rejects esc
   await expect(
     extractLinuxOllama(archive, path.join(root, "bad")),
   ).rejects.toThrow("unsafe_archive_path");
+  await writeFile(archive, zstdCompressSync(Buffer.concat([
+    entry("bin/ollama", "File", "safe"),
+    entry("lib/a", "SymbolicLink", "", "b"),
+    entry("lib/b", "SymbolicLink", "", "a"),
+    Buffer.alloc(1024),
+  ])));
+  await expect(extractLinuxOllama(archive, path.join(root, "cycle"))).rejects.toThrow("UNSAFE_LOCAL_RUNTIME_ARCHIVE");
 });

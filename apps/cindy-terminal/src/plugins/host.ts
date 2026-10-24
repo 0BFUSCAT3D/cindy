@@ -29,6 +29,9 @@ import { PluginDownloadSlot, type PluginDownloadDeps } from '@cindy/plugin-runti
 import { createDownloader } from '@cindy/plugin-runtime/download/index';
 import { fetchSingleHopWithSsrFGuard } from '@cindy/browser-control-runtime/ssrf-runtime';
 import { ghostManifestDigest, type PluginMarketInstallationRecord } from '@cindy/plugin-runtime/market/ledger';
+import { TerminalPluginModels } from './models.js';
+import type { TerminalModelConfig } from '../models/config.js';
+import type { TerminalUtilityModels } from '../models/utility.js';
 
 type Inspected = Exclude<Awaited<ReturnType<NativePluginHost['manager']['inspect']>>, {rejection:unknown}>;
 type PendingInstall = {facts:GhostInstallConsentFacts;file:string; inspected:Inspected; decision:GhostInstallConsentDecision; controller:string; expiresAt:number; namespace:string|null; receiver:string|null; installOrigin:'manual'|'agent-forge'; sourceChanged:boolean; record?:PluginMarketInstallationRecord; target:ReturnType<typeof ghostInstallTargetContext>};
@@ -49,6 +52,7 @@ export interface TerminalPluginOptions {
   downloadRequest?: PluginDownloadDeps['guardedFetch'];
   credentials?:Partial<TerminalPluginCredentialOptions>;
   account?:TerminalPluginAccount;
+  models?:{models:TerminalModelConfig;utility:TerminalUtilityModels};
   broker?:NativePluginHostOptions['broker'];
   log?:NativePluginHostOptions['manager']['log'];
 }
@@ -65,6 +69,7 @@ export class TerminalPlugins {
   readonly identity:TerminalPluginIdentity;
   readonly library:TerminalPluginLibrary;
   readonly downloads:PluginDownloadSlot;
+  readonly models?:TerminalPluginModels;
   readonly setupChanges=new GhostSetupChangeBus();
   private readonly pending = new Map<string,PendingInstall>();
   private readonly removing=new Set<string>();
@@ -83,6 +88,7 @@ export class TerminalPlugins {
     });
     this.kv=createGhostKvStore({getRootDir:()=>path.join(options.root,'plugin-kv'),log:options.log});
     const getGhost=(id:string)=>{this.guard();return this.native.list().find(ghost=>installedGhostStoragePart(ghost)===id)??null;};
+    if(options.models)this.models=new TerminalPluginModels({...options.models,root:options.root,installed:getGhost,guard:()=>this.guard(),changed:()=>{this.revision++;options.changed();}});
     this.library=new TerminalPluginLibrary({root:options.root,runtimeDirectory:options.runtimeDirectory,getGhost,current:()=>this.current(),log:options.log});
     this.downloads=new PluginDownloadSlot({getGhost,root:id=>path.join(options.root,'plugin-downloads',id),
       scope:()=>{this.guard();return options.root;},send:(id,event)=>{if(this.current())this.native.web?.send(id,event);},
@@ -138,6 +144,7 @@ export class TerminalPlugins {
     if(type==='library-request')return this.library.slot.handleLibraryRequest(id,payload);
     if(type==='download-request')return this.downloads.handle(id,payload,()=>this.current());
     if(type==='card-update'){this.cards.handleCardUpdate(id,payload);return {ok:true};}
+    if((type==='cindy-request'||type==='model-request')&&(payload as {kind?:unknown}).kind==='oneshot_text'&&this.models)return this.models.receive(id,payload);
     return this.options.receive(id,payload);
   }
   private async open() {
@@ -178,6 +185,14 @@ export class TerminalPlugins {
   }
   withCredentialMutation<T>(id:string,action:()=>Promise<T>|T):Promise<T>{
     return this.mutate(async()=>{if(this.removing.has(id)||!this.installed(id))throw new Error('PLUGIN_CHANGED');return action();});
+  }
+  setModel(id:string,pin:unknown,current?:()=>void){
+    return this.mutate(async()=>{
+      const ghost=this.installed(id);
+      if(!ghost||this.removing.has(id))throw new Error('PLUGIN_CHANGED');
+      if(!this.models||!ghost.manifest.cindy?.text?.includes('oneshot'))throw new Error('INVALID_ACTION');
+      await this.models.setModel(id,pin,current);
+    });
   }
   async list(){await this.ready;this.guard();await this.native.refresh();this.guard();return this.native.list();}
   async get(id:string){const ghost=(await this.list()).find(item=>installedGhostStoragePart(item)===id);if(!ghost)throw new Error('PLUGIN_NOT_FOUND');return ghost;}
@@ -264,7 +279,7 @@ export class TerminalPlugins {
     }
     const file=path.join(this.options.root,'ghost-workdir-prefs.json'),bytes=await readPrivateFile(file);this.guard();
     if(bytes){const prefs=normalizeGhostWorkdirPrefs(JSON.parse(bytes.toString()));for(const key of Object.keys(prefs.disabledByWorkdir))prefs.disabledByWorkdir[key]=[...new Set(prefs.disabledByWorkdir[key].map(id=>id===from?to:id))];await atomicPrivateWrite(file,JSON.stringify(prefs));}
-    this.guard();await this.cards.relocateGhost(from,to);this.guard();await this.options.archiveUserState?.(from,to);this.guard();
+    this.guard();await this.cards.relocateGhost(from,to);this.guard();await this.models?.relocate(from,to);this.guard();await this.options.archiveUserState?.(from,to);this.guard();
   }
   pendingFor(controller:string){this.guard();return [...this.pending].filter(([,p])=>p.controller===controller&&p.expiresAt>=Date.now()).map(([id,p])=>({id,facts:p.facts}));}
   pendingInstall(id:string,controller:string){
@@ -376,7 +391,7 @@ export class TerminalPlugins {
   close(){
     if(this.closing)return this.closing;
     this.credentials.close();this.closed=true;this.downloads.abortAll();this.options.onClose?.();this.pending.clear();
-    return this.closing=(async()=>{await this.ready.catch(()=>{});await this.mutations;try{await this.native.close();}finally{await this.downloads.stopAndWait();await this.library.close();await this.cards.flushWrites();}})();
+    return this.closing=(async()=>{await this.models?.close();await this.ready.catch(()=>{});await this.mutations;try{await this.native.close();}finally{await this.downloads.stopAndWait();await this.library.close();await this.cards.flushWrites();}})();
   }
 }
 
