@@ -234,6 +234,7 @@
     "cancel": "취소",
     "edit": "편집",
     "steer": "끼어들기",
+    "steerQueued": "아직 전달되지 않았습니다. 메시지는 대기열에 남아 있습니다.",
     "moveUp": "한 칸 앞으로",
     "moveDown": "한 칸 뒤로",
     "cancelSend": "전송 취소",

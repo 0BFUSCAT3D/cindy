@@ -7767,6 +7767,12 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
         projection,
         projectionEpochAtRequestStart,
       );
+      // The boolean ACK can also mean "kept for the next turn" on older hosts.
+      // Inspect the authoritative queue rather than reporting that as delivery.
+      if (remoteSessionStore.getInputProjection(sessionId).pendingQueue
+        .some((entry) => entry.clientId === item.clientId)) {
+        showTransientNotice(t('message.queue.steerQueued'));
+      }
       return accepted;
     });
   };

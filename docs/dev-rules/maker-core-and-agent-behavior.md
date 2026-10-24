@@ -404,6 +404,11 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   不登记阻塞交互或人工续跑。回答只走原执行的 steer，结束／Stop／关闭／替换后作废，
   发送失败不重投新 turn。Claude 会把已排队的答案合并为下一 SDK 段：仅在答案已被接收
   时复用现有 continuation claim 保留产品边界，避免提前完成或重复完成；未回答不建 claim。
+  Claude 前台已结束、仍等待后台任务的 continuation 也接受用户插话，送入原 SDK 输入队列；
+  已接收的补充归当前等待段，不能额外制造一个后继 claim，后台任务停止也不能丢弃补充。
+  插话被拒绝不等于产品结束，宿主必须复核实际运行态后才能合成结束边界。
+  回归见 `abort-stops-background-tasks.test.ts`、`background-steer.native.test.ts` 与 Desktop
+  `agent-input-coordinator.test.ts`；原生测试使用真实 CLI 和本地模型端点，不消耗订阅额度。
   Pi 在原生 RPC 排队后再核对执行代次与取消信号，防止答案串到
   下一次执行。Claude 的本机 hook 与远端 root-only guard 禁止原生子代理直接提问；工具
   入口只接受宿主标明 `mcpCallerKind=root` 且 `mcpCallerAttested=true` 的请求，身份未知、
