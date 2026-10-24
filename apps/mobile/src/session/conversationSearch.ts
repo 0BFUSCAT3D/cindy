@@ -5,6 +5,7 @@
  * 纯函数 + 注入依赖,不直接碰 React / store。
  */
 import {
+  conversationSearchResultKey,
   emptyConversationSearchResponse,
   filterResultsByRequestFilters,
   mergeConversationSearchFanout,
@@ -128,7 +129,11 @@ export async function searchConversationsAcrossDevices(
   // Updated hosts match aliases before limiting indexed results. Supplement the
   // cache for older/offline hosts, retaining the same visible device/project scope.
   if (deps.projectAliases?.size) {
+    // Cache ranks are not comparable to host ranks. Never replace an existing
+    // hit (and its message location/metadata) with an alias-only cache projection.
+    const existingKeys = new Set(present.flatMap((page) => page.results.map(conversationSearchResultKey)));
     const aliasMatches = deps.getCachedSessions().filter((session) =>
+      !existingKeys.has(conversationSearchSessionCacheKey(session)) &&
       session.workspaceKind === 'project' && remoteProjectAlias(deps.projectAliases,
         session.canonicalDeviceId ?? session.deviceLinkDeviceId, session.workingDir)
         ?.toLowerCase().includes(query.toLowerCase()));

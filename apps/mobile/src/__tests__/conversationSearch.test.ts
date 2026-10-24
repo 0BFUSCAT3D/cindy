@@ -105,6 +105,46 @@ const studio: ConversationSearchDeviceOrigin = {
 };
 
 describe('searchConversationsAcrossDevices', () => {
+  // #7026: the alias fallback could outrank an indexed body hit and erase its
+  // message client id. Existing alias coverage had no overlapping body result.
+  // Unit: one host body hit below 1,000,000 plus a cached alias hit is sufficient;
+  // exercise search and list projection so opening still targets that message.
+  it('preserves indexed message locations when supplementing cached alias hits', async () => {
+    const indexed = indexedPage(['top', 'overlap']);
+    const bodyHit = {
+      messageId: 'message', messageClientId: 'message-client', role: 'assistant' as const,
+      createdAt: '2026-08-19T00:00:00.000Z', snippet: 'Customer details',
+      preview: 'Customer details', score: 0.016, ftsRank: 1, vectorRank: null,
+    };
+    indexed.results[0].rankScore = 1_000_000.2;
+    Object.assign(indexed.results[1], {
+      matchKind: 'content', titleScore: null, titleMatchIndices: [],
+      contentHit: bodyHit, contentHits: [bodyHit], rankScore: 999_999.16,
+    });
+    const cached = [
+      session({ id: 'overlap', title: 'Cached task' }),
+      session({ id: 'alias-only', title: 'Another task' }),
+      session({ id: 'overlap', title: 'Other computer', deviceLinkDeviceId: 'dev-b' }),
+    ];
+    const result = await searchConversationsAcrossDevices([
+      studio, { deviceId: 'dev-b', deviceName: 'Laptop', reachable: false },
+    ], { query: 'customer' }, {
+      invoke: vi.fn(async () => indexed) as ConversationSearchInvoke,
+      getCachedSessions: () => cached,
+      projectAliases: new Map([
+        ['device:dev-a:/repo', 'Customer Portal'], ['device:dev-b:/repo', 'Customer Portal'],
+      ]),
+    });
+    const hit = result.results.find(item => item.session.id === 'overlap' && item.session.deviceLinkDeviceId === 'dev-a')!;
+    expect(hit.contentHit).toEqual(bodyHit);
+    expect(hit.contentHits).toEqual([bodyHit]);
+    expect(hit.rankScore).toBe(999_999.16);
+    expect(toSearchListItem(hit, Date.parse('2026-08-19T00:00:00.000Z'), undefined, cached[0]).searchFocusClientId)
+      .toBe('message-client');
+    expect(result.results.map(item => `${item.session.deviceLinkDeviceId}:${item.session.id}`).sort())
+      .toEqual(['dev-a:alias-only', 'dev-a:overlap', 'dev-a:top', 'dev-b:overlap']);
+  });
+
   it.each([1, 3, 24, 40])('finds ordinary hits behind %i Make hits on a bounded legacy host', async (hiddenCount) => {
     const indexed = indexedPage([
       ...Array.from({ length: hiddenCount }, (_entry, index) => 'make-' + index),
