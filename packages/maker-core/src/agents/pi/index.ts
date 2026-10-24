@@ -5125,10 +5125,17 @@ export class PiAgent extends BaseAgent {
     const waitForSessionRpcIdle = async (): Promise<void> => {
       await sessionRpcChain.catch(() => undefined);
     };
+    /**
+     * 宿主发起的独占 RPC 操作(手动压缩 / rewind / 切模等)不预约 turn、也不置
+     * `ctx.isStreaming`；用计数器把它们暴露给 `hasPendingHostOperation()`，
+     * 空闲回收据此拒绝关闭正在执行这类操作的会话。
+     */
+    let hostOperationsInFlight = 0;
     const runExclusivePiRpc = <T>(fn: () => Promise<T>): Promise<T> => {
+      hostOperationsInFlight += 1;
       const run = sessionRpcChain.then(fn);
       sessionRpcChain = run.then(() => undefined, () => undefined);
-      return run;
+      return run.finally(() => { hostOperationsInFlight -= 1; });
     };
     const requestPiCompact = async (instructions?: string): Promise<ManualCompactResult> => {
       const command: Record<string, unknown> = { type: 'compact' };
@@ -8040,6 +8047,10 @@ export class PiAgent extends BaseAgent {
             title: status.title ?? status.description,
             provider: 'pi' as const,
           }));
+      },
+
+      hasPendingHostOperation() {
+        return hostOperationsInFlight > 0;
       },
 
       async requestGracefulStop(): Promise<void> {
