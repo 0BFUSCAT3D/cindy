@@ -22,7 +22,7 @@ vi.mock('../components/new-chat/useAskUserDictation', () => ({
     const [state, setState] = useState<'idle' | 'listening'>('idle');
     return {
       state,
-      isBusy: state !== 'idle',
+      isBusy: state === 'listening',
       liveText: null,
       lastError: null,
       start: () => {
@@ -119,7 +119,7 @@ describe('AskUserQuestion voice entry', () => {
     const cluster = voice.parentElement!;
     // Sharing one container is what keeps the two on the same center line as the
     // answer grows; self-end pins the pair to the row's bottom edge.
-    expect(within(cluster).getByText('提交').tagName).toBe('BUTTON');
+    expect(within(cluster).getByRole('button', { name: '提交' }).tagName).toBe('BUTTON');
     expect(cluster.className).toContain('items-center');
     expect(cluster.className).toContain('self-end');
   });
@@ -129,7 +129,7 @@ describe('AskUserQuestion voice entry', () => {
     const voice = view.getByTestId('ask-user-voice');
     expect(voice).toBeTruthy();
     expect(view.getByPlaceholderText('请输入回答…')).toBeTruthy();
-    expect(within(voice.parentElement!).getByText('提交').tagName).toBe('BUTTON');
+    expect(within(voice.parentElement!).getByRole('button', { name: '提交' }).tagName).toBe('BUTTON');
   });
 
   it('bottom-pins the voice button in multi-select where the row has no send button', () => {
@@ -272,17 +272,18 @@ describe('AskUserQuestion voice entry', () => {
   // #6785: the old card disabled submit until the user stopped the mic.
   // Unit: real card actions must wait for the final transcript, submit once,
   // and leave failures editable. Existing cases only tested the voice entry.
-  it.each(['click', 'enter'] as const)('stops and submits the final answer once via %s', async (action) => {
+  it.each(['click', 'enter', 'custom'] as const)('stops and submits the final answer once via %s', async (action) => {
     let finish!: (ok: boolean) => void;
     stop.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finish = resolve; }));
-    const { view, onAnswer } = renderAsk([{ question: '补充一句' }]);
+    const { view, onAnswer } = renderAsk([{ question: '补充一句', ...(action === 'custom' ? { options: [{ label: '甲' }] } : {}) }]);
     fireEvent.click(view.getByTestId('ask-user-voice'));
     const submit = view.getByText('提交').closest('button')!;
     expect(submit.disabled).toBe(false);
-    if (action === 'click') fireEvent.click(submit);
+    if (action !== 'enter') fireEvent.click(submit);
     else fireEvent.keyDown(view.getByPlaceholderText('请输入回答…'), { key: 'Enter' });
     fireEvent.click(submit);
     expect(stop).toHaveBeenCalledOnce();
+    expect(view.getByRole('button', { name: '提交' }).getAttribute('aria-busy')).toBe('true');
     expect(onAnswer).not.toHaveBeenCalled();
     await act(async () => finish(true));
     expect(onAnswer).toHaveBeenCalledExactlyOnceWith('req-voice', { '补充一句': '完整回答' });

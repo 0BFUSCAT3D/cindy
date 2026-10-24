@@ -924,6 +924,9 @@ function PermissionEvidence({
       <Text style={styles.companionMeta}><Text style={styles.companionMetaLabel}>{`${t('interaction.companion.operation')}  `}</Text>{presentation.toolName}</Text>
       {presentation.sourceDescription ? <Text selectable style={styles.body}>{presentation.sourceDescription}</Text> : null}
       {presentation.autoReviewUnavailable ? <Text style={styles.body}>{t('interaction.permission.autoReviewUnavailable')}</Text> : null}
+      {presentation.autoReviewReason ? <Text selectable style={styles.body} testID="interaction.permission.autoReviewReason">
+        {t('interaction.permission.autoReviewReason', { reason: presentation.autoReviewReason })}
+      </Text> : null}
       {riskWarningText ? <View style={[styles.permissionRiskRow, armed && styles.permissionRiskRowArmed]} testID="interaction.permission.riskWarning">
         <Text style={styles.permissionRiskLabel}>{t('interaction.permission.highRisk')}</Text><Text style={styles.permissionRiskText}>{riskWarningText}</Text>
       </View> : null}
@@ -965,6 +968,11 @@ function PermissionEvidence({
             : presentation.description}
         </Text>
       ) : null}
+      {presentation.autoReviewReason ? (
+        <Text selectable style={styles.permissionDescription} testID="interaction.permission.autoReviewReason">
+          {t('interaction.permission.autoReviewReason', { reason: presentation.autoReviewReason })}
+        </Text>
+      ) : null}
       {riskWarningText ? (
         <View
           style={[styles.permissionRiskRow, armed && styles.permissionRiskRowArmed]}
@@ -996,7 +1004,7 @@ function AskCardVoiceButton({ listening, starting, disabled, onPress }: { listen
   const { colors } = useTheme();
   return (
     <Pressable
-      accessibilityLabel={listening ? t('session.common.voiceStopRecording') : t('session.screen.voiceStartInput')}
+      accessibilityLabel={listening || starting ? t('session.common.voiceStopRecording') : t('session.screen.voiceStartInput')}
       accessibilityRole="button"
       accessibilityState={{ busy: starting, disabled: Boolean(disabled) }}
       disabled={disabled}
@@ -1317,7 +1325,7 @@ function AskUserQuestionForm({
             <View style={[styles.customInputRow, { gap: touchLayout.actionGap }]}>
               <InteractionTouchButton
                 accessibilityLabel={t('interaction.panel.customAnswerPlaceholder')}
-                disabled={busy}
+                disabled={busy || voiceLocked}
                 onPress={() => {
                   if (!isMulti) {
                     clearCurrentAnswer();

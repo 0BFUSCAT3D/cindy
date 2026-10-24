@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 /**
  * AskUserQuestionPrompt
  * ---------------------------------------------------------------------------
@@ -944,9 +945,9 @@ function AskUserQuestionForm({
                     disabled={voiceSubmitting || (!dictation.isBusy && !customInput.trim())}
                     aria-busy={voiceSubmitting}
                     data-testid={isLastQuestion ? undefined : 'ask-user-custom-next'}
-                    aria-label={voiceSubmitting ? voiceSubmitLabel : isLastQuestion ? undefined : t('chat.askUserQuestion.next')}
+                    aria-label={isLastQuestion ? undefined : t('chat.askUserQuestion.next')}
                     className={cn(
-                      'shrink-0 rounded-[9999px] text-13 font-medium',
+                      'relative shrink-0 rounded-[9999px] text-13 font-medium',
                       isLastQuestion
                         ? 'px-[16px] py-[6px]'
                         : 'flex h-8 w-8 items-center justify-center',
@@ -955,12 +956,17 @@ function AskUserQuestionForm({
                         : 'bg-[var(--ask-send-disabled-bg)] text-[var(--ask-send-disabled-text)]',
                     )}
                   >
-                    {voiceSubmitting ? (
-                      <span role="status" aria-label={voiceSubmitLabel}>{isLastQuestion ? voiceSubmitLabel : '…'}</span>
-                    ) : isLastQuestion ? (
-                      t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit')
-                    ) : (
-                      <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
+                    <span className={cn('inline-flex items-center justify-center', voiceSubmitting && 'opacity-0')}>
+                      {isLastQuestion ? (
+                        t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit')
+                      ) : (
+                        <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
+                      )}
+                    </span>
+                    {voiceSubmitting && (
+                      <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center">
+                        <Spinner size={14} />
+                      </span>
                     )}
                   </button>
                 </Tip>
@@ -1044,7 +1050,7 @@ function AskUserQuestionForm({
         {/* Question Row (header chip moved to top header bar above) */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
-            <span className="min-w-0 break-words text-15 font-medium text-[var(--ask-header-text)]">
+            <span className="min-w-0 break-words whitespace-pre-wrap text-15 font-medium text-[var(--ask-header-text)]">
               <QuestionReferenceText text={currentQ?.question ?? ''} onPreviewOpenChange={setReferencePreviewOpen} />
             </span>
             {pageIndicator && (
@@ -1166,21 +1172,26 @@ function AskUserQuestionForm({
                   disabled={voiceSubmitting || (!dictation.isBusy && !customInput.trim())}
                   aria-busy={voiceSubmitting}
                   data-testid={isLastQuestion ? undefined : 'ask-user-custom-next'}
-                  aria-label={voiceSubmitting ? voiceSubmitLabel : isLastQuestion ? undefined : t('chat.askUserQuestion.next')}
+                  aria-label={isLastQuestion ? undefined : t('chat.askUserQuestion.next')}
                   className={cn(
-                    'h-10 rounded-[9999px] text-14 font-medium transition-colors',
+                    'relative h-10 rounded-[9999px] text-14 font-medium transition-colors',
                     isLastQuestion ? 'px-4' : 'flex w-10 items-center justify-center',
                     customInput.trim() || dictation.isBusy
                       ? 'bg-[var(--ask-send-bg)] text-[var(--ask-send-text)]'
                       : 'bg-[var(--ask-send-disabled-bg)] text-[var(--ask-send-disabled-text)]',
                   )}
                 >
-                  {voiceSubmitting ? (
-                    <span role="status" aria-label={voiceSubmitLabel}>{isLastQuestion ? voiceSubmitLabel : '…'}</span>
-                  ) : isLastQuestion ? (
-                    t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit')
-                  ) : (
-                    <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
+                  <span className={cn('inline-flex items-center justify-center', voiceSubmitting && 'opacity-0')}>
+                    {isLastQuestion ? (
+                      t(pending.resumeOnSubmit ? 'chat.askUserQuestion.sendAndContinue' : 'chat.askUserQuestion.submit')
+                    ) : (
+                      <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
+                    )}
+                  </span>
+                  {voiceSubmitting && (
+                    <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center">
+                      <Spinner size={14} />
+                    </span>
                   )}
                 </button>
               </Tip>

@@ -48,9 +48,9 @@ vi.mock('@/inputHandoff/InputHandoffCard', () => ({ InputHandoffCard: () => null
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) }));
 vi.mock('react-native', async () => {
   const { createElement } = await import('react');
-  const view = (tag: string) => ({ children, onPress, disabled, testID, accessibilityState }: {
-    children?: ReactNode; onPress?: () => void; disabled?: boolean; testID?: string; accessibilityState?: { busy?: boolean };
-  }) => createElement(tag, { onClick: onPress, disabled, 'data-testid': testID, 'aria-busy': accessibilityState?.busy }, children);
+  const view = (tag: string) => ({ children, onPress, disabled, testID, accessibilityState, accessibilityLabel }: {
+    children?: ReactNode; onPress?: () => void; disabled?: boolean; testID?: string; accessibilityState?: { busy?: boolean }; accessibilityLabel?: string;
+  }) => createElement(tag, { onClick: onPress, disabled, 'data-testid': testID, 'aria-busy': accessibilityState?.busy, 'aria-label': accessibilityLabel }, children);
   // Text keeps its onTextLayout so a test can report how many lines a label took.
   const Text = ({ children, onTextLayout, onPress, testID }: { children?: ReactNode; onTextLayout?: (event: { nativeEvent: { lines: unknown[] } }) => void; onPress?: () => void; testID?: string }) => {
     if (onTextLayout) textLayouts.set(String(children), onTextLayout);
@@ -64,11 +64,11 @@ vi.mock('react-native', async () => {
 vi.mock('@/components/AppText', async () => {
   const { createElement } = await import('react');
   return { Text: (await import('react-native')).Text,
-    TextInput: ({ value, onChangeText, testID, multiline }: {
-      value: string; onChangeText: (value: string) => void; testID: string; multiline?: boolean;
+    TextInput: ({ value, onChangeText, testID, multiline, editable }: {
+      value: string; onChangeText: (value: string) => void; testID: string; multiline?: boolean; editable?: boolean;
     }) => createElement(multiline ? 'textarea' : 'input', { value, 'data-testid': testID,
       onInput: (event: { currentTarget: HTMLInputElement }) => onChangeText(event.currentTarget.value),
-      readOnly: true }),
+      readOnly: editable === false }),
   };
 });
 vi.mock('lucide-react-native', () => ({ ShieldCheck: () => null, MessageCircle: () => null, ChevronDown: () => null, ChevronUp: () => null, Check: () => null, CornerDownLeft: () => null,
@@ -176,6 +176,7 @@ it('queues a submit before the voice handle exists without pretending to record'
   await click('interaction.ask.voice');
   const mic = host.querySelector('[data-testid="interaction.ask.voice"]')!;
   expect(mic.getAttribute('aria-busy')).toBe('true');
+  expect(mic.getAttribute('aria-label')).toBe('session.common.voiceStopRecording');
   await click('interaction.ask.submitButton');
   const submit = host.querySelector('[data-testid="interaction.ask.submitButton"]')!;
   expect(submit.getAttribute('aria-busy')).toBe('true');
@@ -212,6 +213,144 @@ it.each(['stop', 'live'] as const)('retains text and permits manual correction a
   await click('interaction.ask.submitButton');
   expect(resolveInteraction).toHaveBeenCalledOnce();
   expect(JSON.stringify(resolveInteraction.mock.calls[0])).toContain('修改后的回答');
+});
+
+// Unit regression: the real card/hook disabled submit during recording. Existing
+// voice coverage only exercised signed-out errors, never final text or failures.
+it.each(['free', 'custom', 'multi', 'failed', 'removed', 'connecting', 'connecting-failed', 'connecting-removed', 'connecting-cancelled'])(
+  'submits final voice text once and preserves failed/cancelled answers: %s', async (mode) => {
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    let connect!: () => void;
+    let failConnection!: (error: Error) => void;
+    let signal: AbortSignal | undefined;
+    const stop = vi.fn();
+    const cancel = vi.fn(async () => undefined);
+    voiceStarter.start.mockImplementation(async (input: { signal?: AbortSignal; onListening: () => void; setText: (text: string) => void }) => {
+      signal = input.signal;
+      stop.mockImplementation(() => new Promise<void>((resolve, reject) => {
+        finish = () => { input.setText('Final answer'); resolve(); };
+        fail = reject;
+      }));
+      const run = { stop, cancel };
+      // PR #7017 review: listening can precede the ASR handshake. The previous
+      // fixture always resolved startup immediately and missed lost recordings.
+      if (mode.startsWith('connecting')) {
+        await new Promise<void>((resolve, reject) => { connect = resolve; failConnection = reject; });
+      }
+      input.onListening();
+      return run;
+    });
+    remoteSessionStore.setPendingInteractions('s1', [{ request: {
+      kind: 'ask_user_question', requestId, questions: [{ question: 'Question?',
+        ...(mode === 'custom' || mode === 'multi' ? { options: [{ label: 'A' }] } : {}),
+        multiSelect: mode === 'multi',
+      }],
+    } }]);
+    resolveInteraction.mockResolvedValue({ accepted: true });
+    await act(async () => root.render(
+      <AskCardAuthContext.Provider value={{ getAccessToken: async () => 'test', refreshAccessToken: async () => 'test', apiFetch: async () => ({}) }}>
+        <Harness />
+      </AskCardAuthContext.Provider>,
+    ));
+    if (mode === 'multi') await click('interaction.ask.option.1');
+    if (mode === 'failed' || mode === 'connecting-failed') await type('interaction.ask.textInput', 'Saved draft');
+    await click('interaction.ask.voice');
+    const send = host.querySelector<HTMLButtonElement>('[data-testid="interaction.ask.submitButton"]')!;
+    expect(send.disabled).toBe(false);
+    if (mode === 'connecting-cancelled') {
+      expect(host.querySelector('[data-testid="interaction.ask.voice"]')!.getAttribute('aria-label')).toBe('session.common.voiceStopRecording');
+      await click('interaction.ask.voice');
+      expect(signal?.aborted).toBe(true);
+      expect(host.querySelector('[data-testid="interaction.ask.voice"]')!.getAttribute('aria-label')).toBe('session.screen.voiceStartInput');
+      await act(async () => connect());
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(stop).not.toHaveBeenCalled();
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      return;
+    }
+    await click('interaction.ask.submitButton');
+    await click('interaction.ask.submitButton');
+    if (mode.startsWith('connecting')) {
+      expect(signal?.aborted).toBe(false);
+      expect(stop).not.toHaveBeenCalled();
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      if (mode === 'connecting-removed') {
+        await act(async () => remoteSessionStore.setPendingInteractions('s1', []));
+        expect(signal?.aborted).toBe(true);
+      }
+      await act(async () => mode === 'connecting-failed' ? failConnection(new Error('Connection failed')) : connect());
+      if (mode !== 'connecting') {
+        expect(resolveInteraction).not.toHaveBeenCalled();
+        expect(stop).not.toHaveBeenCalled();
+        if (mode === 'connecting-failed') expect(readAskUserDraft(requestId)?.customInput).toBe('Saved draft');
+        else expect(cancel).toHaveBeenCalledOnce();
+        return;
+      }
+    }
+    expect(stop).toHaveBeenCalledOnce();
+    expect(resolveInteraction).not.toHaveBeenCalled();
+    if (mode === 'removed') await act(async () => remoteSessionStore.setPendingInteractions('s1', []));
+    await act(async () => mode === 'failed' ? fail(new Error('Voice failed')) : finish());
+    if (mode === 'failed' || mode === 'removed') {
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      if (mode === 'failed') expect(readAskUserDraft(requestId)?.customInput).toBe('Saved draft');
+    } else {
+      expect(resolveInteraction).toHaveBeenCalledExactlyOnceWith(requestId, {
+        kind: 'ask_user_question', answers: { 'Question?': mode === 'multi' ? '["A","Final answer"]' : 'Final answer' },
+      });
+    }
+  },
+);
+
+// PR #7017 review: no PCM has arrived yet, so the old hook left editing and
+// navigation enabled while Send awaited startup. Exercise actual card actions,
+// then resolve startup and verify the original answer/question is submitted.
+it.each(['options', 'previous'])('protects the answer while submitting before the first audio chunk: %s', async (action) => {
+  let connect!: () => void;
+  const stop = vi.fn();
+  voiceStarter.start.mockImplementation(async (input: { setText: (text: string) => void }) => {
+    stop.mockImplementation(async () => input.setText('Final answer'));
+    await new Promise<void>((resolve) => { connect = resolve; });
+    return { stop, cancel: vi.fn(async () => undefined) };
+  });
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId, questions: [
+      ...(action === 'previous' ? [{ question: 'First?', multiSelect: true, options: [{ label: 'X' }, { label: 'Y' }] }] : []),
+      { question: 'Current?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] },
+    ],
+  } }]);
+  resolveInteraction.mockResolvedValue({ accepted: true });
+  await act(async () => root.render(
+    <AskCardAuthContext.Provider value={{ getAccessToken: async () => 'test', refreshAccessToken: async () => 'test', apiFetch: async () => ({}) }}>
+      <Harness />
+    </AskCardAuthContext.Provider>,
+  ));
+  if (action === 'previous') {
+    await click('interaction.ask.option.1');
+    await click('interaction.ask.submitButton');
+  }
+  await click('interaction.ask.option.1');
+  await click('interaction.ask.voice');
+  await click('interaction.ask.submitButton');
+  expect(resolveInteraction).not.toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
+  expect(host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]')!.readOnly).toBe(true);
+  for (const id of ['interaction.ask.option.2', 'interaction.ask.skipButton',
+    ...(action === 'previous' ? ['interaction.ask.previousButton'] : [])]) {
+    expect(host.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)!.disabled).toBe(true);
+    await click(id);
+  }
+  expect(host.querySelector('[data-testid="interaction.ask.question"]')!.textContent).toBe('Current?');
+  expect(readAskUserDraft(requestId)?.selectedLabels).toEqual(['A']);
+  await act(async () => connect());
+  expect(resolveInteraction).toHaveBeenCalledExactlyOnceWith(requestId, {
+    kind: 'ask_user_question', answers: {
+      ...(action === 'previous' ? { 'First?': '["X"]' } : {}),
+      'Current?': '["A","Final answer"]',
+    },
+  });
+
 });
 
 // Unit regression for PR #6306 review: a signed-out microphone tap used to
