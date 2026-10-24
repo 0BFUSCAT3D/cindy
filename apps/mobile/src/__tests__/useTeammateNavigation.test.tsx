@@ -26,8 +26,8 @@ const teammate = { key: 'mac:writer', host: { deviceId: 'mac', deviceName: 'My M
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
 let result: ReturnType<typeof useTeammateNavigation>;
-function Probe() { result = useTeammateNavigation(); return null; }
-async function render() { root ??= createRoot(document.createElement('div')); await act(async () => root!.render(createElement(Probe))); }
+function Probe({ push }: { push?: ReturnType<typeof import('@/utils/useGuardedPush').useGuardedPush> }) { result = useTeammateNavigation(push); return null; }
+async function render(push?: ReturnType<typeof import('@/utils/useGuardedPush').useGuardedPush>) { root ??= createRoot(document.createElement('div')); await act(async () => root!.render(createElement(Probe, { push }))); }
 let serial = 0;
 beforeEach(() => {
   vi.clearAllMocks(); h.sessions = []; h.routes = []; h.disk.clear(); h.accountGeneration = ++serial;
@@ -37,6 +37,19 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root?.unmount()); root = undefined; vi.useRealTimers(); });
 describe('header/home shared navigation', () => {
+  // PR #7079: the drawer must unmount before routing. Existing tests only covered immediate home
+  // pushes; one teammate or creation receipt with a deferred host push reproduces the regression.
+  // Unit tier, real navigation hook; the queued route must survive the source hook's unmount.
+  it.each(['existing', 'created'] as const)('waits for the drawer to close before opening an %s teammate', async (kind) => {
+    let routeAfterClose: (() => void) | undefined;
+    await render(href => { routeAfterClose = () => h.push(href); });
+    await act(async () => kind === 'existing' ? result.openTeammate(teammate) : result.openCreatedTeammate(teammate.host, teammate.item.ref));
+    expect(h.push).not.toHaveBeenCalled();
+    expect(result.lastTeammate).toEqual(teammateIdentity(teammate));
+    await act(async () => root!.unmount()); root = undefined;
+    routeAfterClose?.();
+    expect(h.push).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ pathname: '/resources/[collectionId]/[resourceId]' }));
+  });
   it('restores the remembered teammate and section fold, and returning home keeps them', async () => {
     const owner = homeNavigationOwner(h.user);
     await saveHomeNavigationPreferences(owner, { teammatesCollapsed: true, lastTeammate: teammateIdentity(teammate) });

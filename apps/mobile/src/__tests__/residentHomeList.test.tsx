@@ -54,6 +54,35 @@ afterEach(() => {
   state.divider = null; state.pan = {};
 });
 
+// Unit regression: new-task routes must keep the existing sidebar usable. Older
+// coverage only visited [sessionId]; a wide /sessions/new was hidden with its
+// subscriptions paused. Exercise the real provider through creation and resize.
+it.each(['ios', 'android'])('keeps the sidebar active through new task → created task on %s', platform => {
+  state.platform = platform;
+  state.segments = ['sessions', 'new'];
+  const host = document.createElement('div'), root = createRoot(host); roots.push(root);
+  const select = vi.fn();
+  const render = () => act(() => root.render(<Scene detail homeSelect={select} detailSelect={select} />));
+  render();
+  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('box-none');
+  expect(host.querySelector('[data-subscriptions]')?.getAttribute('data-subscriptions')).toBe('true');
+  expect(host.querySelector('[data-testid="session.paneDivider"]')).not.toBeNull();
+  act(() => (host.querySelector('[data-scroll]') as HTMLButtonElement).click());
+  const list = host.querySelector('[data-select]');
+  state.segments = ['sessions', '[sessionId]']; render();
+  expect(host.querySelector('[data-select]')).toBe(list);
+  expect(list?.textContent).toBe('240');
+  state.segments = ['sessions', 'new']; state.width = 430; render();
+  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('none');
+  expect(host.querySelector('[data-subscriptions]')?.getAttribute('data-subscriptions')).toBe('false');
+  expect(host.querySelector('[data-testid="session.paneDivider"]')).toBeNull();
+  state.width = 1000; render();
+  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('box-none');
+  expect(host.querySelector('[data-select]')).toBe(list);
+  act(() => (list as HTMLButtonElement).click());
+  expect(select).toHaveBeenCalledOnce();
+});
+
 // Unit: real divider handlers + provider layout. User's 2026-10-23 request adds
 // live bounded resizing; previous resident-list tests never drove a divider.
 it('drags both panes together, clamps the bounds and retains width through route and orientation changes', () => {

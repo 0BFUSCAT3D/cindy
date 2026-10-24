@@ -2,7 +2,8 @@
 import { act, createContext, createElement as el } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ cloudRefresh: vi.fn(async () => {}), collapsed: false, unread: false }));
+const h = vi.hoisted(() => ({ cloudRefresh: vi.fn(async () => {}), push: vi.fn(),
+  cloudActor: null as null | { id: string }, createOptions: null as any, collapsed: false, unread: false }));
 vi.mock('react-native', () => ({
   View: ({ children, testID }: any) => el('div', { 'data-testid': testID }, children),
   ScrollView: ({ children, testID }: any) => el('div', { 'data-testid': testID }, children),
@@ -20,10 +21,12 @@ vi.mock('lucide-react-native', () => ({ ChevronDown: () => null, ChevronRight: (
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ user: { id: 'owner' } }) }));
 vi.mock('@/components/AppText', () => ({ Text: ({ children, testID }: any) => el('span', { 'data-testid': testID }, children) }));
 vi.mock('@/components/RemoteCompanionAvatar', () => ({ RemoteCompanionAvatar: () => null }));
-vi.mock('@/chat/cloudCompanion', () => ({ CLOUD_ROW_REVISION: 'cloud', cloudActorForRow: () => null, cloudCompanionRows: (items: unknown) => items }));
+vi.mock('@/chat/cloudCompanion', () => ({ CLOUD_ROW_REVISION: 'cloud', cloudActorForRow: () => h.cloudActor, cloudCompanionRows: (items: unknown) => items }));
+vi.mock('@/session/teammateNavigation', () => ({ cloudCompanionRoute: () => '/cloud-chat' }));
+vi.mock('@/session/botGroupNavigation', () => ({ botGroupRoute: () => '/group-chat' }));
 vi.mock('@/chat/useCloudCompanion', () => ({ useCloudCompanionHome: () => ({ supported: true, actors: [], deviceNames: {}, refresh: h.cloudRefresh }) }));
 vi.mock('@/device-link/remoteResourceCache', () => ({ isRemoteResourceUnread: () => h.unread, remoteResourceCacheRevision: () => 0, subscribeRemoteResourceCache: () => () => {} }));
-vi.mock('@/utils/useGuardedPush', () => ({ useGuardedPush: () => () => {} }));
+vi.mock('@/utils/useGuardedPush', () => ({ useGuardedPush: () => h.push }));
 vi.mock('@/theme', async () => {
   const tokens = await import('@/theme/tokens');
   const colors = tokens.lightColors;
@@ -36,11 +39,14 @@ vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () =>
 vi.mock('@/session/HomeRosterContext', () => ({ useHomeRoster: () => null }));
 vi.mock('@/session/HomeListVisuals', () => ({ homeListStyles: () => ({}) }));
 vi.mock('@/session/listDisclosureTransition', () => ({ DisclosureItem: ({ children, testID }: any) => el('div', { 'data-testid': testID }, children) }));
-vi.mock('@/session/TeammateCreateController', () => ({ useTeammateCreateController: () => ({
-  renderTrigger: (trigger: unknown) => trigger, press: () => {}, label: 'create', sheets: null }) }));
+vi.mock('@/session/TeammateCreateController', () => ({ useTeammateCreateController: (options: any) => {
+  h.createOptions = options;
+  return { renderTrigger: (trigger: unknown) => trigger, press: () => {}, label: 'create', sheets: null };
+} }));
 vi.mock('@/session/TeammateList', () => ({
   useTeammateEntries: (items: any[], groups: any[] = []) => [...items.map(row => ({ kind: 'bot', row })), ...groups.map(row => ({ kind: 'group', row }))],
-  useTeammateRowRenderer: () => (entry: any) => el('div', { key: entry.row.key }, entry.row.item.display.title),
+  useTeammateRowRenderer: (options: any) => (entry: any) => el('button', { key: entry.row.key,
+    'data-testid': `row.${entry.kind}`, onClick: () => entry.kind === 'bot' ? options.onSelect(entry.row) : options.groups.onSelect(entry.row) }, entry.row.item.display.title),
 }));
 vi.mock('@/session/useTeammateNavigation', () => ({ useTeammateNavigation: () => ({
   owner: 'owner', teammatesCollapsed: h.collapsed, lastTeammate: null,
@@ -54,11 +60,12 @@ const roster = { items: [item], createTargets: [], groupTargets: [], loading: fa
   isOnline: () => true, connectionState: undefined, refresh: vi.fn(async () => {}) };
 const groups = { items: [] as any[], supported: true, refreshing: false, error: null, isOnline: () => true, refresh: vi.fn(async () => {}) };
 let root: Root; let node: HTMLDivElement;
-beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); node = document.createElement('div'); root = createRoot(node); vi.clearAllMocks(); vi.useFakeTimers(); roster.error = 'LIST_FAILED'; h.collapsed = false; h.unread = false; groups.items = []; });
+beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); node = document.createElement('div'); root = createRoot(node); vi.clearAllMocks(); h.cloudActor = null; vi.useFakeTimers(); roster.error = 'LIST_FAILED'; h.collapsed = false; h.unread = false; groups.items = []; });
 afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(); });
-const render = (refreshKey: number) => act(async () => root.render(el(HomeTeammatesSection, {
+const render = (refreshKey: number, overrides: Partial<Parameters<typeof HomeTeammatesSection>[0]> = {}) => act(async () => root.render(el(HomeTeammatesSection, {
   context: { navigation: null, route: null, shared: { roster, groups } } as any, active: true, refreshKey,
   visible: true, query: '', showFooter: false, runDisclosure: (apply: () => void) => apply(), prepareDisclosure: () => {},
+  ...overrides,
 })));
 const byId = (id: string) => node.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 
@@ -118,4 +125,23 @@ it('uses server read receipts and thread unread state in the collapsed group str
   group.chatUnread = { count: 2, threadCount: 0 };
   await render(0);
   expect(cell()?.querySelector('[data-testid="home.teammatesStrip.unread"]')).not.toBeNull();
+});
+
+// PR #7079: unit-tier component coverage of the cloud/group routes that bypass the teammate hook.
+// Existing coverage only refreshed the roster. A deferred host push must prevent navigation until
+// drawer close; the creation receipt is a separate entry after its own sheet has already closed.
+it.each(['cloud', 'group', 'created-group'] as const)('defers the %s route until the drawer closes', async kind => {
+  let routeAfterClose: (() => void) | undefined;
+  const bot = { ...item, item: { ...item.item, revision: 'cloud' } };
+  const group = { ...item, key: 'host:group', item: { ...item.item, ref: { ...item.item.ref, id: 'group' } } };
+  h.cloudActor = { id: 'actor' };
+  await render(0, { push: href => { routeAfterClose = () => h.push(href); },
+    context: { navigation: null, route: null, shared: { roster: { ...roster, items: [bot] }, groups: { ...groups, items: [group] } } } as any });
+  await act(async () => {
+    if (kind === 'created-group') h.createOptions.onGroupCreated(item.host, 'group');
+    else byId(`row.${kind === 'cloud' ? 'bot' : 'group'}`)!.click();
+  });
+  expect(h.push).not.toHaveBeenCalled();
+  routeAfterClose?.();
+  expect(h.push).toHaveBeenCalledExactlyOnceWith(kind === 'cloud' ? '/cloud-chat' : '/group-chat');
 });
