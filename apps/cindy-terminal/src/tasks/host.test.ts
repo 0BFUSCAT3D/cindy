@@ -34,6 +34,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
 import { TerminalPlugins } from '../plugins/host.js';
 import { TerminalPluginTasks } from '../plugins/tasks.js';
@@ -56,7 +57,7 @@ const hosts: TerminalTaskHost[] = [];
 afterEach(async () => { for(const scheduler of schedulers.splice(0))await scheduler.close(); for (const host of hosts.splice(0)) await host.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 /** Native transport substitute: all task lifecycle/approval behavior remains in real Maker. */
-function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions) => Promise<void>) {
+function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions) => Promise<void>, beforeSend?: (input: RuntimeInput, options: StartSessionOptions) => Promise<void>) {
   const starts: StartSessionOptions[] = [];
   const inputs: RuntimeInput[] = [];
   const decisions: InteractionDecision[] = [];
@@ -92,6 +93,7 @@ function engine(beforeStart?: (input: RuntimeInput, options: StartSessionOptions
           sends.push(sendOptions);
           running = true;
           emit({ type: 'status', data: { isRunning: true } });
+          await beforeSend?.(input, options);
           const text = typeof message.content === 'string' ? message.content : '';
           if (text === 'silent-once' || text === 'silent-loop' || silentForever) {
             silentForever ||= text === 'silent-loop';
@@ -183,6 +185,59 @@ async function auxiliaryFixture(host: TerminalTaskHost, reply: () => Promise<str
 }
 
 describe('terminal task host', () => {
+  // Integration: real MCP transports must preserve harness-attested lineage.
+  // An inherited task token alone cannot make a child Agent a root reporter;
+  // a later human turn must also lose the preceding Lead assignment identity.
+  it('routes worker MCP reports through attested harness contexts and the accepted input', async () => {
+    const results: Array<{ transport: string; caller: string; result: unknown }> = [];
+    const forwarded: Array<{ device: string; request: Record<string, unknown> }> = [];
+    const native = engine(undefined, async (input, options) => {
+      const tools = input.tools!, provider = tools.providers.find(provider => provider.name === 'orca_worker_bridge')!;
+      for (const transport of ['sdk', 'codex', 'pi'] as const) for (const caller of ['root', 'descendant', 'unknown'] as const) {
+        const ctx = { sessionId: options.sessionId!, sessionInstanceId: options.sessionInstanceId!, workingDir: options.workingDir,
+          agentKind: transport === 'sdk' ? 'claude-code' as const : transport, mcpCallerKind: caller, mcpCallerAttested: caller !== 'unknown', vendorOptions: {} };
+        const client = new McpClient({ name: 'worker-report-test', version: '1' });
+        let dispose = () => {};
+        try {
+          if (transport === 'sdk') {
+            const server = (provider.toClaudeSdkConfig!(ctx) as { instance: McpServer }).instance;
+            const pair = InMemoryTransport.createLinkedPair(); await server.connect(pair[1]); await client.connect(pair[0]);
+          } else if (transport === 'pi') {
+            const bridge = tools.pi(ctx); dispose = bridge.disposeSessionCtx!;
+            await client.connect(new StreamableHTTPClientTransport(new URL(bridge.mcpBridge!.servers.find(server => server.name === provider.name)!.url), { requestInit: { headers: { Authorization: `Bearer ${bridge.mcpBridge!.token}` } } }));
+          } else {
+            tools.registerCodexMcpThreadContext({ ...ctx, threadId: `thread-${caller}` });
+            dispose = () => tools.unregisterCodexMcpThreadContext(`thread-${caller}`, ctx.sessionInstanceId);
+            const config = provider.toCodexMcpConfig!(ctx)!;
+            await client.connect(new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers: { Authorization: `Bearer ${tools.env[config.bearerTokenEnvVar!]}` } } }));
+          }
+          results.push({ transport, caller, result: await client.callTool({ name: 'send_to_lead', arguments: { worker_id: 'worker-1', message: 'Finished' }, ...(transport === 'codex' ? { _meta: { threadId: `thread-${caller}` } } : {}) }) });
+        } finally { await client.close(); dispose(); }
+      }
+    });
+    const { host, root } = await setup(native, { remoteInvoke: async (device, _channel, args) => {
+      forwarded.push({ device, request: args[0] as Record<string, unknown> });
+      return { ok: true, result: { content: [{ type: 'text', text: '{"ok":true}' }], isError: false } };
+    } });
+    const context = { source: 'remote' as const, deviceId: 'lead-pc', ownerId: 'owner', assertCurrent() {} };
+    await expect(host.invoke('maker:orca:remote-worker:caps', [], context)).resolves.toMatchObject({ workerBridge: true });
+    await host.invoke('maker:orca:remote-worker:open', [{ sessionId: 'report-worker', agentKind: 'claude-code', permissionMode: 'auto', title: 'Worker', workingDir: root,
+      lead: { leadSessionId: 'lead-task', leadTitle: 'Lead', workerLabel: 'Research' } }], context);
+    await host.invoke('maker:input:enqueue', ['report-worker', { clientId: 'lead-assignment', text: 'Research', origin: { kind: 'orca', displayText: 'Research' } }], context);
+    expect(await host.invoke('terminal:tasks:wait', ['report-worker', 'lead-assignment'])).toMatchObject({ status: 'completed' });
+    expect(results).toHaveLength(9);
+    expect(results.filter(row => row.caller === 'root').every(row => !(row.result as { isError: boolean }).isError)).toBe(true);
+    expect(results.filter(row => row.caller === 'descendant').every(row => JSON.stringify(row.result).includes('NESTED_AGENT_NOT_ALLOWED'))).toBe(true);
+    expect(results.filter(row => row.caller === 'unknown').every(row => JSON.stringify(row.result).includes('CALLER_PROVENANCE_REQUIRED'))).toBe(true);
+    expect(forwarded).toHaveLength(3);
+    for (const call of forwarded) expect(call).toMatchObject({ device: 'lead-pc', request: { sessionId: 'report-worker', leadSessionId: 'lead-task', reportedInputClientIds: ['lead-assignment'] } });
+    await host.invoke('maker:send', ['report-worker', { clientId: 'human-turn', text: 'Now answer my question.' }]);
+    expect(await host.invoke('terminal:tasks:wait', ['report-worker', 'human-turn'])).toMatchObject({ status: 'completed' });
+    expect(results).toHaveLength(18);
+    expect(results.slice(9).filter(row => row.caller === 'root').every(row => JSON.stringify(row.result).includes('NOT_LEAD_ASSIGNED_TURN'))).toBe(true);
+    expect(forwarded).toHaveLength(3);
+  });
+
   // Integration: the execution host must persist the authenticated Lead together
   // with the selected route before starting Maker. A duplicate open, restart,
   // local queue edit and release exercise identities absent from ordinary tasks.
@@ -1715,7 +1770,10 @@ describe('terminal task host', () => {
     const sessionId = init.headers.get('mcp-session-id')!;
     const unauthorized = await fetch(config.url, { method: 'POST', headers: { ...headers, authorization: 'Bearer wrong' }, body: '{}' });
     expect(unauthorized.status).toBe(401);
-    const call = await fetch(config.url, { method: 'POST', headers: { ...headers, 'mcp-session-id': sessionId }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'call_tool', arguments: { name: 'set_current_session_title', args: { title: 'Renamed by actual MCP' } } } }) });
+    const unbound = await fetch(config.url, { method: 'POST', headers: { ...headers, 'mcp-session-id': sessionId }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'call_tool', arguments: { name: 'set_current_session_title', args: { title: 'Must not rename' } } } }) });
+    expect(await unbound.text()).toContain('NO_SESSION_CONTEXT');
+    tools.registerCodexMcpThreadContext({ threadId: 'real-thread', sessionId: task.id, sessionInstanceId: native.starts[0].sessionInstanceId, workingDir: native.starts[0].workingDir, vendorOptions: {}, mcpCallerKind: 'root', mcpCallerAttested: true });
+    const call = await fetch(config.url, { method: 'POST', headers: { ...headers, 'mcp-session-id': sessionId }, body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'call_tool', arguments: { name: 'set_current_session_title', args: { title: 'Renamed by actual MCP' } }, _meta: { threadId: 'real-thread' } } }) });
     const payload = await call.text();
     expect(payload).toContain('Renamed by actual MCP');
     expect(await host.invoke('local-db:sessions:get', [task.id])).toMatchObject({ title: 'Renamed by actual MCP' });

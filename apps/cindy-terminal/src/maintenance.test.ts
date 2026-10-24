@@ -43,6 +43,7 @@ describe('terminal offline maintenance', () => {
     // Plugin data is user work too. Test actual encrypted export/restore, not
     // the path allowlist, and keep download caches out of the portable archive.
     const pluginData = {
+      'orca/state.json': '{"version":1,"teams":[],"workers":[],"reservations":[],"remoteOpens":[],"taskJournal":[]}',
       'plugins/example/ghost.json': '{"id":"example"}',
       'plugin-approvals/example.json': '{"receipt":"synthetic"}',
       'plugin-kv/example.json': '{"preference":"retained"}',
@@ -76,7 +77,7 @@ describe('terminal offline maintenance', () => {
     expect((await fs.readdir(restored)).sort()).toEqual(['owners', 'settings.json']);
     const restoredOwner = path.join(restored, 'owners', 'a'.repeat(32));
     expect((await fs.readdir(restoredOwner)).sort()).toEqual(['capabilities.json', 'cindy-media', 'companions', 'knowledge-settings.json', 'maker-memory', 'managed-agent-skills', 'tasks',
-      'plugins','plugin-approvals','plugin-kv','libraries','library-staging','plugin-market','ghost-workdir-prefs.json','ghost-sidebar-prefs.json','plugin-tasks','ghost-errand-prefs.json'].sort());
+      'orca','plugins','plugin-approvals','plugin-kv','libraries','library-staging','plugin-market','ghost-workdir-prefs.json','ghost-sidebar-prefs.json','plugin-tasks','ghost-errand-prefs.json'].sort());
     for (const [relative, body] of Object.entries(pluginData)) expect(await fs.readFile(path.join(restoredOwner, relative), 'utf8')).toBe(body);
     expect(await fs.readdir(path.join(restoredOwner, 'plugin-market'))).toEqual(['ledger.v1.json']);
     expect(await fs.readdir(path.join(restoredOwner, 'companions', 'cloud'))).toEqual(['a'.repeat(64)+'.json']);

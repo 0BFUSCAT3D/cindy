@@ -41,6 +41,7 @@ export async function readRemoteWorkerAssignment(storage: TerminalTaskStorage, i
 export interface RemoteWorkerPorts {
   storage: TerminalTaskStorage;
   deviceId?: string;
+  workerBridge: boolean;
   guard(context: InvocationContext): void;
   withLock<T>(id: string, work: () => Promise<T>): Promise<T>;
   providers(deviceId: string | null): Promise<ProviderView[]>;
@@ -60,9 +61,7 @@ export function createTerminalRemoteWorkerHost(ports: RemoteWorkerPorts) {
   return async (channel: string, args: unknown[], context: InvocationContext): Promise<unknown> => {
     const guard = () => ports.guard(context);
     const host = createOrcaRemoteWorkerHost({
-      // Automatic final-report polling works independently. Explicit bridge tools
-      // are negotiated only once caller provenance is installed for every harness.
-      workerBridge: false,
+      workerBridge: ports.workerBridge,
       getCaller: () => context.source === 'remote' && context.deviceId && context.ownerId && context.assertCurrent
         ? { controllerDeviceId: context.deviceId, controllerName: context.sourceDevice?.name, sharedTask: context.sharedTask }
         : null,

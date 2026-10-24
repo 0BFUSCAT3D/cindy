@@ -1724,6 +1724,9 @@ importers:
       '@cindy/model-providers':
         specifier: workspace:*
         version: link:../model-providers
+      '@cindy/remote-agent':
+        specifier: workspace:*
+        version: link:../remote-agent
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.3.6)

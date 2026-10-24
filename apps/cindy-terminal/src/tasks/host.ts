@@ -1,3 +1,6 @@
+import { createOrcaRemoteWorkerForwarder } from '@cindy/orca-workflow/host/orcaRemoteWorkerBridge';
+import { TerminalOrcaStore } from './orca-store.js';
+import { createOrcaRemoteWorkerMcpProvider } from '@cindy/orca-workflow/mcp';
 import { createTerminalRemoteWorkerHost, REMOTE_WORKER_CHANNELS, readRemoteWorkerAssignment, assertRemoteWorkerAssignment, type RemoteWorkerAssignment } from './orca-remote.js';
 import type { OrcaRemoteLead } from '@cindy/maker-shared/orca-remote-worker';
 import { isSameSessionExecution } from '@cindy/plugin-runtime/sessionExecutionOwnership';
@@ -147,12 +150,15 @@ export class TerminalTaskHost {
   readonly channels = TERMINAL_TASK_CHANNELS;
   readonly models: TerminalModelConfig;
   readonly storage: TerminalTaskStorage;
+  readonly orcaStore: TerminalOrcaStore;
   readonly changes: TerminalTaskChanges;
   readonly turnLifecycle: TerminalTurnLifecycle;
   readonly channelSignals: ReturnType<typeof createChannelTurnSignals>;
   readonly channelRecovery: ReturnType<typeof createRuntimeRecoveryNotices>;
   readonly taskContext: TerminalTaskContext;
   readonly routes: TerminalTaskRoutes;
+  private readonly remoteWorkerForwarder: ReturnType<typeof createOrcaRemoteWorkerForwarder>;
+  private readonly remoteWorkerTurns = new Map<string, { instanceId: string; generation: number; clientId: string }>();
   private readonly remoteWorkers: ReturnType<typeof createTerminalRemoteWorkerHost>;
   private readonly routeClosures = new Set<string>();
   private readonly permissionChanges = createSessionPermissionChanges();
@@ -260,6 +266,13 @@ export class TerminalTaskHost {
       },
     });
     this.storageReady = this.storage.open();
+    this.orcaStore = new TerminalOrcaStore({ root: options.profileDir, tasks: this.storage, beforeOpen: this.storageReady,
+      guard: () => this.guard({ source: 'local' }),
+      onTaskPatch: (id, patch) => {
+        this.emit('local-db:sessions:patched', { sessionId: id, patch: { ...patch, ...(patch.archived ? { status: 'archived' } : {}) } });
+        this.emit('terminal:tasks:changed', { sessionId: id });
+      },
+    });
     this.channelBindings = new TerminalImBindings({ root: options.profileDir, logger: options.logger, beforeOpen: this.storageReady, assertCurrent: () => { if (this.closed) throw new Error('TASK_HOST_CLOSED'); } });
     this.channelDefaults = new TerminalImDefaults({ root: options.profileDir, assertCurrent: () => this.guard({ source: 'local' }), changed: channel => this.emit('maker:remote-resources:changed', { collectionId: 'channels', channel }) });
     this.channelSessionDefaults = createImSessionDefaults({
@@ -310,8 +323,24 @@ export class TerminalTaskHost {
       replay: (...args) => this.replayRecoveredTask(...args),
       hasExternalOwner: id => Boolean(this.channelBindings.store.findByTarget(id) || this.pluginSetup?.surface.isHeadlessGhostSetupTurn(id)),
     });
+    const currentWorkerTurn = (id: string) => {
+      const turn = this.remoteWorkerTurns.get(id), session = this.live.get(id)?.session;
+      return turn && session?.instanceId === turn.instanceId && session.getTurnGeneration() === turn.generation ? turn : undefined;
+    };
+    this.remoteWorkerForwarder = createOrcaRemoteWorkerForwarder({
+      getOwnerToken: () => this.closed ? null : this,
+      readSession: async id => { const row = await this.storage.get(id); return row ? { status: row.deleted ? 'deleted' : row.archived ? 'archived' : 'active', orcaRemoteLead: row.orcaRemoteLead ?? null } : null; },
+      remoteInvoke: async (device, channel, args) => {
+        this.guard({ source: 'local' });
+        if (!options.remoteInvoke) throw new Error('REMOTE_AGENT_UNAVAILABLE');
+        const result = await options.remoteInvoke(device, channel, args);
+        return result.ok ? { ok: true, result: result.result } : { ok: false, error: { code: result.error?.code ?? 'IPC_ERROR', message: result.error?.message ?? 'Remote worker bridge unavailable' } };
+      },
+      getActiveInputClientIds: id => { const turn = currentWorkerTurn(id); return turn ? [turn.clientId] : []; },
+      getAcceptedInputProvenance: id => currentWorkerTurn(id) ? { originKind: 'orca' } : null,
+    });
     this.remoteWorkers = createTerminalRemoteWorkerHost({
-      storage: this.storage, deviceId: options.deviceId,
+      storage: this.storage, deviceId: options.deviceId, workerBridge: Boolean(options.remoteInvoke),
       guard: context => this.guard(context), withLock: (id, work) => this.routes.withLock(id, work),
       providers: deviceId => deviceId
         ? options.remoteInvoke ? readDeviceProviderViews(options.remoteInvoke, deviceId) : Promise.reject(new Error('REMOTE_AGENT_UNAVAILABLE'))
@@ -339,7 +368,7 @@ export class TerminalTaskHost {
   }
   private async initialize() {
     await privateDirectory(this.options.profileDir);
-    const initialized=await Promise.allSettled([this.storageReady,this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,this.channelDefaults.ready,this.utility.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
+    const initialized=await Promise.allSettled([this.storageReady,this.orcaStore.ready,this.models.open(),this.media.ready,this.capabilities.ready,this.channelBindings.ready,this.channelDefaults.ready,this.utility.ready,...ENGINES.map(async kind=>this.binaries.set(kind,await findAgentBinary(kind,this.options.binaryPaths?.[kind])))]);
     const failed=initialized.find((result):result is PromiseRejectedResult=>result.status==='rejected');if(failed)throw failed.reason;
     for (const id of this.channelBindings.store.listAttachedTargets()) {
       const row = await this.storage.get(id);
@@ -602,7 +631,7 @@ export class TerminalTaskHost {
       readSession: async id => {
         await this.ready; guard();
         const row = await this.storage.get(id); guard();
-        return row ? { id: row.id, agentKind: row.agentKind, workingDir: row.workDir, title: row.title, status: row.deleted ? 'deleted' : row.archived ? 'archived' : 'active', orcaRole: null,
+        return row ? { id: row.id, agentKind: row.agentKind, workingDir: row.workDir, title: row.title, status: row.deleted ? 'deleted' : row.archived ? 'archived' : 'active', orcaRole: row.orcaRole ?? null,
           model: row.model, providerId: row.providerId ?? null, agentDeviceId: row.agentDeviceId ?? null, remoteHostId: null,
           sdkSessionId: row.sdkSessionId ?? null, effort: row.effort ?? 'high', fastMode: row.fastMode ?? false,
           permissionMode: permission(row.permissionMode === 'default' ? 'ask' : row.permissionMode ?? 'ask'), workspaceKind: row.workspaceKind ?? 'project' } : null;
@@ -939,7 +968,7 @@ export class TerminalTaskHost {
     };
   }
   createToolsForCompanion(input:{sessionId:string;workingDir:string;agentKind:AgentKind;setTitle?:(title:string)=>Promise<void>;title?:()=>string;extraFactories?:Parameters<typeof createTaskTools>[0]['extraFactories']}) {
-    return createTaskTools({...input,isCurrent:()=>!this.closed,helper:this.helperDeps(input),scheduler:this.schedulerDeps});
+    return createTaskTools({...input,logger:this.options.logger,isCurrent:()=>!this.closed,helper:this.helperDeps(input),scheduler:this.schedulerDeps});
   }
   observeTask(id:string, listener:(event:AgentEvent)=>void) {const set=this.taskObservers.get(id)??new Set();set.add(listener);this.taskObservers.set(id,set);return ()=>{set.delete(listener);if(!set.size)this.taskObservers.delete(id);};}
   listBindings() { return Object.fromEntries(this.groupBindings); }
@@ -1121,7 +1150,13 @@ export class TerminalTaskHost {
     try{plugin=await this.pluginFactory?.({sessionId:id,workingDir:row.workDir,source:row.source,instanceId,assertCurrent,snapshot:()=>this.pluginPermissionSnapshot(id,instanceId()),confirm:(payload,signal)=>this.requestPluginWrite(id,payload,signal)});}
     catch(error){await knowledge?.close();await capability.close();throw error;}
     let tools: Awaited<ReturnType<typeof createTaskTools>>;
-    try { tools = await createTaskTools({ sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind,
+    try { tools = await createTaskTools({ logger: this.options.logger, sessionId: id, workingDir: row.workDir, agentKind: chosen.selection.agentKind,
+      ...(row.orcaRemoteLead && this.options.remoteInvoke ? { extraProviders: [createOrcaRemoteWorkerMcpProvider(async (context, tool, args) => {
+        assertCurrent();
+        if (context.sessionId !== id || !lease || context.sessionInstanceId !== lease.session.instanceId) throw new Error('TASK_MCP_SCOPE_MISMATCH');
+        const result = await this.remoteWorkerForwarder.forwardTool(context, tool, args);
+        assertCurrent(); return result;
+      }, this.options.logger)] } : {}),
       extraFactories: {...capability.factories,...knowledge?.factories,...plugin?.factories,...this.channelTools?.(() => {
         if (!isCurrent()) throw new Error('TASK_TOOLS_REVOKED');
         const session = this.live.get(id)?.session;
@@ -1143,7 +1178,7 @@ export class TerminalTaskHost {
     },reviewAbort.signal);
     let agent;
     try { agent = await (this.options.createAgent ?? createTerminalAgent)({ reviewAutoPermissionAction, profileDir: this.options.profileDir, taskId: id, selection: chosen.selection, route: chosen.route, binaryPath: binary ?? process.execPath, models: this.models, logger: this.options.logger, tools, turnChangeCapture: this.changes.capture, taskShellEnv:()=>this.options.protectedInput?.envFor(id)??{}, remote: Boolean(row.agentDeviceId), capabilities:capability,getGhostRosterPrompt:plugin?.getGhostRosterPrompt, memory: knowledge?.memory, contactsEnabled: knowledge?.contactsEnabled, getContactsPromptState: () => this.knowledge?.snapshot().contacts ? 'enabled' : 'disabled' }); } catch (error) { revoked=true;reviewAbort.abort();plugin?.close();await tools.close(); await knowledge?.close(); await capability.close(); throw error; }
-    const startDeviceAgentSession = row.agentDeviceId && this.options.remoteInvoke ? createDeviceAgentStarter({ captureKnownFileBefore: this.changes.capture.beforeKnownFileWrite, noteOpaqueTurnChange: this.changes.capture.noteOpaqueWrite, remoteInvoke: this.options.remoteInvoke, rgPath: () => 'rg', codexPath: () => this.binaries.get('codex') ?? undefined, mcpProviders: () => tools.providers, prepareMcpBridge: async () => tools.pi(), makerMemory: () => knowledge?.memory, logger: this.options.logger }) : undefined;
+    const startDeviceAgentSession = row.agentDeviceId && this.options.remoteInvoke ? createDeviceAgentStarter({ captureKnownFileBefore: this.changes.capture.beforeKnownFileWrite, noteOpaqueTurnChange: this.changes.capture.noteOpaqueWrite, remoteInvoke: this.options.remoteInvoke, rgPath: () => 'rg', codexPath: () => this.binaries.get('codex') ?? undefined, mcpProviders: () => tools.providers, prepareMcpBridge: async (_providers, _logger, context) => tools.pi(context), makerMemory: () => knowledge?.memory, logger: this.options.logger }) : undefined;
     const maker = new Maker({ agents: { [chosen.selection.agentKind]: agent }, storage: this.storage, logger: this.options.logger, ...(knowledge ? {makerMemory:knowledge.memory} : {}), ...(startDeviceAgentSession ? { startDeviceAgentSession } : {}) });
     const stopObservingMaker = maker.on(event => {
       for (const observer of this.makerObservers) {
@@ -1327,6 +1362,7 @@ export class TerminalTaskHost {
     this.pluginSetup?.bridge.cleanupForSession(id,'session_closed');
     const task = this.live.get(id);
     if (!task) return;
+    this.remoteWorkerTurns.delete(id);
     // Interrupted turns may have newer usage than the last done event. Save the
     // final live reading before detach so a cold model switch sees that pressure.
     await this.storage.updateIf(id, row => !row.deleted, { usage: task.session.getUsageSnapshot() }, () => {});
@@ -1562,7 +1598,7 @@ export class TerminalTaskHost {
               [AUTO_REVIEW_SOURCE_CONTENT]:message.content,
               [AUTO_REVIEW_USER_INTENT]:intent,
               ...(context.sharedTask?{turnPermissionPolicy:{origin:{kind:'desktop' as const},confirmationSurface:'desktop' as const,autoReviewContext:{requesterAuthority:'guest' as const,source:'group' as const},forceConfirmToolCall:()=>false}}:{}),
-              onAccepted: async () => { this.guard(context); if(context.plugin){if(!this.pluginSessions)throw new Error('PLUGIN_TASKS_UNAVAILABLE');await this.pluginSessions.accept(context.plugin.id,id,stored.clientId!,{instanceId:task.session.instanceId,generation:task.session.getTurnGeneration()});this.guard(context);} this.turnLifecycle.noteUserSend(id); await this.changes.begin(task.session, stored.clientId!); changeSetStarted = true; },
+              onAccepted: async () => { this.guard(context); if(context.plugin){if(!this.pluginSessions)throw new Error('PLUGIN_TASKS_UNAVAILABLE');await this.pluginSessions.accept(context.plugin.id,id,stored.clientId!,{instanceId:task.session.instanceId,generation:task.session.getTurnGeneration()});this.guard(context);} this.turnLifecycle.noteUserSend(id); await this.changes.begin(task.session, stored.clientId!); changeSetStarted = true; if (context.orca) this.remoteWorkerTurns.set(id, { instanceId: task.session.instanceId, generation: task.session.getTurnGeneration(), clientId: stored.clientId! }); else this.remoteWorkerTurns.delete(id); },
             }));
             if (result.accepted) outgoing.accepted();
             if (!result.accepted && changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id);
@@ -1570,7 +1606,7 @@ export class TerminalTaskHost {
           } catch (error) { if (changeSetStarted) this.changes.store.clearPendingTurnChangeSets(id); throw error; }
         } finally { this.sending.delete(id); releaseRoute(); }
       }
-      case 'maker:steer': {const session=(await this.ensureLive(string(args[0]))).session;noteInteractionRouteSteer(session);return session.steer(typeof args[1] === 'string' ? args[1] : await this.message(string(args[0]), args[1], context));}
+      case 'maker:steer': {const id=string(args[0]),session=(await this.ensureLive(id)).session;noteInteractionRouteSteer(session);return session.steer(typeof args[1] === 'string' ? args[1] : await this.message(id, args[1], context),{beforeProviderStart:()=>{this.guard(context);this.remoteWorkerTurns.delete(id);}});}
       case 'maker:get-context-usage': return (await this.ensureLive(string(args[0]))).session.getContextUsage();
       case 'maker:get-session-agent-switch-intent': return this.routes.intent(string(args[0]));
       case 'maker:switch-session-agent': {
@@ -1850,7 +1886,7 @@ export class TerminalTaskHost {
       return items;
     };
     return {
-      listSessions: async args => ({ ok: true, page: page((await sessions(args.sessionIds, args.includeDeleted)).filter(row => (args.includeDeleted || !row.deleted) && (!args.workdir || row.workDir === args.workdir) && (!args.agentKind || (row.agentKind === 'claude-code' ? 'cc' : row.agentKind) === args.agentKind) && (args.fromMs === null || row.createdAt >= args.fromMs) && (args.toMs === null || row.createdAt <= args.toMs)).map(row => ({ id: row.id, title: row.title, workingDir: row.workDir, agentKind: row.agentKind === 'claude-code' ? 'cc' : row.agentKind, workspaceKind: 'local', model: row.model, status: row.deleted ? 'deleted' : row.archived ? 'archived' : 'active', source: 'local', orcaRole: null, parentSessionId: row.parentSessionId ?? null, createdAt: row.createdAt, updatedAt: row.updatedAt, userSendAt: null, messageCount: 0 })), args.limit, args.order, args.cursor) }),
+      listSessions: async args => ({ ok: true, page: page((await sessions(args.sessionIds, args.includeDeleted)).filter(row => (args.includeDeleted || !row.deleted) && (!args.workdir || row.workDir === args.workdir) && (!args.agentKind || (row.agentKind === 'claude-code' ? 'cc' : row.agentKind) === args.agentKind) && (args.fromMs === null || row.createdAt >= args.fromMs) && (args.toMs === null || row.createdAt <= args.toMs)).map(row => ({ id: row.id, title: row.title, workingDir: row.workDir, agentKind: row.agentKind === 'claude-code' ? 'cc' : row.agentKind, workspaceKind: 'local', model: row.model, status: row.deleted ? 'deleted' : row.archived ? 'archived' : 'active', source: 'local', orcaRole: row.orcaRole ?? null, parentSessionId: row.parentSessionId ?? null, createdAt: row.createdAt, updatedAt: row.updatedAt, userSendAt: null, messageCount: 0 })), args.limit, args.order, args.cursor) }),
       listWorkdirs: async args => {
         const dirs = new Map<string, { id: string; createdAt: number; workingDir: string; sessionCount: number; firstSessionAt: number; lastSessionAt: number; agentKinds: string[] }>();
         for (const row of await sessions(args.sessionIds)) {
@@ -1915,6 +1951,7 @@ export class TerminalTaskHost {
     this.channelVendorOptions.clear();
     this.channelHydration.clear();
     await this.taskContext.close();
+    await this.orcaStore.close();
     await this.channelBindings.close();
     await this.channelDefaults.close();
     await this.capabilities.close();

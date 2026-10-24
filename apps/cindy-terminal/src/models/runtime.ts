@@ -140,6 +140,9 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
     prepareCodexSkills: input.capabilities?.prepareCodexSkills,
     getContactsPromptState: input.getContactsPromptState ?? (() => input.contactsEnabled ? 'enabled' : 'disabled'),
     mcpProviders: input.tools?.providers,
+    registerCodexMcpThreadContext: input.tools?.registerCodexMcpThreadContext,
+    unregisterCodexMcpThreadContext: input.tools?.unregisterCodexMcpThreadContext,
+    withCodexMcpDiscoveryContext: input.tools?.withCodexMcpDiscoveryContext,
     runtimeConfig: { taskShellEnv: input.taskShellEnv, userDataPath: input.guestHome ?? profileDir, ...(input.memory ? { makerMemoryEnabled: input.memory.isEnabled() } : {}), ...(custom && selection.agentKind === 'claude-code' ? { endpoint } : {}) },
     capabilityAdditions: { availableModels: catalogModels.map(model => ({
       id: model.id, displayName: model.name, contextWindow: model.contextWindow,
@@ -170,7 +173,7 @@ export async function createTerminalAgent(input: RuntimeInput): Promise<BaseAgen
   }));
   return own(new PiAgent({
     ...deps,
-    preparePiExtraSpawnConfig: async () => input.tools?.pi() ?? null,
+    preparePiExtraSpawnConfig: async (_providers, context) => input.tools?.pi(context) ?? null,
     resolvePiAgentHome: () => input.guestHome ? path.join(input.guestHome,'pi') : path.join(profileDir, 'engines', 'pi', taskId),
     resolvePiNativeProviders: async (): Promise<PiNativeProvidersResult> => {
       const native = resolvePiModelRoute(route.model, { baseUrl: endpoint, wireProtocol: route.routing.wireProtocol });

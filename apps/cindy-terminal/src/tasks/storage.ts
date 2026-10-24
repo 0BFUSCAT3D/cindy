@@ -18,6 +18,7 @@ export type TerminalTaskMeta = SessionMeta & {
   pendingHandoff?: { id: string; text: string; createdAt: number } | null;
   goalContinuation?: import('@cindy/im-runtime/goalInactiveNote').GoalContinuationState | null;
   thinkingEnabled?: boolean; hiddenAt?: number | null;
+  orcaRole?: 'lead' | 'worker' | null;
   orcaRemoteLead?: import('@cindy/maker-shared/orca-remote-worker').OrcaRemoteLead;
   usage?: { tokenUsage: number; contextTokens: number; contextWindow: number; costUsd: number };
 };

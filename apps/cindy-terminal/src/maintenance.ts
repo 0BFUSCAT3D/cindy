@@ -19,7 +19,7 @@ import { TerminalBrowserRuntime } from './plugins/browser.js';
 const derive = promisify(scrypt);
 const MAGIC = Buffer.from('CINDY-BACKUP-1\n');
 const EXCLUDED = ['sign-in tokens', 'provider credentials', 'plugin credentials', 'device identity', 'remote grants', 'installed engines', 'download caches', 'files outside the profile'];
-const OWNER_PATHS = new Set(['models.json', 'projects.json', 'tasks', 'schedules.json', 'workspaces', 'scheduled-workspaces', 'cindy-media', 'knowledge-settings.json', 'maker-memory', 'maker-contacts', 'companions', 'capabilities.json', 'managed-agent-skills',
+const OWNER_PATHS = new Set(['models.json', 'projects.json', 'tasks', 'orca', 'schedules.json', 'workspaces', 'scheduled-workspaces', 'cindy-media', 'knowledge-settings.json', 'maker-memory', 'maker-contacts', 'companions', 'capabilities.json', 'managed-agent-skills',
   'plugins', 'plugin-approvals', 'plugin-kv', 'plugin-fs', 'plugin-market', 'plugin-cleanup.json', 'ghost-workdir-prefs.json', 'ghost-sidebar-prefs.json', 'plugin-tasks', 'ghost-errand-prefs.json', 'ghost-cindy-prefs.json',
   'libraries', 'libraries-binding.json', 'library-staging', 'libraries-trash']);
 const PLUGIN_MARKET_FILES = new Set(['ledger.v1.json', 'organization.v1.json', 'current-organization.json', 'install.pending.json']);

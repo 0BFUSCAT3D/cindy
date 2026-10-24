@@ -30,7 +30,8 @@
     "zod": "^4.0.0",
     "@cindy/im-runtime": "workspace:*",
     "@cindy/model-providers": "workspace:*",
-    "@cindy/device-link": "workspace:*"
+    "@cindy/device-link": "workspace:*",
+    "@cindy/remote-agent": "workspace:*"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

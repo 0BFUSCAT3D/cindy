@@ -65,7 +65,7 @@ export class TerminalTaskRoutes {
     this.deps = {
       pendingSwitches: this.pending, log: host.logger,
       shouldApplyExclusiveProviderReroute: provider => shouldApplyExclusiveProviderReroute(provider, host.models.providerSources()),
-      getSessionRow: async id => { const row = await current(id); return { ...row, agentKind: makerToDbAgentKind(row.agentKind), model: row.model, providerId: row.providerId ?? null, sdkSessionId: row.sdkSessionId ?? null, status: 'active', remoteHostId: null, orcaRole: null, orcaRemoteLead: row.orcaRemoteLead ? JSON.stringify(row.orcaRemoteLead) : null }; },
+      getSessionRow: async id => { const row = await current(id); return { ...row, agentKind: makerToDbAgentKind(row.agentKind), model: row.model, providerId: row.providerId ?? null, sdkSessionId: row.sdkSessionId ?? null, status: 'active', remoteHostId: null, orcaRole: row.orcaRole ?? null, orcaRemoteLead: row.orcaRemoteLead ? JSON.stringify(row.orcaRemoteLead) : null }; },
       getLiveSession: host.getSession,
       closeSession: host.closeSession,
       withCloseSuppressed: host.withCloseSuppressed,
