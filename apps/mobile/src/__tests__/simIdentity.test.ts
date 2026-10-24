@@ -58,9 +58,9 @@ describe('shared simulator environment', () => {
   it('treats the --mock UI data switch as part of the Metro environment', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cindy-sim-env-'));
     try {
-      const env: Record<string, string> = {};
+      const env = {} as NodeJS.ProcessEnv;
       expect(applySimMockArg(['--mock', '--json'], env)).toEqual(['--json']);
-      const real = readSimEnvironment(dir, {}, {});
+      const real = readSimEnvironment(dir, {}, {} as NodeJS.ProcessEnv);
       const mock = readSimEnvironment(dir, {}, env);
       expect([real.uiMock, mock.uiMock]).toEqual([false, true]);
       expect(mock.envFingerprint).not.toBe(real.envFingerprint);

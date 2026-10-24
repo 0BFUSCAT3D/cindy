@@ -4,7 +4,8 @@
  * Runs seedUiMockData against a database built by the real migration chain, so a
  * schema change that the shared catalog no longer satisfies (new NOT NULL column,
  * narrowed enum) fails here instead of leaving `--mock` with an empty task list.
- * A second start must keep what the developer changed while testing.
+ * A second start must keep what the developer changed while testing, and finish a
+ * start that was interrupted between writing a task and its messages.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -66,7 +67,19 @@ describe.skipIf(!canReplayMigrations)('ui mock seed', () => {
       sqlite.prepare("DELETE FROM sessions WHERE id = 'ui-mock-dialogue'").run();
       writeFileSync(readme, 'edited\n');
 
+      // An interrupted first start (task written, messages not) must finish next time,
+      // while a message deleted in the app (tombstone) must not come back.
+      sqlite.prepare("DELETE FROM messages WHERE session_id = 'ui-mock-long-title'").run();
+      sqlite.prepare("DELETE FROM messages WHERE session_id = 'ui-mock-archived'").run();
+      sqlite.prepare(
+        "INSERT INTO messages (id, client_id, session_id, role, content, created_at) VALUES ('tomb', 'tomb', 'ui-mock-archived', 'message_tombstone', '{}', 1)",
+      ).run();
+
       expect(await seed()).toBe(1);
+      expect(sqlite.prepare("SELECT count(*) AS n FROM messages WHERE session_id = 'ui-mock-long-title'").get())
+        .toEqual({ n: 2 });
+      expect(sqlite.prepare("SELECT count(*) AS n FROM messages WHERE session_id = 'ui-mock-archived'").get())
+        .toEqual({ n: 1 });
       expect(sqlite.prepare("SELECT title FROM sessions WHERE id = 'ui-mock-english'").get())
         .toEqual({ title: 'renamed' });
       expect(sqlite.prepare("SELECT count(*) AS n FROM messages WHERE session_id = 'ui-mock-dialogue'").get())

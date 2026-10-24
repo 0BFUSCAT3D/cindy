@@ -49,7 +49,9 @@ interface VisualRealDataSnapshot {
 
 const NOW = Date.parse('2026-07-18T08:00:00.000Z');
 const ISO_NOW = new Date(NOW).toISOString();
-const UI_MOCK_ROWS = buildUiMockRows({ now: NOW, projectRoot: '/Users/demo/Projects' });
+// Built on first use: this module is imported by production code, and only the dev mock reads it.
+let uiMockRows: ReturnType<typeof buildUiMockRows> | null = null;
+const getUiMockRows = () => uiMockRows ??= buildUiMockRows({ now: NOW, projectRoot: '/Users/demo/Projects' });
 const IMAGE_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAABaAgMAAABCqLXBAAAADFBMVEX9/f2BgoIgISTY2NXfCK5xAAAACXBIWXMAAAsTAAALEwEAmpwYAAACCklEQVR42uWXsU7DMBBAk1rqgKyy9xM6nVSJoQv9BJaKlbVh4QcQfEIXWMsQiSZFav8Ao0hMGVhY+IRMmTogVebslsah1Hd0QYKrYrXOq+98Pp99QcAW+bUDPrtF9U5gt8q7kGfmgRwlAwGmxW7zLjdvu931v5lqxYCSU2VY6KWkPNgBIxpMFI7ZSknVg3SOIzZjei7tETa9OQ22jJGdPg2GE2wKjh+n+Aw54PAPguFmUWM/6MSP8oKdCrz2gk6gjbygE3l3vwzWN8doJxjWN0y8E2zUwcmeYFIueKrR5IIzmQS/HXHcE2O+CjngSAaZUUmCNmoKBtjPJECbAdqfBzSYyACEbNLgNMiEyYAM0ORpBmjWM8gaDFBIUEGDqVpybASQ1WRe3fx9UXcPHmKgntdgLdGf1B0uXIf7wD5OZrOEHtXmIJEmtdBhBqvI5gSueuIELnsrmC0UscCbarv6wUtmkkp0wQPv9bvhbklwrJfWABLUWkfGgLOtJcS7hxtmCL6l6Uy/bAUFigPOEET3POrSC0ZIoFgDvKo7htC6mK7B3Ufc1IKLMTbKe2jOLLi8wqb0HsPHuhIvqJmgcEHlAQ9dsPSAronf616Dej9QccHyn1y5aDn/ydWVfRlmX6/ZF3ZWCYDHuWQVFXZcVpmCKV7Rhc/AFj6C48esqtrIoktIQYuE1XhAfgL4ANer/BnN/IZTAAAAAElFTkSuQmCC';
 
@@ -455,7 +457,7 @@ function realDataProjection(snapshot: VisualRealDataSnapshot, sessionId: string)
 }
 
 function visualMockSessions(statusFilter?: string): RemoteSession[] {
-  const catalog = UI_MOCK_ROWS.sessions.map(catalogSession);
+  const catalog = getUiMockRows().sessions.map(catalogSession);
   if (statusFilter === 'archived') return catalog.filter((session) => session.status === 'archived');
   const sessions = [
     ...catalog.filter((session) => statusFilter === 'all' || session.status === 'active'),
@@ -529,7 +531,7 @@ function visualMockMessages(sessionId: string): RemoteMessage[] {
     } as RemoteMessage));
   }
   const running = sessionId.includes('running');
-  const catalog = UI_MOCK_ROWS.messages.filter((row) => row.sessionId === sessionId);
+  const catalog = getUiMockRows().messages.filter((row) => row.sessionId === sessionId);
   if (catalog.length > 0) {
     const lastAssistant = catalog.map((row) => row.role).lastIndexOf('assistant');
     return catalog.map((row, index) => {

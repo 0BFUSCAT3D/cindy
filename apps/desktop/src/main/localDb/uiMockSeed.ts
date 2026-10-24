@@ -9,6 +9,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { inArray } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { buildUiMockRows, UI_MOCK_PROJECTS } from '@cindy/maker-shared/ui-mock';
 
@@ -33,7 +34,7 @@ export function ensureUiMockProjects(projectRoot: string): void {
   }
 }
 
-/** Insert the missing demo tasks and messages. Returns the number of new tasks. */
+/** Insert the missing demo tasks and the messages of unfinished ones. Returns the number of new tasks. */
 export async function seedUiMockData({
   db,
   projectRoot,
@@ -73,7 +74,21 @@ export async function seedUiMockData({
     .onConflictDoNothing()
     .returning({ id: sessions.id });
   const newTaskIds = new Set(inserted.map((row) => row.id));
-  const newMessages = rows.messages.filter((row) => newTaskIds.has(row.sessionId));
+  // Tasks and messages are two writes. A start interrupted between them leaves a mock
+  // task without history, so a catalog task that has no message row at all is finished
+  // too. A message the developer deleted leaves a tombstone row, so it is not restored.
+  const catalogIds = rows.sessions.map((row) => row.id);
+  const withHistory = new Set(
+    (await db.selectDistinct({ id: messages.sessionId }).from(messages)
+      .where(inArray(messages.sessionId, catalogIds))).map((row) => row.id),
+  );
+  const existing = await db.select({ id: sessions.id }).from(sessions)
+    .where(inArray(sessions.id, catalogIds));
+  const seedMessagesFor = new Set([
+    ...newTaskIds,
+    ...existing.map((row) => row.id).filter((id) => !withHistory.has(id)),
+  ]);
+  const newMessages = rows.messages.filter((row) => seedMessagesFor.has(row.sessionId));
   if (newMessages.length > 0) {
     await db
       .insert(messages)
