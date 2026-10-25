@@ -2852,7 +2852,7 @@ describe('codex proxy host', () => {
       const ended = once(outbound, 'end');
       outbound.end(Buffer.concat([header, payload])); // zero mask
       await ended;
-      let message = Buffer.alloc(0);
+      let message: Buffer = Buffer.alloc(0);
       const reader = createWebSocketMessageTransform(true, decoded => { message = decoded; return decoded; });
       reader.resume(); const read = once(reader, 'end'); reader.end(Buffer.concat(forwarded)); await read;
       return message;
