@@ -11911,7 +11911,7 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
     expect(mocks.touchUserSendInDb).toHaveBeenCalledWith('s-b', undefined);
   });
 
-  it('派发在持久化后被取消:scheduler 项不留 recovery(不可被人手动 Retry)', async () => {
+  it.each([false, true])('派发在持久化后被取消:scheduler 不留 recovery,仅撤回失败时可续跑(rewindFails=%s)', async (rewindFails) => {
     // 项转 active-turn recovery 后唯一的出路是**用户点 Retry**,而 Retry 走克隆已受理
     // turn 的路径,不再经过 onAcceptedQueuedMessage —— 没有 scheduler 回调也没有 run
     // 跟踪。而这条 run 此刻已经顺延或落终态了,留着就等于让一条已收口的调度 prompt
@@ -11923,6 +11923,7 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
     // 记录的同一个坑。存活探测判死这一半的语义不变(下方仍断言)。
     const h = createHarness();
     const sid = 'sched-recovery';
+    if (rewindFails) h.rewindPersistedUserMessageAfterClear.mockRejectedValueOnce(new Error('disk unavailable'));
     h.sendToAgent.mockImplementationOnce(async (sessionId, _message, _createOpts, sendOpts) => {
       await persistQueuedUserMessage(sessionId, sendOpts);
       return sessionDispatchFailure('SEND/sched-recovery/send');
@@ -11931,6 +11932,7 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
     await flush();
 
     expect(latestProjection(h.projections).recovery).toBeNull();
+    expect(latestProjection(h.projections).errorCanContinue === true).toBe(rewindFails);
     const bySchedule = (includeRecovery: boolean) =>
       h.coordinator.hasQueuedItemWhere(
         sid,
@@ -11961,6 +11963,7 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
       expect(h.persistTerminalSendError).not.toHaveBeenCalled();
       expect(latestProjection(h.projections).error).toBeNull();
       expect(latestProjection(h.projections).recovery).toBeNull();
+      expect(latestProjection(h.projections).errorCanContinue).not.toBe(true);
       expect(h.coordinator.hasQueuedItemWhere(sid, item => item.clientId === 'scheduled-row')).toBe(false);
     },
   );
@@ -11978,6 +11981,9 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
       await flush();
       expect(h.rewindPersistedUserMessageAfterClear).toHaveBeenCalledTimes(path === 'rollback-failed' ? 1 : 0);
       expect(h.persistTerminalSendError).toHaveBeenCalled();
+      // #7119: a failed/unsafe rewind leaves a scheduled input in history;
+      // the real catch path must expose continuation. Interactive retry is separate.
+      expect(latestProjection(h.projections).errorCanContinue === true).toBe(path !== 'interactive');
     },
   );
 
@@ -12237,6 +12243,7 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
     await flush();
 
     expect(latestProjection(h.projections).recovery).toBeNull();
+    expect(latestProjection(h.projections).errorCanContinue).not.toBe(true);
     releaseSend();
     await flush();
   });
@@ -12306,6 +12313,7 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
     await flush();
 
     expect(latestProjection(h.projections).recovery).toBeNull();
+    expect(latestProjection(h.projections).errorCanContinue).toBe(true);
     expect(
       h.coordinator.hasQueuedItemWhere(sid, (item) => item.clientId === 'c1', {
         includeRecovery: true,
