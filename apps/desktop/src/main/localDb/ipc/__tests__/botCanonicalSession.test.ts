@@ -660,7 +660,8 @@ describe('Bot canonical Session lifecycle', () => {
     h.sqlite!.pragma('foreign_keys = ON');
   });
 
-  it.each(['hidden', 'archived'])('enforces %s companion visibility for cached task IDs, lists and pushes while retaining local access', async (state) => {
+  // cindy-bots-runtime.md §2: hidden/archive affects listing, not owner access to an original task.
+  it.each(['hidden', 'archived'])('keeps %s companion tasks accessible by ID and live pushes while omitting default lists and companion resources', async (state) => {
     const created = await invoke('local-db:bots:create-canonical-session', {
       botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
     });
@@ -670,13 +671,15 @@ describe('Bot canonical Session lifecycle', () => {
     expect(await projectRemoteSessionResult('local-db:sessions:get', created.session)).toEqual(created.session);
     if (state === 'hidden') h.sqlite!.prepare("UPDATE bot_profiles SET hidden_at = 1 WHERE id = 'bot-1'").run();
     else h.sqlite!.prepare("UPDATE bot_profiles SET status = 'archived' WHERE id = 'bot-1'").run();
-    expect(await readRemoteBotSessionAccess(id)).toBe('hidden');
-    await expect(assertRemoteBotInvocationAllowed([id])).rejects.toThrow('[NOT_FOUND]');
-    await expect(assertRemoteBotInvocationAllowed([{ sessionId: id }])).rejects.toThrow('[NOT_FOUND]');
+    expect(await readRemoteBotSessionAccess(id)).toBe('background');
+    await expect(assertRemoteBotInvocationAllowed([id])).resolves.toBeUndefined();
+    await expect(assertRemoteBotInvocationAllowed([{ sessionId: id }])).resolves.toBeUndefined();
+    expect(await projectRemoteSessionResult('local-db:sessions:get', created.session)).toEqual(created.session);
     expect(await projectRemoteSessionResult('local-db:sessions:list', [created.session])).toEqual([]);
     expect(await projectRemoteSessionResult('maker:list-active', [{ sessionId: id }])).toEqual([]);
-    expect(await projectRemoteBotPush({ sessionId: id, content: 'private reply' })).toBeNull();
-    expect(await projectRemoteBotPush(created.session, 'local-db:sessions:created')).toBeNull();
+    const reply = { sessionId: id, content: 'task reply' };
+    expect(await projectRemoteBotPush(reply)).toEqual(reply);
+    expect(await projectRemoteBotPush(created.session, 'local-db:sessions:created')).toEqual(created.session);
     await expect(assertRemoteBotInvocationAllowed(['bot-1'], 'local-db:bots:get')).rejects.toThrow('[NOT_FOUND]');
     const cachedResource = { ref: { id: 'bot-1', kind: 'bot' }, revision: id, display: { title: 'private name' } };
     await expect(projectRemoteSessionResult('maker:remote-resources:get', cachedResource)).rejects.toThrow('[NOT_FOUND]');
