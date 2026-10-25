@@ -301,7 +301,11 @@ async function withLeaseTransition(
   task: () => Promise<AcquireSchemaMigrationLeaseResult>,
 ): Promise<AcquireSchemaMigrationLeaseResult> {
   const gate = `${dbFilePath}.schema-transition`;
-  const marker = `owner-${process.pid}-${crypto.randomUUID()}`;
+  // Put the boot generation in the immutable directory entry, not mutable JSON.
+  // A live PID in another boot cannot belong to the crashed gate publisher.
+  const boot = await readSchemaMigrationBootIdentity();
+  const bootTag = boot ? crypto.createHash('sha256').update(boot).digest('hex') : null;
+  const marker = `owner-${process.pid}-${crypto.randomUUID()}${bootTag ? `-boot-${bootTag}` : ''}`;
   const candidate = `${gate}.${marker}.candidate`;
   let held = false;
   try {
@@ -327,9 +331,12 @@ async function withLeaseTransition(
           throw readError;
         }
         if (entries.length > 0) {
-          const owner = entries.length === 1 && /^owner-([1-9]\d*)-[a-f0-9-]{36}$/.exec(entries[0]);
+          const owner =
+            entries.length === 1 &&
+            /^owner-([1-9]\d*)-[a-f0-9-]{36}(?:-boot-([a-f0-9]{64}))?$/.exec(entries[0]);
           if (!owner) return { acquired: false, reason: 'lock-unreadable' };
-          if (isProcessAlive(Number(owner[1]))) {
+          const fromPreviousBoot = Boolean(bootTag && owner[2] && owner[2] !== bootTag);
+          if (!fromPreviousBoot && isProcessAlive(Number(owner[1]))) {
             return { acquired: false, reason: 'recovery-busy' };
           }
           // Only unlink this unique dead owner's marker. A delayed reclaimer

@@ -1,8 +1,21 @@
-import {
+import fs from 'node:fs';
+import Module, { createRequire } from 'node:module';
+
+// Bootstrap the child with the parent's simulated boot generation. Keep real
+// filesystem/process leases without repeatedly launching OS probes per child.
+// Install this one dependency before loading the production lease module once.
+const fixtureRequire = createRequire(__filename);
+const bootModulePath = fixtureRequire.resolve('../../schemaMigrationBootIdentity');
+const bootModule = new Module(bootModulePath);
+bootModule.exports = {
+  readSchemaMigrationBootIdentity: async () => 'test:11111111-1111-1111-1111-111111111111',
+};
+bootModule.loaded = true;
+fixtureRequire.cache[bootModulePath] = bootModule;
+const {
   acquireSchemaMigrationReaderLease,
   acquireSchemaMigrationWriterLease,
-} from '../../schemaMigrationLease';
-import fs from 'node:fs';
+}: typeof import('../../schemaMigrationLease') = fixtureRequire('../../schemaMigrationLease');
 
 const [dbFilePath, kind, mode] = process.argv.slice(2);
 if (!dbFilePath || (kind !== 'reader' && kind !== 'writer')) {

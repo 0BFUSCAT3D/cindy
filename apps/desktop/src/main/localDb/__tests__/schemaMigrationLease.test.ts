@@ -319,6 +319,56 @@ describe('schema migration lease', () => {
     });
   });
 
+  // PR #7146 / unit: crash leftovers were tested only with dead PIDs. A reboot
+  // can reuse the PID; compare boot generations without weakening live-owner exclusion.
+  it.each([
+    { name: 'same boot', published: 'boot-a', current: 'boot-a', acquired: false },
+    {
+      name: 'previous boot with reused live PID',
+      published: 'boot-a',
+      current: 'boot-b',
+      acquired: true,
+    },
+    { name: 'unavailable current boot', published: 'boot-a', current: null, acquired: false },
+    {
+      name: 'legacy marker without boot evidence',
+      published: null,
+      current: 'boot-b',
+      acquired: false,
+    },
+  ])('handles a gate from $name', async ({ published, current, acquired }) => {
+    const filePath = dbPath();
+    const gate = `${filePath}.schema-transition`;
+    boot.id = published;
+    const rename = fs.renameSync;
+    // Leave the real published gate behind, before acquiring any schema lease.
+    const interrupted = vi.spyOn(fs, 'renameSync').mockImplementationOnce((from, to) => {
+      rename(from, to);
+      throw Object.assign(new Error('interrupted after gate publication'), { code: 'EIO' });
+    });
+    expect(await acquireSchemaMigrationWriterLease(filePath)).toEqual({
+      acquired: false,
+      reason: 'recovery-busy',
+    });
+    interrupted.mockRestore();
+    const originalMarker = fs.readdirSync(gate);
+    // process.pid remains alive: only evidence of another boot may reclaim it.
+    boot.id = current;
+    const result = await acquireSchemaMigrationWriterLease(filePath);
+    if (acquired) {
+      hold(result);
+      expect(fs.existsSync(gate)).toBe(false);
+      expect(await acquireSchemaMigrationReaderLease(filePath)).toEqual({
+        acquired: false,
+        reason: 'writer-active',
+      });
+    } else {
+      expect(result).toEqual({ acquired: false, reason: 'recovery-busy' });
+      expect(fs.readdirSync(gate)).toEqual(originalMarker);
+      expect(fs.existsSync(`${filePath}.schema-writer.lock`)).toBe(false);
+    }
+  });
+
   it('does not remove a successor when another reclaimer wins the dead-gate race', async () => {
     const filePath = dbPath();
     const gate = `${filePath}.schema-transition`;
