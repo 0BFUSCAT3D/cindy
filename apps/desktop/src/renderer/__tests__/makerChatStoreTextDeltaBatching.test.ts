@@ -539,6 +539,37 @@ describe('makerChatStore text delta batching', () => {
     unsubscribe();
   });
 
+  // #7119 round 2: projection eligibility belongs to one error episode. Real
+  // status/event/persist ingress must revoke it without another projection,
+  // while a duplicate terminal or paired done for the same error preserves it.
+  it.each(['turn-start', 'replacement', 'recoverable', 'persisted', 'clear'] as const)(
+    'revokes continuation eligibility at the %s boundary without a projection', async (boundary) => {
+      onInputProjection?.(projection(SESSION_ID, { error: 'capacity', errorCanContinue: true }));
+      const terminal = (message: string, persistId?: string, errorStatus?: number) => onEvent?.({
+        sessionId: SESSION_ID, persistId,
+        event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message, errorStatus } },
+      });
+      terminal('capacity', 'eligible-error', 503);
+      onEvent?.({ sessionId: SESSION_ID, event: { type: 'done', source: 'claude-code', data: {} } });
+      expect(makerChatStore.getLightSnapshot(SESSION_ID).errorCanContinue).toBe(true);
+      if (boundary === 'turn-start') {
+        emitStatus({ status: 'Running', isRunning: true });
+        terminal('capacity');
+      } else if (boundary === 'replacement') {
+        terminal('different error', 'different-id');
+      } else if (boundary === 'recoverable') {
+        onEvent?.({ sessionId: SESSION_ID,
+          event: { type: 'error', source: 'claude-code', data: { isTerminal: false, message: 'retrying' } } });
+      } else if (boundary === 'persisted') {
+        onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'eligible-error' });
+      } else {
+        makerChatStore.clearError(SESSION_ID);
+        await flushPromises();
+      }
+      expect(makerChatStore.getLightSnapshot(SESSION_ID).errorCanContinue).toBe(false);
+    },
+  );
+
   it.each(['local', 'remote'])('retains IM completion provenance through %s ingress and resets it for App turns', (source) => {
     if (source === 'remote') remoteProjectsStore.pinSessionOrigin('device-1', SESSION_ID);
     const emit = (event: unknown) => {

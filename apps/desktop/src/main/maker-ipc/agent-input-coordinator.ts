@@ -4029,7 +4029,7 @@ export class AgentInputCoordinator {
         if (outcome === 'dropped-scheduler') {
           state.error = message ?? state.error;
           setErrorProjectionSignals(state, signals);
-          state.errorCanContinue = true;
+          this.releasePersistedScheduledErrorRecovery(state);
           // **紧随的 done 必须被配对吃掉。**各 agent 的失败收尾都是 terminal error 后再补
           // 一个 done;普通用户项靠下方"!active && recovery.kind==='active-turn'"那道守卫
           // 挡住它,而 scheduler 项恰恰没有 recovery 可挡 —— done 会一路落到方法尾部的
@@ -4062,8 +4062,7 @@ export class AgentInputCoordinator {
           setErrorProjectionSignals(state, signals);
           // 限额失败保留 Retry 与等待；其它确定性错误仍交给 runner 收口。
           if (schedulerItem && !scheduledQuota) {
-            state.recovery = null;
-            state.errorCanContinue = true;
+            this.releasePersistedScheduledErrorRecovery(state);
             this.markPendingExternalTerminalDone(sessionId, state);
             this.emit(sessionId);
             this.scheduleDrainAfterExternalTurnSettles(
@@ -6542,6 +6541,13 @@ export class AgentInputCoordinator {
     }));
   }
 
+  /** Only callers that have settled a persisted scheduler input may grant manual continuation.
+   * Normal and deferred persistence settlement must share this release boundary. */
+  private releasePersistedScheduledErrorRecovery(state: SessionInputState): void {
+    state.recovery = null;
+    state.errorCanContinue = true;
+  }
+
   /**
    * **唯一的 active-turn recovery 出口。**任何终态路径想留「重试上一轮」入口都必须经这里,
    * 不要再直接写 `state.recovery = { kind: 'active-turn', ... }`。
@@ -7115,8 +7121,7 @@ export class AgentInputCoordinator {
       // Scheduler recovery only belongs to the live auto-resume attempt. Once
       // that attempt ends, the runner settles the failed run; keeping Retry
       // here would block every later fire (and replay outside run accounting).
-      this.setActiveTurnRecovery(state, state.recovery.item);
-      state.errorCanContinue = true;
+      this.releasePersistedScheduledErrorRecovery(state);
       // Reuse normal scheduler failure settlement, including its bounded wait
       // for a paired done, so an old terminal cannot clear the next turn.
       this.markPendingExternalTerminalDone(sessionId, state);
@@ -7416,6 +7421,7 @@ export class AgentInputCoordinator {
       if (outcome === 'dropped-scheduler') {
         state.error = terminalEvent.message ?? state.error;
         setErrorProjectionSignals(state, terminalEvent.signals);
+        this.releasePersistedScheduledErrorRecovery(state);
         if (deferredPersistSuppressed) {
           this.notifyResumableTurnErrorDiscarded(sessionId, {
             surfaceError: true,
@@ -7472,7 +7478,7 @@ export class AgentInputCoordinator {
           });
         }
         if (schedulerItem && !scheduledQuota) {
-          state.recovery = null;
+          this.releasePersistedScheduledErrorRecovery(state);
           this.markPendingExternalTerminalDone(sessionId, state);
           this.emit(sessionId);
           this.scheduleDrainAfterExternalTurnSettles(sessionId, 'scheduler-prompt-terminal-error');

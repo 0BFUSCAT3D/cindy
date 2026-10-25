@@ -4495,11 +4495,20 @@ function getOrCreateState(sessionId: string): SessionChatState {
 function setState(
   sessionId: string,
   updater: (prev: SessionChatState) => SessionChatState,
-  opts: { deferNotification?: boolean } = {},
+  opts: { deferNotification?: boolean; fromInputProjection?: boolean } = {},
 ): void {
   const prev = getOrCreateState(sessionId);
-  const next = updater(prev);
+  let next = updater(prev);
   if (next === prev) return;
+  // Only an input projection can confirm eligibility. Every other transition
+  // may retain it solely for an unchanged live error (e.g. its paired done).
+  // Clearing/replacing the error therefore revokes it at one shared boundary,
+  // including direct turns and deferred persistence without another projection.
+  if (next.errorCanContinue && (!next.error || (!opts.fromInputProjection
+    && (!prev.errorCanContinue || !prev.error
+      || !liveErrorTextMatchesRow(next.error, prev.error, next.errorReason ?? undefined))))) {
+    next = { ...next, errorCanContinue: false };
+  }
   if (prev.error !== next.error) {
     _liveErrorEpoch.set(sessionId, (_liveErrorEpoch.get(sessionId) ?? 0) + 1);
   }
@@ -5039,7 +5048,7 @@ function applyInputProjection(
       inputRecovery: projection.recovery ?? null,
       ...(authRetryProjectionError ? { _authRetryPersistOnProjectionError: undefined } : {}),
     };
-  });
+  }, { fromInputProjection: true });
   if (deferredPersistFromProjection.payload) {
     persistTurnErrorDeferredTracked(
       projection.sessionId,

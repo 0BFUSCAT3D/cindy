@@ -12138,11 +12138,13 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
     expect(h.sendToAgent).toHaveBeenCalledTimes(2);
   });
 
-  it('终态 error 撞在持久化中途:落库后结算时 scheduler 项也不留 recovery', async () => {
+  it.each([false, true])('终态 error 撞在持久化中途:落库后 scheduler 仍可人工继续，候选=%s', async (candidate) => {
     // 第五条终态路径。终态 error 在 active.persisting 期间到达 → 被暂存成
     // pendingTerminalEvent,落库完成后由 settlePendingTerminalEventAfterPersist 结算 ——
     // 那里原来无条件造 active-turn recovery,漏了 scheduler 排除(第二十轮 P1)。
     const h = createHarness();
+    h.setResumableTurnErrorCandidate(() => candidate);
+    h.setResumableTurnErrorTakeover(null);
     const sid = 'sched-error-during-persist';
     let releasePersist!: () => void;
     mocks.createMessage.mockImplementationOnce(
@@ -12161,10 +12163,12 @@ describe('AgentInputCoordinator scheduler 排队心跳(review 反馈回归)', ()
     // 落库还挂着,此刻终态 error 到达 → 走 persisting 分支暂存
     h.coordinator.onTurnEvent(sid, 'error', 'upstream died mid-persist');
     await flush();
+    expect(latestProjection(h.projections).errorCanContinue).not.toBe(true);
     releasePersist();
     await flush();
 
     expect(latestProjection(h.projections).recovery).toBeNull();
+    expect(latestProjection(h.projections).errorCanContinue).toBe(true);
     expect(
       h.coordinator.hasQueuedItemWhere(sid, (item) => item.clientId === 'c1', {
         includeRecovery: true,
