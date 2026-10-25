@@ -166,6 +166,7 @@ type MaterializeLocal = Omit<CompanionMaterializeHost, 'latestRows'>;
 
 function createMaterializer(input: {
   ensureCanonicalSession: (botId: string) => Promise<string>;
+  discardInvitationWelcome?: (sessionId: string) => Promise<void>;
   rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
   selfDeviceId?: () => string | null;
 }): MaterializeLocal {
@@ -216,6 +217,15 @@ function createMaterializer(input: {
         const image = decodeBotAvatarImage(restored.imageBase64);
         fence.assertCurrent();
         if (image) await setBotProfileAvatar(id, image);
+      }
+      // The meeting record is gone, so no new greeting can be queued; one an unfinished meeting
+      // already queued (even one restored from the crash snapshot) must not go out on the owner's
+      // first message. Not tied to the record, so a retry that finds it already gone still clears it.
+      if (input.discardInvitationWelcome) {
+        const [row] = await getDbClient().drizzle.select({ sessionId: botProfiles.canonicalSessionId })
+          .from(botProfiles).where(eq(botProfiles.id, id)).limit(1);
+        fence.assertCurrent();
+        if (row?.sessionId) await input.discardInvitationWelcome(row.sessionId);
       }
     },
     applyCapabilities: async (botId, value, fence) => {
@@ -363,6 +373,8 @@ async function companionSessionIds(botId: string): Promise<string[]> {
 export function createCompanionCloudHost(input: {
   deliverToCanonical: CompanionCloudHost['deliverToCanonical'];
   ensureCanonicalSession: (botId: string) => Promise<string>;
+  /** Remove the greeting request an unfinished meeting queued in this task (cloud-companions.md §6). */
+  discardInvitationWelcome?: (sessionId: string) => Promise<void>;
   rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
   /** A turn is running (or queued) in this Session. */
   isTurnActive?: (sessionId: string) => boolean;
