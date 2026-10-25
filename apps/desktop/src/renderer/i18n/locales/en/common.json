@@ -6,6 +6,7 @@
     "button": "Use Original File"
   },
   "mailReader": {
+    "showExternalImages": "Show External Images",
     "markReadFailed": "Could not sync read status. Check mailbox authorization and reopen this email.",
     "title": "Mail",
     "openMailbox": "Open in mailbox",
@@ -1946,7 +1947,20 @@
       "wecomGroupToggleFailed": "Could not update WeCom group notifications",
       "wecomGroupClear": "Remove",
       "wecomGroupCleared": "Webhook removed",
-      "wecomGroupClearFailed": "Could not remove the Webhook"
+      "wecomGroupClearFailed": "Could not remove the Webhook",
+      "chat": {
+        "image": "Image",
+        "audio": "Voice message",
+        "video": "Video",
+        "file": "File",
+        "message": "New message",
+        "teammate": "Teammate",
+        "sender": "Unknown sender",
+        "mention": "Mentioned you",
+        "reply": "Replied to you",
+        "threadReply": "Thread reply",
+        "thread": "Thread"
+      }
     },
     "windowBehavior": {
       "menubar": {
@@ -9137,6 +9151,7 @@
       "descriptionOn": "{{name}} checks summaries when sessions change and keeps you informed.",
       "movedFrom": "Moved here from {{name}}",
       "heldBy": "{{name}} handles this now. Switch it on to move it here.",
+      "routineScopeHint": "Include sessions you create yourself. The built-in follow-up below responds to changes in assigned sessions.",
       "heldByNobody": "Not enabled",
       "restoreDefault": "Restore Default ({{name}})",
       "saveFailed": "Couldn't save. Try again.",
@@ -9164,7 +9179,8 @@
       "conflict": "Settings changed on the other device. Reload before saving.",
       "unsupported": "Update Cindy on the other device to edit these settings.",
       "discardDescription": "Reloading will discard these unsaved settings.",
-      "leaveDescription": "Leaving will discard these unsaved settings."
+      "leaveDescription": "Leaving will discard these unsaved settings.",
+      "finishOnHost": "Finish this on {{device}}."
     },
     "devicePicker": {
       "local": "This Device",
@@ -9314,6 +9330,7 @@
       "title": "Memory",
       "enabled": "Use memory",
       "disabledHint": "Off. Memories aren't read or saved.",
+      "aboutMe": "What you know about me",
       "search": "Search memories",
       "empty": "No memories yet",
       "noResults": "No matching memories",
@@ -9938,6 +9955,7 @@
       "selectedHint": "Only selected items in this list are allowed for this companion.",
       "personalHint": "A skill learned by this companion, loaded with its profile.",
       "unavailableHint": "Unavailable on this computer or execution target. Configure its connection or system access first.",
+      "notOnThisComputer": "Not available on this computer",
       "configure": "Open configuration",
       "empty_toolset": "No built-in tools are available on this execution target.",
       "empty_mcp": "No custom MCP servers have been added.",
@@ -10068,7 +10086,7 @@
       "homeLabel": "Main Computer",
       "thisComputer": "This computer",
       "homeOffline": "Main computer “{{device}}” is offline",
-      "homeUnreachable": "Main computer “{{device}}” doesn’t allow remote control",
+      "homeControlOff": "Main computer “{{device}}” doesn’t allow remote control",
       "continueHere": "Continue on This Computer",
       "takeOverHint": "{{name}} will run here from now on, and the conversation below comes along.",
       "takingOver": "Getting {{name}} ready on this computer…",
@@ -10085,6 +10103,7 @@
       "loadingDevices": "Loading your computers…",
       "devicesFailed": "Couldn’t load your computers",
       "noTargets": "No computer can take over. The other computer must be online, signed in to the same account, and have “Allow same-account devices to control this machine” turned on",
+      "hereControlOff": "“Allow same-account devices to control this machine” is off on this computer, so it can’t be chosen here. Turn it on in Settings → Remote Connection and try again",
       "resumeToMove": "Resume {{name}} before moving it to another computer",
       "transferBusy": "{{name}} is still working on a reply. Move it after the reply finishes",
       "targetUnavailable": "“{{device}}” isn’t available. It must be online with remote control turned on",
@@ -10105,6 +10124,8 @@
       "switchFailed": "Couldn’t move {{name}} to “{{device}}”",
       "homeOutdated": "The main computer “{{device}}” runs an older Cindy. Update it, or change the main computer there",
       "arrivingLater": "{{name}} moved to this computer and is still getting ready. It will appear in your teammates soon",
+      "arrivalPermissions": "{{name}} now uses this computer’s default permissions.",
+      "arrivalModel": "{{name}}’s saved model isn’t available on this computer, so it follows this computer’s default model.",
       "busyTitle": "{{name}} is still replying",
       "busyDescription": "Move it to “{{device}}” once this reply finishes, or stop the reply and move it now.",
       "busyWait": "Move When Done",
@@ -10206,8 +10227,10 @@
         }
       },
       "lanes": {
-        "title": "Hidden tasks",
-        "hint": "Each group, topic, and DM from someone else has its own hidden task. If one gets stuck or goes off track, start it over. Its history is kept.",
+        "title": "{{platform}} tasks",
+        "expand": "Expand {{platform}} tasks",
+        "collapse": "Collapse {{platform}} tasks",
+        "hint": "Each group, topic, and DM from someone else has its own task. If one gets stuck or goes off track, start it over. Its history is kept. Archiving only hides the list entry; the task keeps running with its context and history. New messages bring it back.",
         "ownerName": "Your DM",
         "kind": {
           "ownerDm": "Main task",
@@ -10226,15 +10249,17 @@
         "resetAria": "Start “{{lane}}” over",
         "resetConfirm": {
           "title": "Start “{{lane}}” over?",
-          "description": "The next message starts with a clean context, and any reply in progress stops. The full history stays in this hidden task, and {{name}}’s memory is unchanged.",
+          "description": "The next message starts with a clean context, and any reply in progress stops. The full history stays in this task, and {{name}}’s memory is unchanged.",
           "ownerDescription": "This is {{name}}’s main task, shared by your desktop conversation and this DM. The next message starts with a clean context, and any reply in progress stops. History, memory, and files are kept.",
           "confirm": "Start over",
           "cancel": "Cancel"
         },
         "resetDone": "“{{lane}}” started over. The next message begins with a clean context.",
         "resetFailed": "Couldn’t start it over. Try again later.",
-        "loadFailed": "Couldn’t load hidden tasks",
-        "empty": "No groups or DMs from others yet. They show up here once someone talks to {{name}} in a group or a DM."
+        "loadFailed": "Couldn’t load tasks",
+        "empty": "No groups or DMs from others yet. They show up here once someone talks to {{name}} in a group or a DM.",
+        "archiveAria": "Archive “{{lane}}”",
+        "archiveFailed": "Could not archive the task"
       },
       "add": {
         "button": "Add platform",
@@ -11179,6 +11204,9 @@
         "start": "Start voice input",
         "stop": "Stop voice input",
         "releaseToStop": "Recording. Release to stop.",
+        "holdComposer": "Hold the input box to dictate",
+        "speakRelease": "Start speaking. Release to finish.",
+        "speakPressAgain": "Start speaking. Press again to finish.",
         "releaseToSend": "Release to send",
         "finishAndSend": "Finish voice input and send",
         "refining": "Refining",
@@ -11363,6 +11391,44 @@
           "label": "Draft a reply to this email",
           "prompt": "Draft a reply to this email, taking the conversation and my thoughts into account. Don't send it yet."
         }
+      }
+    },
+    "branchSync": {
+      "multiple-checkouts": "{{branch}} is open in multiple directories. Cannot update",
+      "changed": "The branch state changed. Please retry.",
+      "action": "Pull the latest commits from {{remote}}/{{remoteBranch}}",
+      "remoteAction": "Pull the latest commits from {{remote}}/{{remoteBranch}}",
+      "checkedOut": "Also updates committed files on this branch; uncommitted changes are kept",
+      "fetching": "Pulling…",
+      "updated_one": "Pulled {{count}} new commit",
+      "updated_other": "Pulled {{count}} new commits",
+      "current": "Already up to date",
+      "keptAhead_one": "{{count}} unpushed local commit. No update needed",
+      "keptAhead_other": "{{count}} unpushed local commits. No update needed",
+      "failed": "Pull failed: {{reason}}",
+      "diverged": "Local and {{remote}} have diverged. Cannot update automatically",
+      "conflict": "Uncommitted changes conflict with remote updates. Commit or stash first",
+      "missing-remote": "{{remoteBranch}} does not exist on {{remote}}",
+      "no-remote": "No remote repository configured",
+      "not-local": "Select a local branch or the remote default branch",
+      "ahead_one": "{{count}} commit ahead of {{remote}}",
+      "ahead_other": "{{count}} commits ahead of {{remote}}",
+      "behind_one": "{{count}} commit behind {{remote}}",
+      "behind_other": "{{count}} commits behind {{remote}}",
+      "dirty_one": "{{count}} uncommitted file",
+      "dirty_other": "{{count}} uncommitted files",
+      "diverging_one": "{{ahead}} ahead, {{behind}} behind {{remote}}",
+      "diverging_other": "{{ahead}} ahead, {{behind}} behind {{remote}}",
+      "remoteGroup": "Remote",
+      "localGroup": "Local branches",
+      "errors": {
+        "git": "Git could not update the branch. Check repository access and retry.",
+        "timeout": "Git timed out. Check the connection and retry.",
+        "auth": "Git authentication failed. Check remote credentials.",
+        "network": "Could not connect to the remote repository. Check the connection.",
+        "missing": "The remote branch no longer exists.",
+        "busy": "Repository is busy. Try again later",
+        "changed": "The checked-out branch changed. Retry."
       }
     }
   },
@@ -12599,6 +12665,19 @@
     }
   },
   "ccAgent": {
+    "contextWindowBudget": {
+      "menuTitle": "Task context window",
+      "triggerLabel": "Task context window, currently {{window}}",
+      "menuHint": "Affects this task only. Applies from the next message.",
+      "optionDefault": "Model default",
+      "optionPercent": "{{percent}}%",
+      "inputPrice": "input {{price}}/M",
+      "remoteUnsupported": "The controlled device does not support changing this task's context window",
+      "remoteTightenOnly": "The controlled device ceiling is unavailable, so only smaller tiers are offered here.",
+      "readOnlyHint": "Read-only task: you can review the tiers and price bands, but not change them.",
+      "shrinkWarning": "{{used}} already in use — a smaller window compacts or rolls over first.",
+      "saveFailed": "Failed to save the context window tier"
+    },
     "agentStatus": {
       "readingMemory": "Reading memory…",
       "savingMemory": "Saving memory…",
@@ -13146,7 +13225,7 @@
         "unarchiveAll": "Restore all",
         "openInExplorer": "Open in file manager",
         "newInDirectory": "New session in this directory",
-        "copyDeepLink": "Copy deep link",
+        "copyDeepLink": "Copy Project Link",
         "syncCodex": "Sync Codex sessions for this project",
         "syncCodexDone": "Codex sync complete: {{inserted}} linked, {{updated}} updated",
         "syncCodexAlreadyLinked": "Codex sessions for this project are already linked",
@@ -13155,7 +13234,7 @@
         "search": "Search sessions in this project"
       },
       "deepLink": {
-        "copied": "Deep link copied",
+        "copied": "Link copied",
         "copyFailed": "Copy failed, please copy manually",
         "projectNotFound": "Project not found — it may have been archived or doesn't exist on this device"
       },
@@ -14049,6 +14128,13 @@
     },
     "builtinTemplates": {
       "schedule": {
+        "everyMinute": "Every minute",
+        "hourlyAt": "Hourly at minute {{minutes}}",
+        "atTimes": "At {{times}}",
+        "atHoursMinutes": "Hours {{hours}}, minutes {{minutes}}",
+        "monthDays": "Days {{days}} of the month",
+        "daysOrWeekdays": "{{days}} or {{weekdays}}",
+        "inMonths": "In {{months}}",
         "daily": "Daily at {{time}}",
         "weekdays": "Weekdays at {{time}}",
         "weekly": "{{weekday}} at {{time}}",
@@ -16121,6 +16207,9 @@
     "compression": "For condensing lengthy content."
   },
   "routines": {
+    "onEvent": "Event: {{source}} · {{event}}",
+    "triggerDetails": "View triggers ({{count}}; any can start a run)",
+    "noTriggers": "No triggers set",
     "unsavedTitle": "Unsaved Changes",
     "unsavedDescription": "Leaving will discard these changes to the routine.",
     "discard": "Discard Changes",
@@ -16192,8 +16281,8 @@
     "timeoutMs": "Check timeout (ms, blank for no limit)",
     "advancedSettings": "Advanced settings",
     "builtinFollowUp": {
-      "name": "Follow-up (built-in)",
-      "hint": "Wakes it when a session is stuck, waiting for you, errors out, hits the usage limit, or finishes. Built in, so it can only be paused or resumed."
+      "name": "Follow assigned sessions (built-in)",
+      "hint": "Follow assigned sessions when they stall, need you, fail, reach a usage limit or finish."
     },
     "builtinTodoCheck": {
       "name": "Daily todo check (built-in)",

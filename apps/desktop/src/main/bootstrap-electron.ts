@@ -95,7 +95,6 @@ import { textFilePreviewResult, TEXT_PREVIEW_LIMIT_MB } from './text-file-previe
 import os from 'node:os';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { machineIdSync } from 'node-machine-id';
 import windowStateKeeper from 'electron-window-state';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 import { assertCindyMakeEnabled } from './cindy-make/featureGate.js';
@@ -799,6 +798,8 @@ import {
   isSessionTurnPendingCompletion,
   isSessionInTurn,
   stopOrcaIdleWatcher,
+  applySessionContextWindowBudgetChange,
+  stopPiIdleReleaseWatcher,
   setGoalClearObserver,
   setGoalDeferredResumeCancelObserver,
   setGoalIdleObserver,
@@ -5648,9 +5649,8 @@ const registerIpcHandlers = () => {
     },
   );
 
-  // Device ID (hardware-based, survives app reinstall)
-  const machineId = machineIdSync();
-  ipcMain.handle('get-device-id', () => machineId);
+  // Device ID: use the identity registered by auth, including isolated dev overrides.
+  ipcMain.handle('get-device-id', () => authManager.getDeviceId());
 
   // CC 网络调试开关 — renderer Settings → Experimental "CC 网络调试日志" 操作此值。
   // 改写 process.env.XDT_CC_DEBUG_NET, 让 buildClaudeEnv 在下次 spawn cc 时注入
@@ -9333,6 +9333,9 @@ app.on('ready', async () => {
       }
       return true;
     },
+    // 任务级窗口预算落库后的运行时应用：与模型级上限编辑同一套「关 handle
+    // 冷重建 / 回合中登记 pending」语义。
+    applyContextWindowBudget: applySessionContextWindowBudgetChange,
     withSessionLock: withSendToSessionLock,
     // Mirrors exactly what the resume handler requires (`maker-ipc/register.ts`):
     // a loaded session for this task whose agent is PI. Without it a finished
@@ -10262,6 +10265,7 @@ onQuit('review-artifact-snapshots', cleanupActiveReviewArtifactSnapshots, 'async
 // LSP 不占用 Agent 正常保存和退出的时间窗口。
 onQuit('lsp-pool', shutdownLspServerPool, 'async');
 onQuit('orca-idle-watcher', () => stopOrcaIdleWatcher(), 'sync');
+onQuit('pi-idle-release-watcher', () => stopPiIdleReleaseWatcher(), 'sync');
 onQuit('im', () => stopImConnection('quit'), 'async');
 // 轮 27 MEDIUM-3:pi-env 挪到 post-async —— 若与 shutdown-maker 同 async 并发,
 // bridge 可能在 session close 的 disposeSessionRegistrations(unregisterSessionCtx/

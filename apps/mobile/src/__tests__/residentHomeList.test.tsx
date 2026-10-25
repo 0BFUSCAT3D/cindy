@@ -9,11 +9,10 @@ import { ResidentHomeList, ResidentHomeListProvider, useResidentHomeList, useSes
 const state = vi.hoisted(() => ({
   pan: {} as Record<string, (...args: any[]) => any>, divider: null as any,
   deferMeasure: false, measurements: [] as (() => void)[],
-  platform: 'android', spring: vi.fn((target: number) => target), hydrated: true, reduceMotion: true, progress: null as any, slide: null as any, mode: 'tasks', segments: ['devices'], width: 1000, anchorWidth: 1000, mounts: 0, unmounts: 0,
+  platform: 'android', reduceMotion: true, segments: ['devices'], width: 1000, anchorWidth: 1000, mounts: 0, unmounts: 0,
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/theme', () => ({ useTheme: () => ({ colors: { textSecondary: 'gray', borderStrong: 'gray' } }) }));
-vi.mock('../session/useHomeMode', () => ({ useHomeMode: () => ({ mode: state.mode, hydrated: state.hydrated }) }));
 vi.mock('expo-router', () => ({ useSegments: () => state.segments }));
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => state.reduceMotion }));
 vi.mock('@/platform/AdaptiveWindowContext', () => ({ useAdaptiveWindow: () => ({
@@ -44,21 +43,44 @@ vi.mock('react-native', async () => {
     }),
   };
 });
-vi.mock('react-native-reanimated', async () => {
-  const { useRef } = await import('react');
-  return { default: { View: ({ children, pointerEvents }: any) => <div data-host data-pointer={pointerEvents}>{children}</div> },
-    useSharedValue: (value: number) => { const ref = useRef({ value }); state.progress = ref.current; return ref.current; },
-    useAnimatedStyle: (factory: () => any) => { state.slide = factory; return factory(); },
-    cancelAnimation: () => {}, withSpring: (target: number) => state.spring(target),
-  };
-});
+vi.mock('react-native-reanimated', () => ({ default: { View: ({ children, pointerEvents, style }: any) =>
+  <div data-host data-pointer={pointerEvents} data-opacity={Object.assign({}, ...[style].flat()).opacity}>{children}</div> } }));
 const roots: ReturnType<typeof createRoot>[] = [];
 afterEach(() => {
   act(() => roots.splice(0).forEach(root => root.unmount()));
-  state.platform = 'android'; state.spring.mockClear(); state.hydrated = true; state.reduceMotion = true; state.mode = 'tasks'; state.segments = ['devices']; state.width = 1000; state.anchorWidth = 1000;
+  state.platform = 'android'; state.reduceMotion = true; state.segments = ['devices']; state.width = 1000; state.anchorWidth = 1000;
   state.mounts = 0; state.unmounts = 0;
   state.deferMeasure = false; state.measurements = [];
   state.divider = null; state.pan = {};
+});
+
+// Unit regression: new-task routes must keep the existing sidebar usable. Older
+// coverage only visited [sessionId]; a wide /sessions/new was hidden with its
+// subscriptions paused. Exercise the real provider through creation and resize.
+it.each(['ios', 'android'])('keeps the sidebar active through new task → created task on %s', platform => {
+  state.platform = platform;
+  state.segments = ['sessions', 'new'];
+  const host = document.createElement('div'), root = createRoot(host); roots.push(root);
+  const select = vi.fn();
+  const render = () => act(() => root.render(<Scene detail homeSelect={select} detailSelect={select} />));
+  render();
+  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('box-none');
+  expect(host.querySelector('[data-subscriptions]')?.getAttribute('data-subscriptions')).toBe('true');
+  expect(host.querySelector('[data-testid="session.paneDivider"]')).not.toBeNull();
+  act(() => (host.querySelector('[data-scroll]') as HTMLButtonElement).click());
+  const list = host.querySelector('[data-select]');
+  state.segments = ['sessions', '[sessionId]']; render();
+  expect(host.querySelector('[data-select]')).toBe(list);
+  expect(list?.textContent).toBe('240');
+  state.segments = ['sessions', 'new']; state.width = 430; render();
+  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('none');
+  expect(host.querySelector('[data-subscriptions]')?.getAttribute('data-subscriptions')).toBe('false');
+  expect(host.querySelector('[data-testid="session.paneDivider"]')).toBeNull();
+  state.width = 1000; render();
+  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('box-none');
+  expect(host.querySelector('[data-select]')).toBe(list);
+  act(() => (list as HTMLButtonElement).click());
+  expect(select).toHaveBeenCalledOnce();
 });
 
 // Unit: real divider handlers + provider layout. User's 2026-10-23 request adds
@@ -153,45 +175,6 @@ it('hides the resident list and pauses row subscriptions on other routes without
   expect(state.mounts).toBe(1); expect(state.unmounts).toBe(0);
 });
 
-it.each([{ homeSegments: [] }, { homeSegments: ['index'] }, { homeSegments: ['devices'] }, { homeSegments: ['devices', 'index'] }])('keeps task state but hides the resident list in teammate mode on %j', ({ homeSegments }) => {
-  state.segments = homeSegments;
-  const host = document.createElement('div');
-  const root = createRoot(host); roots.push(root);
-  const render = (detail = false) => act(() => root.render(<Scene detail={detail} homeSelect={() => {}} detailSelect={() => {}} />));
-  render();
-  act(() => (host.querySelector('[data-scroll]') as HTMLButtonElement).click());
-  state.mode = 'teammates'; render();
-  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('none');
-  expect(host.querySelector('[data-subscriptions]')?.getAttribute('data-subscriptions')).toBe('false');
-  // An actual task route still owns the upstream persistent sidebar, irrespective of home preference.
-  state.segments = ['sessions', '[sessionId]']; render(true);
-  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('box-none');
-  state.segments = homeSegments; state.mode = 'tasks'; render();
-  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('box-none');
-  expect(host.querySelector('[data-select]')?.textContent).toBe('240');
-  expect(state.mounts).toBe(1); expect(state.unmounts).toBe(0);
-});
-
-it('slides the wide resident list out with its home pane without remounting or intercepting teammate touches', () => {
-  state.reduceMotion = false;
-  const host = document.createElement('div'); const root = createRoot(host); roots.push(root);
-  const render = () => act(() => root.render(<Scene detail={false} homeSelect={() => {}} />));
-  render(); state.mode = 'teammates'; render(); state.progress.value = 0.5;
-  expect(state.slide()).toEqual({ opacity: 1, transform: [{ translateX: -500 }] });
-  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('none');
-  state.progress.value = 1; expect(state.slide().opacity).toBe(0);
-  expect(state.mounts).toBe(1); expect(state.unmounts).toBe(0);
-});
-
-it('switches Android home modes in place, because each pane draws its own bar', () => {
-  state.reduceMotion = false; state.platform = 'android';
-  const host = document.createElement('div'); const root = createRoot(host); roots.push(root);
-  const render = () => act(() => root.render(<Scene detail={false} homeSelect={() => {}} />));
-  render(); state.mode = 'teammates'; render();
-  expect(state.spring).not.toHaveBeenCalled();
-  expect(state.progress.value).toBe(1);
-});
-
 // Regression: Duo portrait → landscape briefly removed the task list while its
 // new host waited for native measurements. Existing tests only switched routes
 // at a fixed wide size. Exercise the real provider/slot (unit tier), preserving
@@ -282,9 +265,9 @@ it('does not draw the retained iOS sidebar over home during return', () => {
   const host = document.createElement('div'); const root = createRoot(host); roots.push(root);
   const render = () => act(() => root.render(<Scene detail homeSelect={() => {}} detailSelect={() => {}} />));
   render();
-  expect(state.slide().opacity).toBe(1);
+  expect(host.querySelector('[data-host]')?.getAttribute('data-opacity')).toBe('1');
   state.segments = []; render();
-  expect(state.slide().opacity).toBe(0);
+  expect(host.querySelector('[data-host]')?.getAttribute('data-opacity')).toBe('0');
   expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('none');
 });
 

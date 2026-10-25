@@ -1,8 +1,6 @@
-import { useHomeMode } from './useHomeMode';
 import { createContext, useCallback, useContext, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
-import Animated, { useAnimatedStyle } from 'react-native-reanimated';
-import { HomeModeProgressContext, useHomeModeProgress } from './HomeModeTransition';
+import Animated from 'react-native-reanimated';
 import { useSegments } from 'expo-router';
 import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { useReduceMotionEnabled } from '@/hooks/useReduceMotion';
@@ -58,19 +56,13 @@ export function ResidentHomeListProvider({ children }: { children: ReactNode }) 
   const paneLayout = useMemo(() => sessionPaneLayout(geometry, sidebarWidth), [geometry, sidebarWidth]);
   const { persistent } = paneLayout;
   const segments = useSegments() as string[];
-  const { mode, hydrated } = useHomeMode();
   const homeRoute = segments.length === 0 || segments[0] === 'index'
     || (segments[0] === 'devices' && (segments.length === 1 || segments[1] === 'index'));
-  // Android pages draw their own bar inside each pane, so sliding them would move it; they switch in place.
-  const progress = useHomeModeProgress(mode, homeRoute && Platform.OS === 'ios', hydrated);
-  // Keep the outgoing resident list drawn during the slide, but never interactive over the new tab.
+  // iOS Home keeps its list in its own route; Android draws it here on the home too.
   const rootHome = Platform.OS !== 'ios';
-  const visible = (rootHome && mode === 'tasks' && homeRoute)
-    || (persistent && segments[0] === 'sessions' && segments[1] === '[sessionId]');
-  const slide = useAnimatedStyle(() => ({
-    opacity: homeRoute ? (rootHome && progress.value < 1 ? 1 : 0) : (visible ? 1 : 0),
-    transform: [{ translateX: homeRoute ? -progress.value * geometry.width : 0 }],
-  }));
+  const visible = (rootHome && homeRoute)
+    || (persistent && segments[0] === 'sessions'
+      && (segments[1] === '[sessionId]' || segments[1] === 'new'));
   const host = useRef<View>(null);
   const mounted = useRef(false);
   const [entry, setEntry] = useState<Entry | null>(null);
@@ -83,7 +75,7 @@ export function ResidentHomeListProvider({ children }: { children: ReactNode }) 
   useLayoutEffect(() => {
     mounted.current = !!entry;
   }, [entry]);
-  return <PaneLayoutContext.Provider value={paneLayout}><HomeModeProgressContext.Provider value={progress}><Context.Provider value={context}>
+  return <PaneLayoutContext.Provider value={paneLayout}><Context.Provider value={context}>
     <View ref={host} collapsable={false} style={styles.root}>
       {children}
       {entry ? <Animated.View collapsable={false} pointerEvents={visible ? 'box-none' : 'none'}
@@ -95,7 +87,7 @@ export function ResidentHomeListProvider({ children }: { children: ReactNode }) 
           // second size animation when the final asynchronous measure arrives
           // after release; keep the sidebar's native host above the route.
           transitionDuration: !persistent && reduceMotion === false ? motionDuration.fast : 0,
-        }, slide]}>
+        }, { opacity: visible ? 1 : 0 }]}>
         <RemoteSessionStoreSubscriptionGate enabled={visible}>{entry.children}</RemoteSessionStoreSubscriptionGate>
       </Animated.View> : null}
       {visible && !homeRoute && paneLayout.resizeBounds ? <SessionPaneDivider
@@ -104,7 +96,7 @@ export function ResidentHomeListProvider({ children }: { children: ReactNode }) 
         onResize={setSidebarWidth}
       /> : null}
     </View>
-  </Context.Provider></HomeModeProgressContext.Provider></PaneLayoutContext.Provider>;
+  </Context.Provider></PaneLayoutContext.Provider>;
 }
 
 /** A route supplies a measuring slot, not another native list. Its header stays

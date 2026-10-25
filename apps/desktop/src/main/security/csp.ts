@@ -55,9 +55,9 @@ const CUSTOM_IMG_SCHEMES = [
   'cindy-media:',
 ];
 const CUSTOM_MEDIA_SCHEMES = [
-  'xdt-audio:',
-  // Local video (including cindy-ui) uses the extension-checked file handler.
+  // Task-file video uses the same guarded local-file handler as image previews.
   'xdt-file:',
+  'xdt-audio:',
   'xdt-video:',
   'xdt-image:',
   'cindy-remote-media:',

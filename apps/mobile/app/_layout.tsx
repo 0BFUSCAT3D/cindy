@@ -84,7 +84,7 @@ import {
 import { IncomingShareBridge } from '@/session/IncomingShareBridge';
 import { usePendingSharedTaskInvitationIntent } from '@/device-link/sharedTaskInvitationIntent';
 import { removeLegacyClipboardInvitationHistory } from '@/device-link/legacyClipboardInvitationHistory';
-import { HomeEntryProvider, useHomeEntrySplashRelease } from '@/session/HomeEntryProvider';
+import { useHomeStartupSplashRelease } from '@/session/useHomeMode';
 import { RemoteDesktopHost } from '@/remote-desktop/RemoteDesktopHost';
 
 const holdSplash = () => undefined;
@@ -121,10 +121,9 @@ function NavigationGate() {
     [mode, colors],
   );
 
-  // 登录与本机首页偏好就绪、默认入口重定向完成后再释放常驻 splash。
-  // 深链不经过 index；同样在这里释放，避免先露出任务再跳回伙伴。
+  // 登录与本机首页偏好（伙伴段收起状态）就绪后再释放常驻 splash；深链同样在这里释放。
   // 显示模式偏好读回前不释放，避免已选浅色 / 深色的用户先看到系统外观再切换。
-  useHomeEntrySplashRelease(preferenceReady ? releaseSplash : holdSplash);
+  useHomeStartupSplashRelease(preferenceReady ? releaseSplash : holdSplash);
 
   // 启动链走完 = 本次热更 reload(如果有)确实落地:清掉 reload 闸门记录。
   // 只在目标 update 已成为当前运行版本时才清,判定在 markStartupOtaLaunchSuccess 内。
@@ -381,9 +380,7 @@ function RootAfterUpdateChannel({ channel }: { channel: UpdateChannel }) {
         <PrecreatedWorktreeRecoveryBridge />
         <MobileOutboxBridge />
         <RemoteHistoryPrefetchBridge />
-        <HomeEntryProvider>
-          <NavigationGate />
-        </HomeEntryProvider>
+        <NavigationGate />
       </DeviceLinkProvider>
     </AuthProvider>
   );

@@ -248,6 +248,14 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   // 计划模式一级开关(runtime-only, 持久化经 dispatch persistRemoteSetting 回流)。
   // 老被控端无 handler → CHANNEL_NOT_ALLOWED → 控制端 UI 本就按 capabilities.planMode 缺失隐藏入口。
   'maker:set-plan-mode',
+  // 任务级工作上下文窗口档位(会话级设置, 无本机 shell/UI 副作用; 控制端 DB 是被控端那份,
+  // 写本机不生效)。被控端落库并应用到活实例。老被控端无 handler → CHANNEL_NOT_ALLOWED
+  // → 控制端提示「该设备版本不支持」并保留原档位。
+  'maker:set-context-window-budget',
+  // 任务级窗口边界的只读查询(路由默认/物理上限/该路由模型级上限):控制端打开远程档位
+  // 菜单时拉一次,才能给出「更大」的档位。无 event.sender / 无本机副作用,不写任何存储。
+  // 老被控端无 handler → CHANNEL_NOT_ALLOWED → 控制端退回「只允许收紧」。
+  'maker:get-context-window-bounds',
   'maker:set-extra-dirs',
   'maker:set-writable-dirs',
   // Pi 原生分支树:只读快照 + 当前会话内导航。导航业务 handler 在被控端原子同步
@@ -291,6 +299,8 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   // → CHANNEL_NOT_ALLOWED → 控制端吞掉,回退本机/按时间。
   'sidebar-settings:get-project-order',
   'sidebar-settings:apply-project-order',
+  // Host-owned project names are read-only on controllers. Local overrides and write channels stay local.
+  'sidebar-settings:get-project-aliases',
   // 模型供应商目录(只读):远程会话的模型选择器据此 1:1 镜像被控端的「供应商+模型」结构。
   // 被控端 dispatch 在返回前剥离 routing 等执行字段(见 device-link/dispatch.ts),只回显示用字段。
   'maker:provider:list',
@@ -678,6 +688,10 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   // 老被控端无这些 channel → CHANNEL_NOT_ALLOWED → 控制端按对应能力降级。
   'worktree:detect-cwd',
   'worktree:list-branches',
+  // Sync status is local-only; sync mutates only by explicit fetch + fast-forward.
+  // sync-branch baseRepo also passes dispatch PATH_GUARDED_CHANNELS.
+  'worktree:branch-sync-status',
+  'worktree:sync-branch',
   'worktree:suggest-name',
   'worktree:create',
   'worktree:discard-precreated',
@@ -863,6 +877,8 @@ export const INVOKE_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
   // 被控端 worktree:create 含 git worktree add(--no-checkout)+ 白名单文件选择性
   // checkout + .claude/.sivi 拷贝;大仓库 / 慢盘上可能超默认 30s,给足执行预算 + 回程余量。
   'worktree:create': 60_000,
+  // User-triggered fetch (30s) plus local probes and process cleanup. Never replay.
+  'worktree:sync-branch': 90_000,
   // 可能先等待同 sessionId 的晚到 create 释放互斥锁，再执行 git worktree remove。
   'worktree:discard-precreated': 60_000,
   'worktree:cancel-precreated': 60_000,

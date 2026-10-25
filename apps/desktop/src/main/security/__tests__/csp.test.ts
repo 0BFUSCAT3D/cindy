@@ -75,9 +75,9 @@ describe('buildContentSecurityPolicy — shared invariants', () => {
       for (const scheme of ['xdt-image:', 'xdt-file:', 'xdt-video:', 'xdt-model:', 'cindy-remote-media:', 'cindy-media:']) {
         expect(d['img-src']).toContain(scheme);
       }
-      // Local cindy-ui video uses xdt-file; audio uses the dedicated xdt-audio
-      // handler. Omitting either makes Chromium reject media before decoding.
-      for (const scheme of ['xdt-audio:', 'xdt-file:', 'xdt-video:', 'cindy-remote-media:', 'cindy-media:']) {
+      // Local MP4 answers resolve to xdt-file, not the generated-video store.
+      // Missing this source blocks playback before the file handler sees a request.
+      for (const scheme of ['xdt-file:', 'xdt-audio:', 'xdt-video:', 'cindy-remote-media:', 'cindy-media:']) {
         expect(d['media-src']).toContain(scheme);
       }
       for (const directive of ['script-src', 'connect-src', 'frame-src']) {

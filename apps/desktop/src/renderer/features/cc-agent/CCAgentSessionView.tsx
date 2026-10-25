@@ -8,6 +8,7 @@ import { BotFollowUpInvitation } from '@/features/bots/BotFollowUpInvitation';
 import { formatSessionDuration } from '@/lib/sessionDurationFormat';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { shouldShowFailedScheduleNotice } from '@cindy/maker-shared/schedule-model';
+import { canContinueFailedTurn } from '@cindy/maker-shared/synthetic-trigger';
 /**
  * CCAgentSessionView
  * ---------------------------------------------------------------------------
@@ -165,6 +166,7 @@ import { useAnimatedNumber } from '@/hooks/useAnimatedNumber';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { useSilentEncryptedRetry } from '@/hooks/useSilentEncryptedRetry';
 import { TodaySpendChip } from '@/components/status/TodaySpendChip';
+import { ContextWindowBudgetChip } from '@/components/status/ContextWindowBudgetChip';
 import { TopRightChipStack, TopRightChipStackProvider } from '@/components/chat/TopRightChipStack';
 import { ChatDisplaySnapshotProvider } from '@/components/chat/ChatDisplaySnapshotContext';
 import { useCCAgentChat } from '@/hooks/useCCAgentChat';
@@ -1843,6 +1845,7 @@ function CCAgentSessionContent({
     cancelUsageLimitWait,
     errorIsRecoverable,
     errorRetryText,
+    errorCanContinue,
     disposedErrorPersistId,
     credentialSwitchWait,
     continuationInFlightClientId,
@@ -4634,6 +4637,20 @@ function CCAgentSessionContent({
     continueAfterSilentStop();
   }, [continueAfterSilentStop]);
 
+  const canContinueError = canContinueFailedTurn({
+    error,
+    retryText: errorRetryText,
+    running: isAgentBusy || errorIsRecoverable || !!credentialSwitchWait || syntheticContinuationPending,
+    hostCanContinue: errorCanContinue === true,
+  });
+  const handleContinueAfterError = useCallback(async () => {
+    if (!sessionId || !canContinueError || isHistoryRecoveryPending()) return;
+    invalidateHistoryRecoveryNavigation();
+    await rebuildClaudeSubscriptionSessionBeforeRetry(errorReason);
+    await makerChatStore.sendUiTrigger(sessionId, CONTINUE_AFTER_ERROR_PROMPT);
+  }, [canContinueError, errorReason, invalidateHistoryRecoveryNavigation, isHistoryRecoveryPending,
+    rebuildClaudeSubscriptionSessionBeforeRetry, sessionId]);
+
   // 点击 Cancel 关闭报错 banner 同样是处置(用户选择不管它了)。
   const handleDismissError = useCallback(() => {
     if (sessionId) ackErrorAlertHandled(sessionId);
@@ -5765,6 +5782,7 @@ function CCAgentSessionContent({
                 isRecoverable={errorIsRecoverable}
                 retryText={errorRetryText}
                 onRetry={handleRetry}
+                onContinueAfterError={canContinueError ? handleContinueAfterError : undefined}
                 onSilentStopContinue={handleSilentStopContinue}
                 usageLimitWait={usageLimitWait}
                 onCancelUsageLimitWait={cancelUsageLimitWait}
@@ -6306,6 +6324,25 @@ function CCAgentSessionContent({
                       deviceLinkDeviceId={remoteDeviceId ?? null}
                       usageAccount={usageAccount}
                     />
+                    {/* device-link 远程任务的档位走 maker:set-context-window-budget 隧道命令，
+                        在偏好文件落盘并应用到活实例；老被控端不支持时由 chip 提示版本不支持。
+                        当前档位与可选档位一起来自权威边界查询（本地 main / 远程被控端）。 */}
+                    {sessionId && (
+                      <ContextWindowBudgetChip
+                        sessionId={sessionId}
+                        contextTokens={agentStatus.contextTokens}
+                        model={agentSwitchIntent?.model ?? session?.model ?? ''}
+                        providerId={
+                          agentSwitchIntent
+                            ? agentSwitchIntent.providerId
+                            : (session?.providerId ?? null)
+                        }
+                        agentKind={normalizeDbAgentKind(displayAgentKind)}
+                        providers={{ providers }}
+                        deviceId={remoteDeviceId}
+                        disabled={readOnly || !session}
+                      />
+                    )}
                     <ContextCapacityRing
                       isRunning={agentStatus.isRunning}
                       sessionId={sessionId}

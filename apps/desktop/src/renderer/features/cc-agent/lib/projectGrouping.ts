@@ -42,6 +42,7 @@ import { extractDisplayName, splitPathSegments, tailJoin } from '../../../../sha
 export { extractDisplayName } from '../../../../shared/projectDisplayName';
 
 import type { DeviceLinkConnectionStatus, Session } from '@/lib/ccAgent.types';
+import { resolveProjectAliasForSessions, type ProjectAliasesByDevice } from '@cindy/maker-shared/project-alias-sync';
 import { isOrcaLeadSession, isOrcaWorkerSession } from '@/lib/orcaSessionIdentity';
 import { normalizeWorkingDirForGrouping } from '../../../../shared/workingDir';
 import {
@@ -137,6 +138,9 @@ export interface ProjectGroupsResult {
 
 export interface GroupSessionsOptions {
   projectAliases?: ReadonlyMap<string, string> | Record<string, string>;
+  remoteProjectAliases?: ProjectAliasesByDevice;
+  /** Complete members before status/activity/pinning filters; used only for host alias identity. */
+  projectAliasMembers?: readonly Session[];
   /**
    * Build a project catalogue that also contains individually pinned sessions.
    * The normal sidebar keeps this false so a pinned conversation only appears
@@ -490,6 +494,18 @@ export function groupSessions(
     return { pinned: [], dialogues: [], bots: [], unclassified: [], projects: [] };
   }
 
+  const aliasMembersByProject = new Map<string, Session[]>();
+  for (const member of options.projectAliasMembers ?? sessions) {
+    if (member.status === 'deleted' || member.workspaceKind === 'dialogue' || member.orcaRole === 'worker'
+      || !member.deviceLinkDeviceId || options.botOwnerBySessionId?.has(member.id)) continue;
+    const dir = normalizeWorkingDir(member.workingDir);
+    if (!dir) continue;
+    const key = deviceLinkProjectKey(member.deviceLinkDeviceId, dir);
+    const members = aliasMembersByProject.get(key);
+    if (members) members.push(member);
+    else aliasMembersByProject.set(key, [member]);
+  }
+
   // 1. Pinned —— active 在 archived 之上，同状态按 pinnedAt desc
   const pinned = sessions
     .filter((s) => s.pinnedAt != null)
@@ -753,7 +769,10 @@ export function groupSessions(
 
     let name: string;
     let segments: number;
-    const alias = aliases.get(projectKeyComparisonKey(projectKey, localPlatform) ?? projectKey);
+    const alias = aliases.get(projectKeyComparisonKey(projectKey, localPlatform) ?? projectKey)
+      ?? (options.remoteProjectAliases
+        ? resolveProjectAliasForSessions(aliasMembersByProject.get(projectKey) ?? sess, options.remoteProjectAliases)
+        : null);
     if (alias) {
       name = alias;
       segments = 0;

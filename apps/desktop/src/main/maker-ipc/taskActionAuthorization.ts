@@ -196,6 +196,28 @@ export async function assertTaskActionCurrent(): Promise<void> {
   await actionContext.getStore()?.assertCurrent();
 }
 
+/** An independent inbound request must not inherit the action that lazily started
+ * its shared transport. This clears only task-action evidence, not MCP routing;
+ * the request still passes the normal token, caller and per-tool authorization. */
+export function runTaskActionRequest<T>(operation: () => Promise<T>): Promise<T> {
+  return actionContext.exit(operation);
+}
+
+/** Cover in-process callers too: authorize this invocation without ambient evidence,
+ * then execute under only the returned admission. A bare allow intentionally keeps
+ * ordinary-task semantics (no Bot delegation evidence or forced queue). */
+export function isolateTaskActionAuthorizer(authorize: ToolCallAuthorizer): ToolCallAuthorizer {
+  return (call) => runTaskActionRequest(async () => {
+    const decision = await authorize(call);
+    if (!decision.ok) return decision;
+    return {
+      ok: true,
+      run: <T>(operation: () => Promise<T>) => runTaskActionRequest(() =>
+        decision.run ? decision.run(operation) : operation()),
+    };
+  });
+}
+
 /** Host lifecycle only: durable completion delivery is not another invocation
  * of the tool that started the task. Its caller must validate the persisted
  * delegation/run and recipient; this does not authorize any Agent task action. */

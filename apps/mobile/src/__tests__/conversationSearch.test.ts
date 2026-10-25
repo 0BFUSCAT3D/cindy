@@ -3,7 +3,6 @@ import {
   cachedSessionForSearchResult,
   conversationSearchActiveFilterCount,
   conversationSearchAllowsLocalWrites,
-  conversationSearchCompanionParams,
   conversationSearchOriginsFromDeviceModels,
   conversationSearchSessionCacheKey,
   isConversationSearchChannelNotAllowed,
@@ -219,7 +218,7 @@ describe('searchConversationsAcrossDevices', () => {
         ],
       },
     );
-    expect(page.results.map((item) => item.session.id)).toEqual(['hit']);
+    expect(page.results.map((item) => item.session.id)).toEqual(['hit', 'worker']);
   });
 
   it('does not invoke a device that is offline or unresponsive', async () => {
@@ -352,6 +351,24 @@ describe('searchCachedDeviceSessions', () => {
 });
 
 describe('helpers', () => {
+  it('shows project aliases in search filters without changing their stable keys or mixing SSH identities', () => {
+    const local = session({ id: 'local', title: 'Local', workingDir: '/repo/app' });
+    const projectAliases = new Map([['dev-a', {
+      platform: 'darwin',
+      aliases: [{ projectKey: 'local:/repo/app', alias: '黑盒自动化' }],
+    }]]);
+    expect(listConversationSearchProjects([local], undefined, projectAliases)).toMatchObject([
+      { key: 'dev-a:/repo/app', title: '黑盒自动化', workingDir: '/repo/app' },
+    ]);
+    expect(listConversationSearchProjects([
+      local,
+      session({ id: 'ssh', title: 'Remote', workingDir: '/repo/app', remoteHostId: 'ssh-a' }),
+    ], undefined, projectAliases)).toMatchObject([{ key: 'dev-a:/repo/app', title: 'app', count: 2 }]);
+    expect(listConversationSearchProjects([local], undefined, new Map([['dev-a', {
+      platform: 'darwin', aliases: [],
+    }]]))).toMatchObject([{ title: 'app' }]);
+  });
+
   it('classifies CHANNEL_NOT_ALLOWED wrappers', () => {
     expect(isConversationSearchChannelNotAllowed({
       code: 'DEVICE_LINK_CHANNEL_NOT_ALLOWED',
@@ -521,7 +538,4 @@ it('preserves companion identity and the selected archived transcript', () => {
   hit.session.companion = { id: 'bot', name: 'Melody', role: 'history', readOnly: true };
   const item = toSearchListItem(hit, Date.now());
   expect(item.title).toBe('Melody · Remote planning');
-  expect(conversationSearchCompanionParams(item)).toEqual({
-    resourceCollectionId: 'teammates', resourceKind: 'bot', resourceId: 'bot', resourceHistorySessionId: 'old',
-  });
 });
