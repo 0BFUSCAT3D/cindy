@@ -240,6 +240,16 @@ export function buildSessionDeepLink(
   return `${URL_PREFIX}session/${encodeURIComponent(sessionId)}${device}`;
 }
 
+/** History tools use qualified ids for remote tasks; links always name the owning computer. */
+export function buildHistorySessionDeepLink(sessionKey: string, localDeviceId: string): string {
+  const separator = sessionKey.indexOf('::');
+  const deviceId = separator < 0 ? localDeviceId : sessionKey.slice(0, separator);
+  const sessionId = separator < 0 ? sessionKey : sessionKey.slice(separator + 2);
+  return buildSessionDeepLink(sessionId, {
+    deviceId: deviceId === 'local' ? localDeviceId : deviceId,
+  });
+}
+
 /** 带消息锚点(`?message=<clientId>`)的会话深链,与 renderer 侧实现等价镜像。 */
 export function buildSessionMessageDeepLink(
   sessionId: string,

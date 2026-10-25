@@ -27,6 +27,7 @@ import {
   buildFocusDeepLink,
   buildProjectDeepLink,
   buildSessionDeepLink,
+  buildHistorySessionDeepLink,
   buildSessionMessageDeepLink,
   findDeepLinkInArgv,
   redactConsumedDeepLinkInArgv,
@@ -58,6 +59,19 @@ function providerImportUrl(scheme: 'cindy' | 'xdt-maker'): string {
   };
   return `${scheme}://provider/import?v=1&data=${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}`;
 }
+
+describe('history task links', () => {
+  it.each([
+    ['task/一', 'host', 'task/一', 'host'],
+    ['local::task', 'host', 'task', 'host'],
+    ['other::task', 'host', 'task', 'other'],
+  ])('routes %s to its owning computer', (key, localDeviceId, sessionId, deviceId) => {
+    const url = buildHistorySessionDeepLink(key, localDeviceId);
+    expect(parseDeepLink(url)).toEqual({ type: 'session', id: sessionId });
+    expect(new URL(url).searchParams.get('device')).toBe(deviceId);
+    expect(url).not.toContain('::');
+  });
+});
 
 describe('chat invitation handoff', () => {
   const token = 'synthetic-invitation-'.padEnd(43, 'a');
