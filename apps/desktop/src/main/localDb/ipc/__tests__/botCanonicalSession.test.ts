@@ -950,6 +950,26 @@ describe('Bot canonical Session lifecycle', () => {
       })).resolves.toMatchObject({ created: true });
     });
 
+    // The take-over retries about once a minute, and each try builds the main task from the live
+    // default: a follow-default companion on a computer with only a custom provider stops at the
+    // model guidance until the owner picks the companions' default model, then goes through unrestarted.
+    it('retries into the main task once the owner sets the companions\' default model', async () => {
+      await invoke('local-db:bots:create', { id: 'bot-follow', name: 'Cindy', capabilities: {} });
+      h.providers = [{
+        id: 'custom-gateway', connected: true, source: 'user', agents: ['pi'], auth: { method: 'api-key' },
+        models: { pi: [{ id: 'custom-model', efforts: [], defaultEffort: null, defaultEnabled: true }] },
+      }] as unknown as ProviderView[];
+      const createMain = () => invoke('local-db:bots:create-canonical-session', {
+        botId: 'bot-follow', expectedCanonicalSessionId: null, expectedProfileVersion: 1 });
+      try {
+        await expect(createMain()).rejects.toThrow('请先连接模型供应商或选择伙伴模型');
+        await expect(createMain()).rejects.toThrow('请先连接模型供应商或选择伙伴模型');
+        await invoke('local-db:bots:model-chain-settings-set', { modelChain: [
+          { harness: 'pi', providerId: 'custom-gateway', model: 'custom-model', effort: '', fastMode: false }] });
+        await expect(createMain()).resolves.toMatchObject({ created: true, session: { model: 'custom-model' } });
+      } finally { await modelSettings.resetBotModelChainSettings(); }
+    });
+
     it('keeps a finished meeting record', async () => {
       unfinished('ready');
       await updateStoredBotProfile({ id: 'bot-1', name: 'Cindy' }, undefined, undefined, { replacesUnfinishedMeeting: true });
