@@ -33,8 +33,9 @@ const h = vi.hoisted(() => ({
 vi.mock('expo-web-browser', () => ({ openBrowserAsync: vi.fn(async () => ({})) }));
 vi.mock('@/components/ChatReplyIcon', () => ({ ChatReplyIcon: () => null }));
 vi.mock('react-native', () => {
-  const box = (tag: string) => ({ children, testID, accessibilityLabel, style }: any) =>
+  const box = (tag: string) => ({ children, testID, accessibilityLabel, style, onLayout }: any) =>
     el(tag, { 'data-testid': testID, 'aria-label': accessibilityLabel,
+      ref: (node: any) => { if (node) node.nativeLayout = onLayout; },
       style: { opacity: [style].flat().filter(Boolean).findLast((item: any) => item.opacity !== undefined)?.opacity } }, children);
   return {
     View: box('div'), ScrollView: ({ ref, children, ...props }: any) => {
@@ -1378,6 +1379,17 @@ describe('direct server group presentation', () => {
     const attachment = { id: 'media', name: 'picture.png', mimeType: 'image/png', size: 10, category: 'image' as const, url: 'https://media.example.invalid/one-use', path: null };
     h.chat = { ...h.chat, server: true, media: vi.fn(async () => attachment) };
     await render(group({ messages: [message('picture', 1, { authorKind: 'user', isSelf: false, attachments: [{ ...attachment, url: null, category: 'file' }] })], plans: [], openPlan: null }));
+    expect(h.chat.media).not.toHaveBeenCalled();
+    let row = byId('attachmentStrip') as HTMLElement & { nativeLayout?: (event: unknown) => void };
+    while (!row.nativeLayout) row = row.parentElement as typeof row;
+    await act(async () => {
+      row.nativeLayout!({ nativeEvent: { layout: { y: 800, height: 200 } } });
+      h.scroll.onLayout({ nativeEvent: { layout: { height: 500 } } });
+    });
+    expect(h.chat.media).not.toHaveBeenCalled();
+    await act(async () => h.scroll.onScroll({ nativeEvent: {
+      contentOffset: { y: 700 }, contentSize: { height: 1000 }, layoutMeasurement: { height: 500 },
+    } }));
     expect(h.chat.media).toHaveBeenCalledExactlyOnceWith('media');
     expect(byId('attachment.image')?.getAttribute('data-uri')).toBe(attachment.url);
     await click('attachment.image'); expect(h.chat.media).toHaveBeenCalledTimes(2);

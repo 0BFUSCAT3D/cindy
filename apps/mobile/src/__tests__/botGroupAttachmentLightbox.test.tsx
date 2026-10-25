@@ -120,6 +120,7 @@ vi.mock('react-native-reanimated', async () => {
 });
 
 import { BotGroupMessageAttachments } from '@/session/BotGroupMessageAttachments';
+import { MessageListVisibility, MessageListVisibilityContext } from '@/session/messageListVisibility';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
@@ -131,14 +132,14 @@ beforeEach(() => { runtime.alerts = []; runtime.imageEvents.clear(); openBrowser
 const signedImageUrl = 'https://chat.example.invalid/media/group-picture.png?signature=placeholder';
 const serverAttachment: BotGroupAttachment = { id: 'media-1', name: '1.png', category: 'file', mimeType: '', size: 0, url: null, path: null };
 
-async function render(props: Partial<Parameters<typeof BotGroupMessageAttachments>[0]>) {
+async function render(props: Partial<Parameters<typeof BotGroupMessageAttachments>[0]>, visibility?: MessageListVisibility) {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => root!.render(createElement(BotGroupMessageAttachments, {
+  await act(async () => root!.render(createElement(MessageListVisibilityContext.Provider, { value: visibility ?? null }, createElement(BotGroupMessageAttachments, {
     messageId: 'message-1', align: 'right', attachments: [serverAttachment],
     onResolveRemoteMedia: vi.fn<ResolveRemoteMediaFn>(), ...props,
-  })));
+  }))));
   return host;
 }
 
@@ -146,6 +147,23 @@ const click = (element: Element | null | undefined) => act(async () => { (elemen
 const loadFailedKey = 'message.lightbox.loadFailed';
 
 describe('Chat Server group image attachments (#5875)', () => {
+  // PR #7145: ScrollView mounts offscreen history too. Existing tests had no viewport.
+  // The real strip must not mount an image (or request its URL) until its row is visible.
+  it('loads only visible messages and preserves loaded previews when scrolling back', async () => {
+    const visibility = new MessageListVisibility();
+    const resolveServerMedia = vi.fn(async () => ({ ...serverAttachment, category: 'image' as const, url: signedImageUrl }));
+    const container = await render({ resolveServerMedia }, visibility);
+    expect(resolveServerMedia).not.toHaveBeenCalled();
+    expect(container.querySelector('img')).toBeNull();
+    await act(async () => visibility.update([{ key: 'message-1', isViewable: true }]));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(signedImageUrl);
+    await act(async () => visibility.update([]));
+    await act(async () => visibility.update([{ key: 'message-1', isViewable: true }]));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(signedImageUrl);
+  });
+
   it('shows an authorized HTTPS image in the real lightbox, re-authorizing on every tap', async () => {
     const resolveServerMedia = vi.fn(async (id: string): Promise<BotGroupAttachment> => ({
       id, name: '1.png', category: 'image', mimeType: 'image/png', size: 10, url: signedImageUrl, path: null,
@@ -173,6 +191,21 @@ describe('Chat Server group image attachments (#5875)', () => {
     expect(container.querySelector('[data-testid="message.imageLightbox"] img')?.getAttribute('src')).toBe(signedImageUrl);
   });
 
+  // CloudCompanionScreen selects this policy even if its row is visible.
+  it('keeps cloud transcript media tap-only, including after returning from the viewer', async () => {
+    const resolveServerMedia = vi.fn(async () => ({ ...serverAttachment, category: 'image' as const, url: signedImageUrl }));
+    const container = await render({ resolveServerMedia, previewServerImages: false });
+    expect(resolveServerMedia).not.toHaveBeenCalled();
+    expect(container.querySelector('img')).toBeNull();
+    await click(container.querySelector('[data-testid="message.filePreviewButton"]'));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="message.imageLightbox"] img')?.getAttribute('src')).toBe(signedImageUrl);
+    await click(container.querySelector('[data-testid="message.imageLightboxCloseButton"]'));
+    expect(container.querySelector('img')).toBeNull();
+    await click(container.querySelector('[data-testid="message.filePreviewButton"]'));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(2);
+  });
+
   it('opens a non-image server file through its short-lived download address, not the viewer', async () => {
     const fileUrl = 'https://chat.example.invalid/media/report.pdf?signature=placeholder';
     const resolveServerMedia = vi.fn(async (id: string): Promise<BotGroupAttachment> => ({
@@ -193,6 +226,20 @@ describe('Chat Server group image attachments (#5875)', () => {
     expect(container.querySelector('img')).toBeNull();
     await click(container.querySelector('[data-testid="message.filePreviewButton"]'));
     expect(container.querySelector('[data-testid="message.imageLightbox"] img')?.getAttribute('src')).toBe(signedImageUrl);
+  });
+
+  it('cancels queued offscreen previews and does not mount late image results', async () => {
+    const visibility = new MessageListVisibility();
+    visibility.update([{ key: 'message-1', isViewable: true }]);
+    const pending: Array<(value: BotGroupAttachment) => void> = [];
+    const resolveServerMedia = vi.fn(() => new Promise<BotGroupAttachment>(resolve => pending.push(resolve)));
+    const attachments = Array.from({ length: 4 }, (_, index) => ({ ...serverAttachment, id: `media-${index}` }));
+    const container = await render({ resolveServerMedia, attachments }, visibility);
+    expect(resolveServerMedia).toHaveBeenCalledTimes(3);
+    await act(async () => visibility.update([]));
+    await act(async () => pending.forEach(resolve => resolve({ ...serverAttachment, category: 'image', url: signedImageUrl })));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('img')).toBeNull();
   });
 
   it('bounds preview authorization and ignores late results when the message changes', async () => {

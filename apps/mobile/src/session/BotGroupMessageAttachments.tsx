@@ -9,11 +9,12 @@ import { useAuth } from '@/auth/AuthContext';
 import { openBrowserAsync } from 'expo-web-browser';
 import { Text } from '@/components/AppText';
 import { spacing, textStyles, useTheme } from '@/theme';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import type { BotGroupAttachment } from '@cindy/maker-shared/botGroupChat';
 import { ImageLightbox } from './ImageLightbox';
+import { MessageListVisibilityContext, useMessageListItemVisible } from './messageListVisibility';
 import { AttachmentStrip } from './MessageRenderer';
 import { buildMessageContentLayout } from './messageContentLayout';
 import type { MobileMessageGalleryImage } from './messageGallery';
@@ -43,22 +44,27 @@ export function botGroupAttachmentGallery(messageId: string, attachments: readon
   });
 }
 
-export function BotGroupMessageAttachments({ messageId, attachments, align, onResolveRemoteMedia, resolveServerMedia }: {
+export function BotGroupMessageAttachments({ messageId, attachments, align, onResolveRemoteMedia, resolveServerMedia, previewServerImages = true }: {
   messageId: string;
   attachments: readonly BotGroupAttachment[];
   align: 'left' | 'right';
   onResolveRemoteMedia: ResolveRemoteMediaFn;
   resolveServerMedia?: (id: string) => Promise<BotGroupAttachment>;
+  /** Cloud transcripts keep the tap-only contract in cloud-companions.md §3.1. */
+  previewServerImages?: boolean;
 }) {
   const { t } = useTranslation();
   const { width } = useWindowDimensions();
   const { accountGeneration } = useAuth();
+  const visibility = useContext(MessageListVisibilityContext);
+  const rowVisible = useMessageListItemVisible(messageId);
+  const previewVisible = previewServerImages && (!visibility || rowVisible);
   const layout = useMemo(() => buildMessageContentLayout({ screenWidth: width }), [width]);
   const items = useMemo(() => attachments.filter(attachment => !attachment.state).map(botGroupAttachmentForDisplay), [attachments]);
   const gallery = useMemo(() => botGroupAttachmentGallery(messageId, items), [items, messageId]);
   const runs = useMemo(() => botGroupAttachmentRuns(attachments), [attachments]);
   const [openUrl, setOpenUrl] = useState<string | null>(null);
-  if (resolveServerMedia) return <ServerAttachments key={`${accountGeneration}:${messageId}`} runs={runs} align={align} layout={layout} resolve={resolveServerMedia} />;
+  if (resolveServerMedia) return <ServerAttachments key={`${accountGeneration}:${messageId}`} runs={runs} visible={previewVisible} align={align} layout={layout} resolve={resolveServerMedia} />;
   const open = (payload: MessagePayload) => {
     if (payload.kind === 'media' && payload.media.kind === 'image') {
       setOpenUrl(payload.media.url);
@@ -135,7 +141,8 @@ function drainPreviews() {
 }
 
 /** Image preview URLs live only in this mounted message; opening always re-authorizes. */
-function ServerAttachments({ runs, align, layout, resolve }: {
+function ServerAttachments({ runs, visible, align, layout, resolve }: {
+  visible: boolean;
   align: 'left' | 'right';
   runs: ReturnType<typeof botGroupAttachmentRuns>;
   layout: ReturnType<typeof buildMessageContentLayout>;
@@ -145,23 +152,28 @@ function ServerAttachments({ runs, align, layout, resolve }: {
   const { colors } = useTheme();
   const [previews, setPreviews] = useState<Record<string, BotGroupAttachment>>({});
   const resolveRef = useRef(resolve); resolveRef.current = resolve;
+  const previewsRef = useRef(previews); previewsRef.current = previews;
   const previewIds = JSON.stringify(runs.flatMap(run => run.kind === 'ready' ? run.attachments.map(item => item.id) : []));
   useEffect(() => {
     let cancelled = false;
+    if (!visible) return;
     for (const id of JSON.parse(previewIds) as string[]) {
       authorizePreview(async () => {
-        if (cancelled) return;
+        if (cancelled || previewsRef.current[id]) return;
         try {
           const value = await resolveRef.current(id);
           const preview = value.category === 'image' ? value : { ...value, url: null };
-          if (!cancelled) setPreviews(old => ({ ...old, [id]: preview }));
+          if (!cancelled) {
+            previewsRef.current = { ...previewsRef.current, [id]: preview };
+            setPreviews(previewsRef.current);
+          }
         } catch { /* Keep the chip available for an explicit retry on tap. */ }
       });
     }
     return () => { cancelled = true; };
-  }, [previewIds]);
+  }, [previewIds, visible]);
   const displayRuns = botGroupAttachmentRuns(runs.flatMap(run => run.kind === 'pending'
-    ? [run.attachment] : run.attachments.map(item => previews[item.id] ?? item)));
+    ? [run.attachment] : run.attachments.map(item => previews[item.id] ?? { ...item, url: null })));
   const [image, setImage] = useState<BotGroupAttachment | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const pending = useRef(false);
