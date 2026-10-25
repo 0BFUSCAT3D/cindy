@@ -122,6 +122,7 @@ export function ChatVideoView({ src, filename, variant, sessionId }: ChatVideoVi
           ref={videoRef}
           src={displaySrc}
           aria-label={filename}
+          tabIndex={0}
           preload="metadata"
           controls
           playsInline
