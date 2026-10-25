@@ -25,11 +25,12 @@ const viewportHarness = vi.hoisted(() => ({
 vi.mock("react-native", async () => {
   const React = await import("react");
   // onLongPress 映射到 contextmenu,便于测试长按显示来源 ID。
-  const view = ({ children, testID, accessibilityLabel, accessibilityHint, onLongPress, onPress, disabled }: any) =>
+  const view = ({ children, testID, accessibilityLabel, accessibilityHint, onLongPress, onPress, disabled, selectable }: any) =>
     React.createElement(
       "div",
       {
         "data-testid": testID,
+        ...(selectable !== undefined ? { "data-selectable": String(selectable) } : {}),
         "aria-label": accessibilityLabel,
         ...(accessibilityHint ? { "data-hint": accessibilityHint } : {}),
         ...(onLongPress ? { onContextMenu: () => onLongPress() } : {}),
@@ -231,9 +232,6 @@ vi.mock("@/session/mermaidWebView", () => ({ MermaidDiagram: () => null }));
 vi.mock("@/session/mathWebView", () => ({ MathFormulaWebView: () => null }));
 vi.mock("@/session/mediaPlayerWebView", () => ({
   RemoteMediaPlayerWebView: () => null,
-}));
-vi.mock("@/session/MarkdownBlockContent", () => ({
-  MarkdownBlockContent: () => null,
 }));
 // 只把菜单项 id 投到 DOM,供删除入口可见性断言;不渲染真实底部面板。
 vi.mock("@/session/MessageActionSheet", () => ({
@@ -599,29 +597,28 @@ describe('private group reply source', () => {
   });
 });
 
-// VoiceOver / TalkBack cannot perform the bubble's long-press gesture, so the companion menu
-// falls back to the action row, whose Reply quotes the message like the menu does.
-describe("companion menu with a screen reader", () => {
-  it("keeps the action row and quotes on Reply while a screen reader is on", () => {
+// Regression: the companion menu disabled native text selection (2026-10-25 user decision).
+// Render the real MessageRenderer with one completed reply and system menus available;
+// verify native selectable text and a working Reply action coexist (unit tier).
+describe("companion text selection and actions", () => {
+  it.each(["user", "assistant"] as const)("keeps %s text selectable alongside Reply when system menus are available", (role) => {
     a11y.systemMenu = true;
     const onQuote = vi.fn();
     const props = {
       companion: true,
-      companionQuote: { names: { owner: "你", companion: "Vela" }, showReplyTargets: false, onQuote, onLocate: vi.fn(), onSelectText: vi.fn() },
+      companionQuote: { names: { owner: "你", companion: "Vela" }, showReplyTargets: false, onQuote, onLocate: vi.fn() },
       onAddMessageToComposer: vi.fn(),
     };
-    const h = mount([{ ...msg("r1", "Done", { turnCompleted: true }), role: "assistant" }], props);
+    const h = mount([{ ...msg("r1", "Done", { turnCompleted: true }), role }], props);
     try {
-      expect(h.host.querySelector('[data-testid="companion.messageMenu"]')).not.toBeNull();
-      expect(h.host.querySelector('[data-testid="companion.messageActions"]')).toBeNull();
-      act(() => a11y.screenReader?.(true));
-      expect(h.host.querySelector('[data-testid="companion.messageMenu"]')).toBeNull();
+      const body = h.host.querySelector(`[data-testid="message.${role === "user" ? "user" : "agent"}Bubble"]`)!;
+      expect(body.querySelector('[data-selectable="true"]')?.textContent).toBe("Done");
+      expect(h.host.querySelector('[data-testid="companion.messageActions"]')).not.toBeNull();
       const reply = h.host.querySelector('[data-testid="companion.messageReply"]')!;
       act(() => reply.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-      expect(onQuote).toHaveBeenCalledExactlyOnceWith({ clientId: "r1", role: "assistant", excerpt: "Done" });
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith({ clientId: "r1", role, excerpt: "Done" });
       expect(props.onAddMessageToComposer).not.toHaveBeenCalled();
     } finally {
-      act(() => a11y.screenReader?.(false));
       a11y.systemMenu = false;
       h.unmount();
     }
@@ -632,7 +629,7 @@ describe("companion menu with a screen reader", () => {
     const onAddMessageToComposer = vi.fn();
     const h = mount([{ ...msg("e1", "Boom", { turnCompleted: true }), role: "error" }], {
       companion: true,
-      companionQuote: { names: { owner: "你", companion: "Vela" }, showReplyTargets: false, onQuote, onLocate: vi.fn(), onSelectText: vi.fn() },
+      companionQuote: { names: { owner: "你", companion: "Vela" }, showReplyTargets: false, onQuote, onLocate: vi.fn() },
       onAddMessageToComposer,
     });
     try {

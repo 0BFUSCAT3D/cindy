@@ -183,7 +183,6 @@ import {
   type MobileMessageDraft,
 } from '@/session/MessageRenderer';
 import { BotGroupQuote } from '@/session/BotGroupQuote';
-import { CompanionSelectTextSheet } from '@/session/CompanionSelectTextSheet';
 import {
   clearSentCompanionReplyQuote,
   companionReplyQuoteDisplay,
@@ -6208,8 +6207,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   const showCompanionReplyTargets = useCompanionReplyTargetPreference();
   const pendingCompanionReplyQuote = usePendingCompanionReplyQuote(companionChat ? sessionId : null);
   const companionQuoteNames = useMemo(() => ({ owner: t('message.renderer.you'), companion: companionName }), [companionName, t]);
-  const [companionSelectText, setCompanionSelectText] = useState<string | null>(null);
-  useEffect(() => setCompanionSelectText(null), [sessionId]);
   const companionQuoteOptions = useMemo<CompanionQuoteOptions | undefined>(() => (companionChat && sessionId ? {
     names: companionQuoteNames,
     showReplyTargets: showCompanionReplyTargets,
@@ -6218,7 +6215,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       requestAnimationFrame(() => composerInputRef.current?.focus());
     },
     onLocate: (clientId) => router.setParams({ focusClientId: clientId, focusRequestKey: String(Date.now()) }),
-    onSelectText: (text) => setCompanionSelectText(text),
   } : undefined), [companionChat, companionQuoteNames, router, sessionId, showCompanionReplyTargets]);
   const pendingCompanionQuoteOriginal = useMemo(() => {
     const clientId = pendingCompanionReplyQuote?.clientId;
@@ -9992,10 +9988,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           />
         ) : null
         )}</MountOnFirstOpen>
-        {companionSelectText !== null ? (
-          <CompanionSelectTextSheet key={`select-text:${deviceId}:${sessionId}`} text={companionSelectText}
-            onClose={() => setCompanionSelectText(null)} />
-        ) : null}
         {currentSession ? <SideChatsSheet key={`${deviceId}:${sessionId}`} visible={sideChatsOpen}
           session={currentSession} maker={maker} onClose={() => setSideChatsOpen(false)}
           onCreate={() => createSideChat()} onSelect={openSideChat} /> : null}
