@@ -42,6 +42,23 @@ it('fetches only on play and mounts the resolved video in the message with nativ
   render(resolve, false);
   expect(h.player.visible).toBe(false);
 });
+// Tier 1: pressure cleanup must not delete a mounted native player's source;
+// the lease ends on failure or unmount, including after a successful retry.
+it('protects the resolved file until playback fails or the row unmounts', async () => {
+  const release = vi.fn();
+  const protectLocalFile = vi.fn(() => release);
+  const resolve = vi.fn().mockResolvedValue({ ...result, protectLocalFile });
+  render(resolve); await click();
+  expect(protectLocalFile).toHaveBeenCalledOnce();
+  render(resolve, false);
+  expect(release).not.toHaveBeenCalled(); // hidden player stays mounted and can resume
+  act(() => h.player.onError('missing'));
+  expect(release).toHaveBeenCalledOnce();
+  render(resolve); await click();
+  act(() => root.render(null));
+  expect(protectLocalFile).toHaveBeenCalledTimes(2);
+  expect(release).toHaveBeenCalledTimes(2);
+});
 // Unit regression: the original 1146×848 recording was boxed into 16:9 with
 // heavy black bars. Native-size changes must fit the picture without cropping;
 // portrait clips must stay bounded. Earlier adapter tests did not cover sizing.

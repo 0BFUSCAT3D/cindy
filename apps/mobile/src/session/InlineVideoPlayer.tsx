@@ -29,10 +29,11 @@ export function InlineVideoPlayer({ url, label, width, visible, resolve }: {
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const pending = useRef<AbortController | null>(null);
+  const releaseSource = useRef<(() => void) | undefined>(undefined);
   const active = visible && focused && historyActive && foreground;
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => setForeground(state === 'active'));
-    return () => { subscription.remove(); pending.current?.abort(); };
+    return () => { subscription.remove(); pending.current?.abort(); releaseSource.current?.(); };
   }, []);
   useEffect(() => {
     if (!active) { pending.current?.abort(); pending.current = null; setLoading(false); }
@@ -47,14 +48,20 @@ export function InlineVideoPlayer({ url, label, width, visible, resolve }: {
     setFailed(false);
     try {
       let next = url;
+      let protectLocalFile: (() => () => void) | undefined;
       if (!isDirectPreviewableMediaUrl(url)) {
         if (!resolve) throw new Error('No media resolver');
         const media = await resolve({ kind: 'video', url, previewable: false },
           { front: true, forceRefresh, signal: controller.signal });
         if (!media.previewable || !media.mimeType.startsWith('video/')) throw new Error('Not video');
         next = media.url;
+        protectLocalFile = media.protectLocalFile;
       }
-      if (!controller.signal.aborted) setSource(next);
+      if (!controller.signal.aborted) {
+        releaseSource.current?.();
+        releaseSource.current = protectLocalFile?.();
+        setSource(next);
+      }
     } catch {
       if (!controller.signal.aborted) setFailed(true);
     } finally {
@@ -69,7 +76,7 @@ export function InlineVideoPlayer({ url, label, width, visible, resolve }: {
   if (source) return <NativeVideoPlayer key={source} url={source} visible={active} autoPlay
     onVideoSize={setVideoSize}
     style={[frame, { flex: 0, backgroundColor: colors.surface }]} testID="message.inlineVideo"
-    onError={() => { setSource(null); setFailed(true); }} />;
+    onError={() => { releaseSource.current?.(); releaseSource.current = undefined; setSource(null); setFailed(true); }} />;
   return <Pressable accessibilityRole="button" accessibilityLabel={`${t('message.richAnswer.playVideo')} ${label}`}
     disabled={loading} onPress={() => { void play(); }} testID="message.inlineVideoPlay"
     style={[frame, { alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: colors.surface }]}>

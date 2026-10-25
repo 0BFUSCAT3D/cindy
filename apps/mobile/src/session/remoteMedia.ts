@@ -39,6 +39,8 @@ export interface MobileRemoteMediaPresignResult {
 }
 
 export interface MobileResolvedRemoteMedia {
+  /** Local-only consumer lease; never serialized over device-link. */
+  protectLocalFile?(): () => void;
   url: string;
   /** inline 缩略图 / 本地磁盘缓存命中没有在世 OSS 对象,为空串(退屏清理跳过 DELETE)。 */
   ossKey: string;

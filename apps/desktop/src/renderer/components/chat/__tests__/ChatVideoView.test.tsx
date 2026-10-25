@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
 import { ChatVideoView } from '../ChatVideoView';
+import { registerMedia, __resetMediaBusForTests } from '@/lib/mediaPlaybackBus';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/hooks/useRemoteMediaUrl', () => ({ useRemoteMediaUrl: (url: string) => url }));
 let visibility: IntersectionObserverCallback;
@@ -17,7 +18,7 @@ beforeEach(() => {
   });
   pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); __resetMediaBusForTests(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const props = { filename: 'Clip', variant: 'tool-output' as const, src: 'xdt-file://local/?path=%2Fclip.mp4' };
 it('provides inline browser transport controls without a click-to-lightbox wrapper', () => {
   const view = render(<ChatVideoView {...props} />, { wrapper: Tooltip.Provider });
@@ -46,4 +47,27 @@ it('pauses video when its message leaves view', () => {
   render(<ChatVideoView {...props} />, { wrapper: Tooltip.Provider });
   visibility([{ isIntersecting: false }] as IntersectionObserverEntry[], {} as IntersectionObserver);
   expect(pause).toHaveBeenCalledOnce();
+});
+// Tier 1: the old lightbox joined the real audio/video bus; inline playback must
+// preserve that behavior, including the fresh element mounted after retry.
+it('coordinates inline videos and audio through playback and retry', () => {
+  const view = render(<><ChatVideoView {...props} /><ChatVideoView {...props} filename="Second" /></>, { wrapper: Tooltip.Provider });
+  const [first, second] = view.container.querySelectorAll('video');
+  Object.defineProperty(first, 'paused', { configurable: true, value: false });
+  fireEvent.play(second);
+  expect(pause.mock.contexts).toContain(first);
+  const audio = document.createElement('audio');
+  const unregister = registerMedia(audio);
+  Object.defineProperty(audio, 'paused', { configurable: true, value: false });
+  fireEvent.play(second);
+  expect(pause.mock.contexts).toContain(audio);
+  fireEvent.error(second);
+  fireEvent(window, new Event('online'));
+  const retried = view.container.querySelectorAll('video')[1];
+  pause.mockClear();
+  Object.defineProperty(retried, 'paused', { configurable: true, value: false });
+  fireEvent.play(audio);
+  expect(pause.mock.contexts).toContain(retried);
+  expect(pause.mock.contexts).not.toContain(second);
+  unregister();
 });

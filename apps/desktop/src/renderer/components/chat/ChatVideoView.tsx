@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tooltip } from '@/components/ui/tooltip';
 import { useRemoteMediaUrl } from '@/hooks/useRemoteMediaUrl';
+import { registerMedia } from '@/lib/mediaPlaybackBus';
 
 export type ChatVideoVariant = 'tool-output';
 
@@ -58,13 +59,14 @@ export function ChatVideoView({ src, filename, variant, sessionId }: ChatVideoVi
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    const unregister = registerMedia(video);
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) video.pause();
     });
     const onVisibility = () => { if (document.hidden) video.pause(); };
     observer.observe(video);
     document.addEventListener('visibilitychange', onVisibility);
-    return () => { observer.disconnect(); document.removeEventListener('visibilitychange', onVisibility); video.pause(); };
+    return () => { unregister(); observer.disconnect(); document.removeEventListener('visibilitychange', onVisibility); video.pause(); };
   }, [displaySrc, failedSrc]);
 
   // A transient failure should recover when the window/network becomes available;
