@@ -42,7 +42,8 @@ import { LocalDbGate } from '../LocalDbGate';
 
 type ElectronApiStub = {
   localDb: {
-    ensureReady: ReturnType<typeof vi.fn>;
+    // #7146: keep recovery fixtures checked against the renderer IPC contract.
+    ensureReady: ReturnType<typeof vi.fn<ElectronAPI['localDb']['ensureReady']>>;
   };
   appReadyForBot: ReturnType<typeof vi.fn>;
   getUpdateStatus: ReturnType<typeof vi.fn>;
@@ -52,7 +53,7 @@ type ElectronApiStub = {
 function stubElectronApi(): ElectronApiStub {
   const api: ElectronApiStub = {
     localDb: {
-      ensureReady: vi.fn().mockResolvedValue({ ready: true }),
+      ensureReady: vi.fn<ElectronAPI['localDb']['ensureReady']>().mockResolvedValue({ ready: true }),
     },
     appReadyForBot: vi.fn().mockResolvedValue(undefined),
     // fatal 分支挂载 LocalDbFatalScreen → useUpdateStatus 需要这两个 API。
