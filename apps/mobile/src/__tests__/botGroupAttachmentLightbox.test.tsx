@@ -15,6 +15,7 @@ vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null })
 // conversion and the viewer are production code; only native surfaces and unrelated views are replaced.
 const runtime = vi.hoisted(() => ({
   alerts: [] as unknown[][],
+  accountGeneration: 1,
   imageEvents: new Map<string, { onLoad?: (event: unknown) => void; onError?: () => void }>(),
 }));
 const openBrowserAsync = vi.hoisted(() => vi.fn(async (_url: string) => ({})));
@@ -77,7 +78,7 @@ vi.mock('@/theme', async () => {
   return { ...tokens, monoFont: 'monospace', useTheme: () => ({ colors, mode: 'light' }), useThemedStyles: (make: any) => make(colors) };
 });
 vi.mock('@/components/AppText', async () => ({ Text: (await import('react-native')).Text, MAX_FONT_SIZE_MULTIPLIER: 2 }));
-vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ accountGeneration: 1 }) }));
+vi.mock('@/auth/AuthContext', () => ({ useAuth: () => ({ accountGeneration: runtime.accountGeneration }) }));
 vi.mock('@/session/usePluginResultCard', () => ({ usePluginResultCard: () => ({}), useSessionPluginResource: () => ({ title: 'Art' }) }));
 vi.mock('@/session/remoteMediaDiskCacheExpo', () => ({ downloadRemoteMediaShareTemp: vi.fn() }));
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
@@ -126,7 +127,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; host?.remove(); host = undefined; });
-beforeEach(() => { runtime.alerts = []; runtime.imageEvents.clear(); openBrowserAsync.mockClear(); });
+beforeEach(() => { runtime.accountGeneration = 1; runtime.alerts = []; runtime.imageEvents.clear(); openBrowserAsync.mockClear(); });
 
 // Placeholder for a short-lived authorized address; never a real signed URL.
 const signedImageUrl = 'https://chat.example.invalid/media/group-picture.png?signature=placeholder';
@@ -297,6 +298,27 @@ describe('Chat Server group image attachments (#5875)', () => {
     expect(container.querySelector(`img[src="${neighbourUrl}"]`)).toBe(loadedNeighbour);
   });
 
+  it('does not abort a neighbouring pending authorization when retrying one failed image', async () => {
+    let finishNeighbour!: (value: BotGroupAttachment) => void;
+    let neighbourSignal: AbortSignal | undefined;
+    const resolveServerMedia = vi.fn(async (id: string, signal?: AbortSignal) => {
+      if (id === 'neighbour') {
+        neighbourSignal = signal;
+        return new Promise<BotGroupAttachment>(resolve => { finishNeighbour = resolve; });
+      }
+      return { ...serverAttachment, category: 'image' as const, url: signedImageUrl };
+    });
+    const container = await render({ resolveServerMedia, attachments: [serverAttachment, { ...serverAttachment, id: 'neighbour' }] });
+    try {
+      await act(async () => runtime.imageEvents.get(signedImageUrl)!.onError?.());
+      expect(neighbourSignal?.aborted).toBe(false);
+      expect(resolveServerMedia.mock.calls.map(([id]) => id)).toEqual(['media-1', 'neighbour', 'media-1']);
+      expect(container.querySelector('img')?.getAttribute('src')).toBe(signedImageUrl);
+    } finally {
+      await act(async () => finishNeighbour({ ...serverAttachment, id: 'neighbour', category: 'image', url: `${signedImageUrl}&neighbour=1` }));
+    }
+  });
+
   // CloudCompanionScreen selects this policy even if its row is visible.
   it('keeps cloud transcript media tap-only, including after returning from the viewer', async () => {
     const resolveServerMedia = vi.fn(async () => ({ ...serverAttachment, category: 'image' as const, url: signedImageUrl }));
@@ -346,6 +368,35 @@ describe('Chat Server group image attachments (#5875)', () => {
     await act(async () => pending.forEach(resolve => resolve({ ...serverAttachment, category: 'image', url: signedImageUrl })));
     expect(resolveServerMedia).toHaveBeenCalledTimes(3);
     expect(container.querySelector('img')).toBeNull();
+  });
+
+  // PR #7145 r4371434693: three stalled requests must not block another page
+  // until their 20s timeout. Unit through the real strip; old tests settled them first.
+  it.each(['message', 'account'])('aborts old preview jobs and frees slots before stale requests settle (%s)', async change => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const finishes: Array<(value: BotGroupAttachment) => void> = [];
+    const oldResolver = vi.fn((_id: string, signal?: AbortSignal) => {
+      signals.push(signal); return new Promise<BotGroupAttachment>(resolve => finishes.push(resolve));
+    });
+    const container = await render({ resolveServerMedia: oldResolver,
+      attachments: Array.from({ length: 4 }, (_, n) => ({ ...serverAttachment, id: `old-${n}` })) });
+    expect(oldResolver).toHaveBeenCalledTimes(3);
+    const nextUrl = `${signedImageUrl}&next=1`;
+    const nextResolver = vi.fn(async () => ({ ...serverAttachment, category: 'image' as const, url: nextUrl }));
+    if (change === 'account') runtime.accountGeneration++;
+    await act(async () => root!.render(createElement(BotGroupMessageAttachments, {
+      messageId: change === 'message' ? 'next-message' : 'message-1', align: 'right',
+      attachments: [serverAttachment], onResolveRemoteMedia: vi.fn(), resolveServerMedia: nextResolver,
+    })));
+    try {
+      expect(signals.every(signal => signal?.aborted)).toBe(true);
+      expect(nextResolver).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('img')?.getAttribute('src')).toBe(nextUrl);
+    } finally {
+      await act(async () => finishes.forEach(finish => finish({ ...serverAttachment, category: 'image', url: signedImageUrl })));
+    }
+    expect(oldResolver).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(nextUrl);
   });
 
   it('bounds preview authorization and ignores late results when the message changes', async () => {

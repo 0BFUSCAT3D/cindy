@@ -49,7 +49,7 @@ export function BotGroupMessageAttachments({ messageId, attachments, align, onRe
   attachments: readonly BotGroupAttachment[];
   align: 'left' | 'right';
   onResolveRemoteMedia: ResolveRemoteMediaFn;
-  resolveServerMedia?: (id: string) => Promise<BotGroupAttachment>;
+  resolveServerMedia?: (id: string, signal?: AbortSignal) => Promise<BotGroupAttachment>;
   /** Cloud transcripts keep the tap-only contract in cloud-companions.md §3.1. */
   previewServerImages?: boolean;
 }) {
@@ -126,17 +126,40 @@ function PendingAttachment({ attachment, align, layout }: {
 }
 
 // Bound passive authorization across mounted messages; no account data or URLs are cached here.
-const previewJobs: Array<() => Promise<void>> = [];
+type PreviewJob = {
+  run(signal: AbortSignal): Promise<void>;
+  controller: AbortController;
+  active: boolean;
+  finished: boolean;
+};
+const previewJobs: PreviewJob[] = [];
 let activePreviews = 0;
-function authorizePreview(job: () => Promise<void>) {
+function finishPreview(job: PreviewJob) {
+  if (job.finished) return;
+  job.finished = true;
+  if (job.active) activePreviews--;
+  else {
+    const index = previewJobs.indexOf(job);
+    if (index >= 0) previewJobs.splice(index, 1);
+  }
+  drainPreviews();
+}
+function authorizePreview(run: PreviewJob['run']): () => void {
+  const job: PreviewJob = { run, controller: new AbortController(), active: false, finished: false };
   previewJobs.push(job);
   drainPreviews();
+  return () => {
+    if (job.finished) return;
+    job.controller.abort();
+    finishPreview(job);
+  };
 }
 function drainPreviews() {
   while (activePreviews < 3 && previewJobs.length) {
     const job = previewJobs.shift()!;
+    job.active = true;
     activePreviews++;
-    void job().finally(() => { activePreviews--; drainPreviews(); });
+    void job.run(job.controller.signal).then(() => finishPreview(job), () => finishPreview(job));
   }
 }
 
@@ -146,14 +169,14 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
   align: 'left' | 'right';
   runs: ReturnType<typeof botGroupAttachmentRuns>;
   layout: ReturnType<typeof buildMessageContentLayout>;
-  resolve(id: string): Promise<BotGroupAttachment>;
+  resolve(id: string, signal?: AbortSignal): Promise<BotGroupAttachment>;
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const [previews, setPreviews] = useState<Record<string, BotGroupAttachment>>({});
   const failedPreviewIds = useRef(new Set<string>());
   const retriedPreviewIds = useRef(new Set<string>());
-  const [retryRequest, setRetryRequest] = useState(0);
+  const retryPreview = useRef<((id: string) => void) | null>(null);
   const [previewVersions, setPreviewVersions] = useState<Record<string, number>>({});
   const resolveRef = useRef(resolve); resolveRef.current = resolve;
   const previewsRef = useRef(previews); previewsRef.current = previews;
@@ -161,15 +184,16 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
   useEffect(() => {
     let cancelled = false;
     if (!visible) return;
-    for (const id of JSON.parse(previewIds) as string[]) {
-      authorizePreview(async () => {
+    const cancelJobs: Array<() => void> = [];
+    const schedule = (id: string) => {
+      cancelJobs.push(authorizePreview(async signal => {
         if (cancelled || (previewsRef.current[id] && !failedPreviewIds.current.has(id))) return;
         const refreshing = failedPreviewIds.current.has(id);
         const previousPreview = previewsRef.current[id];
         try {
-          const value = await resolveRef.current(id);
+          const value = await resolveRef.current(id, signal);
           const preview = value.category === 'image' ? value : { ...value, url: null };
-          if (!cancelled && previewsRef.current[id] === previousPreview) {
+          if (!cancelled && !signal.aborted && previewsRef.current[id] === previousPreview) {
             previewsRef.current = { ...previewsRef.current, [id]: preview };
             setPreviews(previewsRef.current);
             failedPreviewIds.current.delete(id);
@@ -181,10 +205,16 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
           if (!cancelled) failedPreviewIds.current.delete(id);
           // Keep the chip / fallback available for an explicit retry on tap.
         }
-      });
-    }
-    return () => { cancelled = true; };
-  }, [previewIds, visible, retryRequest]);
+      }));
+    };
+    retryPreview.current = schedule;
+    for (const id of JSON.parse(previewIds) as string[]) schedule(id);
+    return () => {
+      cancelled = true;
+      retryPreview.current = null;
+      cancelJobs.forEach(cancel => cancel());
+    };
+  }, [previewIds, visible]);
   const displayRuns = botGroupAttachmentRuns(runs.flatMap(run => run.kind === 'pending'
     ? [run.attachment] : run.attachments.map(item => previews[item.id] ?? { ...item, url: null })));
   const [image, setImage] = useState<BotGroupAttachment | null>(null);
@@ -233,7 +263,7 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
               || previewsRef.current[attachment.id]?.url !== attachment.url) return;
             retriedPreviewIds.current.add(attachment.id);
             failedPreviewIds.current.add(attachment.id);
-            setRetryRequest(request => request + 1);
+            retryPreview.current?.(attachment.id);
           }}
           onOpenFile={index => { void open(run.attachments[index]!.id); }} usePreviewState={useState} />
         {run.attachments.some(attachment => busy === attachment.id)

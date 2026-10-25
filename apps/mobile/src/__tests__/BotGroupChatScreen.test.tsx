@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
   confirm: vi.fn(),
   leave: vi.fn(),
   focused: true,
+  appState: 'active',
+  appStateListeners: new Set<(state: string) => void>(),
   closeSettings: null as null | (() => void),
   row: null as any,
   inputs: {} as Record<string, any>,
@@ -54,7 +56,9 @@ vi.mock('react-native', () => {
     Platform: { get OS() { return h.platform.OS; }, select: (value: any) => value[h.platform.OS] },
     Alert: { alert: h.alert },
     useWindowDimensions: () => ({ width: 390, height: 844 }),
-    AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
+    AppState: { get currentState() { return h.appState; }, addEventListener: (_event: string, listener: (state: string) => void) => {
+      h.appStateListeners.add(listener); return { remove: () => h.appStateListeners.delete(listener) };
+    } },
     Keyboard: { dismiss: () => {} },
     Animated: { View: box('div'), Value: class { setValue() {} interpolate() { return this; } }, timing: () => ({ start() {}, stop() {} }),
       loop: () => ({ start() {}, stop() {} }), sequence: () => ({}) },
@@ -285,6 +289,7 @@ beforeEach(() => {
   h.management = null;
   vi.clearAllMocks();
   h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
+  h.appState = 'active'; h.appStateListeners.clear();
   h.platform.OS = 'ios'; h.focused = true; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
   h.discarded = []; h.deleted = []; h.leaveGuard = []; h.leaveDecision = async () => false;
@@ -1375,6 +1380,38 @@ describe('direct server group presentation', () => {
     expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
     expect(byId('botGroup.settings.replyMode.mentioned')?.disabled).toBe(true);
   });
+  // PR #7145 r4371434691: a pushed task leaves the group mounted. Unit,
+  // real page + native layout/focus/AppState events; old tests only scrolled rows.
+  it.each(['ios', 'android'])('suspends previews on blur/background and restores the viewport (%s)', async platform => {
+    h.platform.OS = platform;
+    const attachment = (id: string) => ({ id, name: `${id}.png`, category: 'file' as const, mimeType: '', size: 0, url: null, path: null });
+    const media = vi.fn(async (id: string) => ({ ...attachment(id), category: 'image' as const, url: `https://media.example.invalid/${id}` }));
+    h.chat = { ...h.chat, server: true, media };
+    const data = (count: number) => group({ messages: Array.from({ length: count }, (_, n) => message(`m${n}`, n + 1,
+      { authorKind: 'user', isSelf: false, attachments: [attachment(`image-${n}`)] })), plans: [], openPlan: null });
+    const show = async (count: number) => {
+      await render(data(count));
+      await act(async () => {
+        h.scroll.onLayout({ nativeEvent: { layout: { height: 500 } } });
+        for (const strip of node.querySelectorAll('[data-testid="attachmentStrip"]')) {
+          let row = strip as HTMLElement & { nativeLayout?: (event: unknown) => void };
+          while (!row.nativeLayout) row = row.parentElement as typeof row;
+          row.nativeLayout!({ nativeEvent: { layout: { y: 0, height: 100 } } });
+        }
+      });
+    };
+    await show(1); expect(media).toHaveBeenCalledTimes(1);
+    h.focused = false;
+    await show(2); expect(media).toHaveBeenCalledTimes(1);
+    h.focused = true;
+    await show(2); expect(media).toHaveBeenCalledTimes(2);
+    await act(async () => { h.appState = 'background'; h.appStateListeners.forEach(listener => listener(h.appState)); });
+    await show(3); expect(media).toHaveBeenCalledTimes(2);
+    await act(async () => { h.appState = 'active'; h.appStateListeners.forEach(listener => listener(h.appState)); });
+    expect(media).toHaveBeenCalledTimes(3);
+    expect(byId('attachment.image')?.getAttribute('data-uri')).toBe('https://media.example.invalid/image-0');
+  });
+
   it.each([undefined, 'thread-root'])('gates server previews by the viewport and reauthorizes on tap (thread=%s)', async (threadRootId) => {
     const attachment = { id: 'media', name: 'picture.png', mimeType: 'image/png', size: 10, category: 'image' as const, url: 'https://media.example.invalid/one-use', path: null };
     h.chat = { ...h.chat, server: true, media: vi.fn(async () => attachment) };
@@ -1390,7 +1427,7 @@ describe('direct server group presentation', () => {
     await act(async () => h.scroll.onScroll({ nativeEvent: {
       contentOffset: { y: 700 }, contentSize: { height: 1000 }, layoutMeasurement: { height: 500 },
     } }));
-    expect(h.chat.media).toHaveBeenCalledExactlyOnceWith('media');
+    expect(h.chat.media).toHaveBeenCalledExactlyOnceWith('media', expect.any(AbortSignal));
     expect(byId('attachment.image')?.getAttribute('data-uri')).toBe(attachment.url);
     await click('attachment.image'); expect(h.chat.media).toHaveBeenCalledTimes(2);
     expect(byId('lightbox')?.getAttribute('data-url')).toBe(attachment.url);

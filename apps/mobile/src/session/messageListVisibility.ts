@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
 
 /** One store per LegendList lifetime; only rows whose visibility changes are notified. */
 export class MessageListVisibility {
@@ -52,6 +52,12 @@ export class ScrollViewMessageVisibility extends MessageListVisibility {
   private layouts = new Map<string, { y: number; height: number }>();
   private offsetY = 0;
   private height = 0;
+  private active = true;
+
+  setActive(active: boolean): void {
+    this.active = active;
+    this.refresh();
+  }
 
   setViewport(offsetY: number, height: number): void {
     this.offsetY = offsetY;
@@ -78,14 +84,18 @@ export class ScrollViewMessageVisibility extends MessageListVisibility {
   private refresh(): void {
     this.update([...this.layouts].map(([key, layout]) => ({
       key,
-      isViewable: this.height > 0 && layout.height > 0
+      isViewable: this.active && this.height > 0 && layout.height > 0
         && layout.y < this.offsetY + this.height && layout.y + layout.height > this.offsetY,
     })));
   }
 }
 
-export function useScrollViewMessageVisibility(scope: string, keys: readonly string[]): ScrollViewMessageVisibility {
+export function useScrollViewMessageVisibility(scope: string, keys: readonly string[], active = true): ScrollViewMessageVisibility {
   const store = useMemo(() => new ScrollViewMessageVisibility(), [scope]);
+  useLayoutEffect(() => {
+    store.setActive(active);
+    return () => store.setActive(false);
+  }, [store, active]);
   useEffect(() => store.retain(keys), [store, keys]);
   return store;
 }

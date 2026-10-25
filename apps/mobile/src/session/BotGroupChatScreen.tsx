@@ -149,11 +149,13 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
   const jumpAttempts = useRef(0);
   const messagePositions = useRef(new Map<string, number>());
   const group = chat.state.kind === 'ready' ? chat.state.group : null;
+  const focused = useIsFocused();
+  const [foreground, setForeground] = useState(() => AppState.currentState === 'active');
   const previewVisibility = useScrollViewMessageVisibility(
     `${accountGeneration}:${deviceId}:${groupId}:${threadRootId ?? ''}`,
     useMemo(() => group?.messages.map(message => message.id) ?? [], [group?.messages]),
+    focused && foreground,
   );
-  const focused = useIsFocused();
   const viewportOwner = `${user?.id ?? ''}:${accountGeneration}:${deviceId}:${groupId}:${threadRootId ?? 'main'}`;
   const [seen, setSeen] = useState<{ owner: string; sequence: string } | null>(null);
   const latestSequence = group?.messages.reduce((latest, message) => {
@@ -200,7 +202,10 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
   }, [focused, group, user?.id, deviceId, groupId, viewportOwner, latestSequence, chat.server, chat.markRead]);
   useEffect(() => {
     const frame = requestAnimationFrame(acknowledge);
-    const subscription = AppState.addEventListener('change', state => { if (state === 'active') acknowledge(); });
+    const subscription = AppState.addEventListener('change', state => {
+      setForeground(state === 'active');
+      if (state === 'active') acknowledge();
+    });
     return () => { cancelAnimationFrame(frame); subscription.remove(); };
   }, [acknowledge]);
   // The list row seeds the header while the first read is in flight (display only).
@@ -519,7 +524,7 @@ export function BotGroupTimeline({
   identityFor: BotGroupIdentityLookup;
   /** Reads a picture attached to a message from the computer. */
   resolveMedia: ResolveRemoteMediaFn;
-  resolveServerMedia?: (id: string) => Promise<BotGroupAttachment>;
+  resolveServerMedia?: (id: string, signal?: AbortSignal) => Promise<BotGroupAttachment>;
   loadOlder?: () => void;
   loadingOlder?: boolean;
   continuing: boolean;
@@ -618,7 +623,7 @@ function BotGroupTimelineItem({
   identityFor: BotGroupIdentityLookup;
   mentionLabels: readonly string[];
   resolveMedia: ResolveRemoteMediaFn;
-  resolveServerMedia?: (id: string) => Promise<BotGroupAttachment>;
+  resolveServerMedia?: (id: string, signal?: AbortSignal) => Promise<BotGroupAttachment>;
   canContinue: boolean;
   continuing: boolean;
   onContinue(): void;
