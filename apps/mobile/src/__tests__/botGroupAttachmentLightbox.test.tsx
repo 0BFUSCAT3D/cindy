@@ -151,11 +151,12 @@ describe('Chat Server group image attachments (#5875)', () => {
       id, name: '1.png', category: 'image', mimeType: 'image/png', size: 10, url: signedImageUrl, path: null,
     }));
     const container = await render({ resolveServerMedia });
-    // The timeline keeps a file chip and never holds the signed address.
-    expect(container.querySelector('img')).toBeNull();
-    expect(container.innerHTML).not.toContain(signedImageUrl);
+    // Unknown media becomes a real thumbnail after authorization, without a tap.
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(signedImageUrl);
+    expect(container.querySelector('[data-testid="message.imageLightbox"]')).toBeNull();
+    expect(resolveServerMedia).toHaveBeenCalledTimes(1);
 
-    await click(container.querySelector('[data-testid="message.filePreviewButton"]'));
+    await click(container.querySelector('[data-testid="message.mediaPreviewButton"]'));
     expect(resolveServerMedia).toHaveBeenCalledWith('media-1');
     const viewer = container.querySelector('[data-testid="message.imageLightbox"]');
     expect(viewer?.querySelector('img')?.getAttribute('src')).toBe(signedImageUrl);
@@ -165,10 +166,10 @@ describe('Chat Server group image attachments (#5875)', () => {
 
     await click(container.querySelector('[data-testid="message.imageLightboxCloseButton"]'));
     expect(container.querySelector('[data-testid="message.imageLightbox"]')).toBeNull();
-    expect(container.innerHTML).not.toContain(signedImageUrl);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(signedImageUrl);
 
-    await click(container.querySelector('[data-testid="message.filePreviewButton"]'));
-    expect(resolveServerMedia).toHaveBeenCalledTimes(2);
+    await click(container.querySelector('[data-testid="message.mediaPreviewButton"]'));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(3);
     expect(container.querySelector('[data-testid="message.imageLightbox"] img')?.getAttribute('src')).toBe(signedImageUrl);
   });
 
@@ -181,6 +182,33 @@ describe('Chat Server group image attachments (#5875)', () => {
     await click(container.querySelector('[data-testid^="message.filePreviewButton"]'));
     expect(openBrowserAsync).toHaveBeenCalledWith(fileUrl);
     expect(container.querySelector('[data-testid="message.imageLightbox"]')).toBeNull();
+  });
+
+  it('keeps failed preview authorization retryable on tap without showing a background alert', async () => {
+    const resolveServerMedia = vi.fn<() => Promise<BotGroupAttachment>>()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ ...serverAttachment, category: 'image', mimeType: 'image/png', url: signedImageUrl });
+    const container = await render({ resolveServerMedia });
+    expect(runtime.alerts).toEqual([]);
+    expect(container.querySelector('img')).toBeNull();
+    await click(container.querySelector('[data-testid="message.filePreviewButton"]'));
+    expect(container.querySelector('[data-testid="message.imageLightbox"] img')?.getAttribute('src')).toBe(signedImageUrl);
+  });
+
+  it('bounds preview authorization and ignores late results when the message changes', async () => {
+    const pending: Array<(value: BotGroupAttachment) => void> = [];
+    const resolveServerMedia = vi.fn((id: string) => new Promise<BotGroupAttachment>(resolve => {
+      pending.push(value => resolve({ ...value, id }));
+    }));
+    const attachments = Array.from({ length: 8 }, (_, index) => ({ ...serverAttachment, id: `media-${index}` }));
+    const container = await render({ resolveServerMedia, attachments });
+    expect(resolveServerMedia).toHaveBeenCalledTimes(3);
+    await act(async () => root!.render(createElement(BotGroupMessageAttachments, {
+      messageId: 'replacement', align: 'right', attachments: [], onResolveRemoteMedia: vi.fn(), resolveServerMedia,
+    })));
+    await act(async () => pending.forEach(resolve => resolve({ ...serverAttachment, category: 'image', url: signedImageUrl })));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('img')).toBeNull();
   });
 });
 

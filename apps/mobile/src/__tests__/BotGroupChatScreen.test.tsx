@@ -1378,8 +1378,9 @@ describe('direct server group presentation', () => {
     const attachment = { id: 'media', name: 'picture.png', mimeType: 'image/png', size: 10, category: 'image' as const, url: 'https://media.example.invalid/one-use', path: null };
     h.chat = { ...h.chat, server: true, media: vi.fn(async () => attachment) };
     await render(group({ messages: [message('picture', 1, { authorKind: 'user', isSelf: false, attachments: [{ ...attachment, url: null, category: 'file' }] })], plans: [], openPlan: null }));
-    expect(h.chat.media).not.toHaveBeenCalled();
-    await click('attachment.file'); expect(h.chat.media).toHaveBeenCalledExactlyOnceWith('media');
+    expect(h.chat.media).toHaveBeenCalledExactlyOnceWith('media');
+    expect(byId('attachment.image')?.getAttribute('data-uri')).toBe(attachment.url);
+    await click('attachment.image'); expect(h.chat.media).toHaveBeenCalledTimes(2);
     expect(byId('lightbox')?.getAttribute('data-url')).toBe(attachment.url);
   });
 });
