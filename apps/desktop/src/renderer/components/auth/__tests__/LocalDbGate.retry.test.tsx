@@ -6,7 +6,7 @@
  * transient 失败(如跨睡眠 db RPC 假超时)重试 2 次后成功 → 正常放行;
  * 持续失败耗尽重试 → 才落 fatal 阻断渲染。
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { act } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -114,6 +114,24 @@ describe('LocalDbGate 有限重试', () => {
     renderGate();
     await flushAsync();
     expect(screen.getByTestId('main-content')).toBeTruthy();
+  });
+
+  // #7135 / unit: mount the real gate + fatal screen, retry a failed lease for
+  // the original account, and verify admission rather than only callback calls.
+  it('reopens the original account after a lease failure instead of installing an available update', async () => {
+    const api = stubElectronApi();
+    api.getUpdateStatus.mockResolvedValue({ status: 'ready' });
+    api.localDb.ensureReady.mockResolvedValueOnce({
+      ready: false,
+      error: { code: 'DB_SCHEMA_LOCKED', message: 'fixture lock requires recovery' },
+    });
+    renderGate();
+    await flushAsync();
+    expect(screen.queryByTestId('main-content')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'localDbFatal.schemaLease.retry' }));
+    await flushAsync();
+    expect(screen.getByTestId('main-content')).toBeTruthy();
+    expect(api.localDb.ensureReady).toHaveBeenNthCalledWith(2, 'user-1');
   });
 
   it('transient 失败 2 次后成功 → 重试后放行,不落 fatal', async () => {
