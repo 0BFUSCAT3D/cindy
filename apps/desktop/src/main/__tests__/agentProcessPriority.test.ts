@@ -38,8 +38,9 @@ vi.mock('node:os', () => {
 });
 
 // scanWindows 经 execFileAsync 拉 powershell;测试里喂 CIM 输出行,不真起进程。
-// 真实 execFile 的 promisify 版走 custom symbol 解析成 {stdout, stderr},mock 同构
-const cpMock = vi.hoisted(() => ({ stdout: '' }));
+// 真实 execFile 的 promisify 版走 custom symbol 解析成 {stdout, stderr},mock 同构;
+// lastArgs 记录实际调用参数,供断言查询脚本真的由名单常量拼出(greptile P2)
+const cpMock = vi.hoisted(() => ({ stdout: '', lastArgs: [] as unknown[] }));
 vi.mock('node:child_process', () => ({
   execFile: Object.assign(
     (
@@ -51,8 +52,10 @@ vi.mock('node:child_process', () => ({
       cb(null, cpMock.stdout, '');
     },
     {
-      [Symbol.for('nodejs.util.promisify.custom')]: () =>
-        Promise.resolve({ stdout: cpMock.stdout, stderr: '' }),
+      [Symbol.for('nodejs.util.promisify.custom')]: (...callArgs: unknown[]) => {
+        cpMock.lastArgs = callArgs;
+        return Promise.resolve({ stdout: cpMock.stdout, stderr: '' });
+      },
     },
   ),
 }));
@@ -386,5 +389,11 @@ describe('agent process discovery', () => {
       `9003|${process.pid}|C:\\Windows\\System32\\cmd.exe /c dir`, // 非 agent 子进程
     ].join('\r\n');
     await expect(__testing.scanWindows()).resolves.toEqual([{ pid: 9001, kind: 'pi' }]);
+    // 查询脚本必须真的由名单常量拼出:若实现改回硬编码绕开常量,这里即红
+    const argv = (cpMock.lastArgs[1] as string[] | undefined) ?? [];
+    const script = String(argv[argv.indexOf('-Command') + 1] ?? '');
+    for (const name of WINDOWS_AGENT_PROCESS_NAMES) {
+      expect(script).toContain(`Name='${name}'`);
+    }
   });
 });
