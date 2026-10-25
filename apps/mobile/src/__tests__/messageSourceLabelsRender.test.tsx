@@ -622,6 +622,23 @@ describe("companion text selection and actions", () => {
     } finally { h.unmount(); }
   });
 
+  // PR #7094: bounded paragraph runs do not bound code, quotes or table cells.
+  // Expand one oversized block through the same production entry; those native
+  // roots must retain RN Text fallback instead of mounting a giant UITextView.
+  it.each(["code", "blockquote", "table"])("keeps the stable fallback for expanded long %s blocks", (kind) => {
+    const text = "长内容".repeat(700);
+    const markdown = kind === "code" ? `\`\`\`text\n${text}\n\`\`\``
+      : kind === "blockquote" ? `> ${text}` : `| header | second |\n| --- | --- |\n| ${text} | cell |`;
+    const h = mount([msg("long-block", markdown, null)], { companion: true });
+    try {
+      act(() => h.host.querySelector('[data-testid="message.collapseToggle"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      const body = h.host.querySelector('[data-testid="message.markdownBody"]')!;
+      expect(body.textContent).toContain(text);
+      expect(body.querySelector('[data-native-text-view]')).toBeNull();
+      expect(body.querySelector('[data-selectable="true"]')).not.toBeNull();
+    } finally { h.unmount(); }
+  });
+
   it.each(["user", "assistant"] as const)("keeps %s text selectable alongside Reply when system menus are available", (role) => {
     a11y.systemMenu = true;
     const onQuote = vi.fn();

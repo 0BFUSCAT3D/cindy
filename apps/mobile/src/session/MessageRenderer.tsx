@@ -6022,6 +6022,12 @@ function MarkdownBodyBase({
     );
   };
   const renderSingleBlock = useCallback((block: MobileMarkdownBlock): ReactNode => {
+    // Only text_run groups are bounded. Code, quotes and table cells retain
+    // the stable RN Text fallback in expanded long companion messages.
+    const singleBlockAllowsIosUITextView = allowIosUITextView && !boundTextRuns;
+    const singleBlockSpanFor = (blockSelectable: boolean) => singleBlockAllowsIosUITextView
+      ? spanFor(blockSelectable)
+      : undefined;
     if (block.type === 'mermaid') {
       // 内联图表按「图片」形态呈现:无卡片 chrome、无标签文字、无按钮,
       // 就是一块圆角图表;点击任意位置打开沉浸式全屏详情(透明 Pressable
@@ -6067,8 +6073,8 @@ function MarkdownBodyBase({
             ]}
           >
             <HighlightedCodeText
-              SpanComponent={spanFor(selectable === true) ?? Text}
-              allowIosUITextView={allowIosUITextView}
+              SpanComponent={singleBlockSpanFor(selectable === true) ?? Text}
+              allowIosUITextView={singleBlockAllowsIosUITextView}
               language={block.language}
               selectable={selectable === true}
               styles={styles}
@@ -6086,13 +6092,13 @@ function MarkdownBodyBase({
       const headingSelectable = inlinesSelectable(block.inlines);
       return (
         <MarkdownSelectableText
-          allowIosUITextView={allowIosUITextView}
+          allowIosUITextView={singleBlockAllowsIosUITextView}
           key={block.key}
           selectable={headingSelectable}
           style={headingStyle}
           testID="message.markdownHeading"
         >
-          {renderInlines(block.inlines, spanFor(headingSelectable))}
+          {renderInlines(block.inlines, singleBlockSpanFor(headingSelectable))}
         </MarkdownSelectableText>
       );
     }
@@ -6100,11 +6106,11 @@ function MarkdownBodyBase({
       return (
         <View key={block.key} style={styles.markdownQuote} testID="message.markdownQuote">
           <MarkdownSelectableText
-            allowIosUITextView={allowIosUITextView}
+            allowIosUITextView={singleBlockAllowsIosUITextView}
             selectable={inlinesSelectable(block.inlines)}
             style={[styles.messageText, styles.markdownQuoteText]}
           >
-            {renderInlines(block.inlines, spanFor(inlinesSelectable(block.inlines)))}
+            {renderInlines(block.inlines, singleBlockSpanFor(inlinesSelectable(block.inlines)))}
           </MarkdownSelectableText>
         </View>
       );
@@ -6125,11 +6131,11 @@ function MarkdownBodyBase({
             {task ? (block.checked ? '✓' : '') : block.ordered ? block.marker : '•'}
           </Text>
           <MarkdownSelectableText
-            allowIosUITextView={allowIosUITextView}
+            allowIosUITextView={singleBlockAllowsIosUITextView}
             selectable={inlinesSelectable(block.inlines)}
             style={[styles.messageText, styles.markdownListText]}
           >
-            {renderInlines(block.inlines, spanFor(inlinesSelectable(block.inlines)))}
+            {renderInlines(block.inlines, singleBlockSpanFor(inlinesSelectable(block.inlines)))}
           </MarkdownSelectableText>
         </View>
       );
@@ -6155,7 +6161,7 @@ function MarkdownBodyBase({
                 return (
                   <MarkdownSelectableText
                     adjustVerticalAlignment={false}
-                    allowIosUITextView={allowIosUITextView}
+                    allowIosUITextView={singleBlockAllowsIosUITextView}
                     key={`${block.key}:th:${index}`}
                     selectable={inlinesSelectable(cell)}
                     style={[
@@ -6164,7 +6170,7 @@ function MarkdownBodyBase({
                       styles.markdownTableHeaderCell,
                     ]}
                   >
-                    {renderInlines(cell, spanFor(inlinesSelectable(cell)))}
+                    {renderInlines(cell, singleBlockSpanFor(inlinesSelectable(cell)))}
                   </MarkdownSelectableText>
                 );
               })}
@@ -6176,12 +6182,12 @@ function MarkdownBodyBase({
                   return (
                     <MarkdownSelectableText
                       adjustVerticalAlignment={false}
-                      allowIosUITextView={allowIosUITextView}
+                      allowIosUITextView={singleBlockAllowsIosUITextView}
                       key={`${row.key}:td:${index}`}
                       selectable={inlinesSelectable(cell)}
                       style={[styles.markdownTableCell, { width: columnWidth }]}
                     >
-                      {renderInlines(cell, spanFor(inlinesSelectable(cell)))}
+                      {renderInlines(cell, singleBlockSpanFor(inlinesSelectable(cell)))}
                     </MarkdownSelectableText>
                   );
                 })}
@@ -6193,15 +6199,15 @@ function MarkdownBodyBase({
     }
     return (
       <MarkdownSelectableText
-        allowIosUITextView={allowIosUITextView}
+        allowIosUITextView={singleBlockAllowsIosUITextView}
         key={`${block.key}:${pinSettledWidth ? contentWidth : 'hug'}`}
         selectable={inlinesSelectable(block.inlines)}
         style={settledTextStyle}
       >
-        {renderInlines(block.inlines, spanFor(inlinesSelectable(block.inlines)))}
+        {renderInlines(block.inlines, singleBlockSpanFor(inlinesSelectable(block.inlines)))}
       </MarkdownSelectableText>
     );
-  }, [allowIosUITextView, contentWidth, inlinesSelectable, layout, onOpenPayload, pinSettledWidth, renderInlines, selectable, settledTextStyle, spanFor, styles, t]);
+  }, [allowIosUITextView, boundTextRuns, contentWidth, inlinesSelectable, layout, onOpenPayload, pinSettledWidth, renderInlines, selectable, settledTextStyle, spanFor, styles, t]);
   return (
     <View
       collapsable={false}
