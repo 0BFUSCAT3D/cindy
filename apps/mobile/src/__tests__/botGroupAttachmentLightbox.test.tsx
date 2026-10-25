@@ -267,6 +267,59 @@ describe('Chat Server group image attachments (#5875)', () => {
     expect(container.querySelector('img')).toBeNull();
   });
 
+  // PR #7145 r4371557412: the first automatic request has no cached preview.
+  // A successful tap must populate the group list even if that request fails or hangs.
+  it.each(['late-success', 'late-failure', 'already-failed'])('keeps the tapped preview before initial authorization completes (%s)', async outcome => {
+    let finishInitial!: (value: BotGroupAttachment) => void;
+    let failInitial!: (error: Error) => void;
+    const tappedUrl = `${signedImageUrl}&tap=initial`;
+    const resolveServerMedia = vi.fn<() => Promise<BotGroupAttachment>>()
+      .mockImplementationOnce(() => new Promise((resolve, reject) => { finishInitial = resolve; failInitial = reject; }))
+      .mockResolvedValueOnce({ ...serverAttachment, category: 'image', url: tappedUrl });
+    const container = await render({ resolveServerMedia });
+    try {
+      if (outcome === 'already-failed') await act(async () => failInitial(new Error('initial failed')));
+      await click(container.querySelector('[data-testid="message.filePreviewButton"]'));
+      await click(container.querySelector('[data-testid="message.imageLightboxCloseButton"]'));
+      expect(container.querySelector('img')?.getAttribute('src')).toBe(tappedUrl);
+    } finally {
+      await act(async () => {
+        if (outcome === 'late-success') finishInitial({ ...serverAttachment, category: 'image', url: `${signedImageUrl}&older=1` });
+        else failInitial(new Error('initial failed'));
+      });
+    }
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(tappedUrl);
+    expect(resolveServerMedia).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a newer tapped image retry queued when its initial authorization fails late', async () => {
+    let failInitial!: (error: Error) => void;
+    const finishNeighbours: Array<(value: BotGroupAttachment) => void> = [];
+    const tappedUrl = `${signedImageUrl}&tap=initial`;
+    const refreshedUrl = `${signedImageUrl}&retry=initial`;
+    let targetCalls = 0;
+    const resolveServerMedia = vi.fn((id: string): Promise<BotGroupAttachment> => {
+      if (id !== serverAttachment.id) return new Promise(resolve => finishNeighbours.push(resolve));
+      targetCalls++;
+      if (targetCalls === 1) return new Promise((_resolve, reject) => { failInitial = reject; });
+      return Promise.resolve({ ...serverAttachment, category: 'image', url: targetCalls === 2 ? tappedUrl : refreshedUrl });
+    });
+    const container = await render({ resolveServerMedia,
+      attachments: [serverAttachment, ...['neighbour-1', 'neighbour-2'].map(id => ({ ...serverAttachment, id }))] });
+    try {
+      await click(container.querySelector('[data-testid="message.filePreviewButton"]'));
+      await click(container.querySelector('[data-testid="message.imageLightboxCloseButton"]'));
+      await act(async () => runtime.imageEvents.get(tappedUrl)!.onError?.());
+      expect(targetCalls).toBe(2); // retry waits behind the three original authorizations
+      await act(async () => failInitial(new Error('older request failed')));
+      expect(targetCalls).toBe(3);
+      expect(container.querySelector('img')?.getAttribute('src')).toBe(refreshedUrl);
+    } finally {
+      failInitial(new Error('cleanup'));
+      await act(async () => finishNeighbours.forEach((finish, index) => finish({ ...serverAttachment, id: `neighbour-${index + 1}` })));
+    }
+  });
+
   it('does not let a late automatic refresh replace a newer explicit authorization', async () => {
     let finishRefresh!: (value: BotGroupAttachment) => void;
     const tappedUrl = `${signedImageUrl}&tap=1`;

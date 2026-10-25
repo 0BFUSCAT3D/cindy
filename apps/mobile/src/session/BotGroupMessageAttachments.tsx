@@ -64,7 +64,8 @@ export function BotGroupMessageAttachments({ messageId, attachments, align, onRe
   const gallery = useMemo(() => botGroupAttachmentGallery(messageId, items), [items, messageId]);
   const runs = useMemo(() => botGroupAttachmentRuns(attachments), [attachments]);
   const [openUrl, setOpenUrl] = useState<string | null>(null);
-  if (resolveServerMedia) return <ServerAttachments key={`${accountGeneration}:${messageId}`} runs={runs} visible={previewVisible} align={align} layout={layout} resolve={resolveServerMedia} />;
+  if (resolveServerMedia) return <ServerAttachments key={`${accountGeneration}:${messageId}`} runs={runs} visible={previewVisible}
+    previewServerImages={previewServerImages} align={align} layout={layout} resolve={resolveServerMedia} />;
   const open = (payload: MessagePayload) => {
     if (payload.kind === 'media' && payload.media.kind === 'image') {
       setOpenUrl(payload.media.url);
@@ -164,8 +165,9 @@ function drainPreviews() {
 }
 
 /** Image preview URLs live only in this mounted message; opening always re-authorizes. */
-function ServerAttachments({ runs, visible, align, layout, resolve }: {
+function ServerAttachments({ runs, visible, previewServerImages, align, layout, resolve }: {
   visible: boolean;
+  previewServerImages: boolean;
   align: 'left' | 'right';
   runs: ReturnType<typeof botGroupAttachmentRuns>;
   layout: ReturnType<typeof buildMessageContentLayout>;
@@ -202,7 +204,7 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
             if (refreshing) setPreviewVersions(versions => ({ ...versions, [id]: (versions[id] ?? 0) + 1 }));
           }
         } catch {
-          if (!cancelled) failedPreviewIds.current.delete(id);
+          if (!cancelled && previewsRef.current[id] === previousPreview) failedPreviewIds.current.delete(id);
           // Keep the chip / fallback available for an explicit retry on tap.
         }
       }));
@@ -232,7 +234,7 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
       if (value.category === 'image') {
         setImage(value);
         // Cloud transcripts never populate this cache: their media remains tap-only.
-        if (previewsRef.current[id]) {
+        if (previewServerImages) {
           previewsRef.current = { ...previewsRef.current, [id]: value };
           setPreviews(previewsRef.current);
           failedPreviewIds.current.delete(id);
