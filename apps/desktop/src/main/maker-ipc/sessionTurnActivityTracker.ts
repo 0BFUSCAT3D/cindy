@@ -2,6 +2,12 @@ import { isTerminalAgentErrorEvent, type AgentEvent } from '@cindy/maker-core';
 
 export const TURN_IDLE_THROTTLE_RESTORE_GRACE_MS = 1_000;
 
+/**
+ * 结束活动先由逻辑轮次持有：autoResume pending/deferred、认证/网关、溢出与供应商组恢复
+ * 最终失败统一经 interruptProductTurn → createProductTurnFailureFinalizer 提交；恢复新轮的
+ * running/generation 边界丢弃旧记录。silentStop 不续跑经 settleSilentStopDone 提交，
+ * 接受续跑经 captureContinuation 丢弃。计划升级关闭和其他 close/recycle 只清理，不提交。
+ */
 export class SessionListActivityTracker {
   private readonly turns = new Map<string, {
     identity?: string;

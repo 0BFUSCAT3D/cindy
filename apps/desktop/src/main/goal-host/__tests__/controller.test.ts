@@ -798,6 +798,7 @@ describe('GoalController', () => {
       local.session.sends.push({ content, originKind: opts?.origin?.kind });
       order.push('send');
       attempts += 1;
+      await opts?.onAccepted?.();
       opts?.onDispatching?.();
       return attempts === 1
         ? { accepted: false, reason: 'provider-rejected-before-dispatch' }
@@ -808,6 +809,7 @@ describe('GoalController', () => {
       await local.controller.setGoal({ sessionId: 's1', objective: 'ship the feature' });
 
       expect(order).toEqual(['baseline', 'send', 'abort']);
+      expect(local.userDispatched).not.toHaveBeenCalled();
       expect(onUndispatchedUserTurn).toHaveBeenCalledWith('s1');
       expect(await local.storage.get('s1')).toMatchObject({ status: 'active', turnsUsed: 0 });
 
@@ -821,6 +823,7 @@ describe('GoalController', () => {
       expect(beforeDispatchUserTurn).toHaveBeenCalledTimes(2);
       expect(onUndispatchedUserTurn).toHaveBeenCalledTimes(1);
       expect(local.session.sends).toHaveLength(2);
+      expect(local.userDispatched).toHaveBeenCalledExactlyOnceWith('s1', 1_500);
       expect(await local.storage.get('s1')).toMatchObject({ status: 'active', turnsUsed: 0 });
     } finally {
       local.controller.dispose();

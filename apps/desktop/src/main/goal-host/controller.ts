@@ -2560,7 +2560,6 @@ export class GoalController {
         {
           origin: { kind: 'goal', goalSessionId: sessionId },
           planMode: false,
-          onAccepted: noteUserDispatched,
           // Session.send 只在 vendor dispatch 前的最后一个同步边界调用它。不能等
           // send Promise 返回后才登记：派发调用尚未返回时用户点清除，clearGoal 必须
           // 已经知道这个 turn 属于目标模式，才能立即走 Stop 边界。
