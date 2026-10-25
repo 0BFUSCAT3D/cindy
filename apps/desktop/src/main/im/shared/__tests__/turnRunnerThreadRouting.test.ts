@@ -57,6 +57,10 @@ const mocks = vi.hoisted(() => ({
   generateAndPersistFbotTitle: vi.fn(),
   dbSelect: vi.fn(),
   readRemoteRoute: vi.fn(),
+  materializeLocalMarkdownImages: vi.fn(),
+}));
+vi.mock('../localMarkdownImages', () => ({
+  materializeLocalMarkdownImages: mocks.materializeLocalMarkdownImages,
 }));
 vi.mock('../../remoteProviderRoute', () => ({ readImRemoteProviderRoute: mocks.readRemoteRoute }));
 
@@ -286,6 +290,9 @@ beforeEach(() => {
   mocks.bindingGetAttachCardMessageId.mockReturnValue(null);
   mocks.generateAndPersistFbotTitle.mockResolvedValue(null);
   mocks.takePendingInteractionsForSession.mockReturnValue([]);
+  mocks.materializeLocalMarkdownImages.mockImplementation(async ({ text }: { text: string }) => ({
+    text, absPaths: [],
+  }));
   // maker.createSession: 按 id 返回独立 harness(多 session 并行的关键)
   mocks.getMaker.mockReturnValue({
     getSession: vi.fn((id: string) => harnesses.get(id)?.session),
@@ -1103,6 +1110,40 @@ describe('turnRunner 自动任务转播(scheduler turn → 远程控制 thread)'
   const schedulerOrigin = { kind: 'scheduler', scheduleId: 's1', scheduleName: 'PR #118 跟进' };
   const withOrigin = (e: Partial<AgentEvent>): AgentEvent =>
     ({ ...e, turnOrigin: schedulerOrigin }) as AgentEvent;
+
+  // #7125 review, unit: a lone image component used to miss attachment collection.
+  // Exercise background delivery through the runner; only file import is stubbed.
+  it('delivers background image components as chunked-text attachments', async () => {
+    const previousOutput = fakeAdapter.output;
+    fakeAdapter.output = {
+      kind: 'chunked-text', im: mocks.slackIm as unknown as ChannelIM, commitFinal: vi.fn(async () => undefined),
+    };
+    await runner.disposeAllSessions();
+    runner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards);
+    try {
+      const h = await attachAndIdle();
+      const imagePath = path.join('/tmp', 'desktop-wd', 'chart.png');
+      const managedPath = path.join('/tmp', 'test-media', 'chart.png');
+      mocks.materializeLocalMarkdownImages.mockResolvedValue({ text: 'Chart', absPaths: [managedPath] });
+      const source = '```cindy-ui\n' + JSON.stringify({
+        version: 1, seq: 1, op: 'create', id: 'image', kind: 'image', props: { src: imagePath, alt: 'Chart' },
+      }) + '\n```';
+      h.emit(withOrigin({ type: 'text', data: { text: source, isFinal: true } }));
+      h.emit(withOrigin({ type: 'done', data: {} }));
+      await vi.waitFor(() => expect(mocks.slackIm.sendFile).toHaveBeenCalledWith(
+        'U1', managedPath, undefined, { threadTs: '300.3' },
+      ));
+      expect(mocks.materializeLocalMarkdownImages).toHaveBeenCalledWith(expect.objectContaining({
+        text: `![Chart](<${imagePath}>)`,
+      }));
+      expect(mocks.slackIm.sendMarkdownText).toHaveBeenCalledWith(
+        'U1', expect.stringContaining('Chart'), { threadTs: '300.3' },
+      );
+    } finally {
+      await runner.disposeAllSessions();
+      fakeAdapter.output = previousOutput;
+    }
+  });
 
   // #6884, unit: the same component fence must be projected for background
   // streaming/final delivery. Existing relay tests only covered plain Markdown.

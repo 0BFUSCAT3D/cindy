@@ -3168,7 +3168,9 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     }
   });
 
-  it('materializes local Markdown images before committing chunked-text output', async () => {
+  // #7125 review: image components must reach the existing attachment pipeline,
+  // including error finalization; otherwise WeChat removes the projected image.
+  it.each(['markdown', 'component', 'component-error'] as const)('materializes %s images before committing chunked-text output', async (kind) => {
     const previousOutput = fakeAdapter.output;
     const commitFinal = vi.fn(async () => undefined);
     fakeAdapter.output = {
@@ -3185,15 +3187,22 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
       const { turnPromise } = await startDefaultTurn();
       await turnPromise;
 
+      const markdown = '![测试图片](F:\\XDMaker\\generated.png)';
+      const source = kind === 'markdown' ? markdown : '```cindy-ui\n' + JSON.stringify({
+        version: 1, seq: 1, op: 'create', id: 'image', kind: 'image',
+        props: { src: 'F:\\XDMaker\\generated.png', alt: '测试图片' },
+      }) + '\n```';
       h.emit({
         type: 'text',
-        data: { text: '![测试图片](F:\\XDMaker\\generated.png)', isFinal: true },
+        data: { text: source, isFinal: true },
       });
-      h.emit({ type: 'done', data: {} });
+      h.emit(kind === 'component-error'
+        ? { type: 'error', data: { message: 'process exited', isTerminal: true } }
+        : { type: 'done', data: {} });
       await flushMicrotasks();
 
       expect(mocks.materializeLocalMarkdownImages).toHaveBeenCalledWith({
-        text: '![测试图片](F:\\XDMaker\\generated.png)',
+        text: kind === 'markdown' ? markdown : '![测试图片](<F:\\XDMaker\\generated.png>)',
         workingDir: 'F:\\XDMaker',
         sessionId: 'feishu-session',
         maxImages: 4,
@@ -3201,8 +3210,9 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
       });
       expect(commitFinal).toHaveBeenCalledWith({
         userId: 'ou_user',
-        text: '测试图片',
-        terminal: 'done',
+        text: kind === 'component-error' ? expect.stringMatching(/测试图片[\s\S]*process exited/) : '测试图片',
+        terminal: kind === 'component-error' ? 'error' : 'done',
+        ...(kind === 'component-error' ? { errorCode: 'agent_turn_error' } : {}),
         threadTs: undefined,
         mediaAbsPaths: ['C:\\cindy-media\\generated.png'],
         allowedFileRoots: ['F:\\XDMaker'],

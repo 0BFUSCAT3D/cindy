@@ -3202,9 +3202,12 @@ export function createTurnRunner(
         return;
       }
       if (silenced && !t.streamingHandlePromise) return;
-      if (output.kind === 'chunked-text' && !state.makerSession.remoteHostId && t.buffer.includes('![')) {
+      // Component images become Markdown only after projection. Collect from the
+      // outbound copy so the text channel cannot strip an uncollected image.
+      const projectedBody = composeOutboundBody(t.buffer, true);
+      if (output.kind === 'chunked-text' && !state.makerSession.remoteHostId && projectedBody.includes('![')) {
         const materialized = await materializeLocalMarkdownImages({
-          text: t.buffer, workingDir: state.workingDir, sessionId: state.makerSession.id,
+          text: projectedBody, workingDir: state.workingDir, sessionId: state.makerSession.id,
           maxImages: 4, existingAbsPaths: t.mediaAbsPaths,
         });
         t.buffer = materialized.text;
@@ -3911,14 +3914,15 @@ export function createTurnRunner(
   async function materializeTurnLocalImages(state: SessionState, turn: TurnState): Promise<void> {
     if (
       output.kind !== 'chunked-text' ||
-      turn.allowedFileRoots.length === 0 ||
-      !turn.presenter.wholeText().includes('![')
+      turn.allowedFileRoots.length === 0
     ) {
       return;
     }
+    const projectedBody = composeOutboundBody(turn.presenter.wholeText(), true);
+    if (!projectedBody.includes('![')) return;
     try {
       const materialized = await materializeLocalMarkdownImages({
-        text: turn.presenter.wholeText(),
+        text: projectedBody,
         workingDir: state.workingDir,
         sessionId: state.makerSession.id,
         maxImages: 4,
