@@ -3969,7 +3969,7 @@ function ProjectRow({
     // fields here so registering a drag never copies all project task data.
     const { key: projectKey, sessionCount } = project;
     return Gesture.Pan()
-      .activateAfterLongPress(380)
+      .activateAfterLongPress(600)
       .activeOffsetY([-8, 8])
       .failOffsetX([-12, 12])
       .onStart((event) => {
