@@ -16,6 +16,18 @@ export const UI_ACTION_TRIGGER_PREFIX = '[UI_ACTION_TRIGGER]';
  */
 export const APP_EXIT_INTERRUPTED_REASON = 'app-exit-interrupted';
 
+/** A settled turn can continue from its conversation even after a scheduler
+ * releases its retry record. This is a new manual input, never a replay of the
+ * old scheduled run. The error UI still applies its auth/configuration gates. */
+export function canContinueFailedTurn(input: {
+  error: string | null;
+  retryText: string | null;
+  running: boolean;
+  hasUserInput: boolean;
+}): boolean {
+  return Boolean(input.error && !input.retryText && !input.running && input.hasUserInput);
+}
+
 /** 已解析出的 user 文本是否是合成 UI 指令(所有面向用户的文本消费的统一判定)。 */
 export function isSyntheticTriggerText(text: string): boolean {
   return text.startsWith(UI_ACTION_TRIGGER_PREFIX);

@@ -6,9 +6,19 @@ import {
   isSyntheticTriggerText,
   isContinuationMessage,
   syntheticTriggerKind,
+  canContinueFailedTurn,
 } from '../syntheticTrigger.js';
 
 describe('synthetic trigger detection', () => {
+  // Both clients must offer manual continuation for a settled scheduler error,
+  // but never race ongoing work or fabricate context for a rejected first send.
+  it('offers continuation only for a stopped error with conversation context and no retry record', () => {
+    const input = { error: 'Selected model is at capacity', retryText: null, running: false, hasUserInput: true };
+    expect(canContinueFailedTurn(input)).toBe(true);
+    for (const patch of [{ error: null }, { retryText: 'original' }, { running: true }, { hasUserInput: false }]) {
+      expect(canContinueFailedTurn({ ...input, ...patch })).toBe(false);
+    }
+  });
   it('recognizes recovery in raw and hidden projections without treating every trigger as recovery', () => {
     for (const content of [CONTINUE_AFTER_ERROR_PROMPT, { text: CONTINUE_AFTER_ERROR_PROMPT }]) {
       expect(isContinuationMessage({ role: 'user', content })).toBe(true);
