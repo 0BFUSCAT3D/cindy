@@ -145,6 +145,8 @@ const QUOTE_HIGHLIGHT_MS = 2000;
 const STICK_TO_BOTTOM_PX = 48;
 /** Read marks follow scrolling at most this often (leading edge, plus one trailing mark). */
 const ACKNOWLEDGE_THROTTLE_MS = 150;
+/** Match the phone's direct-chat recovery without polling healthy timelines. */
+const TIMELINE_READ_RECOVERY_MS = 30_000;
 const NO_IDS: ReadonlySet<string> = new Set();
 
 /**
@@ -257,7 +259,24 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
     let version = 0;
     let inFlight = false;
     let queued: { sources: string[]; changed: string[] } | null = null;
+    // A queued read can finish before React commits the previous successful snapshot.
+    let hasTimeline = stateRef.current.kind === 'ready';
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearRetry = () => {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    };
+    const retryRead = (owner: ReturnType<typeof getDataOwnerGeneration>, sources: string[], changed: string[]) => {
+      // A first read already has an explicit retry; keep the visible history on a failed refresh.
+      if (!hasTimeline) return;
+      clearRetry();
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        if (!cancelled && isDataOwnerGenerationCurrent(owner)) load(sources, changed);
+      }, TIMELINE_READ_RECOVERY_MS);
+    };
     const run = async (additionalSources: string[], changedIds: string[]) => {
+      clearRetry();
       inFlight = true;
       const current = ++version;
       const readToken = beginBotGroupTimelineRead();
@@ -283,6 +302,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
           : await api.getBotGroup(groupId, direct ? { conversationKind: 'direct' } : undefined);
         if (!isApplicable()) return;
         if (result.ok) {
+          hasTimeline = true;
           readOwner.current = owner;
           const shown = stateRef.current;
           setState((previous) => {
@@ -317,14 +337,21 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
             }
           }
         } else if (result.errorCode === 'NOT_FOUND') {
+          hasTimeline = false;
           discardOutbox();
           setState({ kind: 'missing' });
         } else {
           // Keep a timeline that is already on screen; only a first read fails loudly.
           setState((previous) => (previous.kind === 'ready' ? previous : { kind: 'error' }));
+          if (['REQUEST_TIMEOUT', 'SERVICE_ERROR', 'CHAT_UNAVAILABLE', 'HOST_NOT_READY', 'INTERNAL'].includes(result.errorCode)) {
+            retryRead(owner, additionalSources, changedIds);
+          }
         }
       } catch {
-        if (isApplicable()) setState((previous) => (previous.kind === 'ready' ? previous : { kind: 'error' }));
+        if (isApplicable()) {
+          setState((previous) => (previous.kind === 'ready' ? previous : { kind: 'error' }));
+          retryRead(owner, additionalSources, changedIds);
+        }
       } finally {
         inFlight = false;
         if (queued && !cancelled) {
@@ -393,6 +420,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
         if (payload.change === 'deleted' || (payload.change === 'list' && payload.listState?.hidden)) {
           cancelled = true;
           queued = null;
+          clearRetry();
           // Unsent attachments go with the group (staged copies included).
           discardDraft(botGroupAttachmentScope(groupId));
           discardOutbox();
@@ -407,6 +435,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
     return () => {
       cancelled = true;
       queued = null;
+      clearRetry();
       version += 1;
       loadRef.current = () => {};
       unsubscribe();
