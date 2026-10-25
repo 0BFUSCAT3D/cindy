@@ -151,6 +151,10 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const [previews, setPreviews] = useState<Record<string, BotGroupAttachment>>({});
+  const failedPreviewIds = useRef(new Set<string>());
+  const retriedPreviewIds = useRef(new Set<string>());
+  const [retryRequest, setRetryRequest] = useState(0);
+  const [previewVersions, setPreviewVersions] = useState<Record<string, number>>({});
   const resolveRef = useRef(resolve); resolveRef.current = resolve;
   const previewsRef = useRef(previews); previewsRef.current = previews;
   const previewIds = JSON.stringify(runs.flatMap(run => run.kind === 'ready' ? run.attachments.map(item => item.id) : []));
@@ -159,19 +163,28 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
     if (!visible) return;
     for (const id of JSON.parse(previewIds) as string[]) {
       authorizePreview(async () => {
-        if (cancelled || previewsRef.current[id]) return;
+        if (cancelled || (previewsRef.current[id] && !failedPreviewIds.current.has(id))) return;
+        const refreshing = failedPreviewIds.current.has(id);
+        const previousPreview = previewsRef.current[id];
         try {
           const value = await resolveRef.current(id);
           const preview = value.category === 'image' ? value : { ...value, url: null };
-          if (!cancelled) {
+          if (!cancelled && previewsRef.current[id] === previousPreview) {
             previewsRef.current = { ...previewsRef.current, [id]: preview };
             setPreviews(previewsRef.current);
+            failedPreviewIds.current.delete(id);
+            // A renewed authorization can return the same URL after a transient CDN failure.
+            // Remount only the failed image too, resetting its native error state.
+            if (refreshing) setPreviewVersions(versions => ({ ...versions, [id]: (versions[id] ?? 0) + 1 }));
           }
-        } catch { /* Keep the chip available for an explicit retry on tap. */ }
+        } catch {
+          if (!cancelled) failedPreviewIds.current.delete(id);
+          // Keep the chip / fallback available for an explicit retry on tap.
+        }
       });
     }
     return () => { cancelled = true; };
-  }, [previewIds, visible]);
+  }, [previewIds, visible, retryRequest]);
   const displayRuns = botGroupAttachmentRuns(runs.flatMap(run => run.kind === 'pending'
     ? [run.attachment] : run.attachments.map(item => previews[item.id] ?? { ...item, url: null })));
   const [image, setImage] = useState<BotGroupAttachment | null>(null);
@@ -186,7 +199,16 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
       const value = await resolve(id);
       if (!mounted.current) return;
       if (!value.url) throw new Error('MEDIA_NOT_FOUND');
-      if (value.category === 'image') setImage(value);
+      if (value.category === 'image') {
+        setImage(value);
+        // Cloud transcripts never populate this cache: their media remains tap-only.
+        if (previewsRef.current[id]) {
+          previewsRef.current = { ...previewsRef.current, [id]: value };
+          setPreviews(previewsRef.current);
+          failedPreviewIds.current.delete(id);
+          setPreviewVersions(versions => ({ ...versions, [id]: (versions[id] ?? 0) + 1 }));
+        }
+      }
       else await openBrowserAsync(value.url);
     } catch { if (mounted.current) Alert.alert(t('groupChat.server.attachmentFailed')); }
     finally { pending.current = false; if (mounted.current) setBusy(null); }
@@ -197,12 +219,21 @@ function ServerAttachments({ runs, visible, align, layout, resolve }: {
       ? <PendingAttachment key={run.attachment.id} attachment={run.attachment} align={align} layout={layout} />
       : <View key={run.attachments[0]!.id} style={styles.serverAttachment}>
         <AttachmentStrip attachments={run.attachments.map(botGroupAttachmentForDisplay)}
+          imageReloadKeys={run.attachments.map(item => previewVersions[item.id] ?? 0)}
           messageKey={run.attachments[0]!.id} align={align} layout={layout}
           onOpen={payload => {
             if (payload.kind === 'media') {
               const attachment = run.attachments.find(item => item.url === payload.media.url);
               if (attachment) void open(attachment.id);
             }
+          }}
+          onImageError={index => {
+            const attachment = run.attachments[index];
+            if (!attachment || retriedPreviewIds.current.has(attachment.id)
+              || previewsRef.current[attachment.id]?.url !== attachment.url) return;
+            retriedPreviewIds.current.add(attachment.id);
+            failedPreviewIds.current.add(attachment.id);
+            setRetryRequest(request => request + 1);
           }}
           onOpenFile={index => { void open(run.attachments[index]!.id); }} usePreviewState={useState} />
         {run.attachments.some(attachment => busy === attachment.id)

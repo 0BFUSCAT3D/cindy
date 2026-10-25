@@ -213,6 +213,90 @@ describe('Chat Server group image attachments (#5875)', () => {
     expect(container.querySelector('[data-testid="message.imageLightbox"] img')?.getAttribute('src')).toBe(signedImageUrl);
   });
 
+  // PR #7145 review r4371267451 / media-storage-and-protocols: a native image
+  // failure after successful authorization was not covered by authorization errors.
+  // Unit: one signed image + onError must refresh once, then allow manual recovery.
+  it('refreshes a failed native preview once, then repairs the list on an explicit tap', async () => {
+    const refreshedUrl = `${signedImageUrl}&refreshed=1`;
+    const tappedUrl = `${signedImageUrl}&refreshed=2`;
+    const resolveServerMedia = vi.fn<() => Promise<BotGroupAttachment>>()
+      .mockResolvedValueOnce({ ...serverAttachment, category: 'image', url: signedImageUrl })
+      .mockResolvedValueOnce({ ...serverAttachment, category: 'image', url: refreshedUrl })
+      .mockResolvedValue({ ...serverAttachment, category: 'image', url: tappedUrl });
+    const container = await render({ resolveServerMedia });
+    await act(async () => runtime.imageEvents.get(signedImageUrl)!.onError?.());
+    expect(resolveServerMedia).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(refreshedUrl);
+    await act(async () => runtime.imageEvents.get(refreshedUrl)!.onError?.());
+    expect(resolveServerMedia).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="message.mediaThumbFallback"]')).not.toBeNull();
+    await click(container.querySelector('[data-testid="message.mediaPreviewButton"]'));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(3);
+    await click(container.querySelector('[data-testid="message.imageLightboxCloseButton"]'));
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(tappedUrl);
+    expect(runtime.alerts).toEqual([]);
+  });
+
+  it('retries the same signed URL after a transient native failure', async () => {
+    const resolveServerMedia = vi.fn(async () => ({ ...serverAttachment, category: 'image' as const, url: signedImageUrl }));
+    const container = await render({ resolveServerMedia });
+    await act(async () => runtime.imageEvents.get(signedImageUrl)!.onError?.());
+    expect(resolveServerMedia).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(signedImageUrl);
+    await act(async () => runtime.imageEvents.get(signedImageUrl)!.onError?.());
+    expect(resolveServerMedia).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('defers native-error refresh offscreen and ignores its late result after leaving', async () => {
+    const visibility = new MessageListVisibility();
+    visibility.update([{ key: 'message-1', isViewable: true }]);
+    let finishRefresh!: (value: BotGroupAttachment) => void;
+    const resolveServerMedia = vi.fn<() => Promise<BotGroupAttachment>>()
+      .mockResolvedValueOnce({ ...serverAttachment, category: 'image', url: signedImageUrl })
+      .mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    const container = await render({ resolveServerMedia }, visibility);
+    await act(async () => visibility.update([]));
+    await act(async () => runtime.imageEvents.get(signedImageUrl)!.onError?.());
+    expect(resolveServerMedia).toHaveBeenCalledTimes(1);
+    await act(async () => visibility.update([{ key: 'message-1', isViewable: true }]));
+    expect(resolveServerMedia).toHaveBeenCalledTimes(2);
+    await act(async () => visibility.update([]));
+    await act(async () => finishRefresh({ ...serverAttachment, category: 'image', url: `${signedImageUrl}&late=1` }));
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('does not let a late automatic refresh replace a newer explicit authorization', async () => {
+    let finishRefresh!: (value: BotGroupAttachment) => void;
+    const tappedUrl = `${signedImageUrl}&tap=1`;
+    const resolveServerMedia = vi.fn<() => Promise<BotGroupAttachment>>()
+      .mockResolvedValueOnce({ ...serverAttachment, category: 'image', url: signedImageUrl })
+      .mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }))
+      .mockResolvedValueOnce({ ...serverAttachment, category: 'image', url: tappedUrl });
+    const container = await render({ resolveServerMedia });
+    await act(async () => runtime.imageEvents.get(signedImageUrl)!.onError?.());
+    await click(container.querySelector('[data-testid="message.mediaPreviewButton"]'));
+    await act(async () => finishRefresh({ ...serverAttachment, category: 'image', url: `${signedImageUrl}&late=1` }));
+    await click(container.querySelector('[data-testid="message.imageLightboxCloseButton"]'));
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(tappedUrl);
+    expect(resolveServerMedia).toHaveBeenCalledTimes(3);
+  });
+
+  it('reloads only the failed image and preserves its loaded neighbour', async () => {
+    const neighbour = { ...serverAttachment, id: 'media-2', name: '2.png' };
+    const neighbourUrl = `${signedImageUrl}&neighbour=1`;
+    const resolveServerMedia = vi.fn(async (id: string) => ({
+      ...serverAttachment, id, category: 'image' as const,
+      url: id === neighbour.id ? neighbourUrl : signedImageUrl,
+    }));
+    const container = await render({ resolveServerMedia, attachments: [serverAttachment, neighbour] });
+    const loadedNeighbour = container.querySelector(`img[src="${neighbourUrl}"]`);
+    await act(async () => runtime.imageEvents.get(signedImageUrl)!.onError?.());
+    expect(resolveServerMedia.mock.calls.map(([id]) => id)).toEqual(['media-1', 'media-2', 'media-1']);
+    expect(container.querySelector(`img[src="${signedImageUrl}"]`)).not.toBeNull();
+    expect(container.querySelector(`img[src="${neighbourUrl}"]`)).toBe(loadedNeighbour);
+  });
+
   // CloudCompanionScreen selects this policy even if its row is visible.
   it('keeps cloud transcript media tap-only, including after returning from the viewer', async () => {
     const resolveServerMedia = vi.fn(async () => ({ ...serverAttachment, category: 'image' as const, url: signedImageUrl }));
