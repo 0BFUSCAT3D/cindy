@@ -1280,6 +1280,69 @@ describe('ContextWindowBudgetChip — Greptile 2026-10-24 三条 P2', () => {
     expect(getBounds.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('hides the price band on remote tasks instead of showing local prices', async () => {
+    // 两份报价（gateway 服务端报价 + 本地参考价/用户覆盖）都来自本机配置，被控端用的是
+    // 它自己的连接与价格覆盖 —— 远程任务给本机价会误导用户按错价比较档位
+    // （Greptile P2，2026-10-25）。
+    mockGatewayPricing.mockReturnValue(tieredPricingCatalog);
+    renderChip({ deviceId: 'device-a' });
+    const options = await openTierCard();
+    expect(options.length).toBeGreaterThan(0);
+    expect(options.every((el) => !/\$\d/.test(el.textContent ?? ''))).toBe(true);
+
+    // 同一份目录在本地任务上照旧显示价带（确认隐藏只发生在远程）。
+    cleanup();
+    renderChip();
+    const localOptions = await openTierCard();
+    expect(localOptions.some((el) => /\$\d/.test(el.textContent ?? ''))).toBe(true);
+  });
+
+  it('does not lock a new task when the previous device reports the channel too late', async () => {
+    // 组件换设备时不重挂：旧设备的保存请求在切换之后才返回 CHANNEL_NOT_ALLOWED，
+    // 无条件置位会把新任务（这里切成本地任务）误锁成只读（Greptile P1，2026-10-25）。
+    let rejectSave: ((error: unknown) => void) | null = null;
+    const invoke = vi.fn((_deviceId: string, channel: string) => {
+      if (channel === 'maker:get-context-window-bounds') {
+        return Promise.resolve(boundsView({
+          budget: 150_000, budgetCustomized: true,
+          defaultEffectiveWindow: 200_000, maxEffectiveWindow: 200_000,
+        }));
+      }
+      return new Promise((_resolve, reject) => {
+        rejectSave = reject;
+      });
+    });
+    (window as unknown as { electronAPI: { deviceLink: { invoke: typeof invoke } } }).electronAPI = {
+      deviceLink: { invoke },
+    };
+    const view = renderChip({ deviceId: 'device-a' });
+    const options = await openTierCard();
+    fireEvent.click(options.find((el) => el.getAttribute('data-token') === '200000')!);
+    await waitFor(() => {
+      expect(rejectSave).not.toBeNull();
+    });
+
+    // 用户切到本地任务（同一组件实例，deviceId 消失）后才收到旧设备的拒绝。
+    view.rerender(
+      <ContextWindowBudgetChip
+        sessionId={SESSION_ID}
+        contextTokens={0}
+        model="grok-4.6"
+        providerId="xd"
+        agentKind="cc"
+        providers={routeCatalog}
+      />,
+    );
+    await act(async () => {
+      rejectSave!(Object.assign(new Error('channel not allowed'), {
+        code: 'DEVICE_LINK_CHANNEL_NOT_ALLOWED',
+      }));
+    });
+
+    expect(screen.queryByText('ccAgent.contextWindowBudget.remoteUnsupported')).toBeNull();
+    expect(screen.queryAllByRole('radio').every((row) => !(row as HTMLButtonElement).disabled)).toBe(true);
+  });
+
   it('locks the card read-only after the device rejects the budget channel', async () => {
     // P2「不支持的设备仍可编辑」：CHANNEL_NOT_ALLOWED 之后只弹 toast 会让用户反复提交
     // 必然失败的修改。第二次失败前就必须整卡只读 + 卡内说明原因。

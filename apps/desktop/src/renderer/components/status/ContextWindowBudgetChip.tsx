@@ -112,9 +112,14 @@ export function ContextWindowBudgetChip({
   const [committing, setCommitting] = useState(false);
   // 被控端不支持预算通道（老版本）：卡转只读直到会话换设备。
   const [remoteUnsupported, setRemoteUnsupported] = useState(false);
+  // 当前设备（供迟到的异步响应比对）：组件在换设备时**不重挂**，所以 deviceId 变化
+  // 后仍在飞的保存请求可能带回旧设备的 DEVICE_LINK_CHANNEL_NOT_ALLOWED —— 不比对就会
+  // 把新任务（尤其是切换后的本地任务）误锁成只读（Greptile P1，2026-10-25）。
+  const activeDeviceIdRef = useRef<string | undefined>(deviceId);
   useEffect(() => {
     // 换设备（远程→本地 / 换被控端）后重新探测支持状态。
     // 必须挂在组件的提前 return（约 :395）之前，否则 hooks 顺序随渲染路径漂移。
+    activeDeviceIdRef.current = deviceId;
     setRemoteUnsupported(false);
   }, [deviceId]);
   // 卡片开合：**指针悬浮**展开（与货币 chip 的「用量明细」卡同一节奏：延迟 300ms 开、离开宽限
@@ -400,8 +405,13 @@ export function ContextWindowBudgetChip({
   if (effectiveDefaultWindow === null || options.length === 0 || selectedTokens === null) return null;
 
   const agent = agentKind === 'cc' ? 'claude-code' : agentKind;
-  const quote = getModelPriceQuote(gatewayPricing, providerId, model, agent)
-    ?? getModelPriceQuote(referencePricing, providerId, model, agent);
+  // 远程任务不显示价带：两份报价（gateway 服务端报价 + 本地参考价/用户覆盖）都来自
+  // **本机**配置，被控端用的是它自己的 provider 连接与价格覆盖，同名模型的价可能不同
+  // （Greptile P2，2026-10-25）。拿不到被控端报价时宁可不显示，也不给一个会误导的价。
+  const quote = deviceId
+    ? undefined
+    : getModelPriceQuote(gatewayPricing, providerId, model, agent)
+      ?? getModelPriceQuote(referencePricing, providerId, model, agent);
 
   // 当前档位占基准的百分比：与卡片行同一口径（默认档 = 100%）。
   const selectedPercent = contextWindowBudgetTierPercent(selectedTokens, tierBase);
@@ -474,7 +484,8 @@ export function ContextWindowBudgetChip({
       const unsupported = extractIpcError(error)?.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED';
       // 被控端不支持该通道时记住状态：整卡转只读并说明原因，档位不再可点 ——
       // 反复提交必然失败的修改只会制造更多错误 toast（Greptile P2，2026-10-24）。
-      if (unsupported) setRemoteUnsupported(true);
+      // 只有仍是同一个设备时才记这条「不支持」：换设备后这条错误已经过期。
+      if (unsupported && activeDeviceIdRef.current === deviceId) setRemoteUnsupported(true);
       toast.error(
         unsupported
           ? t('ccAgent.contextWindowBudget.remoteUnsupported')
