@@ -3190,7 +3190,7 @@ let authStateEpoch = 0;
  * 记成一对(而不是只记新代际)才能把豁免绑定到「这次兜底」:冷启动流程只在自己
  * 当前代际等于 `from` 且现值为 `to` 时被豁免。若用户在该兜底之前已经显式登录过,
  * 兜底的 `from` 就不等于流程起始代际,旧流程仍被正常作废(不会反过来覆盖新登录)。
- * 见 authStartupGate 的 supersededOnlyByOwnStartupFallback。
+ * 见 authStartupGate 的 ColdStartAuthFallbackRegistry。
  */
 const coldStartTimeoutFallbacks = new ColdStartAuthFallbackRegistry();
 
@@ -3703,7 +3703,7 @@ function clearAuth(
      * 本次清理是冷启动启动闸超时的兜底(不是用户动作)。为 true 时在**推进代际的
      * 同一同步时刻**记下该代际,让触发兜底的冷启动流程即使在本函数外层还没返回、
      * 锁还没释放时也能认出「这一代是我自己的兜底」而不是用户改过登录态。
-     * 见 authStartupGate 的 supersededOnlyByOwnStartupFallback。
+     * 见 authStartupGate 的 ColdStartAuthFallbackRegistry。
      */
     coldStartTimeoutRecovery?: boolean;
   } = {},
