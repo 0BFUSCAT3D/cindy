@@ -67,7 +67,7 @@ Get-CimInstance Win32_Process |
 `;
     const result = runCommand('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script,
-    ]);
+    ], { maxBuffer: PROCESS_TABLE_MAX_BYTES });
     if (result.error || result.status !== 0) {
       return {
         processes: [],

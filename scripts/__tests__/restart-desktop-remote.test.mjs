@@ -1410,6 +1410,29 @@ test("process scans ask ps for more than the 1 MiB spawnSync default", () => {
 	for (const call of calls) assert.ok(call.options.maxBuffer >= 4 * 1024 * 1024);
 });
 
+test("Windows scans read process tables larger than the spawnSync default", () => {
+	// #6537 / review P1: the existing buffer regression only covered ps. Exercise
+	// both production scanners with >1 MiB JSON; a fake spawn boundary reproduces
+	// ENOBUFS without a real subprocess in the default runner tier.
+	const commandLine = `node ${"x".repeat(1024 * 1024)}`;
+	const stdout = JSON.stringify({ ProcessId: 777, ParentProcessId: 501, CommandLine: commandLine });
+	const runCommand = (command, _args, options = {}) => {
+		assert.equal(command, "powershell.exe");
+		if (Buffer.byteLength(stdout) > (options.maxBuffer ?? 1024 * 1024)) {
+			return {
+				status: null, stdout: "",
+				error: Object.assign(new Error("spawnSync powershell.exe ENOBUFS"), { code: "ENOBUFS" }),
+			};
+		}
+		return { status: 0, stdout };
+	};
+	const expected = [{ pid: 777, ppid: 501, command: commandLine }];
+	const whoami = scanProcessTable({ platform: "win32", runCommand });
+	assert.equal(whoami.error, null);
+	assert.deepEqual(whoami.processes, expected);
+	assert.deepEqual(scanRestartProcessTable({ platform: "win32", runCommand }), expected);
+});
+
 test("posix process rows parse the pid/ppid/command columns", () => {
 	assert.deepEqual(
 		parsePosixProcessTable("  501     1 /sbin/launchd\n   12 501 node script.mjs\n"),

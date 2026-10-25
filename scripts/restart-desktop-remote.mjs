@@ -318,7 +318,9 @@ Get-CimInstance Win32_Process |
   Select-Object ProcessId,ParentProcessId,CommandLine |
   ConvertTo-Json -Compress
 `;
-    const result = runCommand('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script]);
+    const result = runCommand('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      maxBuffer: PROCESS_TABLE_MAX_BYTES,
+    });
     if (result.error || result.status !== 0) {
       throw processScanError(
         result.error?.code ?? `powershell.exe exit ${result.status}`,
