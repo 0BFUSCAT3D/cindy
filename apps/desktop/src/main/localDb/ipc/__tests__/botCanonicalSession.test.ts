@@ -929,6 +929,42 @@ describe('Bot canonical Session lifecycle', () => {
       .toEqual({ name: 'Release Bot', current_version: 1 });
   });
 
+  // #7095: the default companion seeded on a fresh computer is demoted mid-meeting; the take-over then
+  // writes the cloud profile onto that copy.
+  describe('cloud take-over of a copy whose first meeting never finished', () => {
+    const stored = () => JSON.parse(h.sqlite!.prepare(
+      'SELECT v.capabilities_json AS json FROM bot_profile_versions v JOIN bot_profiles p ON p.id = v.bot_id AND p.current_version = v.version WHERE p.id = ?',
+    ).pluck().get('bot-1') as string) as Record<string, unknown>;
+    const unfinished = (stage: string) => h.sqlite!.prepare('UPDATE bot_profile_versions SET capabilities_json = ? WHERE bot_id = ?')
+      .run(JSON.stringify({ invitation: { id: 'invite-1', stage } }), 'bot-1');
+
+    it.each(['profile', 'skills', 'avatar', 'welcome', 'failed'])('replaces the profile and ends the %s meeting', async (stage) => {
+      unfinished(stage);
+      const updated = await updateStoredBotProfile({ id: 'bot-1', name: 'Cindy', enabled: true }, undefined, undefined,
+        { replacesUnfinishedMeeting: true });
+      expect(updated.name).toBe('Cindy');
+      expect(stored().invitation).toBeUndefined();
+      // The take-over goes on to the main task, which a pending meeting would refuse.
+      await expect(invoke('local-db:bots:create-canonical-session', {
+        botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: updated.currentVersion,
+      })).resolves.toMatchObject({ created: true });
+    });
+
+    it('keeps a finished meeting record', async () => {
+      unfinished('ready');
+      await updateStoredBotProfile({ id: 'bot-1', name: 'Cindy' }, undefined, undefined, { replacesUnfinishedMeeting: true });
+      expect(stored().invitation).toMatchObject({ id: 'invite-1', stage: 'ready' });
+    });
+
+    it('does not let a renderer or model body switch the protection off', async () => {
+      unfinished('skills');
+      await expect(invoke('local-db:bots:update', { id: 'bot-1', name: 'Cindy', replacesUnfinishedMeeting: true }))
+        .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      await expect(updateStoredBotProfile({ id: 'bot-1', name: 'Cindy' })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      expect(stored().invitation).toMatchObject({ stage: 'skills' });
+    });
+  });
+
   it('allows profile edits while an existing companion retries only its portrait', async () => {
     await invoke('local-db:bots:create-canonical-session', {
       botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,

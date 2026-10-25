@@ -211,7 +211,7 @@ function createMaterializer(input: {
         ...(description !== undefined ? { description } : {}),
         ...(identitySource !== undefined ? { identitySource } : {}),
         ...(userContextSource !== undefined ? { userContextSource } : {}),
-        ...('portable' in restored ? { avatar: restored.portable } : {}) }, undefined, undefined, { templateId });
+        ...('portable' in restored ? { avatar: restored.portable } : {}) }, undefined, undefined, { templateId, replacesUnfinishedMeeting: true });
       if ('imageBase64' in restored) {
         const image = decodeBotAvatarImage(restored.imageBase64);
         fence.assertCurrent();
