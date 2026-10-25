@@ -7,9 +7,9 @@
  *   lizcn://listperf?turns=300&media=1&auto=1&vel=45&recycle=1
  *   - turns: 轮数(每轮 1 user + 1 assistant),默认 300
  *   - media: 1=含 mermaid/math(WebView),0=纯文本(隔离 WebView 成本),默认 1
- *   - auto:  1=进入后自动做一次「底→顶」匀速滚动扫描并测帧,默认 0
+ *   - auto:  1=进入后自动做一次「顶→底」匀速滚动扫描并测帧,默认 0
  *   - vel:   滚动速度 px/帧(模拟 fling),默认 45
- *   - recycle: 0=关闭 cell 回收做 A/B,默认 1
+ *   - recycle: 1=开启 cell 回收做 A/B,默认 0(与正式列表一致)
  */
 import { useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -36,7 +36,7 @@ export default function ListPerfHarness() {
   const turns = Math.max(1, Math.min(2000, Number(params.turns) || 300));
   const media = params.media !== '0';
   const auto = params.auto === '1';
-  const recycle = params.recycle !== '0';
+  const recycle = params.recycle === '1';
   const pxPerFrame = Math.max(5, Math.min(200, Number(params.vel) || 45));
 
   const items = useMemo(() => buildListPerfRenderItems(turns, { media }), [turns, media]);
@@ -136,7 +136,12 @@ export default function ListPerfHarness() {
       </View>
       <View style={styles.fill}>
         <MessageRenderer
+          key={runKey}
           items={items}
+          // Enter history through the real message-navigation path before sweeping.
+          // Otherwise follow-to-latest keeps correcting each measured scroll back
+          // to the tail, repeatedly mounting opposite ends of the list.
+          focusedItemKey={auto ? items[0]?.key : undefined}
           devRecycleItems={recycle}
           testID="perf.list"
           devExposeList={devExposeList}
