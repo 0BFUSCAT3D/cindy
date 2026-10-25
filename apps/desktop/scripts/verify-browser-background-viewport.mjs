@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkBrowserFixtureScreenshot } from './browser-background-screenshot.mjs';
 
 const option = name => process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
 const port = Number(option('port'));
@@ -169,6 +170,8 @@ try {
       check(result.screenshotWidth >= 640 && result.screenshotHeight >= 360, 'NATIVE_SCREENSHOT_TOO_SMALL');
       result.screenshot = `background-${count}-${i + 1}.png`;
       await writeFile(path.join(out, result.screenshot), png);
+      stage = `capture-content-${count}-${i + 1}`;
+      result.screenshotContent = await checkBrowserFixtureScreenshot(png);
       const after = await inGuest(id, `({nonce:probe.nonce,origin:performance.timeOrigin,clicks:probe.clicks})`);
       check(after.nonce === before.nonce && after.origin === before.origin && after.clicks === 1, 'BACKGROUND_PAGE_RELOADED');
     }
