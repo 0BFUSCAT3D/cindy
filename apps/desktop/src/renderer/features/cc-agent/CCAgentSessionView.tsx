@@ -1845,6 +1845,7 @@ function CCAgentSessionContent({
     cancelUsageLimitWait,
     errorIsRecoverable,
     errorRetryText,
+    errorCanContinue,
     disposedErrorPersistId,
     credentialSwitchWait,
     continuationInFlightClientId,
@@ -4640,7 +4641,7 @@ function CCAgentSessionContent({
     error,
     retryText: errorRetryText,
     running: isAgentBusy || errorIsRecoverable || !!credentialSwitchWait || syntheticContinuationPending,
-    hasUserInput: !!error && messages.some((message) => message.role === 'user'),
+    hostCanContinue: errorCanContinue === true,
   });
   const handleContinueAfterError = useCallback(async () => {
     if (!sessionId || !canContinueError || isHistoryRecoveryPending()) return;

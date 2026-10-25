@@ -27,6 +27,7 @@ import {
   isCindyGatewayProxyTokenInvalidError,
   isResponsesLiteParallelToolCallsError,
   parseAgentErrorCode,
+  requiresAgentErrorConfigurationChange,
 } from '@cindy/maker-shared/error-redaction';
 import { chatRemoteErrorGuidanceKey } from '@/lib/autoReviewUnavailableGuidance';
 import { AlertCircle, Check, Split, Play, RotateCcw, RefreshCw, Timer, Wallet } from 'lucide-react';
@@ -424,7 +425,8 @@ export function ErrorBanner({
   const safeRetryText = !hideRetry && retryText ? retryText : null;
   const retryAction = safeRetryText
     ? () => onRetry(safeRetryText)
-    : !hideRetry && !isRecoverable ? onContinueAfterError : undefined;
+    : !hideRetry && !isRecoverable && !requiresAgentErrorConfigurationChange(error)
+      ? onContinueAfterError : undefined;
   const retryInFlight = useRef(false);
   const [retrying, setRetrying] = useState(false);
   const handleRetry = async () => {

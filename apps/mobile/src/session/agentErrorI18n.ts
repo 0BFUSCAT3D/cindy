@@ -1,4 +1,5 @@
 import { isResponsesLiteParallelToolCallsError, parseAgentErrorCode } from '@cindy/maker-shared/error-redaction';
+export { requiresAgentErrorConfigurationChange } from '@cindy/maker-shared/error-redaction';
 import { i18n } from '@/i18n';
 
 export type MobileToolLoopErrorKind = 'consecutive' | 'pingpong' | 'rotation' | 'contract';
@@ -95,13 +96,4 @@ export function remoteActionErrorI18nKey(message: string): string | null {
 
 export function localizeUnclassifiedAgentError(message: string, sessionSource?: unknown): string {
   return i18n.t(unclassifiedAgentErrorI18nKey(message, sessionSource));
-}
-
-/** Resending unchanged content cannot fix these explicit configuration failures. */
-export function requiresAgentErrorConfigurationChange(message: string): boolean {
-  const code = parseAgentErrorCode(message)?.code;
-  return code === 'REMOTE_LOCAL_ATTACHMENT_UNSUPPORTED'
-    || code === 'REMOTE_COMPAT_MODE_UNSUPPORTED'
-    || code === 'REMOTE_LOCAL_ONLY_PROVIDER'
-    || code === 'DEVICE_LINK_CONTROL_DISABLED';
 }

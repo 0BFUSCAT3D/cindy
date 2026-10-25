@@ -524,6 +524,21 @@ const flushPromises = async () => {
 };
 
 describe('makerChatStore text delta batching', () => {
+  // #7119: UI eligibility must survive the actual projection -> light subscriber
+  // path and disappear when an older host omits the optional field (unit).
+  it('projects host continuation eligibility to light subscribers and revokes missing eligibility', () => {
+    const notify = vi.fn();
+    const unsubscribe = makerChatStore.subscribeLight(SESSION_ID, notify);
+    const failed = projection(SESSION_ID, { error: 'capacity', errorCanContinue: true });
+    onInputProjection?.(failed);
+    expect(makerChatStore.getLightSnapshot(SESSION_ID).errorCanContinue).toBe(true);
+    const afterEligible = notify.mock.calls.length;
+    onInputProjection?.(projection(SESSION_ID, { error: 'capacity' }));
+    expect(makerChatStore.getLightSnapshot(SESSION_ID).errorCanContinue).toBe(false);
+    expect(notify.mock.calls.length).toBeGreaterThan(afterEligible);
+    unsubscribe();
+  });
+
   it.each(['local', 'remote'])('retains IM completion provenance through %s ingress and resets it for App turns', (source) => {
     if (source === 'remote') remoteProjectsStore.pinSessionOrigin('device-1', SESSION_ID);
     const emit = (event: unknown) => {

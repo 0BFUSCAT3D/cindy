@@ -766,6 +766,8 @@ interface SessionInputState {
   error: string | null;
   /** Stable error reason for live projections; null when no terminal error is active. */
   errorReason: string | null;
+  /** The failed scheduled input was persisted before its recovery was released. */
+  errorCanContinue: boolean;
   /** Bounded structured details for tool-loop terminal errors. */
   toolLoop: AgentInputToolLoopDetails | null;
   stickyError: string | null;
@@ -903,6 +905,7 @@ function createInitialInputState(
     activeTurn: null,
     error: null,
     errorReason: null,
+    errorCanContinue: false,
     toolLoop: null,
     stickyError: null,
     autoResumePending: null,
@@ -1140,19 +1143,21 @@ function recordPendingTerminalEvent(active: ActiveTurn, event: ActiveTurnTermina
 }
 
 function clearErrorProjectionSignals(
-  state: Pick<SessionInputState, 'errorReason' | 'toolLoop'>,
+  state: Pick<SessionInputState, 'errorReason' | 'toolLoop' | 'errorCanContinue'>,
 ): void {
   state.errorReason = null;
   state.toolLoop = null;
+  state.errorCanContinue = false;
 }
 
 function setErrorProjectionSignals(
-  state: Pick<SessionInputState, 'errorReason' | 'toolLoop'>,
+  state: Pick<SessionInputState, 'errorReason' | 'toolLoop' | 'errorCanContinue'>,
   signals?: Omit<InterruptedTurnErrorSignals, 'message'>,
 ): void {
   state.errorReason =
     typeof signals?.reason === 'string' && signals.reason.length > 0 ? signals.reason : null;
   state.toolLoop = parseAgentInputToolLoopDetails(signals?.toolLoop) ?? null;
+  state.errorCanContinue = false;
 }
 
 function isActiveTurnDispatched(active: ActiveTurn): boolean {
@@ -4024,6 +4029,7 @@ export class AgentInputCoordinator {
         if (outcome === 'dropped-scheduler') {
           state.error = message ?? state.error;
           setErrorProjectionSignals(state, signals);
+          state.errorCanContinue = true;
           // **紧随的 done 必须被配对吃掉。**各 agent 的失败收尾都是 terminal error 后再补
           // 一个 done;普通用户项靠下方"!active && recovery.kind==='active-turn'"那道守卫
           // 挡住它,而 scheduler 项恰恰没有 recovery 可挡 —— done 会一路落到方法尾部的
@@ -4057,6 +4063,7 @@ export class AgentInputCoordinator {
           // 限额失败保留 Retry 与等待；其它确定性错误仍交给 runner 收口。
           if (schedulerItem && !scheduledQuota) {
             state.recovery = null;
+            state.errorCanContinue = true;
             this.markPendingExternalTerminalDone(sessionId, state);
             this.emit(sessionId);
             this.scheduleDrainAfterExternalTurnSettles(
@@ -4506,6 +4513,7 @@ export class AgentInputCoordinator {
       queueEditLocks: [...state.queueEditLocks],
       queueAbortPending: state.queueAbortPending,
       error,
+      ...(error && state.errorCanContinue ? { errorCanContinue: true } : {}),
       ...(error && state.errorReason ? { errorReason: state.errorReason } : {}),
       ...(error && state.toolLoop ? { toolLoop: state.toolLoop } : {}),
       recovery,
@@ -7108,6 +7116,7 @@ export class AgentInputCoordinator {
       // that attempt ends, the runner settles the failed run; keeping Retry
       // here would block every later fire (and replay outside run accounting).
       this.setActiveTurnRecovery(state, state.recovery.item);
+      state.errorCanContinue = true;
       // Reuse normal scheduler failure settlement, including its bounded wait
       // for a paired done, so an old terminal cannot clear the next turn.
       this.markPendingExternalTerminalDone(sessionId, state);

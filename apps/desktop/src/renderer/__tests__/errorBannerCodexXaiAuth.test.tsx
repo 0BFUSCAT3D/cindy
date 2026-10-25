@@ -10,6 +10,7 @@ const { useCodexRuntimeRouteMock } = vi.hoisted(() => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
+    i18n: { exists: () => true },
     // 插值参数拼进返回值，让进度类文案能断言实际传入的 attempt/maxAttempts。
     t: (key: string, options?: { attempt?: number; maxAttempts?: number }) =>
       options?.attempt && options.maxAttempts
@@ -157,6 +158,8 @@ describe('ErrorBanner overload guidance', () => {
   it.each([
     { error: CAPACITY, isRecoverable: true },
     { error: 'thread not found', agentKind: 'codex' as const },
+    { error: '[REMOTE_LOCAL_ONLY_PROVIDER] local provider' },
+    { error: '[DEVICE_LINK_CONTROL_DISABLED] disabled' },
   ])('does not bypass running or configuration recovery gates: $error', (props) => {
     render(createElement(ErrorBanner, {
       ...props, onRetry: vi.fn(), onContinueAfterError: vi.fn(async () => {}),

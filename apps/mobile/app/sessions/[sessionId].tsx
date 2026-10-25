@@ -7994,7 +7994,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     running: isSessionStreaming || inputProjection.queueAbortPending
       || !!inputProjection.credentialSwitchWait || inputProjection.pendingQueue.length > 0
       || settlingItemsForRender.length > 0,
-    hasUserInput: !!inputProjection.error && messages.some((message) => message.role === 'user'),
+    hostCanContinue: inputProjection.errorCanContinue === true,
   });
   const continueQueueError = () => {
     if (!canContinueError || queueAvailabilityReason || isHistoryRecoveryPending()) return;

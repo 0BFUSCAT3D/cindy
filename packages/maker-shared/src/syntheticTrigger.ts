@@ -7,6 +7,8 @@
  * 隐藏、会话列表预览排除、排队区显示替代标签。漏一处就会把隐藏英文指令暴露给
  * 用户(桌面 review P2 口径,手机端 2026-07 实踩:续跑 prompt 直接显示在会话里)。
  */
+import { requiresAgentErrorConfigurationChange } from './errorRedaction.js';
+
 export const UI_ACTION_TRIGGER_PREFIX = '[UI_ACTION_TRIGGER]';
 
 /**
@@ -23,9 +25,10 @@ export function canContinueFailedTurn(input: {
   error: string | null;
   retryText: string | null;
   running: boolean;
-  hasUserInput: boolean;
+  hostCanContinue: boolean;
 }): boolean {
-  return Boolean(input.error && !input.retryText && !input.running && input.hasUserInput);
+  return Boolean(input.error && !input.retryText && !input.running && input.hostCanContinue
+    && !requiresAgentErrorConfigurationChange(input.error));
 }
 
 /** 已解析出的 user 文本是否是合成 UI 指令(所有面向用户的文本消费的统一判定)。 */
