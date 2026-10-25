@@ -35,6 +35,32 @@ vi.mock('../BotAvatar', () => ({ BotAvatar: () => null }));
 vi.mock('../botGroupStore', () => ({ refreshBotGroups: mocks.refresh }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({ getDataOwnerGeneration: () => 1, isDataOwnerGenerationCurrent: () => true }));
 const key = (name: string) => `bots.groupChat.server.settings.${name}`;
+it('keeps saved fields until a newer snapshot arrives and retries the read without repeating the write', async () => {
+  const initial = { ...group(true), topic: 'Old topic', description: 'Old description' };
+  const { rerender } = render(<MemoryRouter><ChatGroupSettings group={initial} /></MemoryRouter>);
+  const name = screen.getByRole('textbox', { name: key('name') }) as HTMLInputElement;
+  const topic = screen.getByRole('textbox', { name: key('topic') }) as HTMLInputElement;
+  const description = screen.getByRole('textbox', { name: key('description') }) as HTMLInputElement;
+  fireEvent.change(name, { target: { value: 'Saved name' } });
+  fireEvent.change(topic, { target: { value: 'Saved topic' } });
+  fireEvent.change(description, { target: { value: 'Saved description' } });
+  fireEvent.submit(name.closest('form')!);
+  await waitFor(() => expect(mocks.refresh).toHaveBeenCalledOnce());
+  expect([name.value, topic.value, description.value]).toEqual(['Saved name', 'Saved topic', 'Saved description']);
+  expect(name.disabled).toBe(true);
+  // A delayed/failed list read leaves the old projection; retry must not write with its stale CAS.
+  rerender(<MemoryRouter><ChatGroupSettings group={{ ...initial }} /></MemoryRouter>);
+  fireEvent.submit(name.closest('form')!);
+  await waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(2));
+  expect(mocks.manage).toHaveBeenCalledOnce();
+  expect(name.value).toBe('Saved name');
+  rerender(<MemoryRouter><ChatGroupSettings group={{ ...initial, name: 'Saved name', topic: 'Saved topic', description: 'Saved description', revision: 2 }} /></MemoryRouter>);
+  expect(name.disabled).toBe(false);
+  fireEvent.change(topic, { target: { value: 'Next draft' } });
+  fireEvent.submit(name.closest('form')!);
+  await waitFor(() => expect(mocks.manage).toHaveBeenCalledTimes(2));
+  expect(mocks.manage.mock.calls[1]![0].action).toMatchObject({ name: 'Saved name', topic: 'Next draft', description: 'Saved description', expectedRevision: 2 });
+});
 it.each([false, true])('keeps fields paired with their revision when a remote update precedes the save response, edit again=%s', async editAgain => {
   let completeSave!: (result: { ok: true }) => void;
   mocks.manage.mockImplementationOnce(() => new Promise(resolve => { completeSave = resolve; }));
