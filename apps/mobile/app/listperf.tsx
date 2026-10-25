@@ -42,7 +42,6 @@ export default function ListPerfHarness() {
   const items = useMemo(() => buildListPerfRenderItems(turns, { media }), [turns, media]);
   const runKey = `${turns}|${media ? 1 : 0}|${pxPerFrame}|${recycle ? 1 : 0}|${params.run ?? '0'}`;
   const apiRef = useRef<ListApi | null>(null);
-  const startedKeyRef = useRef<string | null>(null);
   const [stats, setStats] = useState<FrameStats | null>(null);
   const [webViewMetrics, setWebViewMetrics] = useState<MobileMessageWebViewMetrics | null>(null);
   const [markdownMetrics, setMarkdownMetrics] = useState<MobileMarkdownRenderMetrics | null>(null);
@@ -53,11 +52,14 @@ export default function ListPerfHarness() {
   }, []);
 
   useEffect(() => {
-    if (!auto || startedKeyRef.current === runKey) return undefined;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelSweep: (() => void) | undefined;
     setStats(null);
     setWebViewMetrics(null);
     setMarkdownMetrics(null);
+    setPhase(auto ? 'waiting…' : 'manual');
+    if (!auto) return undefined;
     // Counters are process-global so repeated A/B deeplinks must start from a
     // clean window; otherwise B includes all parses performed by A.
     resetMobileMarkdownRenderMetrics();
@@ -69,28 +71,28 @@ export default function ListPerfHarness() {
       const ready = !!m && m.contentHeight > m.viewportHeight * 2 && m.viewportHeight > 0;
       if (!ready) {
         if (attempt > 40) { setPhase('list never settled'); return; }
-        setTimeout(() => waitAndRun(attempt + 1), 200);
+        timer = setTimeout(() => waitAndRun(attempt + 1), 200);
         return;
       }
-      startedKeyRef.current = runKey;
       // 从顶向下匀速扫:持续挂载「尚未渲染」的 cell(变高虚拟化下 contentHeight 会低估,
       // 不能靠它算底部;从顶向下 +vel 推进 maxFrames 帧,保证测的是冷挂载稳态)。
       setPhase(`sweeping top→down @${pxPerFrame}px/f`);
       api!.scrollTo(0);
-      setTimeout(() => {
-        runScrollSweep({
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        cancelSweep = runScrollSweep({
           label: `list=Legend turns=${turns} media=${media ? 1 : 0} recycle=${recycle ? 1 : 0} vel=${pxPerFrame}`,
           fromY: 0,
           toY: 1_000_000,
           pxPerFrame,
           maxFrames: 150,
-          scrollTo: (y) => apiRef.current?.scrollTo(y),
+          scrollTo: (y) => api!.scrollTo(y),
           onDone: (s) => {
             if (cancelled) return;
             setStats(s);
-            const currentWebViewMetrics = apiRef.current?.getWebViewMetrics();
+            const currentWebViewMetrics = api!.getWebViewMetrics();
             if (currentWebViewMetrics) setWebViewMetrics(currentWebViewMetrics);
-            const currentMarkdownMetrics = apiRef.current?.getMarkdownMetrics();
+            const currentMarkdownMetrics = api!.getMarkdownMetrics();
             if (currentMarkdownMetrics) setMarkdownMetrics(currentMarkdownMetrics);
             setPhase('done');
             // 打到 Metro 日志,便于抓取。
@@ -101,7 +103,11 @@ export default function ListPerfHarness() {
       }, 400);
     };
     waitAndRun(0);
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      cancelSweep?.();
+    };
   }, [auto, pxPerFrame, media, turns, runKey]);
 
   if (!__DEV__) {
