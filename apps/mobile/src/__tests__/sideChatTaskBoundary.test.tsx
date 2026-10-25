@@ -224,6 +224,22 @@ describe('side chat task lifecycle', () => {
     expect(state.replaceParams).toHaveBeenCalledWith({ deviceId: 'host', deviceName: 'host', sessionId: 'old', focusClientId: 'message' });
   });
 
+  // #7105: a same-ID search hit must exit the companion resource skin, whereas
+  // selecting the already-open ordinary row is a no-op. Unit, actual layout consumer.
+  it.each([false, true])('handles the current task selected from search=%s', (search) => {
+    state.route = { deviceId: 'host', sessionId: 'child', resourceCollectionId: 'teammates', resourceKind: 'bot', resourceId: 'bot' };
+    act(() => root.render(<SessionTaskLayout>{() => <textarea />}</SessionTaskLayout>));
+    const target = {
+      session: { id: 'child', canonicalDeviceId: 'host' },
+      ...(search ? { searchLocallyCached: false } : {}),
+    } as unknown as RemoteSessionListItem;
+    act(() => state.sidebar!.onSelectSession!(target));
+    if (search) expect(state.replaceParams).toHaveBeenCalledExactlyOnceWith({
+      deviceId: 'host', deviceName: 'host', sessionId: 'child',
+    });
+    else expect(state.replaceParams).not.toHaveBeenCalled();
+  });
+
   it('discards the outgoing attachment scope before sidebar navigation and preserves search focus', () => {
     const order: string[] = [];
     state.replaceParams.mockImplementation(() => order.push('navigate'));
