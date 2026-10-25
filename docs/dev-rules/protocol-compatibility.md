@@ -1,5 +1,28 @@
 # 跨端协议兼容
 
+## 手机经电脑确认群消息已读
+
+群 Remote Resource 投影新增可选 `supportsReadReceipts`，仅云端群声明。
+新手机通过现有 `maker:remote-resources:invoke` 的 `read` action 提交实际可见的
+`messageId`；宿主复核群可见性及账号代次，再复用 `chatServer.manage` 的读位确认，
+不信任客户端提供的序号、不读取或确认尚未显示的新消息。旧宿主没有能力标记时，
+手机保留原本地未读缓存行为；旧手机忽略新字段。`send.quote` 转交既有发送验证与水合入口。
+不增加 IPC 白名单、身份权限或原生依赖，不重置连接、不重放发送操作；单群读位失败
+留待该群下次可见或重连刷新，不影响其它设备连接。
+
+## 设备模拟器官方 ID 更新
+
+市场请求携带 `x-cindy-plugin-migrations: simulator-id-v1` 表示客户端支持这一次官方
+`baguette-simulator` → `cindy-simulator` 安装身份迁移，不是权限或发布者凭证。
+Server 保留原市场资源 ID 和不可变旧 Release；无能力声明的客户端继续获取旧 ID 包。
+有声明的客户端获取新 ID 包，列表、详情、下载的 ghostId 必须与选中包的 manifest.id 一致。
+新客户端访问旧 Server 时仍按旧 ID 运行。只有 Server 全量升级且客户端支持已发布后，
+才可审核上架新包；不能只靠引用改名宣称旧安装已迁移。
+回滚 Server 前须通过既有版本选择恢复旧 Release；不可在新包仍为 current 时回滚到不识别迁移的 Server。
+迁移过的客户端保留新安装和原数据键，不会自动降级成旧 ID 或再装一个旧副本。
+事务失败回滚是恢复尚未提交的旧安装，不是支持任意降级客户端二进制。迁移后不得退回不认识
+该 receipt 字段的客户端并重建注册表；回退应保留这段兼容读取能力，避免重新派生数据键。
+
 ## 手动对齐 worktree 源分支
 
 `worktree:list-branches` 的 IPC 响应可选追加 `remoteDefaultBranch`
@@ -3474,6 +3497,13 @@ namespace + id 下同一插件的有界 JSON 请求；`deviceSync: true` 是独�
 分享的刷新通知复用已有 `maker:provider:changed` 空载荷，只发给当前被授权的接收方，并核对
 对应 host。自定义 API 不进入这套策略与新增刷新规则。详细范围及验证见
 [订阅 Fast 控制交接说明](../subscription-fast-policy.md)。
+
+
+### 聊天通知内容与私聊落点（#7046）
+
+聊天推送增量携带 `conversationKind`，新原生端以此区分私聊/群通讯样式，旧端继续使用原通知。手机 `Accept-Language` 只控制服务端固定提示词，真实原文不翻译；云注册到两个服务都保留显式 preview 选择，旧请求缺省 true。完整任务通知预览关闭需要服务端先支持新列/字段；不添加隐私确认或更改默认预览。
+
+Desktop 在通知点击事件携带可选 `conversationKind: direct`，落入现有时间线的明确私聊模式。`getBotGroup` options、`sendBotGroupMessage` input 与 `manage` 的 read action 的同名可选字段仅用于此模式，主进程读取实际 kind 后确认；普通群入口仍拒绝 direct/channel。私聊不提供群设置、邀请、分工或群话题操作，已读通过既有 read action、发送保留原幂等/引用/附件路径。手机由实际 snapshot.kind 决定私聊标题和单人头像；内部 groups 路径保持旧通知链接兼容，不改变服务器成员权限。此入口补齐通知的阅读/回应，不改伙伴主任务/接管编排。
 
 ## 伙伴名册的跟进任务链接
 

@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SideChatTaskBoundary } from '../session/SideChatTaskBoundary';
 import { SessionTaskLayout } from '../session/SessionTaskLayout';
+import { NewSessionLayout } from '../session/NewSessionLayout';
 import type { ComponentProps } from 'react';
 import type { SessionListDrawer } from '../session/SessionListDrawer';
 import type { RemoteSessionListItem } from '../session/sessionList';
@@ -54,8 +55,14 @@ vi.mock('../session/CindyMakeSessionGate', () => ({
 vi.mock('../session/RecentMessageHistories', () => ({
   MessageHistoryOverlay: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock('../session/ResidentHomeList', () => ({ useSessionPaneLayout: () => ({ persistent: true, sidebarWidth: 320 }) }));
-vi.mock('@/platform/AdaptiveWindowContext', () => ({ useAdaptiveWindow: () => ({ barEdge: 'left' }) }));
+vi.mock('../session/ResidentHomeList', () => ({ useSessionPaneLayout: () => ({
+  persistent: true, sidebarWidth: 320, detail: { x: 320, y: 0, width: 680, height: 800 },
+}) }));
+vi.mock('@/platform/AdaptiveWindowContext', () => ({
+  useAdaptiveWindow: () => ({ barEdge: 'left', width: 1000, height: 800 }),
+  PaneViewportProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock('@/theme', () => ({ useTheme: () => ({ colors: { surface: 'white' } }) }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('../session/conversationSearch', () => ({ conversationSearchCompanionParams: () => ({}) }));
 vi.mock('../session/SessionListDrawer', () => ({ SessionListDrawer: (props: ComponentProps<typeof SessionListDrawer>) => {
@@ -94,6 +101,28 @@ describe('side chat task lifecycle', () => {
   afterEach(() => {
     act(() => root.unmount());
     expect(state.listeners.size).toBe(0);
+  });
+
+  // Unit regression #7082: sidebar navigation could cover a pending new task,
+  // whose late completion then replaced the selected task. Existing tests only
+  // exercise completed-task drawers. Use the real layout's navigation handler
+  // while the shared submission ref changes without a React rerender.
+  it('blocks new-task sidebar navigation until a pending creation returns to editing', () => {
+    const creatingRef = { current: false };
+    act(() => root.render(<NewSessionLayout creatingRef={creatingRef}><textarea aria-label="New task" /></NewSessionLayout>));
+    const navigate = state.sidebar!.runNavigation;
+    let route = 'new';
+    navigate(() => { route = 'existing'; });
+    expect(route).toBe('existing');
+    route = 'new';
+    creatingRef.current = true;
+    navigate(() => { route = 'existing'; });
+    expect(route).toBe('new');
+    // A failed/pre-submit-aborted creation clears the same lock; retrying the
+    // sidebar action works immediately. Successful handoff keeps it locked.
+    creatingRef.current = false;
+    navigate(() => { route = 'existing'; });
+    expect(route).toBe('existing');
   });
 
   it('unmounts only its own deleted task and returns immediately once', () => {
@@ -200,7 +229,7 @@ describe('side chat task lifecycle', () => {
       session: { id: 'next', canonicalDeviceId: 'canonical-host', deviceLinkDeviceId: 'old-host', deviceLinkDeviceName: 'Mac' },
       searchFocusClientId: 'message-42',
     } as unknown as RemoteSessionListItem;
-    act(() => state.sidebar!.onSelectSession(target));
+    act(() => state.sidebar!.onSelectSession!(target));
     expect(order).toEqual(['discard', 'navigate']);
     expect(state.replaceParams).toHaveBeenCalledExactlyOnceWith({
       deviceId: 'canonical-host', deviceName: 'Mac', sessionId: 'next', focusClientId: 'message-42',

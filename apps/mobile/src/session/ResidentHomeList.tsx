@@ -61,7 +61,8 @@ export function ResidentHomeListProvider({ children }: { children: ReactNode }) 
   // iOS Home keeps its list in its own route; Android draws it here on the home too.
   const rootHome = Platform.OS !== 'ios';
   const visible = (rootHome && homeRoute)
-    || (persistent && segments[0] === 'sessions' && segments[1] === '[sessionId]');
+    || (persistent && segments[0] === 'sessions'
+      && (segments[1] === '[sessionId]' || segments[1] === 'new'));
   const host = useRef<View>(null);
   const mounted = useRef(false);
   const [entry, setEntry] = useState<Entry | null>(null);

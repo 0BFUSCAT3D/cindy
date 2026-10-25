@@ -2404,7 +2404,7 @@ describe('AgentInputCoordinator send transaction', () => {
   });
 
   it.each(['policy', 'preparation', 'provider'] as const)(
-    'keeps coordination quiet when human steering fails at %s', async (failure) => {
+    'keeps coordination ownership when human steering fails at %s', async (failure) => {
       const h = createHarness(), sid = `coordination-steer-${failure}`;
       h.sendToAgent.mockImplementationOnce(async () => { h.setRunning(true); return sendSuccess(); });
       h.coordinator.enqueue(sid, makeItem('internal', '[UI_ACTION_TRIGGER]File agreement', {
@@ -2435,6 +2435,33 @@ describe('AgentInputCoordinator send transaction', () => {
       expect(h.coordinator.getAcceptedInputProvenance(sid)?.clientId).toBe('internal');
     },
   );
+
+  // The parent's reply ending releases its input lane even if the delegated
+  // child has not reported completion. No child terminal is needed to talk again.
+  it('dispatches owner input after a coordination turn ends and accepts another normal turn', async () => {
+    const h = createHarness(), sid = 'coordination-next-message';
+    h.coordinator.enqueue(sid, makeItem('report', '[UI_ACTION_TRIGGER]Build still running', {
+      botTaskCoordination: { delegationId: 'd', senderSessionId: 'child', runSequence: 1 },
+    }));
+    await flush();
+    h.coordinator.enqueue(sid, makeItem('owner', 'Check the other machine too'));
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledOnce();
+    expect(h.coordinator.getProjection(sid).pendingQueue.map(item => item.clientId)).toEqual(['owner']);
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'done');
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(h.sendToAgent.mock.calls[1]?.[1]).toEqual({ type: 'user', content: 'Check the other machine too' });
+    expect(h.coordinator.isActiveTaskCoordination(sid)).toBe(false);
+    h.setRunning(false);
+    h.coordinator.onTurnEvent(sid, 'done');
+    await flush();
+    h.coordinator.enqueue(sid, makeItem('next', 'What is the next step?'));
+    await flush();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(3);
+    expect(h.coordinator.getProjection(sid).pendingQueue).toEqual([]);
+  });
 
   it.each(['projection', 'control', 'direct'] as const)(
     'keeps coordination queued instead of injecting it through %s steering', async (entry) => {
