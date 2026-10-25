@@ -61,7 +61,7 @@ it('uses LegendList virtualization with platform-scoped history anchoring', () =
     // 重挂仍属于旧父节点的原生 child；listperf 仍可显式做 on/off A/B。
     expect(source).toContain('devRecycleItems = false,');
     expect(source).toContain('const recycleItems = __DEV__ ? devRecycleItems === true : false;');
-    expect(perfHarness).toContain("const recycle = params.recycle !== '0';");
+    expect(perfHarness).toContain("const recycle = params.recycle === '1';");
     expect(listSource).toContain('recycleItems={recycleItems}');
     expect(listSource).toContain('getItemType={mobileMessageListItemType}');
     expect(source).toContain('useRecyclingState');
