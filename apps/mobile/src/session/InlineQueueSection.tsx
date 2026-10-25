@@ -29,7 +29,7 @@ import { describeAgentAuthError } from '@/device-link/remoteStatus';
 import type { InputProjection } from '@/session/types';
 import type { ErrorDiagnosisSource } from '@/session/errorDiagnosisPrompt';
 import { inputProjectionErrorI18nKey } from '@/session/inputProjectionError';
-import { localizeAgentError, localizeUnclassifiedAgentError, requiresAgentErrorConfigurationChange } from '@/session/agentErrorI18n';
+import { describeNonRetryableAgentError, localizeAgentError, localizeUnclassifiedAgentError, requiresAgentErrorConfigurationChange } from '@/session/agentErrorI18n';
 import {
   fontWeight,
   iconSize,
@@ -84,7 +84,10 @@ export function InlineQueueSection({
   const controlsDisabled = busy || !!readOnlyReason;
   const errorDisabledReason = readOnlyReason
     || (busy ? t('message.queuePresentation.row.busy') : null);
-  const retryable = !requiresAgentErrorConfigurationChange(projection.error ?? '');
+  // Keep token-based retries on their existing path; hidden continuation uses
+  // the same exclusions as the persisted-tail continuation action.
+  const retryable = !requiresAgentErrorConfigurationChange(projection.error ?? '')
+    && (!!projection.errorRetryText || describeNonRetryableAgentError(projection.error ?? '') === null);
   const retryDisabledReason = errorDisabledReason
     || (!projection.errorRetryText && !onContinueAfterError ? t('message.queue.noRetryContent') : null);
   const localizedAgentError = localizeAgentError(

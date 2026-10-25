@@ -1,6 +1,20 @@
 import { isResponsesLiteParallelToolCallsError, parseAgentErrorCode } from '@cindy/maker-shared/error-redaction';
 export { requiresAgentErrorConfigurationChange } from '@cindy/maker-shared/error-redaction';
 import { i18n } from '@/i18n';
+import { describeAgentAuthError } from '@/device-link/remoteStatus';
+
+/**
+ * Mobile history errors and recovery-less live failures share this guidance.
+ * Retrying cannot fix missing host credentials, a lost Codex thread or content
+ * encrypted for a different provider. Desktop has additional local-context gates.
+ */
+export function describeNonRetryableAgentError(text: string): string | null {
+  const authGuidance = describeAgentAuthError(text);
+  if (authGuidance) return authGuidance;
+  if (/thread not found/i.test(text)) return i18n.t('session.tail.codexThreadLost');
+  if (/invalid_encrypted_content/i.test(text)) return i18n.t('session.tail.encryptedContentInvalid');
+  return null;
+}
 
 export type MobileToolLoopErrorKind = 'consecutive' | 'pingpong' | 'rotation' | 'contract';
 
