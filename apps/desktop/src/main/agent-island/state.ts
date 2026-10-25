@@ -1606,7 +1606,8 @@ function projectCompanionChats(
   for (const chat of chats) {
     const live = sessions.get(chat.sessionId);
     if (!chat.visible) {
-      sessions.delete(chat.sessionId);
+      // Visibility hides restored replies, not a live run, interaction or error.
+      if (live?.phase === 'completed') sessions.delete(chat.sessionId);
       continue;
     }
     if (!live && !chat.unread) continue;

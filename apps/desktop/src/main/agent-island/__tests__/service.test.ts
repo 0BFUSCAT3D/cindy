@@ -616,7 +616,8 @@ describe('AgentIslandService native publishing', () => {
     expect(publish.mock.calls.at(-1)![0].pillSnapshot.attentionCount).toBe(0);
   });
 
-  it('keeps fresh completion sounds and clears local runtime attention when the chat is explicitly read', async () => {
+  // Unit regression #7134: the earlier test only checked sound after an unread snapshot arrived.
+  it.each([false, true])('keeps fresh completion sounds before chat unread=%s and clears explicit reads', async (unread) => {
     const { AgentIslandService } = await import('../service.js');
     const publish = vi.fn<(state: AgentIslandDisplayState) => boolean>(() => true);
     const playSound = vi.fn(() => true);
@@ -633,6 +634,14 @@ describe('AgentIslandService native publishing', () => {
     service.handleUserPrompt({ sessionId: input.sessionId }, 'hello');
     playSound.mockClear();
     service.handleAgentEvent({ sessionId: input.sessionId }, doneEvent());
+    expect(playSound).toHaveBeenCalledWith(customSound('complete.wav'));
+    if (!unread) {
+      service.setCompanionChats([input]);
+      expect(playSound).toHaveBeenCalledTimes(1);
+      expect(publish.mock.calls.at(-1)![0].sessions).toEqual([]);
+      service.resetRuntimeState();
+      return;
+    }
     const runtimeToken = (service.getSessionActivitySnapshot(input.sessionId) as AgentIslandSessionActivity).completionToken!;
     service.setCompanionChats([{ ...input, unread: true, lastMessageAt: Date.now(), preview: 'Reply' }]);
     expect(playSound).toHaveBeenCalledWith(customSound('complete.wav'));

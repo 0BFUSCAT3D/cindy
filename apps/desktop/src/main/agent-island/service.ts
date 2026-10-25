@@ -1982,16 +1982,23 @@ export class AgentIslandService {
       this.clearPublishTimer();
       return;
     }
+    // Sounds follow real runtime transitions. Chat read/visibility filters only own
+    // the rendered unread projection and must neither mute a fresh turn nor replay history.
+    const soundDisplayState = withAgentIslandConfig(
+      buildAgentIslandDisplayState(this.state, now), this.soundSettings, this.mascotSkin,
+    );
+    const chatDisplayState = this.companionChats.size > 0
+      ? withAgentIslandConfig(
+        buildAgentIslandDisplayState(this.state, now, this.companionChatProjections()),
+        this.soundSettings, this.mascotSkin,
+      )
+      : soundDisplayState;
     if (!this.enabled) {
       this.mutedCompletionSoundSessionIds.clear();
       this.baselineSoundSessionIds.clear();
       this.clearStreamingPreviewPublishTimer();
-      this.lastSoundDisplayState = withAgentIslandConfig(
-        buildAgentIslandDisplayState(this.state, now, this.companionChatProjections()),
-        this.soundSettings,
-        this.mascotSkin,
-      );
-      this.publishAttentionCount(this.lastSoundDisplayState.pillSnapshot.attentionCount);
+      this.lastSoundDisplayState = soundDisplayState;
+      this.publishAttentionCount(chatDisplayState.pillSnapshot.attentionCount);
       // 侧栏卡片的逐步活动不依赖灵动岛开关:即便岛 UI 关闭,状态机仍累积,照常广播给 renderer。
       this.emitSessionActivityToRenderer();
       // Windows / headless / 用户关掉岛面时,仍要按 TTL 把完整会话迁到轻量未读账本。
@@ -2009,20 +2016,14 @@ export class AgentIslandService {
     }
 
     this.hiddenPublished = false;
-    const displayState = this.localizeDisplayState(
-      withAgentIslandConfig(
-        buildAgentIslandDisplayState(this.state, now, this.companionChatProjections()),
-        this.soundSettings,
-        this.mascotSkin,
-      ),
-    );
+    const displayState = this.localizeDisplayState(chatDisplayState);
     this.publishAttentionCount(displayState.pillSnapshot.attentionCount);
     this.emitSessionActivityToRenderer();
     this.scheduleNextPublish(now);
-    this.playSoundForDisplayTransition(this.lastSoundDisplayState, displayState, now);
+    this.playSoundForDisplayTransition(this.lastSoundDisplayState, soundDisplayState, now);
     this.mutedCompletionSoundSessionIds.clear();
     this.baselineSoundSessionIds.clear();
-    this.lastSoundDisplayState = displayState;
+    this.lastSoundDisplayState = soundDisplayState;
 
     if (this.nativeHost.failed) {
       this.logNativeRendererUnavailable(displayState);

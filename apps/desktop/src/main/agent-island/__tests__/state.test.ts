@@ -65,19 +65,28 @@ describe('companion chat unread projection', () => {
     expect(display.sessions).toHaveLength(1);
     expect(display.sessions[0].phase).toBe('running');
     expect(display.pillSnapshot).toMatchObject({ attentionCount: 1, runningSessionCount: 0 });
+    // Hiding restored chat unread must leave genuine runtime work observable (unit regression #7134).
+    const hidden = { ...chat, visible: false };
+    expect(buildAgentIslandDisplayState(state, 101, [hidden]).pillSnapshot)
+      .toMatchObject({ attentionCount: 0, runningSessionCount: 1 });
     display = buildAgentIslandDisplayState(state, 102, [{ ...chat, unread: false }]);
     expect(display.pillSnapshot).toMatchObject({ attentionCount: 0, runningSessionCount: 1 });
     applyAgentIslandInteractionRequest(state, meta, { kind: 'ask_user_question', requestId: 'question', questions: [] }, 103);
     display = buildAgentIslandDisplayState(state, 104, [{ ...chat, unread: false }]);
     expect(display.sessions[0]).toMatchObject({ phase: 'needs-interaction', attention: true });
+    expect(buildAgentIslandDisplayState(state, 104, [hidden]).sessions[0])
+      .toMatchObject({ phase: 'needs-interaction', attention: true });
     applyAgentIslandInteractionDismissed(state, chat.sessionId, 'question', 105);
     applyAgentIslandEvent(state, meta, doneEvent(), 106);
     display = buildAgentIslandDisplayState(state, 107, [chat]);
     expect(display.sessions[0].completionToken).toBe('chat-token');
     expect(buildAgentIslandDisplayState(state, 108, [{ ...chat, unread: false }]).sessions).toEqual([]);
+    expect(buildAgentIslandDisplayState(state, 108, [hidden]).sessions).toEqual([]);
     // Reading chat replies must not suppress an independent terminal error.
     applyAgentIslandEvent(state, meta, terminalErrorEvent('failed'), 109);
     expect(buildAgentIslandDisplayState(state, 110, [{ ...chat, unread: false }]).sessions[0])
+      .toMatchObject({ phase: 'error', attention: true });
+    expect(buildAgentIslandDisplayState(state, 110, [hidden]).sessions[0])
       .toMatchObject({ phase: 'error', attention: true });
   });
 });
