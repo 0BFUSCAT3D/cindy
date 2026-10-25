@@ -36,6 +36,19 @@ const URL_B = 'xdt-image://cache/b.png';
 const URL_C = 'xdt-image://cache/c.png';
 
 describe('remoteMediaDiskCache', () => {
+  // Unit regression: a downloaded MP4 retained as .img is rejected by AVPlayer.
+  // Exercise the real cache write/lookup, not the MIME table in isolation.
+  it.each([['video/mp4', 'mp4'], ['video/quicktime', 'mov'], ['video/webm', 'webm']])(
+    'retains playable filenames for %s through history reopen', async (mimeType, ext) => {
+      const { io } = memoryIO();
+      const cache = createRemoteMediaDiskCache(io);
+      await cache.store('video-history', 'file:///staging/video', mimeType, 1000);
+      const reopened = createRemoteMediaDiskCache(io);
+      const hit = await reopened.lookup('video-history');
+      expect(hit?.uri.endsWith(`.${ext}`)).toBe(true);
+      expect(hit).toMatchObject({ mimeType, size: 1000 });
+    },
+  );
   it('preserves the previous version when replacement storage is unavailable', async () => {
     const h = memoryIO();
     let available = 10_000;

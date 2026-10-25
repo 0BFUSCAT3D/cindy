@@ -1988,6 +1988,12 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
         }
         const resolved = await resolveMobileRemoteMedia(media, {
           fetchRemoteMedia: deps.maker.fetchRemoteMedia,
+          ...(diskCache ? { retainLocalVideo: async (video: MobileResolvedRemoteMedia) => {
+            const stored = await diskCache.store(bareDiskSource, video.url, video.mimeType, video.size);
+            const copy = stored ? await diskCache.lookup(bareDiskSource) : null;
+            if (!copy) throw new Error('VIDEO_CACHE_FAILED');
+            return { ...video, url: copy.uri, expiresAt: REMOTE_MEDIA_NEVER_EXPIRES };
+          } } : {}),
           presignGet: (ossKey) => deps.auth.apiFetch<MobileRemoteMediaPresignResult>(
             '/api/device-link/media/presign-get',
             { baseUrl: DEVICE_LINK_API_BASE_URL, method: 'POST', body: { key: ossKey } },

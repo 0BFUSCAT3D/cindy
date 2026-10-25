@@ -378,6 +378,11 @@ export function extOfMime(mimeType: string): string {
   if (mimeType === 'image/webp') return 'webp';
   if (mimeType === 'image/svg+xml') return 'svg';
   if (mimeType === 'image/bmp') return 'bmp';
+  // AVPlayer uses the local file suffix to select its media demuxer.
+  if (mimeType === 'video/mp4') return 'mp4';
+  if (mimeType === 'video/quicktime') return 'mov';
+  if (mimeType === 'video/webm') return 'webm';
+  if (mimeType === 'video/x-matroska') return 'mkv';
   return 'img';
 }
 
