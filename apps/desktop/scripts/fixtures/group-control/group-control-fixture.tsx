@@ -18,6 +18,10 @@ interface GroupData {
   wrappedReactions?: boolean;
   /** A single-speaker server group: nobody was named, so everyone answers in turn (bot-group-chat.md §4.0/§7.0). */
   arrangement?: Queue;
+  /** A preserved work plan whose ordinary messages must stay quiet. */
+  workMentioned?: boolean;
+  /** A 分工 you started (bot-group-chat.md §7.4): stopped after step 1 waiting for 继续, or going on by itself. */
+  division?: Division;
   /** Open the group settings drawer as its owner. */
   settings?: boolean;
   /** Server read state: unread thread entries and the in-chat 话题 hint. */
@@ -170,6 +174,30 @@ function arrangementPlan(state: Queue) {
     })),
   };
 }
+type Division = 'waiting' | 'auto';
+const DIVISION_ASK = '把发版说明整理好：先列出这周合进去的改动，再写成给用户看的说明';
+/** Your request, the organizer's card and Aster's finished first step. */
+function divisionMessages() {
+  return [
+    message({ id: 'q1', sequence: 1, isSelf: true, content: DIVISION_ASK, createdAt: T0 }),
+    message({ id: 'p2-card', sequence: 2, kind: 'plan', planId: 'p2', isSelf: true, content: '', createdAt: T0 }),
+    message({ id: 'a1', sequence: 3, authorKind: 'bot', authorBotId: 'a', authorName: 'Aster', planId: 'p2', createdAt: T0 + 4 * MINUTE,
+      content: '这周合进去 6 个改动：群聊分工入口回来了、仅 @ 模式不再误叫醒伙伴、负责人显示修好，另有 3 个小修复。' }),
+  ];
+}
+function divisionPlan(state: Division) {
+  const auto = state === 'auto';
+  return {
+    id: 'p2', status: auto ? 'running' : 'waiting', organizerBotId: 'a', organizerName: 'Aster', currentStep: auto ? 1 : 0,
+    kind: 'work', canManage: true, canAdd: true, autoContinue: auto, workDir: null, branch: null,
+    createdAt: T0, updatedAt: auto ? Date.now() - 40_000 : T0 + 4 * MINUTE,
+    steps: [
+      { position: 0, botId: 'a', botName: 'Aster', task: '列出这周合进去的改动', status: 'done', resultMessageId: 'a1' },
+      { position: 1, botId: 'b', botName: 'Nova', task: '写成给用户看的发版说明', status: auto ? 'running' : 'pending', resultMessageId: null },
+    ],
+  };
+}
+
 /**
  * Two Threads name the reader, one they follow is unread without naming them, one is read
  * (bot-group-chat.md §10「话题未读与提示」).
@@ -191,10 +219,11 @@ function threadSummaries() {
 
 function groupFrom(data: GroupData) {
   const bubbles = data.bubbles ? bubbleMessages(data.wrappedReactions) : null;
+  const planKind = data.workMentioned ? 'work' : 'talk';
   return {
     id: 'fixture-group',
     name: data.name,
-    replyMode: 'all',
+    replyMode: data.workMentioned ? 'mentioned' : 'all',
     speakingMode: 'auto',
     members: [...(data.settings ? [{ botId: '', actorId: 'me', actorKind: 'user', name: 'You', isSelf: true, isOwned: true, role: 'owner', avatar: '', avatarColor: 'gray', status: 'active' }] : []),
       ...data.members.map((member) => ({
@@ -213,14 +242,18 @@ function groupFrom(data: GroupData) {
     openPlan: null,
     createdAt: 1,
     updatedAt: 1,
-    plans: data.arrangement ? [arrangementPlan(data.arrangement)] : [],
+    plans: data.arrangement ? [{ ...arrangementPlan(data.arrangement), kind: planKind }] : data.division ? [divisionPlan(data.division)] : [],
+    ...(data.division ? { openPlan: { id: 'p2', status: data.division === 'auto' ? 'running' : 'waiting', currentStep: data.division === 'auto' ? 1 : 0,
+      stepCount: 2, currentBotName: data.division === 'auto' ? 'Nova' : 'Aster', currentStepStatus: data.division === 'auto' ? 'running' : 'done', kind: 'work' },
+      singleSpeaker: true, autoContinue: data.division === 'auto' } : {}),
     ...(data.arrangement ? { openPlan: data.arrangement === 'long'
-      ? { id: 'p1', status: 'waiting', currentStep: 4, stepCount: 7, currentBotName: 'Pax', currentStepStatus: 'done', kind: 'talk' }
-      : data.arrangement === 'running' ? { id: 'p1', status: 'running', currentStep: 1, stepCount: 2, currentBotName: 'Nova', currentStepStatus: 'running', kind: 'talk' } : null,
+      ? { id: 'p1', status: 'waiting', currentStep: 4, stepCount: 7, currentBotName: 'Pax', currentStepStatus: 'done', kind: planKind }
+      : data.arrangement === 'running' ? { id: 'p1', status: 'running', currentStep: 1, stepCount: 2, currentBotName: 'Nova', currentStepStatus: 'running', kind: planKind } : null,
       singleSpeaker: true } : {}),
-    ...(data.bubbles || data.arrangement ? { serverBacked: true } : {}),
+    ...(data.bubbles || data.arrangement || data.division ? { serverBacked: true } : {}),
+    ...(data.settings ? { autoContinue: false } : {}),
     ...(data.threadUnread ? { threads: threadSummaries() } : {}),
-    messages: data.bodyAnswer ? bodyMessages() : data.arrangement ? arrangementMessages(data.arrangement)
+    messages: data.bodyAnswer ? bodyMessages() : data.arrangement ? arrangementMessages(data.arrangement) : data.division ? divisionMessages()
       : bubbles ? bubbles.map(m => (data.threadUnread && UNREAD[m.id as string] ? { ...m, threadUnread: UNREAD[m.id as string] } : m))
       : Array.from({ length: data.messages }, (_, i) => ({
       id: `m${i}`,

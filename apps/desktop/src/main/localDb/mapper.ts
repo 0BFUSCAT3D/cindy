@@ -313,6 +313,17 @@ export function sessionToCamel(row: SessionRowWithCount): Session {
   return { ...base, ...projectSessionRuntimeFields({ ...base, scheduledModelBaseline: row.scheduledModelBaseline }) };
 }
 
+function importedReplyText(content: unknown): unknown {
+  if (!Array.isArray(content) || !content.length) return content;
+  const texts: string[] = [];
+  for (const block of content) {
+    const record = block && typeof block === 'object' ? (block as { type?: unknown; text?: unknown }) : null;
+    if (record?.type !== 'text' || typeof record.text !== 'string') return content;
+    texts.push(record.text);
+  }
+  return texts.join('');
+}
+
 export function messageToCamel(row: MessageRow): Message {
   let content: unknown = row.content;
   try {
@@ -320,6 +331,11 @@ export function messageToCamel(row: MessageRow): Message {
   } catch {
     // 容错：极端情况下 content 可能不是合法 JSON（例如旧手工写入），保留原字符串
     content = row.content;
+  }
+  // Replies imported from the cloud room (`cloud-history:`, companion-cloud/mirror.ts) were once
+  // stored as text blocks; every reader expects a reply as a plain string, so they read as one.
+  if (row.role === 'assistant' && row.clientId?.startsWith('cloud-history:')) {
+    content = importedReplyText(content);
   }
   if (row.role === 'assistant' && typeof content === 'string') {
     content = stripInternalWebCitations(content);
@@ -701,6 +717,7 @@ export function scheduleToCamel(row: ScheduleRow): Schedule {
     modelAgentKind: row.modelAgentKind ?? undefined,
     model: row.model ?? undefined,
     providerId: row.providerId ?? undefined,
+    agentDeviceId: row.agentDeviceId ?? undefined,
     effort: row.effort ?? undefined,
     fastMode: (row.fastMode ?? false),
     workspaceKind: normalizeWorkspaceKind(row.workspaceKind),
@@ -753,6 +770,7 @@ export function scheduleCreateToRow(s: Schedule): ScheduleInsert {
     modelAgentKind: s.modelAgentKind ?? null,
     model: s.model ?? null,
     providerId: s.providerId ?? null,
+    agentDeviceId: s.agentDeviceId ?? null,
     effort: (s.effort as ScheduleInsert['effort']) ?? null,
     fastMode: (s.fastMode ?? false),
     workspaceKind: s.workspaceKind ?? 'project',
@@ -808,6 +826,7 @@ export function schedulePatchToRow(patch: Partial<Schedule>): Partial<ScheduleIn
   if (hasKey(patch, 'modelAgentKind')) out.modelAgentKind = patch.modelAgentKind ?? null;
   if (hasKey(patch, 'model')) out.model = patch.model ?? null;
   if (hasKey(patch, 'providerId')) out.providerId = patch.providerId ?? null;
+  if (hasKey(patch, 'agentDeviceId')) out.agentDeviceId = patch.agentDeviceId ?? null;
   if (hasKey(patch, 'effort')) out.effort = (patch.effort as ScheduleInsert['effort']) ?? null;
   if (hasKey(patch, 'fastMode')) out.fastMode = (patch.fastMode ?? false);
   if (hasKey(patch, 'workspaceKind')) out.workspaceKind = patch.workspaceKind ?? 'project';

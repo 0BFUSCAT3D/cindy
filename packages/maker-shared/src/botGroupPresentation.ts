@@ -14,6 +14,7 @@ import {
   type BotGroupNoticeCode,
   type BotGroupPlanStepView,
   type BotGroupPlanView,
+  type BotGroupReplyMode,
   type BotGroupSummary,
 } from './botGroupChat.js';
 
@@ -57,6 +58,19 @@ export function botGroupMemberNames(
 /** Collapse whitespace so a multi-line message fits a one-line preview. */
 export function botGroupPreviewLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/** New arrivals below a reader's viewport, excluding history pages and repeat snapshots. */
+export function botGroupNewMessageCount(messages: readonly BotGroupMessageView[], seenThrough: number | string | null, threadRootId?: string): number {
+  if (seenThrough === null) return 0;
+  const incoming = new Set<string>();
+  for (const message of messages) {
+    if (BigInt(message.serverSequence ?? message.sequence) <= BigInt(seenThrough) || message.deleted || (message.threadRootId ?? undefined) !== threadRootId || message.isSelf === true
+      || (message.kind !== 'message' && message.kind !== 'plan')
+      || (message.authorKind !== 'bot' && message.isSelf !== false) || message.authorKind === 'system') continue;
+    incoming.add(message.id);
+  }
+  return incoming.size;
 }
 
 /**
@@ -222,13 +236,15 @@ export type BotGroupComposerPlanState =
   | { kind: 'running'; botName: string; talk?: boolean }
   | { kind: 'waiting'; botName: string; stepDone: boolean };
 
-export function botGroupComposerPlanState(plan: BotGroupPlanView | null): BotGroupComposerPlanState | null {
+export function botGroupComposerPlanState(plan: BotGroupPlanView | null, replyMode: BotGroupReplyMode = 'all'): BotGroupComposerPlanState | null {
   if (!plan) return null;
   if (plan.status === 'proposed') return { kind: 'proposed' };
   const current = currentBotGroupPlanStep(plan);
-  const botName = current?.botName.trim() ?? '';
-  // Someone who cannot add to a queue sends a new request: the composer must not promise otherwise.
-  if (plan.status === 'running' && plan.kind === 'talk') return plan.canAdd === false ? null : { kind: 'running', botName, talk: true };
+  // Keep the work-plan state for the division gate, but name a recipient only when
+  // ordinary text is actually forwarded to that worker (including legacy plans).
+  const botName = replyMode === 'mentioned' ? '' : current?.botName.trim() ?? '';
+  // Only promise additions when unmentioned words actually reach the speaking teammate.
+  if (plan.status === 'running' && plan.kind === 'talk') return plan.canAdd === false || replyMode === 'mentioned' ? null : { kind: 'running', botName, talk: true };
   if (plan.status === 'running') return { kind: 'running', botName };
   // A queue waiting for 继续 takes a new request, not changes to the last answer (bot-group-chat.md §4.0).
   if (plan.status === 'waiting' && plan.kind === 'talk') return null;
