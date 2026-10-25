@@ -6073,7 +6073,7 @@ function MarkdownBodyBase({
             ]}
           >
             <HighlightedCodeText
-              SpanComponent={singleBlockSpanFor(selectable === true) ?? Text}
+              SpanComponent={spanFor(selectable === true && singleBlockAllowsIosUITextView) ?? Text}
               allowIosUITextView={singleBlockAllowsIosUITextView}
               language={block.language}
               selectable={selectable === true}
