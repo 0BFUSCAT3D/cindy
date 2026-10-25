@@ -47,14 +47,14 @@ vi.mock('@/session/NativeChatViewport', () => ({
   get nativeChatViewportAvailable() { return h.nativeChatViewportAvailable; },
   get nativeAndroidKeyboardViewportAvailable() { return h.nativeChatViewportAvailable && h.platform.OS === 'android'; },
   NativeChatViewport: ({ children, ...props }: any) => { h.nativeChatViewport = props; return children; },
-  NativeAndroidComposerAnchor: ({ children }: any) => children,
+  NativeAndroidComposerAnchor: ({ children, followKeyboard }: any) => el('div', { 'data-native-keyboard-follow': String(!!followKeyboard) }, children),
 }));
 vi.mock('@/session/useSmoothMessageFollow', () => ({ useSmoothMessageFollow: () => ({
   scrollRef: useRef(null), nativeScrollRef: useRef({ scrollTo: h.scrollTo }), move: h.moveTail, cancel: h.cancelTail,
 }) }));
 vi.mock('@/session/AnimatedContentHeight', () => ({ AnimatedContentHeight: ({ open = true, children }: any) => open ? children : null }));
 vi.mock('@/session/ComposerDockKeyboardFollow', () => ({ DockKeyboardLift: ({ children, ...props }: any) => {
-  h.keyboardLift = props; return children;
+  h.keyboardLift = props; return el('div', { 'data-keyboard-lift': String(props.active) }, children);
 } }));
 vi.mock('@/session/NativeKeyboardViewport', () => ({
   get nativeKeyboardViewportAvailable() { return h.nativeViewportAvailable && h.platform.OS === 'ios'; },
@@ -500,6 +500,26 @@ describe('group timeline', () => {
     expect(byId('botGroup.newMessages')?.textContent).toContain('count=1');
     expect(h.markRead).not.toHaveBeenCalled();
     expect(h.moveTail).not.toHaveBeenCalled();
+  });
+
+  // Unit: the actual unread action must use the same native keyboard movement
+  // as the composer. A history reader must still be able to tap it with IME open.
+  it.each(['ios', 'android'])('keeps the unread action under %s keyboard ownership', async (platform) => {
+    h.platform.OS = platform;
+    h.nativeViewportAvailable = platform === 'ios';
+    h.nativeChatViewportAvailable = platform === 'android';
+    const data = group();
+    const props = { deviceId: 'mac', deviceName: 'Mac', groupId: 'g1', messageId: data.messages[0].id };
+    h.chat = { ...h.chat, state: { kind: 'ready', group: data } };
+    await act(async () => root.render(el(BotGroupChatScreen, props)));
+    h.chat = { ...h.chat, state: { kind: 'ready', group: { ...data, messages: [...data.messages, message('keyboard-arrival', 20, {})] } } };
+    await act(async () => root.render(el(BotGroupChatScreen, props)));
+    const jump = byId('botGroup.newMessages') as HTMLButtonElement;
+    expect(jump).toBeTruthy();
+    expect(jump.closest(platform === 'ios' ? '[data-keyboard-lift="true"]' : '[data-native-keyboard-follow="true"]')).toBeTruthy();
+    expect(h.markRead).not.toHaveBeenCalled();
+    await act(async () => jump.click());
+    if (platform === 'android') expect(h.nativeChatViewport.followLatest).toBe(true);
   });
 
   // Unit: Android native layout compensation must be the only scroll writer.

@@ -1188,6 +1188,8 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
         }}
         className="min-h-0 flex-1 overflow-y-auto overflow-x-clip px-5 pb-4 pt-4"
       >
+        {/* Keep presentation movement out of the scroller's overflow range. */}
+        <div className="overflow-clip">
         <div ref={contentRef} className="mx-auto flex w-full max-w-[760px] flex-col">
           {hasMoreBefore ? (
             <div className="mb-2 flex justify-center">
@@ -1289,6 +1291,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
             // The progress strip carries a running step's status; only its confirmations stay here.
             ? <BotGroupSpeakerInteraction key={`${speaker.member.botId}:${speaker.activity}`} speaker={speaker} />
             : <BotGroupSpeakingLine key={`${speaker.member.botId}:${speaker.activity}`} speaker={speaker} />))}
+        </div>
         </div>
       </div>
       <div className="relative h-0 shrink-0" inert={newMessageCount <= 0}>

@@ -532,7 +532,11 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
           onEditStep={(planId, step, action, botId) => void editPlanStep(planId, step, action, botId)}
           onInteractionError={(message) => { if (message) Alert.alert(message); }} />
       </Reanimated.ScrollView>
-      {newMessageCount > 0 ? <View style={styles.newMessages} accessibilityLiveRegion="polite">
+      {newMessageCount > 0 ? <NativeAndroidComposerAnchor surfaceId="" followKeyboard={!!androidComposerSurfaceId}
+        pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+        <DockKeyboardLift active={nativeKeyboardViewportAvailable} restingBottom={insets.bottom} keyboardGap={0}
+          pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+        <View style={styles.newMessages} accessibilityLiveRegion="polite">
         <CompanionFadeIn play distance={spacing.xs}>
           <MainWindowActionButton density="compact" style={styles.newMessagesButton} action={{
             label: t('groupChat.timeline.newMessages', { count: newMessageCount }),
@@ -541,7 +545,9 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
             onPress: () => { setFollowIntent(true); followTail(); },
           }} />
         </CompanionFadeIn>
-      </View> : null}
+        </View>
+        </DockKeyboardLift>
+      </NativeAndroidComposerAnchor> : null}
       </View>
       <NativeAndroidComposerAnchor surfaceId={androidComposerSurfaceId ?? ''} followKeyboard={!!androidComposerSurfaceId}>
       <DockKeyboardLift active={nativeKeyboardViewportAvailable} restingBottom={insets.bottom} keyboardGap={0}>
