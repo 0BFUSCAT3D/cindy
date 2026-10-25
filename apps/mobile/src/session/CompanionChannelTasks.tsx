@@ -17,6 +17,14 @@ function request(op: string, botId?: string, args?: Record<string, unknown>) {
     input: { v: 1, op, ...(args ? { args } : {}) } }];
 }
 
+function requiresHostUpgrade(error: unknown): boolean {
+  const transportCode = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+  const message = error instanceof Error ? error.message : '';
+  const code = typeof transportCode === 'string' && transportCode !== 'IPC_ERROR' ? transportCode
+    : /^(?:Error invoking remote method '[^']+': Error: )?\[([A-Z0-9_]+)\]/.exec(message)?.[1];
+  return code === 'UNSUPPORTED_CAPABILITY' || code === 'CHANNEL_NOT_ALLOWED' || code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED';
+}
+
 /** Read existing channel tasks; opening one never resets its context or starts a turn. */
 export function CompanionChannelTasks({ deviceId, botId, online, onOpenTask }: {
   deviceId: string; botId: string; online: boolean; onOpenTask(id: string): void;
@@ -29,14 +37,15 @@ export function CompanionChannelTasks({ deviceId, botId, online, onOpenTask }: {
   const connections = useRemoteCompanionQuery<Result<{ connections: Connection[] }>>(deviceId, REMOTE_RESOURCE_INVOKE_CHANNEL, request('channels.im.list', botId), { enabled: online && !!supported });
   const lanes = useRemoteCompanionQuery<Result<{ lanes: Lane[] }>>(deviceId, REMOTE_RESOURCE_INVOKE_CHANNEL, request('channels.im.listLanes', botId, { id: expanded }), { enabled: online && !!supported && !!expanded });
   const rows = connections.value?.result?.value?.connections?.filter(row => row.botId === botId) ?? [];
+  const unsupported = caps.error && requiresHostUpgrade(caps.cause) || caps.value?.result?.ok === true && !supported;
   const failed = caps.error || caps.value?.result?.ok === false || connections.error || connections.value?.result?.ok === false;
   const retry = () => { caps.refresh(); connections.refresh(); lanes.refresh(); };
   return <View style={styles.content}>
-    {!online ? <Text style={styles.note}>{t('devices.resources.hostOffline')}</Text> : failed ? <>
+    {!online ? <Text style={styles.note}>{t('devices.resources.hostOffline')}</Text>
+      : unsupported ? <Text style={styles.note}>{t('devices.companionProfile.hostUpgrade')}</Text> : failed ? <>
       <Text style={styles.note}>{t('devices.companionProfile.readFailed')}</Text>
       <MainWindowActionButton action={{ label: t('devices.resources.retry'), onPress: retry }} />
-    </> : caps.value && !supported ? <Text style={styles.note}>{t('devices.companionProfile.hostUpgrade')}</Text>
-      : !connections.value ? <Text style={styles.note}>{t('devices.resources.loading')}</Text>
+    </> : !connections.value ? <Text style={styles.note}>{t('devices.resources.loading')}</Text>
       : rows.length === 0 ? <Text style={styles.note}>{t('devices.companionProfile.channelsEmpty')}</Text> : null}
     {rows.map(row => <View key={row.id} style={styles.content}>
       <MainWindowActionButton action={{ label: `${t(`devices.companionProfile.channelPlatforms.${row.service === 'lark' ? 'lark' : row.channel}`, { defaultValue: row.channel })}${row.identity?.username ? ` · ${row.identity.username}` : ''}`, onPress: () => setExpanded(expanded === row.id ? null : row.id) }} />
