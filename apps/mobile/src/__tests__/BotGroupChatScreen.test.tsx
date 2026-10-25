@@ -273,12 +273,12 @@ async function click(id: string) {
   if (!target) throw new Error(`missing ${id}`);
   await act(async () => { target.click(); });
 }
-async function render(data: BotGroupRemoteChatData | null = group(), kind: 'ready' | 'loading' | 'missing' | 'error' = 'ready') {
+async function render(data: BotGroupRemoteChatData | null = group(), kind: 'ready' | 'loading' | 'missing' | 'error' = 'ready', threadRootId?: string) {
   h.chat = {
     ...h.chat,
     state: kind === 'ready' ? { kind, group: data } : kind === 'error' ? { kind, message: 'x' } : { kind },
   };
-  await act(async () => root.render(el(BotGroupChatScreen, { deviceId: 'mac', deviceName: 'Mac', groupId: 'g1' })));
+  await act(async () => root.render(el(BotGroupChatScreen, { deviceId: 'mac', deviceName: 'Mac', groupId: 'g1', threadRootId })));
 }
 
 beforeEach(() => {
@@ -1375,10 +1375,10 @@ describe('direct server group presentation', () => {
     expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
     expect(byId('botGroup.settings.replyMode.mentioned')?.disabled).toBe(true);
   });
-  it('reauthorizes a server attachment on tap and opens the existing image viewer', async () => {
+  it.each([undefined, 'thread-root'])('gates server previews by the viewport and reauthorizes on tap (thread=%s)', async (threadRootId) => {
     const attachment = { id: 'media', name: 'picture.png', mimeType: 'image/png', size: 10, category: 'image' as const, url: 'https://media.example.invalid/one-use', path: null };
     h.chat = { ...h.chat, server: true, media: vi.fn(async () => attachment) };
-    await render(group({ messages: [message('picture', 1, { authorKind: 'user', isSelf: false, attachments: [{ ...attachment, url: null, category: 'file' }] })], plans: [], openPlan: null }));
+    await render(group({ messages: [message('picture', 1, { authorKind: 'user', isSelf: false, attachments: [{ ...attachment, url: null, category: 'file' }] })], plans: [], openPlan: null }), 'ready', threadRootId);
     expect(h.chat.media).not.toHaveBeenCalled();
     let row = byId('attachmentStrip') as HTMLElement & { nativeLayout?: (event: unknown) => void };
     while (!row.nativeLayout) row = row.parentElement as typeof row;

@@ -164,6 +164,28 @@ describe('Chat Server group image attachments (#5875)', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe(signedImageUrl);
   });
 
+  it('keeps a multi-image history offscreen while loading the latest row, then authorizes again on tap', async () => {
+    const visibility = new MessageListVisibility();
+    const resolveServerMedia = vi.fn(async (id: string) => ({ ...serverAttachment, id, category: 'image' as const, url: `${signedImageUrl}#${id}` }));
+    const container = await render({}, visibility);
+    await act(async () => root!.render(createElement(MessageListVisibilityContext.Provider, { value: visibility },
+      ...['history', 'latest'].map(messageId => createElement(BotGroupMessageAttachments, {
+        key: messageId, messageId, align: 'right', resolveServerMedia, onResolveRemoteMedia: vi.fn(),
+        attachments: (messageId === 'history' ? ['old-1', 'old-2'] : ['latest']).map(id => ({ ...serverAttachment, id })),
+      })),
+    )));
+    expect(resolveServerMedia).not.toHaveBeenCalled();
+    await act(async () => visibility.update([{ key: 'latest', isViewable: true }]));
+    expect(resolveServerMedia.mock.calls.map(([id]) => id)).toEqual(['latest']);
+    expect(container.querySelectorAll('img')).toHaveLength(1);
+    await act(async () => visibility.update([{ key: 'history', isViewable: true }]));
+    expect(resolveServerMedia.mock.calls.map(([id]) => id)).toEqual(['latest', 'old-1', 'old-2']);
+    expect(container.querySelectorAll('img')).toHaveLength(3);
+    await click(container.querySelector(`img[src="${signedImageUrl}#old-2"]`)?.closest('[data-testid="message.mediaPreviewButton"]'));
+    expect(resolveServerMedia.mock.calls.map(([id]) => id)).toEqual(['latest', 'old-1', 'old-2', 'old-2']);
+    expect(container.querySelector('[data-testid="message.imageLightbox"] img')?.getAttribute('src')).toBe(`${signedImageUrl}#old-2`);
+  });
+
   it('shows an authorized HTTPS image in the real lightbox, re-authorizing on every tap', async () => {
     const resolveServerMedia = vi.fn(async (id: string): Promise<BotGroupAttachment> => ({
       id, name: '1.png', category: 'image', mimeType: 'image/png', size: 10, url: signedImageUrl, path: null,
