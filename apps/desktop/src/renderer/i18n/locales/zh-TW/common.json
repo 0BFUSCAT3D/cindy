@@ -8135,8 +8135,8 @@
       "coverage": "按天統計從 {{date}} 起",
       "col": {
         "task": "任務",
-        "model": "模型",
-        "provider": "供應商",
+        "model": "目前模型",
+        "provider": "目前供應商",
         "tokens": "累計 token",
         "context": "上下文佔用",
         "lastActive": "最後活躍"

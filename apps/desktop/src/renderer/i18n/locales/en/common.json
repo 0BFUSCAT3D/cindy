@@ -8167,8 +8167,8 @@
       "coverage": "Daily tracking since {{date}}",
       "col": {
         "task": "Session",
-        "model": "Model",
-        "provider": "Provider",
+        "model": "Current Model",
+        "provider": "Current Provider",
         "tokens": "Total tokens",
         "context": "Context used",
         "lastActive": "Last active"

@@ -8135,8 +8135,8 @@
       "coverage": "日別集計は {{date}} から",
       "col": {
         "task": "セッション",
-        "model": "モデル",
-        "provider": "プロバイダー",
+        "model": "現在のモデル",
+        "provider": "現在のプロバイダー",
         "tokens": "累計トークン",
         "context": "コンテキスト使用率",
         "lastActive": "最終アクティブ"
