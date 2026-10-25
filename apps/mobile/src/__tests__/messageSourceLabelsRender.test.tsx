@@ -162,7 +162,10 @@ vi.mock("react-native-svg", () => ({
   default: () => null,
   Circle: () => null,
 }));
-vi.mock("react-native-uitextview", async () => ({ UITextView: (await import('react-native')).Text }));
+vi.mock("react-native-uitextview", async () => {
+  const { Text } = await import('react-native');
+  return { UITextView: (props: any) => createElement('div', { 'data-native-text-view': true }, createElement(Text, props)) };
+});
 vi.mock("expo-image", () => ({ Image: () => null }));
 // The site-video preview imports this native surface; label tests keep the
 // production renderer but must not load React Native's Flow runtime in Node.
@@ -601,6 +604,24 @@ describe('private group reply source', () => {
 // Render the real MessageRenderer with one completed reply and system menus available;
 // verify native selectable text and a working Reply action coexist (unit tier).
 describe("companion text selection and actions", () => {
+  // The short-message case never enters the iOS long-message fallback. Removing
+  // the separate selection sheet must keep partial selection after expansion too.
+  it("keeps expanded long companion text in bounded native selection views", () => {
+    const text = "可以直接选择这段长消息中的文字。".repeat(180);
+    const h = mount([msg("long", text, null)], { companion: true });
+    try {
+      const toggle = h.host.querySelector('[data-testid="message.collapseToggle"]')!;
+      expect(toggle).not.toBeNull();
+      act(() => toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      const body = h.host.querySelector('[data-testid="message.markdownBody"]')!;
+      const selectable = [...body.querySelectorAll('[data-native-text-view] [data-testid="message.markdownTextRun"]')];
+      expect(selectable.length).toBeGreaterThan(1);
+      expect(selectable.map(node => node.textContent).join('')).toBe(text);
+      expect(selectable.every(node => node.getAttribute('data-selectable') === 'true')).toBe(true);
+      expect(selectable.every(node => node.textContent!.length <= 1800)).toBe(true);
+    } finally { h.unmount(); }
+  });
+
   it.each(["user", "assistant"] as const)("keeps %s text selectable alongside Reply when system menus are available", (role) => {
     a11y.systemMenu = true;
     const onQuote = vi.fn();

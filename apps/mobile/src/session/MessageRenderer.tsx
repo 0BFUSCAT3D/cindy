@@ -538,7 +538,7 @@ const stylesStatic = StyleSheet.create({
  */
 type MarkdownSelectableTextProps = Omit<ComponentProps<typeof Text>, 'selectionColor'> & {
   /**
-   * iOS 是否使用可部分选中的 UITextView。超长展开正文禁用它并回退 RN Text:
+   * iOS 是否使用可部分选中的 UITextView。普通任务的超长展开正文回退 RN Text:
    * UITextView 在折叠→展开时骤增为超高复用视图会偶发只留下巨高空白容器。
    */
   allowIosUITextView?: boolean;
@@ -3956,7 +3956,8 @@ function MessageBubble({
           <MarkdownBody
             renderRichAnswers={item.message.kind === 'assistant'}
             richStateKey={item.message.source.clientId ?? item.message.key}
-            allowIosUITextView={!shouldCollapseLongMessage}
+            allowIosUITextView={!shouldCollapseLongMessage || actions.companion === true}
+            boundTextRuns={shouldCollapseLongMessage && actions.companion === true}
             markdownImageCacheKey={item.message.key}
             layout={contentLayout}
             onOpenPayload={actions.onOpenPayload}
@@ -3973,8 +3974,8 @@ function MessageBubble({
         // 纯文本,absolute 不占布局、opacity 0 不可见、pointerEvents none 不挡
         // 触摸。这里只需知道行数是否越过阈值,因此最多排到 threshold + 1 行:
         // 不让不可见节点为超长消息完整排版,避免 iOS 产生额外的超高原生
-        // 文本布局,Android 也不用承担无意义的完整排版开销。展开态的巨高
-        // 空白由上方 MarkdownBody 的 RN Text fallback 单独处理。
+        // 文本布局,Android 也不用承担无意义的完整排版开销。伙伴展开态复用有界
+        // 文本分组保留部分选字，普通任务继续使用 RN Text fallback。
         // 无障碍两端都要屏蔽:accessibilityElementsHidden 管 iOS VoiceOver
         // (opacity 0 不会让 VoiceOver 跳过,漏了会把正文重复朗读一遍),
         // importantForAccessibility 管 Android TalkBack。
@@ -5781,6 +5782,7 @@ function CompanionCardMarkdown({ text, actions, messageKey }: { text: string; ac
 // 不跳转界面;整条复制走操作条按钮。选择按块进行(原生 Text 能力边界,跨段选择做不到)。
 function MarkdownBodyBase({
   allowIosUITextView = true,
+  boundTextRuns = false,
   markdownImageCacheKey,
   layout,
   onOpenPayload,
@@ -5790,11 +5792,13 @@ function MarkdownBodyBase({
   streaming,
   text,
 }: {
-  /** 超长展开正文在 iOS 回退 RN Text,避免超高 UITextView 空白;仍保留整块复制。 */
   renderRichAnswers?: boolean;
   /** Persisted row ids may replace stream ids; clientId stays stable across that handoff. */
   richStateKey?: string;
+  /** 普通任务的超长展开正文可禁用 UITextView，伙伴改用有界文本分组。 */
   allowIosUITextView?: boolean;
+  /** Reuse bounded native text runs for expanded companion messages on iOS. */
+  boundTextRuns?: boolean;
   /** 本地 Markdown 图片的稳定消息身份,避免后续消息复用同一路径的旧媒体缓存。 */
   markdownImageCacheKey?: string;
   layout: MessageContentLayout;
@@ -5945,11 +5949,12 @@ function MarkdownBodyBase({
   );
   const textRunGroupingOptions = useMemo(() => ({
     ...(Platform.OS === 'android' ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS : {}),
+    ...(boundTextRuns ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS : {}),
     imageRendersPreview,
-  }), [imageRendersPreview]);
+  }), [boundTextRuns, imageRendersPreview]);
   // 连续纯文本块合并为 text_run，图片预览保持独立。
   // Android selectable Text 在超长原生文本视图里会偶发高度/滚动协商异常,长 run 分块
-  // 后仍保留块内跨段选择,同时避免单个 LegendList item 内出现巨型 selectable Text。
+  // 后仍保留块内跨段选择。伙伴的 iOS 长消息展开也复用同一分块，避免巨型 UITextView。
   const groups = useMemo(
     () => groupMobileMarkdownSelectableBlocks(blocks, textRunGroupingOptions),
     [blocks, textRunGroupingOptions],
