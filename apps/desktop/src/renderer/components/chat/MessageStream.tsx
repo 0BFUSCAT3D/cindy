@@ -4,6 +4,7 @@ import { readMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { animateFocusScroll } from './animateFocusScroll';
 import { simplifyBotRenderItems } from '@/features/bots/botConversationPresentation';
 import { useMessageEntrance } from './useMessageEntrance';
+import { useSmoothMessageFollow } from './useSmoothMessageFollow';
 import { isVisibleVoiceCallMessage } from '@/features/bots/voice/voiceCallPresentation';
 import { MessageViewport, type MessageViewportApi } from './MessageViewport';
 import { PAGE_TEXT_NAVIGATION_EVENT } from '@/lib/pageTextAccess';
@@ -3091,6 +3092,7 @@ export function MessageStream({
   const contentRef = useRef<HTMLDivElement>(null);
   /** 渲染 item 的内层 flex 容器；按 data-render-item-key 定位，异步卡片可不占 DOM。 */
   const itemsRef = useRef<HTMLDivElement>(null);
+  const followMessageBottom = useSmoothMessageFollow(scrollRef, itemsRef);
 
   // ── 切会话恢复浏览位置(默认常开) ──
   // 父组件用 key={sessionId} 重挂载本组件,所以这里在 mount 时一次性读取快照即可:
@@ -5079,7 +5081,7 @@ export function MessageStream({
     if (scrollbarDragStartTopRef.current != null) return;
     const generation = beginProgrammaticScroll();
     suppressScrollbarActivation(el);
-    el.scrollTop = el.scrollHeight;
+    followMessageBottom();
     // Layout effects already flush their state updates before paint. Observer
     // and input callbacks need an explicit commit before the next scroll event.
     if (fromLayout) reconcileMessageViewport();
@@ -5092,7 +5094,7 @@ export function MessageStream({
         refreshViewportAnchor();
       }
     });
-  }, [beginProgrammaticScroll, finishProgrammaticScroll, refreshViewportAnchor, reconcileMessageViewport, syncMessageViewport]);
+  }, [beginProgrammaticScroll, finishProgrammaticScroll, refreshViewportAnchor, reconcileMessageViewport, syncMessageViewport, followMessageBottom]);
   pinToBottomRef.current = pinToBottom;
 
   // Composer send is an explicit "show me the result" intent. Don't wait for
@@ -6470,6 +6472,8 @@ export function MessageStream({
                 className="relative mx-auto w-full pt-7"
                 style={{
                   paddingBottom: resolvedBottomPadding,
+                  // The visual follow transform must not enlarge the native scroll range.
+                  overflow: 'clip',
                   // Match the input overlay's width so chat content + input box
                   // share the same horizontal bounds. Falls back to 880 only if
                   // the parent forgot to pass contentWidth.

@@ -1,3 +1,4 @@
+import { useSmoothMessageFollow } from '@/components/chat/useSmoothMessageFollow';
 import { RemoveChatFromListButton } from './RemoveChatFromListButton';
 import { useMessageEntrance } from '@/components/chat/useMessageEntrance';
 import { useThreadPanelResize } from './useThreadPanelResize';
@@ -232,6 +233,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
   const loadRef = useRef<(additionalSources?: string[], changedIds?: string[]) => void>(() => {});
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const followMessageBottom = useSmoothMessageFollow(scrollRef, contentRef, state.kind === 'ready');
   const stickToBottomRef = useRef(true);
   const [seenThrough, setSeenThrough] = useState<string | null>(null);
   const readOwner = useRef(getDataOwnerGeneration());
@@ -753,8 +755,8 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element || prependAnchorRef.current) return;
-    if (stickToBottomRef.current) element.scrollTop = element.scrollHeight;
-  }, [lastRowKey, speakingKey, rows.length, hasControlledBanner, controlledBannerCollapsed]);
+    if (stickToBottomRef.current) followMessageBottom();
+  }, [lastRowKey, speakingKey, rows.length, hasControlledBanner, controlledBannerCollapsed, followMessageBottom]);
 
   // Markdown, code blocks and avatars finish layout after the first paint, and the composer or
   // progress strip may grow: keep a reader who is at the bottom pinned there.
@@ -764,12 +766,12 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
     const content = contentRef.current;
     if (!ready || !scroller || !content || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      if (stickToBottomRef.current && !prependAnchorRef.current) scroller.scrollTop = scroller.scrollHeight;
+      if (stickToBottomRef.current && !prependAnchorRef.current) followMessageBottom();
     });
     observer.observe(content);
     observer.observe(scroller);
     return () => observer.disconnect();
-  }, [ready]);
+  }, [ready, followMessageBottom]);
 
   /** Reads one older page; returns it so 引用 can keep paging toward the original. */
   const loadOlder = async (beforeSequence?: number): Promise<{ messages: BotGroupMessageView[]; hasMore: boolean } | null> => {
@@ -1184,7 +1186,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
           stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < STICK_TO_BOTTOM_PX;
           if (stickToBottomRef.current) acknowledgeSoon();
         }}
-        className="min-h-0 flex-1 overflow-y-auto px-5 pb-4 pt-4"
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-clip px-5 pb-4 pt-4"
       >
         <div ref={contentRef} className="mx-auto flex w-full max-w-[760px] flex-col">
           {hasMoreBefore ? (

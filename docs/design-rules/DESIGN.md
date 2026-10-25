@@ -1199,21 +1199,23 @@ existing actions. Other composers keep their existing behavior.
 
 #### Motion tokens (the only tier source)
 
-**Message arrival and delivery continuity (2026-10-24).** Keep the existing bubble
-colors, shape and typography. Newly appended visible messages enter once with opacity
-and a 6px/pt upward translation on `base` / `ease-out`, without scaling text or changing
-layout dimensions. Decide arrival from the open timeline's visible message identities,
-not the age of the first token: a slow final reply still enters naturally. Initial
-history, older pages, window replacement and recycled cells do not replay; streaming
+**Message arrival and delivery continuity (2026-10-25).** Keep the existing bubble
+colors, shape and typography. New timeline rows enter once with a subtle opacity /
+6px/pt translation while their occupied space grows continuously on mobile. Arrival
+comes from visible message identities, not the age of the first token. Initial
+history, older pages, replacement windows and recycled cells do not replay; streaming
 updates and delivery acknowledgement retain their row identity. Reduced motion shows
 the final state immediately, including when enabled during an entrance.
 
-Pending mobile sends reserve a footer only where the settled message has an action
-row. Companion chats using long-press menus have no empty send footer; real queue,
-offline and failure actions remain accessible. Ordinary streamed replies reserve the
-eventual action row without exposing unfinished-message actions. Companion menu shells
-and avatar columns stay mounted across streaming completion, so enabling actions cannot
-recreate the body or change its width. Historical bubble styling stays unchanged.
+Animate occupied space through streamed wrapping, thinking/work previews, action-row
+changes, recommendations and status removal. Retain exiting content until its space
+closes. Only one scroll owner follows the tail; keyboard and composer reservation must
+use the same evolving geometry as scroll compensation. A reader's drag/history position
+takes precedence. Keep native text selection and the existing message actions; pending
+sends retain the settled action-row space. Reserve streaming action space without
+exposing unfinished-message actions, and collapse intermediate replies' unused space
+continuously. Frame-rate claims require actual display/frame evidence, not interpolated
+recordings or an animation-duration setting.
 
 Global tokens live in `:root` of `apps/desktop/src/renderer/styles/globals.css`; mobile (`apps/mobile`) mirrors same-name same-value constants in `src/theme/tokens.ts` (dual-platform isomorphism, same policy as color tokens, landing with the mobile motion overhaul). **New transitions/animations must reference tokens — no hardcoded durations or cubic-beziers**; 5 interaction-duration tiers + 3 curves, the same philosophy as the §5 radius scale. Values outside the tiers require design review first. Narrow semantic exceptions are recorded directly below.
 

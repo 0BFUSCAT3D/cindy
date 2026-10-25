@@ -48,6 +48,7 @@ import { botTaskResultKey, type BotCollaborationMeta } from '@cindy/maker-shared
  */
 
 import { CHAT_BODY_CLASS } from './chatChrome';
+import { Collapse } from '@/components/ui/collapse';
 import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, TriangleAlert } from 'lucide-react';
@@ -504,7 +505,11 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) : null}
       {/* Reserve the completed toolbar's space while streaming, without showing premature actions.
           Companion hover tools are outside flow and need no footer reservation. */}
-      {!botBubble && (isStreaming || showActionBar) ? <div className="min-h-6">{actionBar}</div> : null}
+      {!botBubble ? <div className="-mt-1.5">
+        <Collapse open={isStreaming || showActionBar}>
+          <div className="pt-1.5"><div className="min-h-6">{actionBar}</div></div>
+        </Collapse>
+      </div> : null}
     </div>
   );
 });

@@ -309,10 +309,7 @@ export function PendingSendBubble({
   screenWidth,
   viewerDeviceId,
   onOpenImage,
-  reserveActionRow = true,
 }: {
-  /** Companion long-press menus have no settled footer; don't reserve one while sending. */
-  reserveActionRow?: boolean;
   /** 当前查看设备:排队消息就是本机发的时不显示设备标签(与已发送消息同一规则)。 */
   viewerDeviceId?: string | null;
   renderImage: (uri: string | null, sourceUri: string | null, onError: () => void) => ReactNode;
@@ -612,7 +609,6 @@ export function PendingSendBubble({
         </Animated.View>
       </View>
       {/* 气泡下方这一行:送达后正式消息的「复制 / …」也占这一行,状态与操作都放这里,前后行高不变。 */}
-      {reserveActionRow || failed || waiting && statusShown || queued && statusShown || selected && outbox ? (
       <View style={styles.statusRow} testID={`pendingSend.statusRow.${item.clientId}`}>
         {failed ? (
           <>
@@ -656,7 +652,6 @@ export function PendingSendBubble({
           </View>
         ) : null}
       </View>
-      ) : null}
       {/* 有具体原因的失败(比如模型不支持图片)直接写出来,用户才知道该怎么处理;图片没传上去的
           通用提示由那张图上的重传按钮表达,轻点气泡才看。 */}
       {item.errorText && (failedImages === 0 || selected) ? (
