@@ -166,9 +166,11 @@ type MaterializeLocal = Omit<CompanionMaterializeHost, 'latestRows'>;
 
 function createMaterializer(input: {
   ensureCanonicalSession: (botId: string) => Promise<string>;
-  discardInvitationWelcome?: (sessionId: string) => Promise<void>;
+  /** False when the task's queue could not be read. */
+  discardInvitationWelcome?: (sessionId: string) => Promise<boolean>;
   rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
   selfDeviceId?: () => string | null;
+  log?: CompanionLog;
 }): MaterializeLocal {
   return {
     applyTodos: async (botId, items, remove, fence) => {
@@ -225,7 +227,12 @@ function createMaterializer(input: {
         const [row] = await getDbClient().drizzle.select({ sessionId: botProfiles.canonicalSessionId })
           .from(botProfiles).where(eq(botProfiles.id, id)).limit(1);
         fence.assertCurrent();
-        if (row?.sessionId) await input.discardInvitationWelcome(row.sessionId);
+        if (row?.sessionId) {
+          // Best effort: an unreadable queue must not fail a take-over that otherwise works.
+          const cleared = await input.discardInvitationWelcome(row.sessionId).catch(() => false);
+          fence.assertCurrent();
+          if (!cleared) input.log?.warn('Queued invitation welcome could not be cleared', { sessionId: row.sessionId });
+        }
       }
     },
     applyCapabilities: async (botId, value, fence) => {
@@ -373,8 +380,8 @@ async function companionSessionIds(botId: string): Promise<string[]> {
 export function createCompanionCloudHost(input: {
   deliverToCanonical: CompanionCloudHost['deliverToCanonical'];
   ensureCanonicalSession: (botId: string) => Promise<string>;
-  /** Remove the greeting request an unfinished meeting queued in this task (cloud-companions.md §6). */
-  discardInvitationWelcome?: (sessionId: string) => Promise<void>;
+  /** Remove the greeting request an unfinished meeting queued in this task (cloud-companions.md §6); false when its queue is unreadable. */
+  discardInvitationWelcome?: (sessionId: string) => Promise<boolean>;
   rebuildContext: (sessionId: string) => Promise<'rebuilt' | 'busy'>;
   /** A turn is running (or queued) in this Session. */
   isTurnActive?: (sessionId: string) => boolean;

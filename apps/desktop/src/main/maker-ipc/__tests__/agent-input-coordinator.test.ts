@@ -649,10 +649,11 @@ describe('discarding the welcome an unfinished meeting queued', () => {
     expect(sent(h).join('\n')).toContain('Say hello');
   });
 
-  it('fails when the queue cannot be read, so the take-over retries', async () => {
+  it('does nothing and does not throw when the queue cannot be read', async () => {
     const h = createHarness();
     h.setLoadQueueSnapshot(async () => { throw new Error('snapshot unreadable'); });
-    await expect(discardQueuedInvitationWelcomes(h.coordinator, 'welcome-session')).rejects.toThrow('INVITATION_QUEUE_UNAVAILABLE');
+    await expect(discardQueuedInvitationWelcomes(h.coordinator, 'welcome-session')).resolves.toBeNull();
+    expect(h.coordinator.getQueueControlSnapshot('welcome-session').pendingQueue).toEqual([]);
   });
 });
 
