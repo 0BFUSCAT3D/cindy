@@ -248,7 +248,7 @@ function streamingHandleStub() {
     messageId: 'C1|9.9',
     append: vi.fn(),
     replace: vi.fn(),
-    finalize: vi.fn(async (): Promise<void> => undefined),
+    finalize: vi.fn<(text: string) => Promise<void>>(async () => undefined),
     addExtraImageAbsPath: vi.fn(),
     close: vi.fn(),
   };
@@ -1103,6 +1103,43 @@ describe('turnRunner 自动任务转播(scheduler turn → 远程控制 thread)'
   const schedulerOrigin = { kind: 'scheduler', scheduleId: 's1', scheduleName: 'PR #118 跟进' };
   const withOrigin = (e: Partial<AgentEvent>): AgentEvent =>
     ({ ...e, turnOrigin: schedulerOrigin }) as AgentEvent;
+
+  // #6884, unit: the same component fence must be projected for background
+  // streaming/final delivery. Existing relay tests only covered plain Markdown.
+  it.each(['rich-card', 'chunked-text'] as const)('projects background rich answers for %s', async (kind) => {
+    const stub = streamingHandleStub();
+    mocks.slackIm.startStreamingText.mockResolvedValue(stub);
+    const previousOutput = fakeAdapter.output;
+    if (kind === 'chunked-text') fakeAdapter.output = {
+      kind: 'chunked-text', im: mocks.slackIm as unknown as ChannelIM, commitFinal: vi.fn(async () => undefined),
+    };
+    await runner.disposeAllSessions();
+    runner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards);
+    try {
+      const h = await attachAndIdle();
+      const source = '```cindy-ui\n' + JSON.stringify({
+        version: 1, seq: 1, op: 'create', id: 'result', kind: 'text', props: { text: 'Readable background result' },
+      }) + '\n```';
+      h.emit(withOrigin({ type: 'text', data: { text: '```cindy-ui\n{"version":', isFinal: false } }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(JSON.stringify(stub.replace.mock.calls)).not.toContain('cindy-ui');
+      h.emit(withOrigin({ type: 'text', data: { text: source, isFinal: true } }));
+      if (kind === 'rich-card') {
+        await vi.waitFor(() => expect(stub.replace).toHaveBeenCalledWith(expect.stringContaining('Readable background result')));
+      }
+      h.emit(withOrigin({ type: 'done', data: {} }));
+      await vi.waitFor(() => {
+        const text = kind === 'chunked-text' ? mocks.slackIm.sendMarkdownText.mock.calls.at(-1)?.[1]
+          : stub.finalize.mock.calls.at(-1)?.[0];
+        expect(text).toContain('Readable background result');
+        expect(text).not.toContain('cindy-ui');
+        expect(text).not.toContain('"op"');
+      });
+    } finally {
+      await runner.disposeAllSessions();
+      fakeAdapter.output = previousOutput;
+    }
+  });
 
   it('successful background work without a reply removes the progress card and its title', async () => {
     const stub = streamingHandleStub();
