@@ -293,6 +293,7 @@ import { AutomationTimerIcon } from '@/session/AutomationTimerIcon';
 import { RenameSessionModal } from '@/session/RenameSessionModal';
 import { SessionOptionsPresenter } from '@/session/SessionOptionsExpoSheet';
 import { SwipeableSessionRow, type SessionSwipeControls } from '@/session/SwipeableSessionRow';
+import { TaskFollowMark, taskFollowerNames, useTaskFollowers } from '@/session/TaskFollowMark';
 import { createSwipeRowRegistry } from '@/session/swipeRowRegistry';
 import { useSessionListActions } from '@/session/useSessionListActions';
 import { useModalFadeLifecycle } from '@/session/useModalFadeLifecycle';
@@ -4396,9 +4397,11 @@ function HomeSessionRowInner({
   const prepareDisclosure = useDisclosurePrepare();
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   // 运行态走订阅而非命令式读取:行已 memo 化,父层不再逐 emit 重渲染,命令式读取会 stale。
   const latestItem = latestMobileSessionRow(item);
+  // 伙伴开的或接手的任务:标题后带第一位伙伴的头像(与桌面侧栏「在跟进」同口径)。
+  const followers = useTaskFollowers(latestItem.session);
   const sessionIsRunning = useSessionRunning(latestItem.session.id);
   // 已加载消息的预览按 session 订阅。普通流式 token 只让对应的可见行更新，首页根层、
   // sections 和其它任务行都保持原引用。
@@ -4453,11 +4456,14 @@ function HomeSessionRowInner({
   };
   const groupRowOpensPrimary = !!group && (attention || rightStatus === 'error') && !groupExpanded;
   const accessibilityTitle = sharedRole === 'owned' ? item.title + ', ' + t('sharedTask.roleHost') : item.title;
+  const followedBy = !group && followers.length
+    ? t('devices.list.a11y.followedBy', { names: taskFollowerNames(followers, i18n.language) })
+    : '';
   const accessibilityLabel = group
     ? groupRowOpensPrimary
       ? t('devices.list.a11y.openAutomationLatest', { title: accessibilityTitle })
       : t('devices.list.a11y.automationTask', { title: accessibilityTitle })
-    : t('devices.list.a11y.openConversation', { title: accessibilityTitle });
+    : t('devices.list.a11y.openConversation', { title: accessibilityTitle }) + followedBy;
   const handlePress = selectionMode && onPressSelection
     ? onPressSelection
     : group
@@ -4592,6 +4598,9 @@ function HomeSessionRowInner({
                 ) : null}
                 {showPinned ? <Pin color={colors.textTertiary} size={iconSize.md} strokeWidth={iconStroke.thin} /> : null}
               </View>
+            ) : null}
+            {!group && followers[0] ? (
+              <TaskFollowMark follower={followers[0]} testID={`home.sessionFollowMark.${item.session.id}`} />
             ) : null}
             {rightStatus === 'time' ? (
               // 任务信息(显示菜单勾选):时间 / PR / worktree / Token / 费用,按勾选顺序。

@@ -20,6 +20,7 @@ import {
 } from '../appSessionState.js';
 import type { WorkbenchDelegationStatus, WorkbenchTranscriptItem } from '../../shared/botWorkbench.js';
 import { broadcastBotWorkbenchChanged } from './botWorkbenchService.js';
+import { broadcastBotRemoteResourceChanged } from './botRemoteResourceInvalidation.js';
 import { botLinkedProjectAccess } from './botLinkedProjects.js';
 import { boundTranscript, readSessionTranscript } from './botWorkbenchTranscripts.js';
 import { readTaskResponsibilities, responsibleSessionIds, setTaskResponsibility } from './botTaskResponsibility.js';
@@ -203,6 +204,8 @@ export async function captureBotCreatedTaskResponsibility(callerSessionId?: stri
     assertCurrent();
     await setTaskResponsibility(root, botId, sessionId, true, assertCurrent);
     broadcastBotWorkbenchChanged(botId);
+    // Remote task rows draw the same mark from the teammate roster's links.
+    broadcastBotRemoteResourceChanged(botId);
   };
 }
 
@@ -217,6 +220,12 @@ export interface BotWorkbenchHostDeps {
   sendToRemoteSession: BotWorkbenchAccessDeps['sendToRemoteSession'];
   /** 另一台电脑上一件任务最近的用户 / 助手文字(按时间正序)。 */
   readRemoteMessages(deviceId: string, sessionId: string): Promise<{ ok: true; items: WorkbenchTranscriptItem[] } | Failure>;
+}
+
+/** Desktop sidebar marks re-read the scopes; remote task rows re-read the teammate roster links. */
+function broadcastResponsibilityChanged(botId: string): void {
+  broadcastBotWorkbenchChanged(botId);
+  broadcastBotRemoteResourceChanged(botId);
 }
 
 /**
@@ -237,7 +246,7 @@ function createDesktopBotWorkbenchAccess(host: BotWorkbenchHostDeps): BotWorkben
       const result = await host.readRemoteMessages(deviceId, sessionId);
       return result.ok ? { ok: true as const, transcript: boundTranscript(result.items) } : result;
     },
-    notifyChanged: broadcastBotWorkbenchChanged,
+    notifyChanged: broadcastResponsibilityChanged,
     listDelegations: listBotDelegationChildren,
     readResponsibleSessionIds: (botId) => readBotResponsibleSessionIds(userDataDir, botId),
     saveResponsibility: (botId, sessionId, responsible) => setTaskResponsibility(

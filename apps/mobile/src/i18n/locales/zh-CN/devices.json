@@ -330,6 +330,7 @@
       "openAutomationLatest": "打开自动化 {{title}} 的最新任务",
       "automationTask": "自动化 {{title}}",
       "openConversation": "打开任务 {{title}}",
+      "followedBy": "，{{names}}在跟进",
       "collapse": "收起 {{title}}",
       "expand": "展开 {{title}}",
       "taskError": "任务出错",
