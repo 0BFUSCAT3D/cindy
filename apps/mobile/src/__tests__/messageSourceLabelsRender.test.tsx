@@ -11,6 +11,8 @@ vi.mock('@/platform/gestureHandler', () => {
   return { GestureDetector: ({ children }: { children: unknown }) => children, Gesture: { LongPress: chain } };
 });
 vi.mock('expo-modules-core', () => ({ requireOptionalNativeModule: () => null }));
+// Native playback is covered by NativeVideoPlayer/inlineVideoPlayer; retain this suite's message assertions.
+vi.mock('@/session/NativeVideoPlayer', () => ({ NativeVideoPlayer: () => null }));
 
 // Screen reader toggle and the system action menu availability, for the companion menu case.
 const a11y = vi.hoisted(() => ({ screenReader: null as null | ((enabled: boolean) => void), systemMenu: false }));
