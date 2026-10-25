@@ -1002,20 +1002,21 @@ function canonicalReplyVisibility() {
     sql`(${messages.agentMeta} IS NULL OR json_extract(${messages.agentMeta}, '$.parent_tool_use_id') IS NULL)`,
     // A completed reply remains visible even when the same turn continues with tools.
     // Only unsealed pre-tool narration is hidden by the companion transcript.
-    // Bound the lookup to this user turn so a later task cannot hide an old reply.
+    // Give the session/time index an upper bound instead of visiting every later
+    // tool and checking its turn. Equality preserves tools tied with the next input;
+    // without a next input, SQLite's maximum integer keeps the tail unbounded.
     sql`(${canonicalReplyCompleted()} OR NOT EXISTS (
       SELECT 1 FROM messages AS subsequent_tool
       WHERE subsequent_tool.session_id = ${messages.sessionId}
         AND subsequent_tool.created_at > ${messages.createdAt}
         AND subsequent_tool.rewind_at IS NULL
         AND subsequent_tool.role IN ('tool_use', 'tool_result', 'thinking')
-        AND NOT EXISTS (SELECT 1 FROM messages AS next_input
+        AND subsequent_tool.created_at <= COALESCE((SELECT MIN(next_input.created_at) FROM messages AS next_input
           WHERE next_input.session_id = ${messages.sessionId}
             AND next_input.role = 'user' AND next_input.rewind_at IS NULL
             AND next_input.created_at > ${messages.createdAt}
-            AND next_input.created_at < subsequent_tool.created_at
             AND (next_input.agent_meta IS NULL OR json_extract(next_input.agent_meta, '$.autoResume') IS NOT 1)
-            AND (next_input.agent_meta IS NULL OR json_extract(next_input.agent_meta, '$.delivery') IS NOT 'steer'))
+            AND (next_input.agent_meta IS NULL OR json_extract(next_input.agent_meta, '$.delivery') IS NOT 'steer')), 9223372036854775807)
     ))`,
   ];
 }
