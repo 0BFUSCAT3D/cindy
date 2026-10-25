@@ -11,7 +11,6 @@ import { getCachedDeviceProviders } from '@/device-link/deviceProvidersCache';
 import { MountOnFirstOpen } from '@/session/MountOnFirstOpen';
 import { RunningTokenRatePopover } from '@/session/RunningTokenRatePopover';
 import { companionConversationItems } from '@/session/companionConversationPresentation';
-import { conversationSearchCompanionParams } from '@/session/conversationSearch';
 import { useRunningTokenRateHistory } from '@/session/useRunningTokenRateHistory';
 import { HomeHeaderGlassButton } from '@/session/HomeHeaderGlassButton';
 import { HomeNewTaskButton } from '@/session/HomeNewTaskButton';
@@ -45,7 +44,7 @@ import { mobileDebugLog } from '@/debug/mobileDebugLog';
 import { getMobileAuthOwner, isMobileAuthOwnerCurrent, subscribeMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { mobileDurableOutbox, durableOutboxDisplayItem, getCurrentMobileOutboxRecords, reconcileMobileOutboxDrafts } from '@/session/mobileDurableOutbox';
 import { retainOutboxFile, durableOutboxUploadUri, removeOutboxFiles, outboxAttachmentNeedsLocalBytes } from '@/session/durableOutboxFiles';
-import { isDurableOutboxSettled, isDurableOutboxUnsent, observeDurableOutboxSending, type DurableOutboxRecord } from '@/session/durableOutbox';
+import { isDurableOutboxSettled, observeDurableOutboxSending, type DurableOutboxRecord } from '@/session/durableOutbox';
 import { isInFlightDeviceLinkError, isSharedTaskPeer, resolveRemoteText } from '@cindy/device-link';
 import { takeRefinementContextTail, truncateRefinementReply } from '@cindy/voice-input-core';
 import {
@@ -183,7 +182,6 @@ import {
   type MobileMessageDraft,
 } from '@/session/MessageRenderer';
 import { BotGroupQuote } from '@/session/BotGroupQuote';
-import { CompanionSelectTextSheet } from '@/session/CompanionSelectTextSheet';
 import {
   clearSentCompanionReplyQuote,
   companionReplyQuoteDisplay,
@@ -446,7 +444,7 @@ import {
   reconcileOptimisticUserMessages,
   type OptimisticUserMessage,
 } from '@/session/optimisticUserMessages';
-import type { PendingSendBubbleActions } from '@/session/PendingSendBubble';
+import { usePendingOutboxActions, usePendingSendActions } from '@/session/usePendingSendActions';
 import {
   acquireQueueEditLock,
   commitQueueEdit,
@@ -672,7 +670,6 @@ import {
   sessionMetaWriteQueue,
   sessionPendingWrites,
   type RemoteSessionRunStatus,
-  useRemoteSessions,
   useRemoteSessionDetail,
   useSessionGoalStatus,
   useSessionInputProjection,
@@ -721,6 +718,8 @@ import { normalizeRemoteOpDirEntries, parentRelPath } from '@/session/fileBrowse
 import * as Clipboard from 'expo-clipboard';
 import { createRemoteMediaDiskCache, imageMimeFromUrl, type RemoteMediaDiskCache } from '@/session/remoteMediaDiskCache';
 import { createExpoRemoteMediaDiskCacheIO, downloadRemoteMediaShareTemp } from '@/session/remoteMediaDiskCacheExpo';
+import { Paths } from 'expo-file-system';
+import { PEER_FILE_DISK_RESERVE_BYTES } from '@/device-link/peerFileRegistry';
 import {
   buildRewindPreviewState,
   isCommitReadyRewindState,
@@ -1177,7 +1176,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   useEffect(() => {
     if (messageScreenFocusedRef.current && messageAppActiveRef.current) historyView.view.setActive(true);
   }, [connectionEpoch, messageReloadRevision, historyView.view]);
-  const sessions = useRemoteSessions();
   const inheritedMessages = useSessionMessages(sessionId, deviceId);
   const rawMessages = useMemo(() => sideChatBoundary === undefined ? inheritedMessages
     : inheritedMessages.filter(message => Date.parse(message.createdAt) >= sideChatBoundary), [inheritedMessages, sideChatBoundary]);
@@ -1914,7 +1912,13 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   // 图片磁盘缓存(跨会话屏 / 跨启动):命中直接回本地 file://,零取件零桌面上传;
   // 未命中取件成功后后台落盘。forceRefresh(skipCache)时绕过并覆盖写自愈。
   const remoteMediaDiskCacheRef = useRef<RemoteMediaDiskCache | null>(null);
-  remoteMediaDiskCacheRef.current ??= createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO());
+  remoteMediaDiskCacheRef.current ??= createRemoteMediaDiskCache(createExpoRemoteMediaDiskCacheIO(), {
+    availableBytes: () => Paths.availableDiskSpace,
+    reserveBytes: PEER_FILE_DISK_RESERVE_BYTES,
+    // Preserve manual image retention; only the new regenerable video copies
+    // join pressure cleanup, with mounted players holding a protection lease.
+    canEvict: mimeType => mimeType.startsWith('video/'),
+  });
   // 磁盘缓存源键加设备命名空间:缓存跨账号/设备存续,不同被控端可能产生相同的
   // xdt-image:// url 字符串,裸 url 作键会把上一账号/设备的缓存文件当命中返回
   // (隐私 + 内容错乱)。经 ref 读当前 deviceId,队列工厂闭包不依赖它重建。
@@ -1988,6 +1992,13 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
         }
         const resolved = await resolveMobileRemoteMedia(media, {
           fetchRemoteMedia: deps.maker.fetchRemoteMedia,
+          ...(diskCache ? { retainLocalVideo: async (video: MobileResolvedRemoteMedia) => {
+            const stored = await diskCache.store(bareDiskSource, video.url, video.mimeType, video.size);
+            const copy = stored ? await diskCache.lookup(bareDiskSource) : null;
+            if (!copy) throw new Error('VIDEO_CACHE_FAILED');
+            return { ...video, url: copy.uri, expiresAt: REMOTE_MEDIA_NEVER_EXPIRES,
+              protectLocalFile: () => diskCache.protect(bareDiskSource) };
+          } } : {}),
           presignGet: (ossKey) => deps.auth.apiFetch<MobileRemoteMediaPresignResult>(
             '/api/device-link/media/presign-get',
             { baseUrl: DEVICE_LINK_API_BASE_URL, method: 'POST', body: { key: ossKey } },
@@ -3127,7 +3138,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     const focusClientId = 'searchFocusClientId' in item
       ? (item as { searchFocusClientId?: string }).searchFocusClientId
       : undefined;
-    if (targetSession.id === sessionId && !focusClientId) {
+    if (targetSession.id === sessionId && !focusClientId && !('searchLocallyCached' in item)) {
       closeSessionListDrawer();
       return;
     }
@@ -3156,7 +3167,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
         deviceName: targetSession.deviceLinkDeviceName ?? targetDeviceId,
         sessionId: targetSession.id,
         ...(focusClientId ? { focusClientId } : {}),
-        ...conversationSearchCompanionParams(item),
       });
     });
   }, [closeSessionListDrawer, navigation, queueDrawerNavigation, sessionId, t]);
@@ -6069,55 +6079,10 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     return outboxConnectionBlockedNow() || isRemoteSessionMissing(row) || row?.cacheSeeded === true
       || getNewSessionCreationTask(sessionId) !== null;
   };
-  const findDurableOutboxRecord = (clientId: string) => getCurrentMobileOutboxRecords().find((r) =>
-    r.deviceId === deviceId && r.item.sessionId === sessionId && r.item.clientId === clientId);
-  const retryOutboxItem = (clientId: string) => {
-    const record = findDurableOutboxRecord(clientId);
-    if (!record || record.state !== 'failed') return;
-    if (record.creation && !record.prepared && !record.template) {
-      const owner = getMobileAuthOwner();
-      void mobileDurableOutbox.update(record, { suspended: true }).then(() => {
-        if (isMobileAuthOwnerCurrent(owner) && outboxSessionAliveRef.current === sessionId) {
-          router.push({ pathname: '/sessions/new', params: { recoverySessionId: sessionId, deviceId, deviceName } });
-        }
-      }).catch((err) => setError(formatRemoteError(err)));
-      return;
-    }
-    setQueueSelectedClientId(null);
-    void mobileDurableOutbox.update(record, {
-      state: record.prepared ? 'confirming' : 'queued', error: undefined,
-    }).catch((err) => setError(formatRemoteError(err)));
-  };
-  const removeOutboxItem = (clientId: string) => {
-    const record = findDurableOutboxRecord(clientId);
-    if (!record) return;
-    // Until creation succeeds, this row also owns the recovery form for every later message.
-    if (record.creation && !record.prepared && !record.template) {
-      setError(t('session.outbox.creationRecoveryRequired'));
-      return;
-    }
-    // 删除发送失败的消息不可撤销:先确认(破坏性按钮),确认后才真正移除。
-    const confirmRemove = () => {
-      setQueueSelectedClientId(null);
-      const owner = getMobileAuthOwner();
-      const remove = async () => {
-        if (isDurableOutboxUnsent(record)) {
-          await mobileDurableOutbox.update(record, { state: 'host-owned', cleanupOutcome: 'cancelled', cancelRequested: true, error: undefined });
-        } else await mobileDurableOutbox.update(record, { cancelRequested: true, state: 'confirming' });
-      };
-      void remove().catch((err) => {
-        if (isMobileAuthOwnerCurrent(owner) && outboxSessionAliveRef.current === sessionId) setError(formatRemoteError(err));
-      });
-    };
-    Alert.alert(
-      t('session.outbox.deleteConfirmTitle'),
-      t('session.outbox.deleteConfirmBody'),
-      [
-        { text: t('session.common.cancel'), style: 'cancel' },
-        { text: t('session.common.delete'), style: 'destructive', onPress: confirmRemove },
-      ],
-    );
-  };
+  const { findDurableOutboxRecord, retryOutboxItem, removeOutboxItem } = usePendingOutboxActions({
+    deviceId, deviceName, sessionId, router, outboxSessionAliveRef,
+    setError, setQueueSelectedClientId, t,
+  });
   const outboxDisplayItems = useMemo(() => outboxItems.map((item) => {
     const record = findDurableOutboxRecord(item.clientId);
     return {
@@ -6255,8 +6220,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
   const showCompanionReplyTargets = useCompanionReplyTargetPreference();
   const pendingCompanionReplyQuote = usePendingCompanionReplyQuote(companionChat ? sessionId : null);
   const companionQuoteNames = useMemo(() => ({ owner: t('message.renderer.you'), companion: companionName }), [companionName, t]);
-  const [companionSelectText, setCompanionSelectText] = useState<string | null>(null);
-  useEffect(() => setCompanionSelectText(null), [sessionId]);
   const companionQuoteOptions = useMemo<CompanionQuoteOptions | undefined>(() => (companionChat && sessionId ? {
     names: companionQuoteNames,
     showReplyTargets: showCompanionReplyTargets,
@@ -6265,7 +6228,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       requestAnimationFrame(() => composerInputRef.current?.focus());
     },
     onLocate: (clientId) => router.setParams({ focusClientId: clientId, focusRequestKey: String(Date.now()) }),
-    onSelectText: (text) => setCompanionSelectText(text),
   } : undefined), [companionChat, companionQuoteNames, router, sessionId, showCompanionReplyTargets]);
   const pendingCompanionQuoteOriginal = useMemo(() => {
     const clientId = pendingCompanionReplyQuote?.clientId;
@@ -7744,11 +7706,20 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
     };
   };
 
+  // Shared by queue receipts and file actions; declared before memoized consumers.
+  const [transientNotice, setTransientNotice] = useState<SessionTransientNoticeValue | null>(null);
+  const transientNoticeSeqRef = useRef(0);
+  const showTransientNotice = useCallback((message: string) => {
+    transientNoticeSeqRef.current += 1;
+    setTransientNotice({ id: transientNoticeSeqRef.current, message });
+  }, []);
+  const dismissTransientNotice = useCallback(() => setTransientNotice(null), []);
+
   const resumeQueue = () => {
     void runQueueAction(() => maker.input.resume(sessionId));
   };
 
-  const steerQueueItem = (item: QueuedRemoteMessage) => {
+  const steerQueueItem = useCallback((item: QueuedRemoteMessage) => {
     void runQueueAction(async () => {
       // Projections omit trusted bodies. Prefer fresh source data, while allowing the
       // target to restore its main-owned snapshot when the source is unavailable.
@@ -7776,7 +7747,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       }
       return accepted;
     });
-  };
+  }, [deviceId, invoke, maker, runQueueAction, sessionId, showTransientNotice, t]);
 
   const moveQueueItem = useCallback((clientId: string, direction: 'up' | 'down') => {
     // 菜单打开期间队列可能变化：按最新位置重新判断方向和目标。
@@ -7809,7 +7780,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       });
   }, [applyProjectionIfCurrent, maker, sessionId]);
 
-  const removeQueueItem = (clientId: string) => {
+  const removeQueueItem = useCallback((clientId: string) => {
     const before = remoteSessionStore.getInputProjection(sessionId);
     const index = before.pendingQueue.findIndex((item) => item.clientId === clientId);
     const removed = index >= 0 ? before.pendingQueue[index] : undefined;
@@ -7843,7 +7814,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       },
       action: () => maker.input.remove(sessionId, clientId),
     });
-  };
+  }, [maker, runOptimisticQueueAction, runQueueAction, sessionId]);
 
   /**
    * 回收某次排队编辑期间"新增"的附件(不在 stash、也不是该队列条目自身 files):
@@ -7901,7 +7872,7 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
    * 已在编辑另一条时切换目标:沿用最初的 stash(用户真正的草稿),旧条目解锁,
    * 且旧条目编辑期间新增的附件先回收再覆写托盘(否则成为 OSS 孤儿,review P2)。
    */
-  const beginQueueEdit = (item: QueuedRemoteMessage) => {
+  const beginQueueEdit = useCallback((item: QueuedRemoteMessage) => {
     if (queueAvailabilityReason || queueBusy) return;
     // 上一条的保存(update-content)在途时不允许进入/切换编辑:切换路径会立即解锁
     // 旧条目并回收其编辑期附件,与在途 RPC 竞争——桌面端可能用旧内容抢先派发,或
@@ -7953,36 +7924,14 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
       setQueueEditLock,
     );
     composerInputRef.current?.applyDocumentAndSetSelectionToEnd(textState.document);
-  };
+  }, [applyComposerDocument, discardQueueEditTransientAttachments, pendingUploads.length,
+    queueAvailabilityReason, queueBusy, setQueueEditLock, t]);
 
-  /** 放弃排队消息编辑:解锁 + 回收编辑期新增附件 + 恢复进入前的草稿与附件托盘。 */
-  const pendingSendActions = useMemo<PendingSendBubbleActions>(
-    () => ({
-      busy: queueBusy,
-      selectedClientId: queueSelectedClientId,
-      onSelect: setQueueSelectedClientId,
-      onRemove: (clientId: string) => {
-        setQueueSelectedClientId(null);
-        removeQueueItem(clientId);
-      },
-      onBeginEdit: (clientId: string) => {
-        const target = remoteSessionStore.getInputProjection(sessionId).pendingQueue
-          .find((entry) => entry.clientId === clientId);
-        if (target) beginQueueEdit(target);
-      },
-      onSteer: (clientId: string) => {
-        const target = remoteSessionStore.getInputProjection(sessionId).pendingQueue
-          .find((entry) => entry.clientId === clientId);
-        if (!target) return;
-        setQueueSelectedClientId(null);
-        steerQueueItem(target);
-      },
-      onMove: moveQueueItem,
-      onRetryOutbox: retryOutboxItem,
-      onRemoveOutbox: removeOutboxItem,
-    }),
-    [beginQueueEdit, moveQueueItem, queueBusy, queueSelectedClientId, removeQueueItem, removeOutboxItem, retryOutboxItem, sessionId, steerQueueItem],
-  );
+  const pendingSendActions = usePendingSendActions({
+    beginQueueEdit, moveQueueItem, queueBusy, queueSelectedClientId,
+    removeQueueItem, removeOutboxItem, retryOutboxItem, sessionId,
+    setQueueSelectedClientId, steerQueueItem,
+  });
 
   // ⚠️ 临时取证(定位「气泡凭空消失」,定位完成后删):会话页实例身份 + 挂载/卸载。
   // settlingDiag 只在两次「首帧」打出 prev=0,之后再没跑过 —— 强烈指向组件被换了实例
@@ -9125,14 +9074,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
 
   // chip 长按菜单(浮动面板,ContextSheet/模型选择面板同款):target 即开关。
   const [chipMenuTarget, setChipMenuTarget] = useState<ChatFilePathTarget | null>(null);
-  // 会话页的短暂提示(复制路径等),与文件浏览器「已复制路径」同口径。
-  const [transientNotice, setTransientNotice] = useState<SessionTransientNoticeValue | null>(null);
-  const transientNoticeSeqRef = useRef(0);
-  const showTransientNotice = useCallback((message: string) => {
-    transientNoticeSeqRef.current += 1;
-    setTransientNotice({ id: transientNoticeSeqRef.current, message });
-  }, []);
-  const dismissTransientNotice = useCallback(() => setTransientNotice(null), []);
   const [chipShareBusy, setChipShareBusy] = useState(false);
 
   // 聊天正文文件 chip 上下文(消息树内 inline chip 经 context 消费,不走多层 prop):
@@ -10060,10 +10001,6 @@ function SessionScreenContent({ beforeSessionSwitchRef, newSessionActionRef }: S
           />
         ) : null
         )}</MountOnFirstOpen>
-        {companionSelectText !== null ? (
-          <CompanionSelectTextSheet key={`select-text:${deviceId}:${sessionId}`} text={companionSelectText}
-            onClose={() => setCompanionSelectText(null)} />
-        ) : null}
         {currentSession ? <SideChatsSheet key={`${deviceId}:${sessionId}`} visible={sideChatsOpen}
           session={currentSession} maker={maker} onClose={() => setSideChatsOpen(false)}
           onCreate={() => createSideChat()} onSelect={openSideChat} /> : null}

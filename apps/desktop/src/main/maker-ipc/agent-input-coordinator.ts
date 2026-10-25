@@ -738,6 +738,8 @@ type AgentInputSendFailure = Extract<
 >;
 
 interface SessionInputState {
+  /** Runtime courtesy clock; never persisted or used for list ordering. */
+  lastUserActionAt: number | null;
   pendingQueue: AgentInputQueuedMessage[];
   pendingCompacts: PendingCompactRequest[];
   steeringQueueClientIds: string[];
@@ -885,6 +887,7 @@ function createInitialInputState(
   fencedStaleTerminal: { instanceId: string; generation: number } | null = null,
 ): SessionInputState {
   return {
+    lastUserActionAt: null,
     pendingQueue: [],
     pendingCompacts: [],
     steeringQueueClientIds: [],
@@ -1972,9 +1975,8 @@ export class AgentInputCoordinator {
           sessionId,
           clientId: abandonedClientId,
         });
-        // 手动「继续」是真人介入,与 retryLastError 同口径刷新 userSendAt(否则
-        // 会话活跃信号 / 列表排序不会反映这次人工动作)。
-        this.touchUserSend(sessionId, opts?.sendAtMs);
+        // 继续原消息仍是真人接手，但不是新消息，不推进列表排序时间。
+        this.noteUserAction(sessionId);
         this.emit(sessionId);
         this.scheduleDrain(sessionId, 'ui-continue-queue-head-unlock');
         return this.getProjection(sessionId);
@@ -2020,7 +2022,8 @@ export class AgentInputCoordinator {
     // 而静默顺延(PR #972 review P2)。侧栏排序的 bump 语义保留在派发时刻 ——
     // runner 的 accepted 回调按直发路径同款调 touchUserSendInDb(ctx.firedAt)。
     if (!automaticOrigin) {
-      this.touchUserSend(sessionId, opts?.sendAtMs);
+      if (isUiContinuationItem(item)) this.noteUserAction(sessionId);
+      else this.touchUserSend(sessionId, opts?.sendAtMs);
     }
     // 视觉连续性: 当这条入队后立即可派发(agent 空闲、队列此前为空、无暂停/锁/恢复
     // 阻塞)时, 跳过中间态 emit 并同步进入 drain —— drain 的同步前半段会先把队首
@@ -3132,7 +3135,7 @@ export class AgentInputCoordinator {
         sessionId,
         clientId: pausedQueueHeadRecoveryClientId,
       });
-      this.touchUserSend(sessionId);
+      this.noteUserAction(sessionId);
     } else {
       this.clearErrorUnlessQueueHeadBlocked(state);
     }
@@ -3177,8 +3180,8 @@ export class AgentInputCoordinator {
    *    首次 admission / 网络失败可以自动穿过，而持续无产出时仍会在上限处停下。
    *  - 已 accept 的 stall / idle / reconnect-stalled timeout：即使 DB 里没有
    *    assistant 行，也只发 CONTINUE，绝不克隆原文（本 turn 可能已经跑过工具）。
-   *  - 不 `touchUserSend`：那个时间戳的语义是「人最近发过消息」（会话列表 / 陈旧判定
-   *    在读它），自动补发不该冒充人类动作。
+   *  - 不通知 `onUserAction`：自动补发不算真人接手。人工与自动恢复都保留原消息的
+   *    userSendAt，不因重试改变列表排序；真人接手与新消息发送分别记账。
    */
   private async performRetryLastError(
     sessionId: string,
@@ -3459,7 +3462,7 @@ export class AgentInputCoordinator {
         attemptToken ?? undefined,
       );
     }
-    if (!automatic) this.touchUserSend(sessionId);
+    if (!automatic) this.noteUserAction(sessionId);
     this.emit(sessionId);
     this.scheduleDrain(sessionId, 'retry');
     this.scheduleExternalTurnRetryIfNeeded(sessionId, state, 'retry');
@@ -6443,9 +6446,20 @@ export class AgentInputCoordinator {
     if (byClientId.size === 0) this.steerRequestLineages.delete(sessionId);
   }
 
+  getLastUserActionAt(sessionId: string): number | null {
+    return this.states.get(sessionId)?.lastUserActionAt ?? null;
+  }
+
+  private noteUserAction(sessionId: string): void {
+    // Use host time, not a remote sender's clock. State clear/owner teardown also
+    // clears this clock; an app restart has no running turn to yield to.
+    this.getState(sessionId).lastUserActionAt = Date.now();
+    this.deps.onUserAction?.(sessionId);
+  }
+
   private touchUserSend(sessionId: string, atMs?: number): void {
     // 真人接手在派发/落库失败时也成立；限额预算与渠道 turn 的认领分别通知。
-    this.deps.onUserAction?.(sessionId);
+    this.noteUserAction(sessionId);
     void touchUserSendInDb(sessionId, atMs).catch((err) => {
       log.warn('touchUserSend failed', { sessionId, error: errorMessage(err) });
     });
