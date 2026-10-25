@@ -712,7 +712,10 @@ export function ContextWindowBudgetChip({
  *
  * 为什么不用 Radix 的菜单项：卡片要**指针悬浮**就展开（与货币 chip 的「用量明细」卡同一交互），
  * 而 Radix 菜单在展开时会把焦点抢进内容 —— 鼠标扫过底栏不该发生这种事；Popover 不抢焦点，
- * 行的几何/选中标记沿用原菜单项（`pl-8 pr-2 py-1.5 rounded-sm` + 左侧实心圆点）。
+ * 行的几何/选中标记沿用原菜单项（`pl-8 pr-2 py-1.5` + 左侧实心圆点）；行高亮的圆角
+ * 取 8px inner 档（`rounded-lg`，与 `ui/dropdown-menu.tsx` 的 `ROW_BASE`、
+ * `ui/menu-row.tsx` 的 `COMPOSER_MENU_ROW` 一致）——4px 是不入档值，新代码禁止再写
+ * （DESIGN.md §5 Step 2 / §4，design-decision-log 2026-08-29）。
  */
 function TierRow({
   tokens,
@@ -746,7 +749,7 @@ function TierRow({
       onFocus={onFocus}
       onClick={onSelect}
       className={cn(
-        'relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-left text-13 font-medium',
+        'relative flex w-full cursor-default select-none items-center rounded-lg py-1.5 pl-8 pr-2 text-left text-13 font-medium',
         'outline-none transition-colors hover:bg-sidebar-item-hover',
         'focus-visible:bg-sidebar-item-hover focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
         'disabled:pointer-events-none disabled:opacity-50',
