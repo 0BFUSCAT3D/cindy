@@ -738,6 +738,8 @@ type AgentInputSendFailure = Extract<
 >;
 
 interface SessionInputState {
+  /** Runtime courtesy clock; never persisted or used for list ordering. */
+  lastUserActionAt: number | null;
   pendingQueue: AgentInputQueuedMessage[];
   pendingCompacts: PendingCompactRequest[];
   steeringQueueClientIds: string[];
@@ -885,6 +887,7 @@ function createInitialInputState(
   fencedStaleTerminal: { instanceId: string; generation: number } | null = null,
 ): SessionInputState {
   return {
+    lastUserActionAt: null,
     pendingQueue: [],
     pendingCompacts: [],
     steeringQueueClientIds: [],
@@ -1973,7 +1976,7 @@ export class AgentInputCoordinator {
           clientId: abandonedClientId,
         });
         // 继续原消息仍是真人接手，但不是新消息，不推进列表排序时间。
-        this.deps.onUserAction?.(sessionId);
+        this.noteUserAction(sessionId);
         this.emit(sessionId);
         this.scheduleDrain(sessionId, 'ui-continue-queue-head-unlock');
         return this.getProjection(sessionId);
@@ -2019,7 +2022,7 @@ export class AgentInputCoordinator {
     // 而静默顺延(PR #972 review P2)。侧栏排序的 bump 语义保留在派发时刻 ——
     // runner 的 accepted 回调按直发路径同款调 touchUserSendInDb(ctx.firedAt)。
     if (!automaticOrigin) {
-      if (isUiContinuationItem(item)) this.deps.onUserAction?.(sessionId);
+      if (isUiContinuationItem(item)) this.noteUserAction(sessionId);
       else this.touchUserSend(sessionId, opts?.sendAtMs);
     }
     // 视觉连续性: 当这条入队后立即可派发(agent 空闲、队列此前为空、无暂停/锁/恢复
@@ -3132,7 +3135,7 @@ export class AgentInputCoordinator {
         sessionId,
         clientId: pausedQueueHeadRecoveryClientId,
       });
-      this.deps.onUserAction?.(sessionId);
+      this.noteUserAction(sessionId);
     } else {
       this.clearErrorUnlessQueueHeadBlocked(state);
     }
@@ -3459,7 +3462,7 @@ export class AgentInputCoordinator {
         attemptToken ?? undefined,
       );
     }
-    if (!automatic) this.deps.onUserAction?.(sessionId);
+    if (!automatic) this.noteUserAction(sessionId);
     this.emit(sessionId);
     this.scheduleDrain(sessionId, 'retry');
     this.scheduleExternalTurnRetryIfNeeded(sessionId, state, 'retry');
@@ -6443,9 +6446,20 @@ export class AgentInputCoordinator {
     if (byClientId.size === 0) this.steerRequestLineages.delete(sessionId);
   }
 
+  getLastUserActionAt(sessionId: string): number | null {
+    return this.states.get(sessionId)?.lastUserActionAt ?? null;
+  }
+
+  private noteUserAction(sessionId: string): void {
+    // Use host time, not a remote sender's clock. State clear/owner teardown also
+    // clears this clock; an app restart has no running turn to yield to.
+    this.getState(sessionId).lastUserActionAt = Date.now();
+    this.deps.onUserAction?.(sessionId);
+  }
+
   private touchUserSend(sessionId: string, atMs?: number): void {
     // 真人接手在派发/落库失败时也成立；限额预算与渠道 turn 的认领分别通知。
-    this.deps.onUserAction?.(sessionId);
+    this.noteUserAction(sessionId);
     void touchUserSendInDb(sessionId, atMs).catch((err) => {
       log.warn('touchUserSend failed', { sessionId, error: errorMessage(err) });
     });
