@@ -8137,8 +8137,8 @@
       "coverage": "일별 집계는 {{date}}부터",
       "col": {
         "task": "세션",
-        "model": "모델",
-        "provider": "제공자",
+        "model": "현재 모델",
+        "provider": "현재 제공자",
         "tokens": "누적 토큰",
         "context": "컨텍스트 사용률",
         "lastActive": "마지막 활동"
