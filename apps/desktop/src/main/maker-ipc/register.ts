@@ -3122,6 +3122,12 @@ type DispatchOrcaInterAgentMessage = (
 
 let dispatchInterAgentMessageHolder: DispatchOrcaInterAgentMessage | null = null;
 
+/** Local/SSH sessions settle reports without completing the Worker turn. */
+export function captureLocalWorkerReport(sessionId: string): (accepted: boolean) => Promise<void> {
+  if (!orcaTeamServiceForEvents) throw new Error('Orca team service is not initialized');
+  return orcaTeamServiceForEvents.captureLocalWorkerReport(sessionId);
+}
+
 export async function dispatchInterAgentMessage(
   params: DispatchOrcaInterAgentMessageParams,
 ): Promise<DispatchOrcaInterAgentMessageResult> {
