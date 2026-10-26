@@ -142,7 +142,17 @@ export function createChatHistory(input: { api: Api; store: ChatHistoryStore; cu
     for (const message of messages) merge(state, message);
     const ids = messages.map(m => m.id); state.pages[key] = ids;
     state.stalePages = state.stalePages?.filter(value => value !== key);
-    while (Object.keys(state.pages).length > 500) delete state.pages[Object.keys(state.pages)[0]!];
+    const excess = Object.keys(state.pages).length - 500;
+    if (excess > 0) {
+      // Retain the newest covered ranges, not insertion order: renaming a shifted
+      // head must not evict the next page and cascade misses through a transcript.
+      // Keep this response covered until page() has returned its message objects.
+      const oldest = Object.entries(state.pages).filter(([pageKey]) => pageKey !== key)
+        .map(([pageKey, pageIds]) => ({ key: pageKey,
+          seq: BigInt(state.messages[pageIds[0] ?? '']?.seq ?? new URLSearchParams(pageKey).get('before') ?? '0') }))
+        .sort((a, b) => a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0);
+      for (const page of oldest.slice(0, excess)) delete state.pages[page.key];
+    }
     await save(room, state);
     return ids;
   }

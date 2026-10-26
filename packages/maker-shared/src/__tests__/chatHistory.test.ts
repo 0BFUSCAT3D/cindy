@@ -100,6 +100,40 @@ describe('durable chat history', () => {
     expect((await fresh.projection('room', ['2'])).messages).toEqual([f.message('2', 2, true)]);
   });
 
+  // PR #7242, unit: one new head at the 500-page limit used to evict each next
+  // page during a forward scan. Existing shifted-boundary coverage never filled the cache.
+  it('retains the next cached pages during a full scan at capacity after a new message', async () => {
+    const f = fixture();
+    const state: ChatHistoryState = { generation: 'saved', snapshot: { room: { id: 'room' }, messages: [], cursor: '10' },
+      cursor: '10', messages: {}, pages: {}, metadataDirty: false };
+    // One message per page keeps the capacity/eviction regression small while using
+    // the same production page, persistence and coverage-stitching entry points.
+    for (let seq = 500; seq >= 1; seq--) {
+      state.messages[String(seq)] = f.message(String(seq));
+      state.pages[seq === 500 ? 'limit=1' : `limit=1&before=${seq + 1}`] = [String(seq)];
+    }
+    f.disk.set('room', state);
+    const cache = f.open();
+    await cache.receive('room', { cursor: '11', changes: [{ type: 'message.created', data: { message: f.message('501') } }] }, '10');
+    f.api.mockImplementation(async route => {
+      const before = new URL(`https://fixture${route}`).searchParams.get('before');
+      return [f.message(before ? String(Number(before) - 1) : '501')];
+    });
+    // receive() does not mark the restored cache checked; retain its real empty delta read.
+    const messagesApi = f.api.getMockImplementation()!;
+    f.api.mockImplementation(async route => route.startsWith('/changes?')
+      ? { cursor: '11', changes: [] } : messagesApi(route));
+    for (let seq = 501; seq >= 2; seq--) {
+      const query = new URLSearchParams(seq === 501 ? 'limit=1' : `limit=1&before=${seq + 1}`);
+      expect((await cache.page('room', query)).map(message => message.id)).toEqual([String(seq)]);
+    }
+    expect(f.api.mock.calls.filter(([route]) => route.includes('/messages?'))).toHaveLength(1);
+    expect(Object.keys(f.disk.get('room')!.pages)).toHaveLength(500);
+    // Evicting old coverage must not prune the very page the caller is receiving.
+    expect(await cache.page('room', new URLSearchParams('limit=1&before=2'))).toEqual([f.message('1')]);
+    expect(Object.keys(f.disk.get('room')!.pages)).toHaveLength(500);
+  });
+
   // Personal read positions have an actor cursor, separate from room message changes.
   it('reauthorizes personal snapshot metadata after reconnect even when room changes are empty', async () => {
     const f = fixture(); let readSeq = '0';
