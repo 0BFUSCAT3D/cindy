@@ -434,12 +434,14 @@ export function openMainWindowBillingTopUp(): void {
  */
 export function openMainWindowSession(
   sessionId: string,
-  options?: { focus?: boolean; islandEntryId?: string },
+  options?: { focus?: boolean; islandEntryId?: string; deviceId?: string; messageClientId?: string },
 ): void {
   dispatchDeepLink(
-    options?.islandEntryId
-      ? { type: 'session', id: sessionId, islandEntryId: options.islandEntryId }
-      : { type: 'session', id: sessionId },
+    { type: 'session', id: sessionId,
+      ...(options?.islandEntryId ? { islandEntryId: options.islandEntryId } : {}),
+      ...(options?.deviceId ? { deviceId: options.deviceId } : {}),
+      ...(options?.messageClientId ? { messageClientId: options.messageClientId } : {}),
+    },
     options?.focus !== false,
   );
 }

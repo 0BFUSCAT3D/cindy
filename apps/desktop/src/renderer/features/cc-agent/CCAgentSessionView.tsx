@@ -44,6 +44,7 @@ import {
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { CindyMakeSessionGate } from './CindyMakeSessionGate';
 import { SessionRouteOriginGate } from './SessionRouteOriginGate';
+import { useBotIslandVisibleSession } from '@/features/bots/useBotIslandVisibleSession';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { useTranslation } from 'react-i18next';
 import { buildSessionDeepLink } from '@/lib/deepLink';
@@ -1904,6 +1905,10 @@ function CCAgentSessionContent({
     updateQueueItemContent,
     chatDisplaySnapshot,
   } = useCCAgentChat(sessionId, handleTitleUpdate, { chatRealtime });
+  useBotIslandVisibleSession(
+    viewVisible && session?.id === sessionId && historyLoaded ? sessionId ?? null : null,
+    ownsWindowRoute && !isCompactRail && !isOrcaMode,
+  );
   const clearQueueComposerEditDraft = useCallback(
     (edit: NonNullable<typeof queueComposerEdit>, files: readonly AttachedFile[]) => {
       const originalIds = new Set(edit.originalAttachmentIds);

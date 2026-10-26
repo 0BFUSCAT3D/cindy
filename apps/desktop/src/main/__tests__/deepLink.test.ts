@@ -39,6 +39,7 @@ import {
   focusMainWindow,
   handleIncomingDeepLink,
   openMainWindowVoiceSettings,
+  openMainWindowSession,
   openMainWindowRemoteControlSettings,
   setDeepLinkMainWindow,
   takePendingDeepLink,
@@ -422,6 +423,13 @@ describe('dual scheme (cindy primary + legacy xdt-maker)', () => {
       expect(JSON.stringify(result)).not.toContain('sk-must-stay-in-main');
     },
   );
+
+  it('retains the original task host and reply anchor while the main renderer is unavailable', () => {
+    setDeepLinkMainWindow(null);
+    openMainWindowSession('original', { deviceId: 'studio', messageClientId: 'reply', islandEntryId: 'entry' });
+    expect(takePendingDeepLink()).toEqual({ type: 'session', id: 'original', deviceId: 'studio', messageClientId: 'reply', islandEntryId: 'entry' });
+    expect(takePendingDeepLink()).toBeNull();
+  });
 
   it('buffers only the opaque provider import id during cold start', () => {
     setDeepLinkMainWindow(null);

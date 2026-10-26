@@ -6,12 +6,13 @@ const mocks = vi.hoisted(() => ({
   params: { botId: 'bot-a', sessionId: 'chat-a' },
   location: { state: null as unknown },
   supported: true,
+  historyLoaded: false,
 }));
 vi.mock('react-router-dom', () => ({
   useParams: () => mocks.params,
   useLocation: () => mocks.location,
   useNavigate: () => vi.fn(),
-  Navigate: () => null,
+  Navigate: () => <div data-testid="original-task" />,
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (s: string) => s }) }));
 vi.mock('@/hooks/useAgentIslandSettings', () => ({
@@ -20,10 +21,14 @@ vi.mock('@/hooks/useAgentIslandSettings', () => ({
 // The private-chat topic host belongs to the chat surface these tests isolate.
 vi.mock('../BotDmThreadHost', () => ({ BotDmThreadHost: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
-  CCAgentSessionView: ({ readOnly }: { readOnly?: boolean }) => <div data-testid="chat" data-readonly={String(!!readOnly)} />,
+  CCAgentSessionView: ({ readOnly }: { readOnly?: boolean }) => {
+    useBotIslandVisibleSession(mocks.historyLoaded ? mocks.params.sessionId : null);
+    return <div data-testid="chat" data-readonly={String(!!readOnly)} />;
+  },
 }));
 vi.mock('../botReadState', () => ({ getBotLastReadAt: () => null, markBotRead: vi.fn() }));
 
+import { useBotIslandVisibleSession } from '../useBotIslandVisibleSession';
 import { BotSessionView } from '../BotSessionView';
 import { BotHistorySessionView } from '../BotHistorySessionView';
 
@@ -34,7 +39,7 @@ const get = vi.fn();
 const history = vi.fn();
 const profile = {
   id: 'bot-a', status: 'active',
-  sessions: [{ id: 'chat-a', kind: 'chat', status: 'active' }],
+  sessions: [{ id: 'chat-a', kind: 'chat', status: 'active', role: 'canonical' }],
 };
 
 beforeEach(() => {
@@ -42,6 +47,7 @@ beforeEach(() => {
   mocks.params = { botId: 'bot-a', sessionId: 'chat-a' };
   mocks.location = { state: null };
   mocks.supported = true;
+  mocks.historyLoaded = true;
   vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   get.mockResolvedValue(profile);
   history.mockResolvedValue([{ id: 'chat-a' }]);
@@ -138,7 +144,7 @@ describe('unavailable Bot task page never disposes island alerts by itself', () 
       sessions: [...profile.sessions, { id: 'delegated-a', kind: 'worker', role: 'delegation', status: 'active' }],
     });
     const view = render(<BotSessionView />);
-    await waitFor(() => expect(view.getByText('bots.sessionUnavailableTitle')).toBeTruthy());
+    await waitFor(() => expect(view.getByTestId('original-task')).toBeTruthy());
     view.rerender(<BotSessionView />);
     await act(async () => {});
     expect(consumeEntryAlert).not.toHaveBeenCalled();
@@ -151,7 +157,7 @@ describe('unavailable Bot task page never disposes island alerts by itself', () 
     live.unmount();
     get.mockRejectedValue(new Error('db busy'));
     const failed = render(<BotSessionView />);
-    await waitFor(() => expect(failed.getByText('bots.sessionLoadFailedTitle')).toBeTruthy());
+    await waitFor(() => expect(failed.getByText('ccAgent.sessionEntry.failed')).toBeTruthy());
     expect(consumeEntryAlert).not.toHaveBeenCalled();
   });
 });
