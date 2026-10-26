@@ -399,8 +399,82 @@ describe('readProviderAccountUsage', () => {
     setAccountUsageFetch(fetchMock as typeof fetch);
     const late = readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
     const fresh = await readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
-    finishLate(jsonRes({}, 429, { 'retry-after': '60' }));
+    finishLate(jsonRes({}, 503));
     await expect(late).resolves.toEqual(fresh);
+    await expect(readProviderAccountUsage({ providerId: 'deepseek' })).resolves.toEqual(fresh);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // PR #7031: failure settlement preserves the latest snapshot/TTL and the longest
+  // active Retry-After, in either completion order. Unit; controlled promises, no I/O.
+  it.each([
+    { firstWait: 0, lateWait: 600 },
+    { firstWait: 600, lateWait: 0 },
+    { firstWait: 600, lateWait: 60 },
+    { firstWait: 60, lateWait: 600 },
+  ].flatMap(row => [false, true].map(seedCache => ({ ...row, seedCache }))))(
+    'keeps the longer backoff after parallel failures ($firstWait / $lateWait, prior cache: $seedCache)',
+    async ({ firstWait, lateWait, seedCache }) => {
+      if (seedCache) {
+        setAccountUsageFetch((async () => jsonRes(DEEPSEEK_BALANCE)) as typeof fetch);
+        await readProviderAccountUsage({ providerId: 'deepseek' });
+        nowMs += 6 * 60_000;
+      }
+      const failure = (wait: number) => wait
+        ? jsonRes({}, 429, { 'retry-after': String(wait) })
+        : jsonRes({}, 503);
+      let finishLate!: (response: Response) => void;
+      const fetchMock = vi.fn()
+        .mockImplementationOnce(() => new Promise<Response>(resolve => { finishLate = resolve; }))
+        .mockResolvedValueOnce(failure(firstWait));
+      setAccountUsageFetch(fetchMock as typeof fetch);
+      const late = readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
+      await readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
+      finishLate(failure(lateWait));
+      const result = await late;
+      const retryAt = nowMs + Math.max(firstWait, lateWait) * 1000;
+      expect(result).toMatchObject({ retryAt });
+      if (seedCache) {
+        expect(result).toMatchObject({ status: 'ready', stale: true, error: 'rate-limited', snapshot: { balances: [{ totalBalance: '194.06' }] } });
+      } else {
+        expect(result).toMatchObject({ status: 'unavailable', error: 'throttled' });
+      }
+      nowMs = retryAt - 1;
+      for (const forceRefresh of [false, true]) {
+        await expect(readProviderAccountUsage({ providerId: 'deepseek', forceRefresh })).resolves.toMatchObject({ retryAt });
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('preserves a parallel success and its TTL while applying a late Retry-After', async () => {
+    let finishLate!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { finishLate = resolve; }))
+      .mockResolvedValueOnce(jsonRes(DEEPSEEK_BALANCE));
+    setAccountUsageFetch(fetchMock as typeof fetch);
+    const late = readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
+    const fresh = await readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
+    finishLate(jsonRes({}, 429, { 'retry-after': '60' }));
+    await expect(late).resolves.toMatchObject({ status: 'ready', stale: true, error: 'rate-limited', retryAt: nowMs + 60_000 });
+    nowMs += 1_000;
+    await expect(readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true })).resolves.toMatchObject({ stale: true, error: 'rate-limited' });
+    nowMs += 60_000;
+    await expect(readProviderAccountUsage({ providerId: 'deepseek' })).resolves.toEqual(fresh);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([503, 429])('clears a parallel HTTP %s failure after a successful response', async (status) => {
+    let finishSuccess!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { finishSuccess = resolve; }))
+      .mockResolvedValueOnce(jsonRes({}, status, { 'retry-after': '600' }));
+    setAccountUsageFetch(fetchMock as typeof fetch);
+    const success = readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
+    await readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
+    finishSuccess(jsonRes(DEEPSEEK_BALANCE));
+    const fresh = await success;
+    expect(fresh).toMatchObject({ status: 'ready', stale: false });
     await expect(readProviderAccountUsage({ providerId: 'deepseek' })).resolves.toEqual(fresh);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

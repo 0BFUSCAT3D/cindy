@@ -432,9 +432,6 @@ async function readResolvedAccountUsage(
     request.forceRefresh === true
     && record !== undefined
     && now - record.lastAttemptAt < MIN_MANUAL_REFRESH_INTERVAL_MS;
-  if (manualRefreshBlocked && record.snapshot && record.expiresAt > now) {
-    return { status: 'ready', snapshot: record.snapshot, stale: false, agent: resolution.agent };
-  }
   // 限流窗口内不发起请求：有旧快照就回 stale，否则报 throttled（Retry-After 生效）。
   if (record?.retryAt && now < record.retryAt) {
     if (record.snapshot) {
@@ -448,6 +445,9 @@ async function readResolvedAccountUsage(
       };
     }
     return { status: 'unavailable', error: 'throttled', retryAt: record.retryAt };
+  }
+  if (manualRefreshBlocked && record.snapshot && record.expiresAt > now) {
+    return { status: 'ready', snapshot: record.snapshot, stale: false, agent: resolution.agent };
   }
   if (
     !request.forceRefresh
@@ -477,36 +477,37 @@ async function readResolvedAccountUsage(
     );
     // 等待上游期间其它查询可能已更新同一账户；迟到失败不能覆盖该记录，
     // 也不能把新余额/TTL/限流状态回退到本次请求开始前的值。
-    const latest = cache.get(cacheKey);
+    let latest = cache.get(cacheKey);
+    const retryAt = Math.max(
+      latest?.retryAt ?? 0,
+      err instanceof AccountUsageRequestError ? err.retryAt ?? 0 : 0,
+    );
     if (latest && latest !== record) {
+      // 仅合并更长的上游等待时间；新余额、有效期与其它并行写入字段保持原值。
+      if (retryAt > latest.retryAt) {
+        latest = { ...latest, retryAt };
+        cache.set(cacheKey, latest);
+      }
+      const waiting = retryAt > accountUsageNow();
+      const error = waiting ? 'rate-limited' : latest.lastError;
       if (latest.snapshot) {
         return {
           status: 'ready', snapshot: latest.snapshot,
-          stale: latest.expiresAt <= accountUsageNow() || latest.lastError !== undefined,
-          ...(latest.lastError ? { error: latest.lastError } : {}),
-          ...(latest.retryAt ? { retryAt: latest.retryAt } : {}),
+          stale: latest.expiresAt <= accountUsageNow() || error !== undefined,
+          ...(error ? { error } : {}),
+          ...(waiting ? { retryAt } : {}),
           agent: resolution.agent,
         };
       }
-      return { status: 'unavailable', error: latest.lastError ?? code, ...(latest.retryAt ? { retryAt: latest.retryAt } : {}) };
+      return { status: 'unavailable', error: waiting ? 'throttled' : error ?? code, ...(waiting ? { retryAt } : {}) };
     }
-    if (err instanceof AccountUsageRequestError && err.retryAt) {
-      cache.set(cacheKey, {
-        snapshot: record?.snapshot,
-        expiresAt: record?.expiresAt ?? 0,
-        lastAttemptAt: now,
-        lastError: code,
-        retryAt: err.retryAt,
-      });
-    } else {
-      cache.set(cacheKey, {
-        snapshot: record?.snapshot,
-        expiresAt: record?.expiresAt ?? 0,
-        lastAttemptAt: now,
-        lastError: code,
-        retryAt: 0,
-      });
-    }
+    cache.set(cacheKey, {
+      snapshot: record?.snapshot,
+      expiresAt: record?.expiresAt ?? 0,
+      lastAttemptAt: now,
+      lastError: code,
+      retryAt,
+    });
     if (
       err instanceof AccountUsageRequestError
       && err.code === 'rate-limited'
