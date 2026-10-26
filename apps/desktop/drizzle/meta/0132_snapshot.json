@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e51c1c93-2ccb-49c7-ae9c-8716e66655bb",
+  "id": "84f21dac-eba7-41de-8850-0e3f81ef2927",
   "prevId": "b05d3986-bbff-4d57-bb16-d71d46d827bd",
   "tables": {
     "account_usage_snapshots": {
@@ -1865,99 +1865,6 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "chat_cache_messages": {
-      "name": "chat_cache_messages",
-      "columns": {
-        "namespace": {
-          "name": "namespace",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "room_id": {
-          "name": "room_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "message_id": {
-          "name": "message_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "payload": {
-          "name": "payload",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "chat_cache_messages_namespace_room_id_message_id_pk": {
-          "columns": [
-            "namespace",
-            "room_id",
-            "message_id"
-          ],
-          "name": "chat_cache_messages_namespace_room_id_message_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "chat_cache_rooms": {
-      "name": "chat_cache_rooms",
-      "columns": {
-        "namespace": {
-          "name": "namespace",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "room_id": {
-          "name": "room_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "chat_cache_rooms_namespace_room_id_pk": {
-          "columns": [
-            "namespace",
-            "room_id"
-          ],
-          "name": "chat_cache_rooms_namespace_room_id_pk"
-        }
-      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
@@ -3958,6 +3865,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "entry_kind": {
+          "name": "entry_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'tool'"
         },
         "session_id": {
           "name": "session_id",

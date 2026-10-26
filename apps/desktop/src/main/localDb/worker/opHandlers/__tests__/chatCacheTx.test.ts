@@ -12,7 +12,7 @@ let db: Database.Database;
 let client: DbClient;
 beforeEach(() => {
   db = new Database(':memory:');
-  db.exec(readFileSync(new URL('../../../../../../drizzle/0132_famous_bruce_banner.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../../../../../../drizzle/0133_chat_history_cache.sql', import.meta.url), 'utf8'));
   client = { tx: async (name: string, args: unknown) => tx(db, { name, args }) } as DbClient;
 });
 afterEach(() => db.close());

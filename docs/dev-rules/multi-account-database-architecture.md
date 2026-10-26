@@ -313,7 +313,7 @@ family。客户端收到当前 family 失效时，只清理当前 Profile。
 
 在账号库中增加 Chat namespace：可信服务端点／realm + 已验证 issuer + membership 身份映射。一个账号访问不同 Chat 服务的数据不得串用，同一房间在直连、device-link 两种路径上不得重复。`deviceId` 是执行地点，不能成为聊天归属主键；消息作者也不等于缓存所有者。
 
-本轮 Desktop 的具体实现是捕获当前 owner 的 `DbClient`，以规范化 endpoint、服务端 `/me` 验证的 human actor ID 和实际 reader actor ID 的 SHA256 作为 namespace。服务端 actor 已绑定 issuer-qualified membership；客户端不自行解析未验证 JWT 来建立归属。migration `0132` 新增：
+本轮 Desktop 的具体实现是捕获当前 owner 的 `DbClient`，以规范化 endpoint、服务端 `/me` 验证的 human actor ID 和实际 reader actor ID 的 SHA256 作为 namespace。服务端 actor 已绑定 issuer-qualified membership；客户端不自行解析未验证 JWT 来建立归属。migration `0133` 新增：
 
 | 物理表 | 主键 | 内容 |
 | --- | --- | --- |

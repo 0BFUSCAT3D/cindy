@@ -847,7 +847,7 @@ Desktop 群聊与话题之间的分隔线支持左右拖拽和方向键调宽；
 - Desktop actor 刷新兜底从 5 秒调整为 60 秒，Auth profile 刷新从 60 秒调整为 300 秒。本机伙伴变化信号、云端 `actor.changed` 仍可主动失效；强制刷新失败保留失效标记，按既有错误退避重试，不能受最近成功登记的 60 秒节流阻挡。
 - 每个空闲伙伴独立按 2 / 4 / 8 / 15 秒空领取退避，另加最多 1 秒抖动；本机 2 秒调度 tick 带来不到 2 秒额外等待，因此稳定空闲兜底约 16–18 秒。queued 通知、重连和运行结束重置退避；401/429 等失败等待优先，运行中 15 秒续租及忙碌 lane 的检查保留。尚无覆盖全部未打开房间的可靠工作通知，因此没有拉长到 60 秒。
 - 共用 [chatHistory.ts](../../packages/maker-shared/src/chatHistory.ts)：首次 snapshot，缺页才取 messages，重启／重连按已提交 cursor 读 changes。已加载旧消息按 revision 更新／保留删除 tombstone；最新页变化后保留旧范围覆盖，分页边界移动不导致所有旧页重新下载。变化正文不带的表情聚合／话题回复数只刷新受影响的已展示页。
-- Desktop 在账号 SQLite 的 `chat_cache_rooms`、`chat_cache_messages` 中保存投影（追加 migration `0132`）；worker 事务同时提交消息、覆盖范围、snapshot、generation 与 cursor，并用 version + generation 防止并行实例回写旧状态（包括清除重建后的版本号重复）。WebSocket 按序处理，落盘完成后 ACK。
+- Desktop 在账号 SQLite 的 `chat_cache_rooms`、`chat_cache_messages` 中保存投影（追加 migration `0133`）；worker 事务同时提交消息、覆盖范围、snapshot、generation 与 cursor，并用 version + generation 防止并行实例回写旧状态（包括清除重建后的版本号重复）。WebSocket 按序处理，落盘完成后 ACK。
 - Mobile 复用现有私有文件缓存能力，在 `cache/chat-history-v1/` 中按账号／realm／endpoint／已验证 human actor／房间生成哈希文件名；每房间消息、页覆盖、游标原子替换，跨挂载 CAS。聊天正文不占用 AsyncStorage，避免多房间累计挤满偏好／草稿的共享库；不新增原生依赖或冷更输入。切账号及退出先失效旧实例、等待在途写入后清理文件，清理失败在下一次登录前重试。元数据失效标记必须在刷新成功落盘后消费，CAS 冲突重试不能丢弃，刷新期间到达的新标记也必须保留。活动群的通知先完成增量补齐再 ACK；列表的跨设备已读通知单独失效相应房间读位，重连、actor 游标重置及手动刷新重新校准个人元数据。
 - `RESET_REQUIRED`、游标超前或成员变化会重建整房间覆盖；界面通过 `historyRevision` 丢弃旧页。翻页、引用原文及附件补读也检查代次：发现重置立即清空旧窗口、作废在途读取并重载最新页，不能再次用展示缓存恢复失效窗口。旧代次迟到回包不能混入新窗口。同代次翻页的 `messageUpdates` 同步修正已显示消息，若已有更晚的刷新结果则保留该结果，并补读新加载范围。明确撤权清除投影，普通网络失败保留磁盘数据。增量投影恢复仍需在线校验；主干的独立展示缓存可先显示已保存内容，得知重置或撤权后立即废弃，离线副本不代表最新授权。已校验热缓存最多复用 30 秒，显式刷新／重连立即补 changes；组装详情期间遇到投影代次变化必须重读，不能把旧正文标成新代次。
 - Desktop 本地已读、话题已读及关注写入共用失效入口，HTTP 成功后立即使个人元数据失效，不依赖 WebSocket 回声。
