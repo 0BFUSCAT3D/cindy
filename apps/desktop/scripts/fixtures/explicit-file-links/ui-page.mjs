@@ -7,7 +7,7 @@ export default {
   real: 'MarkdownRenderer, path classification, click-time resolution, link context menu and error toast',
   notCovered: 'Real filesystem, remote transport and OS opening; mobile native rendering.',
   cases: {
-    default: { about: 'Missing authored link remains clickable, explains failure, copies destination and retries after restoration' },
+    default: { about: 'Missing authored link remains clickable, explains failure, offers a copy menu and requests a fresh lookup after restoration' },
     remote: { about: 'Missing remote link remains clickable without local filesystem access' },
     untrusted: { about: 'Content without privileged file access stays inert' },
   },

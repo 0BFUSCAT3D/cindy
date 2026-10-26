@@ -11,9 +11,9 @@ const content = '[查看报告](/fixture/report.html)\n\n[下载 PDF](/fixture/r
 mountPage({
   route: '/sessions/fixture',
   host: ctx => ({
-    resolvePath: ctx.case === 'remote' ? forbid('resolvePath on remote file') : async ({ href }: { href: string }) => ({
-      status: restored && href.endsWith('.pdf') ? 'unique' : 'none',
-      candidates: restored && href.endsWith('.pdf') ? [href] : [],
+    resolvePath: ctx.case === 'remote' ? forbid('resolvePath on remote file') : async ({ href, refresh }: { href: string; refresh?: boolean }) => ({
+      status: refresh && restored && href.endsWith('.pdf') ? 'unique' : 'none',
+      candidates: refresh && restored && href.endsWith('.pdf') ? [href] : [],
       kind: 'file',
     }),
     openPath: async (path: string) => {

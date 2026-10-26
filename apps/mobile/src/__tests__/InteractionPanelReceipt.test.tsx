@@ -57,9 +57,9 @@ vi.mock('react-native', async () => {
     children?: ReactNode; onPress?: () => void; disabled?: boolean; testID?: string; accessibilityState?: { busy?: boolean }; accessibilityLabel?: string; style?: unknown;
   }) => createElement(tag, { onClick: onPress, disabled, 'data-testid': testID, 'data-native-style': JSON.stringify(style), 'aria-busy': accessibilityState?.busy, 'aria-label': accessibilityLabel }, children);
   // Text keeps its onTextLayout so a test can report how many lines a label took.
-  const Text = ({ children, onTextLayout, onPress, testID }: { children?: ReactNode; onTextLayout?: (event: { nativeEvent: { lines: unknown[] } }) => void; onPress?: () => void; testID?: string }) => {
+  const Text = ({ children, onTextLayout, onPress, onLongPress, testID }: { children?: ReactNode; onTextLayout?: (event: { nativeEvent: { lines: unknown[] } }) => void; onPress?: () => void; onLongPress?: () => void; testID?: string }) => {
     if (onTextLayout) textLayouts.set(String(children), onTextLayout);
-    return createElement('span', { onClick: onPress, 'data-testid': testID }, children);
+    return createElement('span', { onClick: onPress, onContextMenu: onLongPress, 'data-testid': testID }, children);
   };
   return { View: view('div'), Text, Pressable: view('button'), Linking: { openURL: evidence.openURL },
     ScrollView: view('div'), Image: () => null, ActivityIndicator: () => null,
@@ -511,6 +511,41 @@ it.each([true, false])('keeps missing file links actionable only when authored: 
   } else {
     expect(onOpenPath).not.toHaveBeenCalled();
   }
+});
+
+// #7303: an authored directory without a trailing slash can be tapped before
+// background stat completes. Wait for its actual kind before choosing a route.
+it.each(['open', 'menu', 'unmounted', 'outside'] as const)('waits for an authored directory kind before acting: %s', async (mode) => {
+  const onOpenPath = vi.fn();
+  const onLongPressPath = vi.fn();
+  let finishStat!: (value: { kind: 'dir'; resolvedPath: string }) => void;
+  const pending = new Promise<{ kind: 'dir'; resolvedPath: string }>((resolve) => { finishStat = resolve; });
+  const fileContext: ChatFilePathContextValue = {
+    deviceId: 'd1', sessionId: 's1', workdir: '/repo', onOpenPath, onLongPressPath,
+    statPath: vi.fn(() => pending),
+  };
+  await act(async () => root.render(
+    <ChatFilePathContext.Provider value={fileContext}>
+      <ChatPathChipSpan candidate={classifyChatPathLinkTarget(mode === 'outside' ? '/other/components' : 'src/components')} explicitLink
+        display="目录" SpanText={Text} chipStyle={{}} plainStyle={{}} usePathState={useState} />
+    </ChatFilePathContext.Provider>,
+  ));
+  const link = host.querySelector<HTMLElement>('[data-testid="message.markdownPathChip"]')!;
+  await act(async () => mode === 'menu'
+    ? link.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+    : link.click());
+  expect(onOpenPath).not.toHaveBeenCalled();
+  expect(onLongPressPath).not.toHaveBeenCalled();
+  if (mode === 'unmounted') await act(async () => root.render(null));
+  await act(async () => finishStat({ kind: 'dir', resolvedPath: '/repo/src/components' }));
+  if (mode === 'unmounted' || mode === 'outside') {
+    expect(onOpenPath).not.toHaveBeenCalled();
+    expect(onLongPressPath).not.toHaveBeenCalled();
+    return;
+  }
+  expect(mode === 'menu' ? onLongPressPath : onOpenPath).toHaveBeenCalledExactlyOnceWith({
+    kind: 'directory', absPath: '/repo/src/components', relPath: 'src/components',
+  });
 });
 
 it.each(['push-first', 'receipt-first', 'lost-receipt', 'other-client'] as const)(

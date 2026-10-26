@@ -1551,7 +1551,7 @@ function MarkdownTargetLink({
           // cached copy or explain the connection failure. Never open locally.
           result = { status: 'unique', absPath, kind: verdict === 'directory' ? 'directory' : 'file' };
         } else {
-          result = await resolveLocalPathSmart(target.href, workingDir);
+          result = await resolveLocalPathSmart(target.href, workingDir, { refresh: true });
         }
         if (result.status === 'multiple') {
           toast.error(t('chat.markdownRenderer.duplicateFiles', { count: result.candidates.length }));

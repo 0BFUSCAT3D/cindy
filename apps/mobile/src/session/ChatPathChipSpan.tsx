@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useMemo, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from 'react';
 import type { StyleProp, TextStyle } from 'react-native';
 import { useRecyclingState } from '@legendapp/list/react-native';
 import { Text } from '@/components/AppText';
@@ -48,6 +48,11 @@ export function ChatPathChipSpan({
     const absPath = resolveChatAbsPath(candidate.href, ctx.workdir);
     return { absPath, relPath: toWorkdirRel(ctx.workdir, absPath) };
   }, [candidate, ctx]);
+  const actionScope = useRef<{ ctx: typeof ctx; target: typeof target } | null>(null);
+  useEffect(() => {
+    actionScope.current = { ctx, target };
+    return () => { actionScope.current = null; };
+  }, [ctx, target]);
   // verdict 是**缓存的纯派生**,chip 不自己存结论:ForRender 版会把 TTL 未过期的负缓存
   // 回成 'unknown',于是断链期间的乐观点亮也来自缓存。自存一份的话收不到缓存变化 ——
   // 同一路径出现在多个 chip 上时,A 按 unknown 点亮、B 拿到确定的 nonfile,A 会一直
@@ -117,16 +122,34 @@ export function ChatPathChipSpan({
   if (!canOpenChatPathChip(kind, target.relPath)) {
     return <SpanText style={plainStyle}>{display}</SpanText>;
   }
-  const chipTarget: ChatFilePathTarget = {
-    kind,
-    relPath: target.relPath,
-    absPath: target.absPath,
-    ...(kind === 'file' && candidate.line !== undefined ? { line: candidate.line } : {}),
+  const activate = async (action: (value: ChatFilePathTarget) => void) => {
+    let actionKind = kind;
+    if (explicitLink) {
+      // A visible authored link may be tapped before background verification,
+      // or after a cached miss. Resolve the kind before opening or building its
+      // menu; a directory without a trailing slash must not enter file preview.
+      try {
+        const stat = await ctx.statPath(target.absPath);
+        if (stat.kind === 'dir') actionKind = 'directory';
+        else if (stat.kind === 'file') actionKind = 'file';
+      } catch {
+        // Preserve the existing preview/browser failure UX and copy menu when
+        // the host is unavailable; no local lookup or connection reset.
+      }
+      if (actionScope.current?.ctx !== ctx || actionScope.current.target?.absPath !== target.absPath) return;
+    }
+    if (!canOpenChatPathChip(actionKind, target.relPath)) return;
+    action({
+      kind: actionKind,
+      relPath: target.relPath,
+      absPath: target.absPath,
+      ...(actionKind === 'file' && candidate.line !== undefined ? { line: candidate.line } : {}),
+    });
   };
   return (
     <SpanText
-      onLongPress={ctx.onLongPressPath ? () => ctx.onLongPressPath?.(chipTarget) : undefined}
-      onPress={() => ctx.onOpenPath(chipTarget)}
+      onLongPress={ctx.onLongPressPath ? () => { void activate(ctx.onLongPressPath!); } : undefined}
+      onPress={() => { void activate(ctx.onOpenPath); }}
       style={chipStyle}
       testID="message.markdownPathChip"
     >
