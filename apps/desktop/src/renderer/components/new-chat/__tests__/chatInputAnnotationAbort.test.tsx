@@ -22,6 +22,13 @@ import type { ModelSelector } from '../ModelSelector';
 import type { UseVoiceInputResult } from '@/voice-input/useVoiceInput';
 import { useAttachments } from '@/hooks/useAttachments';
 import { dispatchInputDeviceAction } from '@/lib/inputDeviceActions';
+import { makerChatStore } from '@/lib/makerChatStore';
+import {
+  __testing as promptRecommendations,
+  beginPromptRecommendationPrediction,
+  clearPromptRecommendationSession,
+  resolvePromptRecommendationPrediction,
+} from '@/lib/promptRecommendationStore';
 import type { InputDeviceRendererAction } from '../../../../shared/inputDevices';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
@@ -302,6 +309,45 @@ it('shows voice guidance only in an empty composer and distinguishes holding fro
   view.rerender(<ChatInput {...view.props} />);
   fireEvent.pointerEnter(area);
   expect(screen.queryByTestId('composer-voice-hint')).toBeNull();
+});
+
+// 2026-10-26 regression (unit/jsdom): existing guidance must survive the 500ms
+// voice hover delay. The empty-composer test above has no recommendation/preview.
+it.each(['recommendation', 'preview'] as const)('keeps %s visible while hovering the empty composer', async kind => {
+  const sessionId = 'voice-hint-priority';
+  const prompt = 'Continue with this plan';
+  const view = renderComposer({ sessionId, previewPrompt: kind === 'preview' ? prompt : undefined });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  vi.spyOn(makerChatStore, 'getPromptRecommendationCompletionStatus').mockReturnValue({
+    turnStoppedByUser: false, hasTerminalError: false, sideTask: false,
+    hasBackgroundAgentWork: false, hasAutoDrainingQueue: false,
+  });
+  if (kind === 'recommendation') {
+    await act(async () => {
+      promptRecommendations.applyRunningSnapshot(new Map([[sessionId, { isRunning: true }]]));
+      promptRecommendations.noteTurnEnded(sessionId, 200);
+      promptRecommendations.applyRunningSnapshot(new Map());
+      promptRecommendations.settleCompletion(sessionId);
+      const seq = beginPromptRecommendationPrediction(sessionId, 200)!;
+      resolvePromptRecommendationPrediction(sessionId, 200, seq, prompt);
+    });
+  }
+  expect(screen.getByText(prompt)).toBeTruthy();
+  vi.useFakeTimers();
+  try {
+    fireEvent.pointerEnter(h.editor!.view.dom.parentElement!.parentElement!);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(screen.queryByTestId('composer-voice-hint')).toBeNull();
+    expect(screen.getByText(prompt)).toBeTruthy();
+    if (kind === 'recommendation') {
+      supplyRangeGeometry();
+      await act(async () => { fireEvent.keyDown(h.editor!.view.dom, { key: 'Tab' }); });
+      expect(h.editor!.getText()).toBe(prompt);
+    }
+  } finally {
+    vi.useRealTimers();
+    clearPromptRecommendationSession(sessionId);
+  }
 });
 
 // #374 / voiceInputButtonAnchor: the real toolbar must keep the voice control
