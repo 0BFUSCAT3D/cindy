@@ -2488,7 +2488,7 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.handle.mockImplementation(route => route === '/actors'
       ? { body: [{ id: botId, kind: 'bot', externalId: 'local-bot', name: 'Renamed' }] } : response(route));
     // Reads return on the old registry; the next background registration replaces it afterwards.
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(60_000);
     await service.getGroup(roomId);
     await vi.advanceTimersByTimeAsync(300);
     expect(deps.onChanged).toHaveBeenCalledWith(expect.objectContaining({ groupId: '' }), undefined);
@@ -2512,6 +2512,7 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deps.onChanged).toHaveBeenCalledWith(expect.objectContaining({ groupId: roomId }), undefined);
     vi.mocked(socket.send).mockClear();
     socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '43', changes: [] }));
+    await vi.advanceTimersByTimeAsync(0);
     expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'ack', scope: `conversation:${roomId}`, cursor: '43' }));
   });
 
@@ -3208,6 +3209,39 @@ describe('Chat Server result delivery and refresh', () => {
       expect(claims()).toBe(before);
       await vi.advanceTimersByTimeAsync(1);
       expect(claims()).toBe(before + 1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.dispatch).toHaveBeenCalledOnce();
+    });
+
+    // Unit: two-minute idle installations previously performed 60 claims per Bot and
+    // refreshed identity every six seconds. Preserve the bounded unopened-room fallback.
+    it('backs off idle claims independently from profile refresh while keeping a bounded fallback', async () => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      claimed = true;
+      await vi.advanceTimersByTimeAsync(120_000);
+      const count = (path: string) => fixture.handle.mock.calls.filter(([route]) => route === path).length;
+      expect(count('/executions/claim')).toBeGreaterThanOrEqual(5);
+      expect(count('/executions/claim')).toBeLessThanOrEqual(12);
+      expect(count('/me')).toBeLessThanOrEqual(3);
+      expect(count('/actors')).toBeLessThanOrEqual(3);
+      expect(count('/profile/refresh')).toBe(1);
+    });
+
+    // Unit: a notice racing an old empty response must not inherit that response's idle delay.
+    it('claims immediately when a queued notice arrives during an empty claim', async () => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      claimed = true;
+      const socket = await live();
+      let finish!: (value: unknown) => void;
+      fixture.handle.mockImplementation(route => route === '/executions/claim'
+        ? new Promise(resolve => { finish = resolve; }) : response(route));
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(finish).toBeTypeOf('function');
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '8',
+        changes: [{ type: 'execution.changed', entityId: execution.id, data: { status: 'queued', botId } }] }));
+      await vi.advanceTimersByTimeAsync(250);
+      claimed = false; fixture.handle.mockImplementation(response);
+      finish({ body: { execution: null } });
       await vi.advanceTimersByTimeAsync(0);
       expect(deps.dispatch).toHaveBeenCalledOnce();
     });
@@ -4065,6 +4099,8 @@ describe('Chat authentication recovery and polling backoff', () => {
     const meCalls = () => fixture.requests.filter(r => new URL(r.url).pathname === '/v1/me').length;
     expect(meCalls()).toBe(5);
     await vi.advanceTimersByTimeAsync(6_000);
+    expect(meCalls()).toBe(5);
+    await vi.advanceTimersByTimeAsync(54_000);
     expect(meCalls()).toBe(6);
     expect(fixture.refresh).not.toHaveBeenCalled();
   });

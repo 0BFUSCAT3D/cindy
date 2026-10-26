@@ -11,10 +11,18 @@ const h = vi.hoisted(() => ({
   storage: new Map<string, string>(),
   sockets: [] as any[],
 }));
+vi.mock('@/session/historyDiskStoreExpo', () => ({ createHistoryDiskIO: () => ({
+  read: async (key: string) => h.storage.get('file:' + key) ?? null,
+  write: async (key: string, value: string) => { h.storage.set('file:' + key, value); },
+  remove: async (key: string) => { h.storage.delete('file:' + key); },
+  files: async () => [...h.storage.keys()].filter(key => key.startsWith('file:')).map(key => key.slice(5)),
+}) }));
+vi.mock('expo-crypto', () => ({ randomUUID: () => 'fixture-generation' }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => h.auth }));
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {
   getItem: async (key: string) => h.storage.get(key) ?? null,
   setItem: async (key: string, value: string) => { h.storage.set(key, value); },
+  removeItem: async (key: string) => { h.storage.delete(key); },
 } }));
 vi.mock('react-native', () => ({ AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) } }));
 vi.mock('expo-router', async () => { const { useEffect } = await import('react'); return { useFocusEffect: (fn: any) => useEffect(fn, [fn]) }; });
@@ -52,7 +60,7 @@ beforeEach(() => {
     if (path.endsWith('/snapshot')) return { room, members: [], messages: [], cursor: '1' };
     if ((path.endsWith('/executions') || path.includes('/execution-failures?'))) return [];
     if (path.includes('/messages?')) return [];
-    if (path.includes('/changes?')) return { head: '1' };
+    if (path.includes('/changes?')) return { head: '1', cursor: '1', changes: [], hasMore: false };
     if (options.method === 'POST') return { id: self };
     throw new Error('Unexpected fixture request');
   });

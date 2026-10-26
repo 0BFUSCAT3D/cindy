@@ -8,6 +8,7 @@ const native = vi.hoisted(() => ({
   replaceRoute: vi.fn(),
   closeAccount: undefined as (() => void) | undefined,
   storage: new Map<string, string>(),
+  chatFiles: new Map<string, string>(),
   readSecure: vi.fn(),
   deleteSecure: vi.fn(),
   writeSecure: vi.fn(),
@@ -111,6 +112,12 @@ vi.mock('@/session/composerPaletteCache', () => ({ resetComposerPaletteCache: as
 vi.mock('@/device-link/remoteResourceCache', () => ({ clearRemoteResourceCache: async () => {} }));
 vi.mock('@/session/mobileHomeListCache', () => ({ clearCachedHomeListSnapshot: async () => {} }));
 vi.mock('@/remote-desktop/credentialIdentity', () => ({ updateCredentialAccessToken() {} }));
+vi.mock('@/session/historyDiskStoreExpo', () => ({ createHistoryDiskIO: () => ({
+  read: async (key: string) => native.chatFiles.get(key) ?? null,
+  write: async (key: string, value: string) => { native.chatFiles.set(key, value); },
+  remove: async (key: string) => { native.chatFiles.delete(key); },
+  files: async () => [...native.chatFiles.keys()],
+}) }));
 vi.mock('@/session/mobileSessionMessageCache', () => ({ clearCachedSessionMessages: async () => {} }));
 vi.mock('@/session/remoteHistoryDiskCache', () => ({ clearHistoryDisk: async () => {} }));
 vi.mock('@/session/mobileVoiceCredentialStore', () => ({ clearAllMobileVoiceCredentials: async () => {} }));
@@ -197,7 +204,7 @@ describe('browser auth session lifecycle (real AuthProvider, mocked native/netwo
     native.providers.mockReset().mockResolvedValue({ social: ['wechat'], emailCode: true, smsCode: false });
     native.initialUrl.mockReset().mockResolvedValue(null);
     native.requestCode.mockReset().mockResolvedValue(undefined);
-    native.storage.clear();
+    native.storage.clear(); native.chatFiles.clear();
     native.writeSecure.mockReset().mockImplementation(async (key: string, value: string) => { native.storage.set(key, value); });
     native.logoutCleanup.mockReset();
     native.unregisterPush.mockReset();
@@ -253,10 +260,12 @@ describe('browser auth session lifecycle (real AuthProvider, mocked native/netwo
     native.logoutCleanup.mockImplementationOnce(async () => {
       native.storage.delete('cindy.mobile.auth.session.v1');
     });
+    native.chatFiles.set('fixture-room.json', 'private chat history');
     native.clearSpeaker.mockRejectedValueOnce(new Error('keychain unavailable'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await act(async () => { await auth[action](); });
     expect(native.clearSpeaker).toHaveBeenCalledWith(owner.accountKey);
+    expect(native.chatFiles.size).toBe(0);
     expect(native.storage.has('cindy.mobile.auth.session.v1')).toBe(false);
     expect(native.storage.has('cindy.mobile.auth.userProfile')).toBe(false);
     expect(getMobileAuthOwner().accountKey).toBe('');

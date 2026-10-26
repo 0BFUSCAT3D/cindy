@@ -12,6 +12,7 @@ const sha256Hex = (text: string) => Crypto.digestStringAsync(Crypto.CryptoDigest
 type RoomState = {
   identity: string; roomId: string | null; messages: ChatMessage[]; before: string | null;
   status: 'loading' | 'ready' | 'error'; loadingOlder: boolean;
+  historyRevision?: string;
 };
 
 /** The companion's read-only 1:1 cloud conversation: the latest page, then older pages on demand. */
@@ -31,14 +32,16 @@ export function useCloudCompanionRoom(actorId: string, name: string, enabled: bo
     const previous = latest.current.identity === identity ? latest.current : null;
     try {
       const roomId = previous?.roomId ?? await api.client.companionRoom(actorId, name, sha256Hex);
-      const page = await api.client.history(roomId);
+      const page = await api.client.history(roomId, undefined, previous?.messages.map(message => message.id));
       if (run !== generation.current || !valid()) return;
       // Keep pages already loaded above the refreshed newest page.
       const fresh = new Set(page.messages.map(message => message.id));
-      const kept = previous?.roomId === roomId && previous.messages.length > page.messages.length
-        ? previous.messages.filter(message => !fresh.has(message.id)) : [];
+      const updates = new Map(page.messageUpdates?.map(message => [message.id, message]));
+      const sameHistory = !page.historyRevision || page.historyRevision === previous?.historyRevision;
+      const kept = sameHistory && previous?.roomId === roomId && previous.messages.length > page.messages.length
+        ? previous.messages.filter(message => !fresh.has(message.id)).map(message => updates.get(message.id) ?? message) : [];
       setState({ identity, roomId, messages: [...page.messages, ...kept], before: kept.length ? previous!.before : page.before,
-        status: 'ready', loadingOlder: false });
+        historyRevision: page.historyRevision, status: 'ready', loadingOlder: false });
     } catch (error) {
       if (run !== generation.current || !valid()) return;
       setState(old => old.identity === identity && old.status === 'ready' && !chatAccessLost(error)
@@ -55,15 +58,27 @@ export function useCloudCompanionRoom(actorId: string, name: string, enabled: bo
     const current = latest.current;
     if (current.identity !== identity || !current.roomId || !current.before || olderPending.current) return;
     olderPending.current = true;
+    const run = generation.current;
     setState(old => ({ ...old, loadingOlder: true }));
     try {
       const page = await api.client.history(current.roomId, current.before);
-      if (!valid() || latest.current.roomId !== current.roomId) return;
+      if (!valid() || run !== generation.current || latest.current.roomId !== current.roomId) return;
+      if (page.historyRevision && page.historyRevision !== current.historyRevision) {
+        setState(old => ({ ...old, messages: [], before: null, status: 'loading', loadingOlder: false }));
+        await reload(); return;
+      }
       setState(old => ({ ...old, messages: [...old.messages, ...page.messages], before: page.before, loadingOlder: false }));
-    } catch {
-      if (valid()) setState(old => ({ ...old, loadingOlder: false }));
-    } finally { olderPending.current = false; }
-  }, [api, identity]);
+    } catch (error) {
+      if (valid() && run === generation.current) setState(old => chatAccessLost(error)
+        ? { ...initial(), status: 'error' } : { ...old, loadingOlder: false });
+    } finally {
+      olderPending.current = false;
+      // A refresh can invalidate this page without replacing the visible state if it fails.
+      // Settle this request's loading indicator even when its message result was discarded.
+      if (valid()) setState(old => old.identity === identity && old.roomId === current.roomId && old.loadingOlder
+        ? { ...old, loadingOlder: false } : old);
+    }
+  }, [api, identity, reload]);
   /** The signed address of one attachment, fetched when it is opened (a stale address is simply fetched again). */
   const media = useCallback(async (mediaId: string): Promise<BotGroupAttachment> => {
     const current = latest.current;

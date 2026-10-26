@@ -176,6 +176,8 @@ export function startCompanionCloud(input: {
   humanActorId: string;
   selfDeviceId?: string;
   current: () => boolean;
+  /** Durable Chat Server display projection; takeover and runtime reconstruction still read authoritative history. */
+  transcript?: (roomId: string, actorId: string) => Promise<CompanionTranscriptMessage[]>;
   /** Active local companions whose home is this computer (and not demoted). */
   bots: () => CompanionCloudBot[];
   /** A local companion the owner paused: not synced or moved, and a merge asks to resume it first. */
@@ -765,7 +767,8 @@ export function startCompanionCloud(input: {
       // The room orders by arrival (older history may be uploaded later): read it whole, show it
       // by message time. The first page re-reads; older pages reuse that read.
       const cached = transcripts.get(roomId);
-      const messages = before && cached && Date.now() - cached.at < TRANSCRIPT_CACHE_MS ? cached.messages
+      const messages = input.transcript ? await input.transcript(roomId, actor.id)
+        : before && cached && Date.now() - cached.at < TRANSCRIPT_CACHE_MS ? cached.messages
         : await readAllRoomMessages(input.api, roomId, actor.id);
       transcripts.set(roomId, { at: Date.now(), messages });
       return transcriptPageOf(messages, before ? Number(before) : undefined);
