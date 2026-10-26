@@ -5797,7 +5797,6 @@ async function handleSilentStopTurnEnd(
           // silentStopContinuationBinding.ts 文件头。
           ...binding.sendOpts,
           onAccepted: async () => {
-            discardEndedActivity();
             await createDbMessage(session.id, {
               clientId,
               role: 'user',
@@ -5843,6 +5842,8 @@ async function handleSilentStopTurnEnd(
         await surfaceSilentStopExhaustedBanner(session.id);
         await settleSilentStopDone(session.id, 'exhausted', turnLeaseId, session, generation);
       } else {
+        // 只在供应商确认派发后丢弃原结束时间；未派发或抛出时由失败收口按原时间提交。
+        discardEndedActivity();
         log.info('silent-stop auto-resume dispatched', { sessionId: session.id });
       }
     } catch (err) {
