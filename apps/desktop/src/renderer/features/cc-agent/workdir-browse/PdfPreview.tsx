@@ -259,6 +259,7 @@ export function PdfPreview({ workdir, relPath, size, mtimeMs }: PdfPreviewProps)
   const { t } = useTranslation();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pagesHostRef = useRef<HTMLDivElement>(null);
+  const loadingTaskRef = useRef<ReturnType<typeof pdfjs.getDocument> | null>(null);
   const [pdfDoc, setPdfDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(() => new Set());
@@ -280,7 +281,6 @@ export function PdfPreview({ workdir, relPath, size, mtimeMs }: PdfPreviewProps)
   useEffect(() => {
     let cancelled = false;
     let loadingTask: ReturnType<typeof pdfjs.getDocument> | null = null;
-    let loadedPdf: pdfjs.PDFDocumentProxy | null = null;
     const nextDocumentVersion = documentVersionRef.current + 1;
     documentVersionRef.current = nextDocumentVersion;
     setDocumentVersion(nextDocumentVersion);
@@ -305,11 +305,16 @@ export function PdfPreview({ workdir, relPath, size, mtimeMs }: PdfPreviewProps)
           cMapUrl: '/pdfjs/cmaps/',
           cMapPacked: true,
           standardFontDataUrl: '/pdfjs/standard_fonts/',
+          // This preview renders page canvases only. Keep interactive XFA off
+          // explicitly so untrusted workspace PDFs cannot expand the surface
+          // beyond static page content if PDF.js defaults change later.
+          enableXfa: false,
         });
+        loadingTaskRef.current = loadingTask;
         const pdf = await loadingTask.promise;
-        loadedPdf = pdf;
         if (cancelled) {
-          await pdf.destroy();
+          if (loadingTaskRef.current === loadingTask) loadingTaskRef.current = null;
+          await loadingTask.destroy();
           return;
         }
         setPdfDoc(pdf);
@@ -326,11 +331,10 @@ export function PdfPreview({ workdir, relPath, size, mtimeMs }: PdfPreviewProps)
 
     return () => {
       cancelled = true;
-      // destroy 两者:loadingTask 中止未完成的加载;pdfDoc 释放已解析文档的
-      // worker / 渲染资源(promise resolve 后仅 destroy loadingTask 不够,
-      // 中途导航离开会泄漏文档)。destroy 幂等,两者都调是安全的。
+      // PDF.js 6 把销毁入口收口到 loadingTask。它同时中止未完成加载并释放
+      // 已解析 document proxy、worker 与渲染资源。
+      if (loadingTaskRef.current === loadingTask) loadingTaskRef.current = null;
       void loadingTask?.destroy();
-      void loadedPdf?.destroy();
     };
     // size/mtimeMs 进依赖:同一路径的文件被就地改写(agent 重生成 PDF 等)时
     // relPath 不变但 mtimeMs/size 变,需要重新读字节 + 重渲染,否则预览会停在
@@ -399,13 +403,13 @@ export function PdfPreview({ workdir, relPath, size, mtimeMs }: PdfPreviewProps)
 
     // The error branch unmounts PdfPage first, cancelling sibling RenderTasks.
     // Release the parsed document as well instead of retaining its worker-side
-    // resources for as long as the fallback card remains open. The loading
-    // effect may destroy the same proxy again on prop change/unmount; pdf.js
-    // destroy is idempotent.
+    // resources for as long as the fallback card remains open.
     setPdfDoc(null);
     setPageCount(0);
     setVisiblePages(new Set());
-    void pdfDoc.destroy();
+    const loadingTask = loadingTaskRef.current;
+    loadingTaskRef.current = null;
+    void loadingTask?.destroy();
   }, [pdfDoc, state.kind]);
 
   if (state.kind === 'error') {

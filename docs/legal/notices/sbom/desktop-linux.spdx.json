@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "cindy-desktop-linux",
-  "documentNamespace": "https://cindy.app/spdx/desktop-linux/0f59dcf2cf824f63c865c31e9efee01c3d5c7b43bb4e638322170d93282a18b7",
+  "documentNamespace": "https://cindy.app/spdx/desktop-linux/8e49897285284bfd42046f8d7b91b8c1c4e116d88225fe945675d409630c42cb",
   "creationInfo": {
-    "created": "2026-10-22T12:27:42Z",
+    "created": "2026-10-22T16:02:06Z",
     "creators": [
       "Tool: scripts/generate-third-party-notices.mjs"
     ]
@@ -43,8 +43,8 @@
     },
     {
       "name": "drawio viewer (vendored)",
-      "SPDXID": "SPDXRef-Package-ef29a7e5a6f64477",
-      "versionInfo": "30.0.4",
+      "SPDXID": "SPDXRef-Package-faf2136aae74b2b9",
+      "versionInfo": "32.6.1",
       "downloadLocation": "https://github.com/jgraph/drawio",
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
@@ -2255,6 +2255,23 @@
       ]
     },
     {
+      "name": "@napi-rs/canvas",
+      "SPDXID": "SPDXRef-Package-64951636a26954e4",
+      "versionInfo": "1.0.13",
+      "downloadLocation": "https://github.com/Brooooooklyn/canvas",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/%40napi-rs/canvas@1.0.13"
+        }
+      ]
+    },
+    {
       "name": "@napi-rs/canvas-linux-arm64-gnu",
       "SPDXID": "SPDXRef-Package-7b18f20184d8bf8a",
       "versionInfo": "0.1.100",
@@ -2272,6 +2289,23 @@
       ]
     },
     {
+      "name": "@napi-rs/canvas-linux-arm64-gnu",
+      "SPDXID": "SPDXRef-Package-2deb4be85a2da300",
+      "versionInfo": "1.0.13",
+      "downloadLocation": "https://github.com/Brooooooklyn/canvas",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/%40napi-rs/canvas-linux-arm64-gnu@1.0.13"
+        }
+      ]
+    },
+    {
       "name": "@napi-rs/canvas-linux-x64-gnu",
       "SPDXID": "SPDXRef-Package-0b82bb0fba6b6b67",
       "versionInfo": "0.1.100",
@@ -2285,6 +2319,23 @@
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
           "referenceLocator": "pkg:npm/%40napi-rs/canvas-linux-x64-gnu@0.1.100"
+        }
+      ]
+    },
+    {
+      "name": "@napi-rs/canvas-linux-x64-gnu",
+      "SPDXID": "SPDXRef-Package-b82bb663858be364",
+      "versionInfo": "1.0.13",
+      "downloadLocation": "https://github.com/Brooooooklyn/canvas",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/%40napi-rs/canvas-linux-x64-gnu@1.0.13"
         }
       ]
     },
@@ -12626,8 +12677,8 @@
     },
     {
       "name": "pdfjs-dist",
-      "SPDXID": "SPDXRef-Package-055ffab7d4480e98",
-      "versionInfo": "5.7.284",
+      "SPDXID": "SPDXRef-Package-ab6244e1a74d89af",
+      "versionInfo": "6.4.299",
       "downloadLocation": "https://github.com/mozilla/pdf.js",
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
@@ -12637,7 +12688,7 @@
         {
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
-          "referenceLocator": "pkg:npm/pdfjs-dist@5.7.284"
+          "referenceLocator": "pkg:npm/pdfjs-dist@6.4.299"
         }
       ]
     },
@@ -15976,7 +16027,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-ef29a7e5a6f64477"
+      "relatedSpdxElement": "SPDXRef-Package-faf2136aae74b2b9"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -16666,12 +16717,27 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-64951636a26954e4"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-7b18f20184d8bf8a"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-2deb4be85a2da300"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-0b82bb0fba6b6b67"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-b82bb663858be364"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -19716,7 +19782,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-055ffab7d4480e98"
+      "relatedSpdxElement": "SPDXRef-Package-ab6244e1a74d89af"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

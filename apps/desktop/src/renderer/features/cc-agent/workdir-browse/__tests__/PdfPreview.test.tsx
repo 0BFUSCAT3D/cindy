@@ -147,6 +147,7 @@ describe('PdfPreview lazy page rendering', () => {
       <PdfPreview workdir="C:/work" relPath="mixed.pdf" size={100} mtimeMs={1} />,
     );
     await waitFor(() => expect(container.querySelectorAll('[data-pdf-page]')).toHaveLength(3));
+    expect(pdfjs.getDocument).toHaveBeenCalledWith(expect.objectContaining({ enableXfa: false }));
     const pageNodes = [...container.querySelectorAll<HTMLElement>('[data-pdf-page]')];
     // jsdom has no layout: lock the cross-axis contract as well as the lazy
     // lifecycle. Centering these children moves narrow placeholders outside
@@ -387,9 +388,10 @@ describe('PdfPreview lazy page rendering', () => {
       getPage: vi.fn(async () => page),
       destroy: vi.fn(async () => undefined),
     };
+    const destroyLoadingTask = vi.fn(async () => undefined);
     vi.mocked(pdfjs.getDocument).mockReturnValue({
       promise: Promise.resolve(pdf),
-      destroy: vi.fn(async () => undefined),
+      destroy: destroyLoadingTask,
     } as never);
 
     const { container, getByTestId } = render(
@@ -413,7 +415,7 @@ describe('PdfPreview lazy page rendering', () => {
       renderDeferred.reject(new Error('page render failed'));
     });
     await waitFor(() => expect(getByTestId('unrenderable')).toBeTruthy());
-    await waitFor(() => expect(pdf.destroy).toHaveBeenCalled());
+    await waitFor(() => expect(destroyLoadingTask).toHaveBeenCalled());
     expect(observer!.disconnected).toBe(true);
     expect(renderTask.cancel).toHaveBeenCalled();
   });

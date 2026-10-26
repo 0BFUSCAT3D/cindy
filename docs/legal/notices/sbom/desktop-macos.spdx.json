@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "cindy-desktop-macos",
-  "documentNamespace": "https://cindy.app/spdx/desktop-macos/0232eb5cb93ac8b9fd43bd4c910825ad7912699ee00e06f82aeb31d4ccc50855",
+  "documentNamespace": "https://cindy.app/spdx/desktop-macos/d82d1b1359b1bc336ebe8e6e8049004c74a936e525550b6223907f5c1d5ef3ed",
   "creationInfo": {
-    "created": "2026-10-22T12:27:42Z",
+    "created": "2026-10-22T16:02:06Z",
     "creators": [
       "Tool: scripts/generate-third-party-notices.mjs"
     ]
@@ -63,8 +63,8 @@
     },
     {
       "name": "drawio viewer (vendored)",
-      "SPDXID": "SPDXRef-Package-ef29a7e5a6f64477",
-      "versionInfo": "30.0.4",
+      "SPDXID": "SPDXRef-Package-faf2136aae74b2b9",
+      "versionInfo": "32.6.1",
       "downloadLocation": "https://github.com/jgraph/drawio",
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
@@ -2285,6 +2285,23 @@
       ]
     },
     {
+      "name": "@napi-rs/canvas",
+      "SPDXID": "SPDXRef-Package-64951636a26954e4",
+      "versionInfo": "1.0.13",
+      "downloadLocation": "https://github.com/Brooooooklyn/canvas",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/%40napi-rs/canvas@1.0.13"
+        }
+      ]
+    },
+    {
       "name": "@napi-rs/canvas-darwin-arm64",
       "SPDXID": "SPDXRef-Package-fa2bcd8090d745ab",
       "versionInfo": "0.1.100",
@@ -2302,6 +2319,23 @@
       ]
     },
     {
+      "name": "@napi-rs/canvas-darwin-arm64",
+      "SPDXID": "SPDXRef-Package-43f682561dc4edbf",
+      "versionInfo": "1.0.13",
+      "downloadLocation": "https://github.com/Brooooooklyn/canvas",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/%40napi-rs/canvas-darwin-arm64@1.0.13"
+        }
+      ]
+    },
+    {
       "name": "@napi-rs/canvas-darwin-x64",
       "SPDXID": "SPDXRef-Package-39978a015654477b",
       "versionInfo": "0.1.100",
@@ -2315,6 +2349,23 @@
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
           "referenceLocator": "pkg:npm/%40napi-rs/canvas-darwin-x64@0.1.100"
+        }
+      ]
+    },
+    {
+      "name": "@napi-rs/canvas-darwin-x64",
+      "SPDXID": "SPDXRef-Package-e35f1ed36ebae0f4",
+      "versionInfo": "1.0.13",
+      "downloadLocation": "https://github.com/Brooooooklyn/canvas",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/%40napi-rs/canvas-darwin-x64@1.0.13"
         }
       ]
     },
@@ -12656,8 +12707,8 @@
     },
     {
       "name": "pdfjs-dist",
-      "SPDXID": "SPDXRef-Package-055ffab7d4480e98",
-      "versionInfo": "5.7.284",
+      "SPDXID": "SPDXRef-Package-ab6244e1a74d89af",
+      "versionInfo": "6.4.299",
       "downloadLocation": "https://github.com/mozilla/pdf.js",
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
@@ -12667,7 +12718,7 @@
         {
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
-          "referenceLocator": "pkg:npm/pdfjs-dist@5.7.284"
+          "referenceLocator": "pkg:npm/pdfjs-dist@6.4.299"
         }
       ]
     },
@@ -16016,7 +16067,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-ef29a7e5a6f64477"
+      "relatedSpdxElement": "SPDXRef-Package-faf2136aae74b2b9"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -16711,12 +16762,27 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-64951636a26954e4"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-fa2bcd8090d745ab"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-43f682561dc4edbf"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-Package-39978a015654477b"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-e35f1ed36ebae0f4"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -19761,7 +19827,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-Package-055ffab7d4480e98"
+      "relatedSpdxElement": "SPDXRef-Package-ab6244e1a74d89af"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

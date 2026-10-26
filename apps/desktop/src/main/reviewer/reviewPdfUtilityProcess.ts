@@ -133,8 +133,9 @@ export async function extractReviewPdfText(
     }
     return { sections, pagesInspected, numPages: document.numPages, clipped };
   } finally {
-    if (document) await document.destroy().catch(() => undefined);
-    else await loadingTask.destroy().catch(() => undefined);
+    // PDF.js 6 owns teardown on the loading task; destroying it releases the
+    // resolved document proxy and worker resources as well as partial loads.
+    await loadingTask.destroy().catch(() => undefined);
   }
 }
 
@@ -290,8 +291,7 @@ export async function inspectPdfPages(
     }
     return { numPages, pagesInspected: pages.length, pages };
   } finally {
-    if (document) await document.destroy().catch(() => undefined);
-    else await loadingTask.destroy().catch(() => undefined);
+    await loadingTask.destroy().catch(() => undefined);
   }
 }
 

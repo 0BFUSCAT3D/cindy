@@ -2,8 +2,9 @@
 
 用于在工作区文件浏览里预览 `.drawio` 文件的官方 viewer 脚本,直接 vendor 进仓库以避免运行时从外网拉取。
 
-- **来源**: https://github.com/jgraph/drawio (发布产物 `viewer-static.min.js`)
-- **版本**: `30.0.4`(以 min.js 内嵌的 `VERSION` 字符串为准,`pnpm licenses:generate` 会自动解析)
+- **来源**: https://github.com/jgraph/drawio/blob/v32.6.1/src/main/webapp/js/viewer-static.min.js
+- **版本**: `32.6.1`(以 min.js 内嵌的 `VERSION` 字符串为准,`pnpm licenses:generate` 会自动解析)
+- **SHA-256**: `0c12ccf10dcaf0d0ef40ca60a5bc881ba27b57e076797ee39bce46602371f769`
 - **License**: Apache-2.0(见同目录 `LICENSE`,Copyright (c) JGraph Ltd)
 - **附加限制说明**: 上游对其 icon set / stencil / 模板**素材**另有"未经书面许可不得用于 Atlassian 产品"的附加条款;本目录只 vendor viewer **代码本体**,不包含也不分发那些素材,该限制对本产品不适用。
 
