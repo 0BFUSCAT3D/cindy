@@ -7238,7 +7238,7 @@
         "anonymousAuthorOnly": "僅原作者可修改",
         "anonymousUnavailable": "作者設定暫不可用",
         "anonymousUpdateFailed": "無法確認匿名設定是否已儲存，請重新整理後再試。",
-        "myPlugins": "我的插件",
+        "myPlugins": "發佈插件",
         "publish": "提交審核",
         "submitUpdate": "提交新版本審核",
         "publishHint": "僅限有權發佈的插件，審核通過後在社群上架。",

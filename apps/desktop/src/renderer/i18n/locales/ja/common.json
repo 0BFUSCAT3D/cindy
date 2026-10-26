@@ -7238,7 +7238,7 @@
         "anonymousAuthorOnly": "変更できるのは元の作者のみです",
         "anonymousUnavailable": "作者設定を取得できません",
         "anonymousUpdateFailed": "匿名設定が保存されたか確認できません。更新してから再試行してください。",
-        "myPlugins": "マイプラグイン",
+        "myPlugins": "プラグインを公開",
         "publish": "審査に提出",
         "submitUpdate": "新しいバージョンを審査に提出",
         "publishHint": "公開する権限のあるプラグインのみ対象です。審査の承認後にコミュニティで公開されます。",

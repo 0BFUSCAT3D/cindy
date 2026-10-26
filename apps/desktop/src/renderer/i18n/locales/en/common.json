@@ -7269,7 +7269,7 @@
         "anonymousAuthorOnly": "Only the original author can change this",
         "anonymousUnavailable": "Author settings unavailable",
         "anonymousUpdateFailed": "Could not confirm the anonymity setting was saved. Refresh before trying again.",
-        "myPlugins": "My Plugins",
+        "myPlugins": "Publish Plugin",
         "publish": "Submit for Review",
         "submitUpdate": "Submit New Version for Review",
         "publishHint": "Publish only plugins you have permission to publish. Human approval is required for community listing.",
