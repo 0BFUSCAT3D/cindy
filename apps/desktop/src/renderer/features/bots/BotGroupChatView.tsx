@@ -308,6 +308,11 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
           return;
         }
         const displayed = stateRef.current;
+        if (!hasTimeline && reloadVersion === 0) void api.getBotGroup(groupId, { cacheOnly: true, ...(direct ? { conversationKind: 'direct' } : {}) }).then(cached => {
+          if (!cached.ok || hasTimeline || !isCurrent()) return;
+          hasTimeline = true;
+          setState({ kind: 'ready', group: cached.group, older: [], olderPlans: [], olderHasMore: cached.group.hasMoreBefore, readToken: 0 });
+        }).catch(() => undefined);
         const shown = displayed.kind === 'ready' && displayed.group.id === groupId;
         const sourceMessageIds = [...new Set([...(shown
           ? mergeBotGroupMessages(displayed.older, displayed.group.messages).map(message => message.id) : []), ...additionalSources])];
@@ -352,7 +357,10 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
                 : previous);
             }
           }
-        } else if (result.errorCode === 'NOT_FOUND') {
+        } else if (result.errorCode === 'NOT_FOUND' || result.errorCode === 'PERMISSION_DENIED') {
+          // A disk read started beside this request may finish after the rejection.
+          // It must never restore a conversation whose access was just revoked.
+          version += 1;
           hasTimeline = false;
           discardOutbox();
           setState({ kind: 'missing' });

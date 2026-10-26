@@ -120,6 +120,8 @@ vi.mock('@/session/historyDiskStoreExpo', () => ({ createHistoryDiskIO: () => ({
   remove: native.removeChatFile,
   files: async () => [...native.chatFiles.keys()],
 }) }));
+// Cache failure banners belong to the app shell, not AuthProvider's listener lifecycle.
+vi.mock('@/session/cacheWriteNotice', () => ({ notifyCacheWriteFailure: vi.fn() }));
 vi.mock('@/session/mobileSessionMessageCache', () => ({ clearCachedSessionMessages: async () => {} }));
 vi.mock('@/session/remoteHistoryDiskCache', () => ({ clearHistoryDisk: async () => {} }));
 vi.mock('@/session/mobileVoiceCredentialStore', () => ({ clearAllMobileVoiceCredentials: async () => {} }));

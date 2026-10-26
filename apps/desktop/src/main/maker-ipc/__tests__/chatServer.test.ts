@@ -24,6 +24,15 @@ vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({
 }) }));
 beforeEach(() => workspaceSettings.clear());
 const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
+const sendJournal = vi.hoisted(() => ({ enabled: false, rows: new Map<string, { intent?: unknown; receipt?: string }>() }));
+vi.mock('../chatSendJournal.js', () => ({ chatSendJournal: () => ({
+  read: (key: string) => sendJournal.enabled ? sendJournal.rows.get(key) ?? null : null,
+  save: (key: string, _signature: string, intent: unknown) => { if (sendJournal.enabled) sendJournal.rows.set(key, { intent: structuredClone(intent) }); },
+  confirm: (key: string, _signature: string, receipt: string) => { if (sendJournal.enabled) sendJournal.rows.set(key, { receipt }); },
+  forgetRoom: vi.fn(),
+}) }));
+beforeEach(() => { sendJournal.enabled = false; sendJournal.rows.clear(); });
+vi.mock('../chatLocalHistory.js', () => ({ chatLocalHistory: () => ({ read: () => null, save: vi.fn(), forget: vi.fn() }) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
 vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' },
   nativeImage: { createFromBuffer: () => ({ isEmpty: () => false, getSize: () => ({ width: 1, height: 1 }) }) } }));
@@ -543,7 +552,8 @@ describe('Chat Server result delivery and refresh', () => {
       expect(posts()).toHaveLength(0);
     });
 
-    it('retries a send whose answer was lost with the same quote, even after the original is gone', async () => {
+    it.each([false, true])('retries a lost send with the same quote after deletion (restart=%s)', async restart => {
+      sendJournal.enabled = restart;
       let original: unknown = quoted();
       let lost = true;
       fixture.handle.mockImplementation((route, method) => {
@@ -554,6 +564,10 @@ describe('Chat Server result delivery and refresh', () => {
       expect(await service.sendMessage(input)).toMatchObject({ ok: false });
       // The original is deleted before the user retries the same send.
       original = null;
+      if (restart) {
+        service.dispose();
+        service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      }
       expect(await service.sendMessage(input)).toEqual({ ok: true, messageId: 'saved-quote' });
       const [first, retry] = posts().map(([, , body]) => body);
       expect(retry.operationId).toBe(first.operationId);

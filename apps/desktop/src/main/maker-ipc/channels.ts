@@ -851,6 +851,8 @@ export const MAKER_INVOKE = {
   BOT_GROUP_SET_MEMBERS: 'maker:bot-group:set-members',
   BOT_GROUP_DELETE: 'maker:bot-group:delete',
   BOT_GROUP_SEND: 'maker:bot-group:send',
+  CHAT_DISPLAY_CACHE: 'maker:chat:display-cache',
+  BOT_GROUP_OUTBOX: 'maker:bot-group:outbox',
   BOT_GROUP_CONTINUE: 'maker:bot-group:continue',
   BOT_GROUP_STOP: 'maker:bot-group:stop',
   BOT_GROUP_PLAN_START: 'maker:bot-group:plan-start',

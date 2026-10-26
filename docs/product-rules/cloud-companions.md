@@ -167,7 +167,7 @@
 
 ### 4.1 私聊统一数据层（2026-10-26）
 
-> 状态：云端消息的持久读取投影与历史增量修正已在优化分支实现，尚未发布；反向镜像修订、可靠 outbox 与时间分页仍待实现。现行发送路径、权限及主力电脑行为保留。本地表与账号边界见 [多账号数据库架构](../dev-rules/multi-account-database-architecture.md) 第 11 节；完整交付范围见 [伙伴群聊](bot-group-chat.md) 11.0。
+> 状态：云端消息的持久读取投影与历史增量修正已在优化分支实现，尚未发布；主干已补展示缓存与持久发送，反向镜像修订与时间分页仍待实现。现行发送路径、权限及主力电脑行为保留。本地表与账号边界见 [多账号数据库架构](../dev-rules/multi-account-database-architecture.md) 第 11 节；完整交付范围见 [伙伴群聊](bot-group-chat.md) 11.0。
 
 Desktop `runtime.transcript()` 经注入的 Chat History 读取，首次按现有时间排序合同读有界历史，后续复用持久页覆盖并补 changes；新消息导致分页边界移动时拼接已知范围，不重新下载所有旧页。Mobile 的 `history()` 同样落盘，刷新时以 message ID 修正已展示的编辑／删除；reset generation 变化时清掉旧页。接管、merge 和主任务重建仍走完整、权威读取，不能把有界 UI 缓存当作全部历史导入。
 

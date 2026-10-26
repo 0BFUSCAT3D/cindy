@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   groupId: 'g1',
   navigate: vi.fn(),
   getBotGroup: vi.fn(),
+  cachedGroup: null as BotGroupDetail | null,
   sendBotGroupMessage: vi.fn(),
   stopBotGroupRound: vi.fn(),
   continueBotGroupRound: vi.fn(),
@@ -285,6 +286,7 @@ beforeEach(() => {
   mocks.toastError.mockReset();
   mocks.toastInfo.mockReset();
   mocks.pushes = [];
+  mocks.cachedGroup = null;
   mocks.getBotGroup.mockReset().mockResolvedValue({ ok: true, group: detail() });
   mocks.sendBotGroupMessage.mockReset().mockResolvedValue({ ok: true, messageId: 'u2' });
   mocks.stopBotGroupRound.mockReset().mockResolvedValue({ ok: true });
@@ -324,7 +326,9 @@ beforeEach(() => {
       maker: {
         chatServer: { thread: mocks.thread, reply: mocks.reply, shareToMain: mocks.shareToMain, reactors: vi.fn(async () => ({ ok: true, reactors: [] })) },
         listBotGroups: vi.fn(async () => ({ ok: true, groups: [] })),
-        getBotGroup: (...args: unknown[]) => mocks.getBotGroup(...args),
+        getBotGroup: (...args: unknown[]) => (args[1] as { cacheOnly?: boolean } | undefined)?.cacheOnly
+          ? Promise.resolve(mocks.cachedGroup ? { ok: true, group: mocks.cachedGroup } : { ok: false, errorCode: 'NOT_FOUND' })
+          : mocks.getBotGroup(...args),
         sendBotGroupMessage: (...args: unknown[]) => mocks.sendBotGroupMessage(...args),
         stopBotGroupRound: (...args: unknown[]) => mocks.stopBotGroupRound(...args),
         continueBotGroupRound: (...args: unknown[]) => mocks.continueBotGroupRound(...args),
@@ -990,6 +994,8 @@ describe('BotGroupChatView', () => {
     renderView();
     fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
     await screen.findByText('Old earlier');
+    // The independent display cache can still hold the revoked window while delta sync resets.
+    mocks.cachedGroup = detail({ historyRevision: 'a', messages: [latest], hasMoreBefore: true });
     await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })));
     expect(screen.queryByText('Old earlier')).toBeNull();
