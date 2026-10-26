@@ -37,17 +37,21 @@ export default {
     await page.getByRole('button', { name: '重新打开任务', exact: true }).click();
     await assertInitial();
     await ui.capture('reopened');
-    const didAnimate = await page.evaluate(async () => {
+    const growth = await page.evaluate(async () => {
       const content = document.querySelector('[data-thread-items]');
+      const scroll = document.querySelector('[data-thread-scroll]');
+      const before = scroll.scrollHeight;
+      let didAnimate = false;
       document.querySelectorAll('button')[1].click();
       for (let frame = 0; frame < 12; frame++) {
         await new Promise(requestAnimationFrame);
         if (content.getAnimations().some((animation) => animation.playState === 'running'))
-          return true;
+          didAnimate = true;
       }
-      return false;
+      return { didAnimate, before, after: scroll.scrollHeight };
     });
-    assert.equal(didAnimate, false, 'later height changes must not translate the whole column');
+    assert.ok(growth.after > growth.before, 'appended progress must actually increase content height');
+    assert.equal(growth.didAnimate, false, 'later height changes must not translate the whole column');
     await page.waitForFunction(() => {
       const el = document.querySelector('[data-thread-scroll]');
       return (
