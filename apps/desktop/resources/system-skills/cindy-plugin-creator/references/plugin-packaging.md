@@ -127,7 +127,7 @@ plugin_id、release_id、sha256 和 revision；取消保留版本与记录，当
 
 提交返回本次进度标识，用 `ghost_contribution_status({ local_id })` 查询到本次动作结束。
 202 / processing 仅表示提交仍在处理，不等于待审核；结束后用 `ghost_my_plugins` 查看审核结果。
-没有上传记录列表或 resume 参数。不要自行重复提交；网络结果尚未确认时，Host 在下一次正常提交中先核对同一服务端请求，避免重复提审。
+没有上传记录列表或 resume 参数。提交失败后先用 `ghost_my_plugins` 核对该版本是否已有提审记录；已受理则查看真实审核结果，不绕过版本或待审限制再次提交。仅预检仍允许提审时，Host 才沿既有防重复处理核对尚未确认的同包请求。
 只有服务端回执、实际审核及市场可用事实才能说明已提审、已通过或已上架。
 
 `ghost_my_plugins` 的 plugin_id 读详情，submission_id 读精确留存包内容，cursor 为分页。

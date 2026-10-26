@@ -1548,7 +1548,7 @@ export function createCindyGhostsMcpServer(
     inputSchema: z.object({ ghost_id: contributionId, namespace: ghostNamespaceInput }).strict() },
     async ({ ghost_id, namespace }) => contribute({ action: 'prepare', ghostId: ghost_id, namespace }));
   server.registerTool('ghost_contribution_submit', {
-    description: '把 ghost_contribution_prepare 刚准备的确切插件提交审核。用户已明确委托公开发布时沿当前任务的 Full Access / Auto / Ask 权限执行，不额外要求用户重新授权或最后手动点击；只有安装委托不等于发布委托。不接受文件路径、独立文案、账号或票据。返回本次提交的进度标识，接 ghost_contribution_status 查询到结束；202/处理中不等于已提交审核。不要自行重复发起提交；Host 内部核对尚未确认的同包请求。权限拒绝时说明原因并停止，不改权限模式重试。官方 public 插件须通过 GitHub 仓库提交修改，以保证源码完整、便于维护；客户端与 Agent 工具均不得提审。',
+    description: '把 ghost_contribution_prepare 刚准备的确切插件提交审核。用户已明确委托公开发布时沿当前任务的 Full Access / Auto / Ask 权限执行，不额外要求用户重新授权或最后手动点击；只有安装委托不等于发布委托。不接受文件路径、独立文案、账号或票据。返回本次提交的进度标识，接 ghost_contribution_status 查询到结束；202/处理中不等于已提交审核。提交失败后先用 ghost_my_plugins 核对该版本是否已有提审记录，已受理则查看真实审核结果，不绕过版本或待审限制再次提交；仅预检仍允许提审时 Host 才核对尚未确认的同包请求。权限拒绝时说明原因并停止，不改权限模式重试。官方 public 插件须通过 GitHub 仓库提交修改，以保证源码完整、便于维护；客户端与 Agent 工具均不得提审。',
     inputSchema: z.object({ prepared_id: contributionId }).strict() },
     async ({ prepared_id }) => contribute({ action: 'submit', id: prepared_id }));
   server.registerTool('ghost_contribution_status', {

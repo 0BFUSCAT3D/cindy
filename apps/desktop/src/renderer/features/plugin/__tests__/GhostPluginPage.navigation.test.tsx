@@ -1063,7 +1063,8 @@ describe('plugin use details and independent author management', () => {
       expect(await screen.findByRole('button', { name: `${prefix}.submitVersion` })).toHaveProperty('disabled', false);
       expect(within(picker).getByText('Checked update notes')).toBeTruthy();
     } else {
-      expect(await screen.findByText('Missing release notes')).toBeTruthy();
+      expect(await within(picker).findByText(`${prefix}.errors.RELEASE_NOTES_REQUIRED`)).toBeTruthy();
+      expect(within(picker).queryByText('Missing release notes')).toBeNull();
       expect(screen.queryByRole('button', { name: `${prefix}.submitUpdate` })).toBeNull();
       expect(screen.queryByRole('button', { name: `${prefix}.submitVersion` })).toBeNull();
     }
