@@ -1,4 +1,6 @@
 import { todoForCaller } from '../maker-ipc/botTodoAccess.js';
+import { getDeviceId } from '../authManager.js';
+import { buildHistorySessionDeepLink } from '../deepLink.js';
 import { activeCompanionCloud } from '../companion-cloud/runtime.js';
 import { TodoError, queryTodoItems, type TodoListQuery, type TodoPatch, type preflightTodoEvents } from '@cindy/maker-shared/teammate-todo';
 import { t } from '../i18n.js';
@@ -84,6 +86,7 @@ import {
   saveBotSkillForSession,
 } from '../maker-ipc/botSkillService.js';
 import {
+  canBotContinueWorkbenchTask,
   captureBotCreatedTaskResponsibility,
   runBotWorkbenchTool,
   runBotProjectsTool,
@@ -307,6 +310,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
     isScopeCurrent: (db) => !isAppSessionBoundaryPending() && db === tryGetDbClient(),
     authorizeAction: createDesktopTaskActionAuthorizer({
       input: getTaskActionInputState, getSession: getTaskActionSession, confirm: confirmTaskAction,
+      isEntrustedTask: canBotContinueWorkbenchTask,
     }),
   });
   // Companion history uses the same account scope as ordinary task history.
@@ -1150,6 +1154,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         authorizePath: (request) => authorizeDesktopSessionPath(request, deps.getLiveSessionGrantState),
       }),
       history: {
+        sessionUrl: (sessionId) => buildHistorySessionDeepLink(sessionId, getDeviceId()),
         remote: deps.historyRemote,
         resolveSessionScope: async ({ callerSessionId, callerMemoryScopeKey }) => {
           try {
@@ -1200,7 +1205,22 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       createWorker: wrap((s, params) => s.createWorker(params)),
       listWorkers: wrap((s, params) => s.listWorkers(params)),
       switchFocus: wrap((s, params) => s.switchFocus(params)),
-      sendToWorker: wrap((s, params) => s.sendToWorker(params)),
+      sendToWorker: wrap(
+        (
+          s,
+          params: {
+            callerLeadSessionId: string;
+            targetSessionId: string;
+            message: string;
+            delivery?: 'queue' | 'steer';
+            /** MCP 工具层字段名; host service 内部叫 imagePaths。 */
+            images?: string[];
+          },
+        ) => {
+          const { images, ...rest } = params;
+          return s.sendToWorker({ ...rest, ...(images ? { imagePaths: images } : {}) });
+        },
+      ),
       interruptWorker: wrap((s, params) => s.interruptWorker(params)),
       listWorkerQueuedMessages: wrap((s, params) => s.listWorkerQueuedMessages(params)),
       updateWorkerQueuedMessage: wrap((s, params) => s.updateWorkerQueuedMessage(params)),
@@ -1211,6 +1231,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       idleWorker: wrap((s, params) => s.idleWorker(params)),
       endTeam: wrap((s, params) => s.endTeam(params)),
       archiveWorker: wrap((s, params) => s.archiveWorker(params)),
+      updateWorker: wrap((s, params) => s.updateWorker(params)),
       listAvailableModels: wrap((s, params) => s.listAvailableModels(params)),
       getWorkspaceInfo: wrap((s, params) => s.getWorkspaceInfo(params)),
       getWorkerStatus: wrap((s, params) => s.getWorkerStatus(params)),
