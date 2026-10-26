@@ -162,11 +162,11 @@ vi.mock('@/session/HomeHeaderGlassButton', () => ({
   HomeHeaderGlassButton: ({ onPress, testID, disabled, children }: any) => el('button', { 'data-testid': testID, disabled, onClick: onPress }, children),
 }));
 vi.mock('@/session/CompanionSheet', () => ({
-  CompanionSheet: ({ visible, children, onClose, onClosed, testID }: any) => {
+  CompanionSheet: ({ visible, children, footer, preventDismiss, onClose, onClosed, testID }: any) => {
     if (testID === 'botGroup.settings') h.closeSettings = onClose;
     const was = useRef(visible);
     useEffect(() => { if (was.current && !visible) onClosed?.(); was.current = visible; }, [visible]);
-    return visible ? el('div', { 'data-testid': testID }, children) : null;
+    return visible ? el('div', { 'data-testid': testID, 'data-prevent-dismiss': String(!!preventDismiss) }, children, footer) : null;
   },
 }));
 vi.mock('@/session/BotGroupAvatars', () => ({
@@ -1309,17 +1309,55 @@ describe('group settings', () => {
     await openSettings(data);
     await act(async () => { h.inputs['botGroup.settings.description'].onChangeText('My draft'); });
     manage.mockRejectedValueOnce(new Error('REVISION_CONFLICT'));
-    await act(async () => { h.inputs['botGroup.settings.description'].onBlur(); });
+    await click('botGroup.settings.descriptionSave');
     expect(manage).toHaveBeenLastCalledWith('update', { description: 'My draft', expectedRevision: 5 });
     expect(h.inputs['botGroup.settings.description'].value).toBe('My draft');
     expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.conflict');
     h.management.group = { ...data, description: 'Other edit', revision: 6 };
     await render(h.management.group);
     expect(h.inputs['botGroup.settings.description'].value).toBe('My draft');
-    await act(async () => { h.inputs['botGroup.settings.description'].onBlur(); });
+    await click('botGroup.settings.descriptionSave');
     expect(manage).toHaveBeenLastCalledWith('update', { description: 'My draft', expectedRevision: 6 });
     await click(`botGroup.settings.memberMenu.${data.members[1].botId}.action.role:${data.members[1].botId}`);
     expect(manage).toHaveBeenLastCalledWith('set-member-role', { actorId: 'member-actor', role: 'admin' });
+  });
+
+  // Regression: native dismissal need not emit blur, so an edited description was lost.
+  // Unit tier uses the production settings component; no artificial onBlur is dispatched.
+  it('keeps an unblurred cloud draft open until saving succeeds or the user explicitly cancels', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5, description: 'Original' });
+    data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
+    let finish!: () => void;
+    const manage = vi.fn(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    h.chat.server = true;
+    h.management = { group: data, editable: true, loading: false, reason: null, act: manage, refresh: vi.fn() };
+    await openSettings(data);
+    await act(async () => { h.inputs['botGroup.settings.description'].onChangeText('Unblurred draft'); });
+    await act(async () => { h.closeSettings?.(); });
+    expect(byId('botGroup.settings')).not.toBeNull();
+    expect(byId('botGroup.settings')?.dataset.preventDismiss).toBe('true');
+    expect(manage).not.toHaveBeenCalled();
+    await click('botGroup.settings.descriptionSave');
+    expect(manage).toHaveBeenCalledWith('update', { description: 'Unblurred draft', expectedRevision: 5 });
+    await act(async () => { h.closeSettings?.(); });
+    expect(byId('botGroup.settings')).not.toBeNull();
+    await act(async () => { finish(); });
+    expect(byId('botGroup.settings')?.dataset.preventDismiss).toBe('false');
+    await act(async () => { h.closeSettings?.(); });
+    expect(byId('botGroup.settings')).toBeNull();
+
+    await click('botGroup.settingsButton');
+    manage.mockRejectedValueOnce(new Error('NETWORK_ERROR'));
+    await act(async () => { h.inputs['botGroup.settings.description'].onChangeText('Retained on failure'); });
+    await click('botGroup.settings.descriptionSave');
+    await act(async () => { h.closeSettings?.(); });
+    expect(h.inputs['botGroup.settings.description'].value).toBe('Retained on failure');
+    expect(byId('botGroup.settings')?.dataset.preventDismiss).toBe('true');
+    await click('botGroup.settings.descriptionCancel');
+    expect(byId('botGroup.settings')).toBeNull();
+    await click('botGroup.settingsButton');
+    expect(h.inputs['botGroup.settings.description'].value).toBe('Original');
+    expect(byId('botGroup.settings.descriptionSave')).toBeNull();
   });
 
   it('explains unavailable management and offers retry without enabling edits', async () => {

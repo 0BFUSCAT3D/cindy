@@ -16,7 +16,7 @@ import {
 import { chatGroupMembership, isActiveBotGroupMember } from '@cindy/maker-shared/botGroupPresentation';
 import { useAuth } from '@/auth/AuthContext';
 import { Text, TextInput } from '@/components/AppText';
-import { MainWindowOptionButton } from '@/components/MobilePrimitives';
+import { MainWindowActionButton, MainWindowOptionButton } from '@/components/MobilePrimitives';
 import { mobileInteractionStyles } from '@/components/mobileInteractionStyles';
 import type { RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { showConfirm } from '@/platform/chrome';
@@ -105,9 +105,9 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
   const candidatesLoading = management ? cloudCandidates.loading : teammates.loading;
   const candidatesFailed = management ? cloudCandidates.failed : teammates.failed;
   const [description, setDescription] = useState(group.description ?? '');
-  const descriptionDirty = useRef(false);
+  const [descriptionDirty, setDescriptionDirty] = useState(false);
   const descriptionRevision = useRef(group.revision);
-  useEffect(() => { if (!descriptionDirty.current) setDescription(group.description ?? ''); }, [group.description]);
+  useEffect(() => { if (!descriptionDirty) setDescription(group.description ?? ''); }, [group.description, descriptionDirty]);
 
   // Follow renames that land from the computer while the field is not being edited.
   useEffect(() => { if (!nameFocused.current && !nameDirty.current) setName(group.name); }, [group.name]);
@@ -161,6 +161,19 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
     if (saved) nameDirty.current = false;
   };
 
+  const saveDescription = async () => {
+    if (!descriptionDirty) return;
+    const captured = scope;
+    if (errors.description) descriptionRevision.current = group.revision;
+    const saved = await run('description', 'update', { description, expectedRevision: descriptionRevision.current }, 'groupChat.settings.descriptionSaveFailed');
+    if (saved && active.current === captured) setDescriptionDirty(false);
+  };
+
+  // Native dismissal can happen without TextInput.onBlur. Keep the draft visible until
+  // the user saves it or explicitly cancels, including after a rejected server write.
+  const preventDismiss = busy !== null || descriptionDirty;
+  const close = () => { if (!descriptionDirty) onClose(); };
+
   const setMembers = async (botIds: string[]) => {
     const saved = await run('members', 'set-members', { botIds }, 'groupChat.settings.membersSaveFailed');
     if (saved) setPicking(false);
@@ -205,8 +218,15 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
         style={[styles.segment, unavailable && styles.inheritedInactive]} testID={`botGroup.settings.${section}.${option.value}`} />)}
     </View>;
 
-  return <CompanionSheet visible={visible} title={t('groupChat.settings.title')} onClose={onClose} onClosed={onClosed}
-    preventDismiss={busy !== null} testID="botGroup.settings">
+  return <CompanionSheet visible={visible} title={t('groupChat.settings.title')} onClose={close} onClosed={onClosed}
+    preventDismiss={preventDismiss} testID="botGroup.settings"
+    footer={descriptionDirty ? <View style={styles.draftActions}>
+      <MainWindowActionButton action={{ label: t('devices.common.cancel'), disabled: busy !== null,
+        onPress: () => { if (busyRef.current) return; setDescriptionDirty(false); setDescription(group.description ?? ''); onClose(); },
+        testID: 'botGroup.settings.descriptionCancel' }} />
+      <MainWindowActionButton action={{ label: t('devices.common.save'), tone: 'primary', busy: busy === 'description', disabled: locked,
+        onPress: () => void saveDescription(), testID: 'botGroup.settings.descriptionSave' }} />
+    </View> : undefined}>
     <View style={styles.content}>
       {management && (management.loading || management.reason) ? <View style={styles.managementRow} testID="botGroup.settings.management">
         {management.loading ? <ActivityIndicator size="small" color={colors.textSecondary} testID="botGroup.settings.connecting" /> : null}
@@ -236,13 +256,8 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
         <Text style={styles.sectionTitle}>{t('groupChat.settings.description')}</Text>
         <TextInput accessibilityLabel={t('groupChat.settings.description')} value={description} maxLength={2000} multiline
           editable={!locked} style={[styles.input, styles.description]} testID="botGroup.settings.description"
-          onChangeText={value => { if (!descriptionDirty.current || errors.description) descriptionRevision.current = group.revision;
-            descriptionDirty.current = true; setDescription(value); setErrors(current => ({ ...current, description: undefined })); }}
-          onBlur={() => { if (descriptionDirty.current) {
-            if (errors.description) descriptionRevision.current = group.revision;
-            void run('description', 'update', { description, expectedRevision: descriptionRevision.current }, 'groupChat.settings.descriptionSaveFailed')
-              .then(saved => { if (saved) descriptionDirty.current = false; });
-          } }} />
+          onChangeText={value => { if (!descriptionDirty || errors.description) descriptionRevision.current = group.revision;
+            setDescriptionDirty(true); setDescription(value); setErrors(current => ({ ...current, description: undefined })); }} />
         {error('description')}
       </View> : null}
 
@@ -407,6 +422,7 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
 const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   content: { gap: spacing.xl, paddingTop: spacing.sm, paddingBottom: spacing.xl },
   settingsBody: { gap: spacing.xl },
+  draftActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm },
   managementRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   managementText: { color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   reconnect: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
