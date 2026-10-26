@@ -1,4 +1,4 @@
-// agent-binary-cdn-fallback 单测：验证 CDN 兜底的 URL 拼接、gunzip、best-effort sha256 校验。
+// agent-binary-cdn-fallback 单测：验证 CDN 兜底的 URL 拼接、gunzip、fail-closed sha256 校验。
 // 用 node 内置 http server mock CDN（manifest + .gz），node 内置 test runner，无 vitest 依赖。
 // 直接 `node --test scripts/__tests__/agent-binary-cdn-fallback.test.mjs`。
 import { test, before, after, beforeEach } from 'node:test';
@@ -98,17 +98,17 @@ test('downloadFromCdn: 成功兜底——gunzip 后 binPath 内容正确，sha �
   assert.equal(fs.existsSync(`${binPath}.tmp`), false);
 });
 
-test('downloadFromCdn: manifest version 不匹配 pin → 跳过 sha 校验仍成功', async () => {
-  // canary 拿得到但 version 不符；stable 404 → tryGetManifestAsset 返回 null
+test('downloadFromCdn: manifest version 不匹配 pin → 拒绝未验证下载', async () => {
+  // canary 拿得到但 version 不符；stable 404 → 没有可信 checksum，必须 fail closed。
   routes.set('/manifest-darwin-arm64-canary.json', serveJson(manifest('claudeCode', { version: '9.9.9' })));
   routes.set(`/claude-code/${VERSION}/darwin-arm64/claude.gz`, serveGz());
 
   const binPath = tmpBinPath();
-  const r = await downloadFromCdn({ kind: 'claude', version: VERSION, platformKey: 'darwin-arm64', binPath });
-
-  assert.equal(r.gzVerified, false);
-  assert.equal(r.binaryVerified, false);
-  assert.deepEqual(fs.readFileSync(binPath), BINARY);
+  await assert.rejects(
+    () => downloadFromCdn({ kind: 'claude', version: VERSION, platformKey: 'darwin-arm64', binPath }),
+    /no trusted checksums/,
+  );
+  assert.equal(fs.existsSync(binPath), false);
 });
 
 test('downloadFromCdn: .gz sha256 mismatch → 抛错且不落地', async () => {
@@ -152,20 +152,21 @@ test('downloadFromCdn: win32 平台拼出 .exe.gz URL', async () => {
   assert.equal(r.binaryVerified, true);
 });
 
-test('downloadFromCdn: ripgrep 没有 manifest 字段时也按约定 URL 兜底成功', async () => {
-  let hitPath = null;
+test('downloadFromCdn: ripgrep 缺少 manifest 字段时拒绝未验证下载', async () => {
+  let downloaded = false;
   routes.set(`/ripgrep/${VERSION}/darwin-arm64/rg.gz`, (req, res) => {
-    hitPath = req.url.split('?')[0];
+    downloaded = true;
     res.writeHead(200);
     res.end(GZ);
   });
 
   const binPath = tmpBinPath('rg');
-  const r = await downloadFromCdn({ kind: 'ripgrep', version: VERSION, platformKey: 'darwin-arm64', binPath });
-  assert.equal(hitPath, `/ripgrep/${VERSION}/darwin-arm64/rg.gz`);
-  assert.equal(r.gzVerified, false);
-  assert.equal(r.binaryVerified, false);
-  assert.deepEqual(fs.readFileSync(binPath), BINARY);
+  await assert.rejects(
+    () => downloadFromCdn({ kind: 'ripgrep', version: VERSION, platformKey: 'darwin-arm64', binPath }),
+    /no trusted checksums/,
+  );
+  assert.equal(downloaded, false);
+  assert.equal(fs.existsSync(binPath), false);
 });
 
 test('downloadFromCdn: 不支持的 kind 直接抛错', async () => {

@@ -13,9 +13,8 @@
  *          字段 claudeCode / codex / ripgrep = { version, file, sha256(.gz 的), size, binarySha256(裸二进制的) }
  *
  * 校验信任链与正式版运行时（apps/desktop/src/main/agent-binaries/factory.ts）一致：
- *   下载的 .gz 校验 sha256 → gunzip → 解压后二进制校验 binarySha256。均为 best-effort：
- *   仅当 CDN manifest 当前 version === 期望 pin version 时才有对应 sha 可校验（pin 是历史版本时
- *   manifest 已往前走，跳过 sha 校验，靠 gunzip 成功 + 上层 isValidBinary 兜住）。
+ *   下载的 .gz 校验 sha256 → gunzip → 解压后二进制校验 binarySha256。两层校验都必须存在并
+ *   通过；manifest 缺失、版本不匹配或 checksum 非法时 fail closed，不下载也不落地可执行文件。
  */
 
 import fs from 'node:fs';
@@ -58,8 +57,8 @@ function sha256File(filePath) {
 }
 
 /**
- * best-effort 拉 CDN manifest，返回该 kind 在期望 version 下的 asset（含 sha256 / binarySha256）。
- * manifest 拉不到、404、或 version 不匹配（pin 是历史版本）都返回 null —— 跳过 sha 校验。
+ * 拉 CDN manifest，返回该 kind 在期望 version 下的 asset（含 sha256 / binarySha256）。
+ * manifest 拉不到、404、或 version 不匹配都返回 null，由调用方 fail closed。
  */
 async function tryGetManifestAsset(manifestField, platformKey, version) {
   const cdnBase = getCdnBase();
@@ -89,8 +88,16 @@ export async function downloadFromCdn({ kind, version, platformKey, binPath }) {
   const gzUrl = `${getCdnBase()}/${cfg.pathPrefix}/${version}/${platformKey}/${binFile}.gz`;
 
   const asset = await tryGetManifestAsset(cfg.manifestField, platformKey, version);
-  const expectedGzSha = typeof asset?.sha256 === 'string' ? asset.sha256.toLowerCase() : null;
-  const expectedBinSha = typeof asset?.binarySha256 === 'string' ? asset.binarySha256.toLowerCase() : null;
+  const normalizeSha256 = (value) => (
+    typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : null
+  );
+  const expectedGzSha = normalizeSha256(asset?.sha256);
+  const expectedBinSha = normalizeSha256(asset?.binarySha256);
+  if (!expectedGzSha || !expectedBinSha) {
+    throw new Error(
+      `CDN manifest has no trusted checksums for ${kind} ${platformKey}@${version}; refusing unverified executable download`,
+    );
+  }
 
   const gzTmp = `${binPath}.gz.tmp`;
   const binTmp = `${binPath}.tmp`;
@@ -117,23 +124,19 @@ export async function downloadFromCdn({ kind, version, platformKey, binPath }) {
       progress.finish();
     }
 
-    // 2. best-effort 校验 .gz 的 sha256（与正式版运行时一致的信任链入口）
-    if (expectedGzSha) {
-      const actual = await sha256File(gzTmp);
-      if (actual !== expectedGzSha) {
-        throw new Error(`CDN .gz sha256 mismatch for ${kind} ${platformKey}@${version}: expected ${expectedGzSha}, got ${actual}`);
-      }
+    // 2. 校验 .gz 的 sha256（与正式版运行时一致的信任链入口）
+    const actualGzSha = await sha256File(gzTmp);
+    if (actualGzSha !== expectedGzSha) {
+      throw new Error(`CDN .gz sha256 mismatch for ${kind} ${platformKey}@${version}: expected ${expectedGzSha}, got ${actualGzSha}`);
     }
 
     // 3. gunzip → 裸二进制
     await pipeline(fs.createReadStream(gzTmp), createGunzip(), fs.createWriteStream(binTmp));
 
-    // 4. best-effort 校验解压后二进制的 binarySha256
-    if (expectedBinSha) {
-      const actual = await sha256File(binTmp);
-      if (actual !== expectedBinSha) {
-        throw new Error(`CDN binary sha256 mismatch for ${kind} ${platformKey}@${version}: expected ${expectedBinSha}, got ${actual}`);
-      }
+    // 4. 校验解压后二进制的 binarySha256
+    const actualBinSha = await sha256File(binTmp);
+    if (actualBinSha !== expectedBinSha) {
+      throw new Error(`CDN binary sha256 mismatch for ${kind} ${platformKey}@${version}: expected ${expectedBinSha}, got ${actualBinSha}`);
     }
 
     // 5. 原子替换 + chmod（win32 不需要）
@@ -142,7 +145,7 @@ export async function downloadFromCdn({ kind, version, platformKey, binPath }) {
       try { fs.chmodSync(binPath, 0o755); } catch { /* ignore */ }
     }
 
-    return { url: gzUrl, gzVerified: Boolean(expectedGzSha), binaryVerified: Boolean(expectedBinSha) };
+    return { url: gzUrl, gzVerified: true, binaryVerified: true };
   } finally {
     try { fs.rmSync(gzTmp, { force: true }); } catch { /* ignore */ }
     try { fs.rmSync(binTmp, { force: true }); } catch { /* ignore */ }
