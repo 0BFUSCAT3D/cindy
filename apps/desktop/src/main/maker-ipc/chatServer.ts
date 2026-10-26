@@ -26,6 +26,8 @@ import { chatServerWorkspaces } from './chatServerWorkspaces.js';
 import { buildPlanStepBrief, draftPlanSteps, type PlanStepDraft } from './botGroupDivision.js';
 import { splitBotGroupRelaySteps } from '@cindy/maker-shared/botGroupMentions';
 import { chatMigrationReceipts } from './chatMigrationReceipts.js';
+import { chatLocalHistory } from './chatLocalHistory.js';
+import { chatSendJournal } from './chatSendJournal.js';
 import { prepareBotGroupTaskPost, type BotGroupTaskPostSnapshot } from './botGroupTaskPostSnapshot.js';
 import { registerGroupToolAuthority, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import path from 'node:path';
@@ -77,6 +79,12 @@ interface Room {
 }
 /** `reads`: this reader's read position per Thread (`thread_key` = root ID, `main` for the main timeline); older servers omit it. */
 interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string; reads?: Array<{ thread_key: string; read_seq: string; following?: boolean; muted?: boolean }> }
+interface SavedChatSend {
+  snapshot: Snapshot; plans: ServerPlan[]; members: Member[];
+  quote: (BotGroupQuoteView & { recipientActorId?: string }) | null;
+  mentions: { all: boolean; botIds: string[] };
+  shouldPlan: boolean; route: string; body: unknown; attachments: BotGroupAttachment[];
+}
 interface Execution {
   id: string; conversation_id: string; source_message_id: string; bot_id: string;
   requester_id?: string;
@@ -333,6 +341,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let savedShadows = JSON.stringify(deps.companionCloud?.homes.persistedShadows() ?? []);
   let connected = false;
   const current = () => !disposed && (!scope || !deps.isOwnerScopeCurrent || deps.isOwnerScopeCurrent(scope));
+  const history = chatLocalHistory(config.baseUrl, current);
+  const sendJournal = chatSendJournal<SavedChatSend>(config.baseUrl, current);
   const executorId = `desktop:${randomUUID()}`;
   let actors: Actor[] = [];
   let selfId = '';
@@ -345,6 +355,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   };
   personalList.subscribe(row => {
     if (!current()) return;
+    if (row.hidden) { history.forget(row.conversationId); sendJournal.forgetRoom(row.conversationId); }
     deps.onChanged?.({ groupId: row.conversationId, change: 'list', listState: row }, scope);
     for (const [source, target] of upgradedGroups) if (target === row.conversationId)
       deps.onChanged?.({ groupId: source, change: 'list', listState: row }, scope);
@@ -1004,6 +1015,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             }).catch(() => ws.close());
           } else {
             rooms.delete(roomId);
+            history.forget(roomId); sendJournal.forgetRoom(roomId);
             // Access may come back with a narrower history; re-read every reference.
             threads.reset();
             changed(roomId);
@@ -2622,33 +2634,42 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const i = z.object({ conversationKind: z.literal('direct').optional(), groupId: id, text: z.string().max(8000), clientId: z.string().min(8).max(160),
       mentions: z.object({ all: z.boolean(), botIds: z.array(z.string()) }), division: z.boolean().optional(), attachments: z.array(z.unknown()).optional(),
       quote: z.object({ messageId: id }).strict().optional() }).parse(input);
-    i.groupId = await resolveGroup(i.groupId);
+    const journalKey = JSON.stringify([i.groupId, i.clientId, origin?.controllerDeviceId ?? null]);
+    const signature = createHash('sha256').update(JSON.stringify({ ...i, attachments: undefined })).digest('hex');
+    const journal = sendJournal.read(journalKey, signature);
+    if (journal?.receipt) return { ok: true as const, messageId: journal.receipt };
+    const recovered = journal?.intent;
+    i.groupId = recovered?.snapshot.room.id ?? await resolveGroup(i.groupId);
+    if (recovered) {
+      await ensureRegistered(); await syncPersonalList();
+      if (personalList.hidden(i.groupId)) throw new Error('CONVERSATION_NOT_FOUND');
+    }
     const direct = i.conversationKind === 'direct';
     if (direct && i.division) throw new Error('INVALID_INPUT');
     if (!i.text.trim() && !i.attachments?.length) throw new Error('INVALID_INPUT');
     // A single-speaker server cannot release a held request (no cancel-planning): a newer message
     // replacing a 分工 still being arranged would leave it to be queued two minutes later. Wait for its card.
-    if (singleSpeaker && planIntents.get(i.groupId)?.sourceId) throw new Error('PLAN_OPEN');
+    if (!recovered && singleSpeaker && planIntents.get(i.groupId)?.sourceId) throw new Error('PLAN_OPEN');
     // An attempted send must not cancel a valid decision until its message exists.
     const intentVersion = ++nextIntentVersion;
     // The reads a send needs share one round trip (none for a snapshot the live subscription
     // vouches for). Each is awaited in the former order, so the first failure reported is the
     // one the serial version reported.
-    const snapshotRead = direct ? directSnapshot(i.groupId) : recentSnapshot(i.groupId, true);
+    const snapshotRead = recovered ? Promise.resolve(recovered.snapshot) : direct ? directSnapshot(i.groupId) : recentSnapshot(i.groupId, true);
     // An unopened room must be confirmed as a group before reading its other resources.
     if (!rooms.has(i.groupId)) await snapshotRead;
     const quoteKey = i.quote ? JSON.stringify([i.groupId, i.clientId, i.quote.messageId, i.text, i.mentions, i.division]) : '';
     const knownQuote = i.quote ? postedQuotes.get(quoteKey) : undefined;
     const snapshotMembers = snapshotRead.then(value => value.members);
-    const quoteRead = i.quote && !knownQuote ? quoteSnapshot(i.groupId, i.quote.messageId, snapshotMembers, direct) : undefined;
-    const plansRead = direct ? Promise.resolve([] as ServerPlan[]) : api<ServerPlan[]>(`/conversations/${i.groupId}/plans`);
-    const membersRead = namesNobody(i.mentions) && !i.quote ? undefined : api<Member[]>(`/conversations/${i.groupId}/members`);
+    const quoteRead = i.quote && !knownQuote && !recovered ? quoteSnapshot(i.groupId, i.quote.messageId, snapshotMembers, direct) : undefined;
+    const plansRead = recovered ? Promise.resolve(recovered.plans) : direct ? Promise.resolve([] as ServerPlan[]) : api<ServerPlan[]>(`/conversations/${i.groupId}/plans`);
+    const membersRead = recovered ? Promise.resolve(recovered.members) : namesNobody(i.mentions) && !i.quote ? undefined : api<Member[]>(`/conversations/${i.groupId}/members`);
     for (const read of [snapshotMembers, quoteRead, plansRead, membersRead]) read?.catch(() => undefined);
     const s = await snapshotRead;
     // Read before preparing attachments: an unavailable quote must not stage files.
-    const quote = i.quote ? knownQuote?.quote ?? await quoteRead! : null;
+    const quote = recovered ? recovered.quote : i.quote ? knownQuote?.quote ?? await quoteRead! : null;
     const members = membersRead ? await membersRead : [];
-    i.mentions = knownQuote?.mentions ?? withReplyRecipient(members, i.mentions, quote?.recipientActorId);
+    i.mentions = recovered?.mentions ?? knownQuote?.mentions ?? withReplyRecipient(members, i.mentions, quote?.recipientActorId);
     const plans = await plansRead;
     const openPlan = plans.find(p => ['proposed','running','waiting'].includes(p.status));
     const proposed = openPlan?.status === 'proposed' && openPlan.creator_id === selfId;
@@ -2665,12 +2686,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const commentPlan = canTrigger && openPlan && openPlan.status !== 'proposed' && !(singleSpeaker && openPlan.kind === 'talk' && openPlan.status === 'waiting') && !i.mentions.botIds.length && !i.mentions.all && mayAdd ? openPlan : undefined;
     // Single-speaker servers queue turns themselves; only a 分工, or words about your proposed card,
     // wait for the arrangement. A 分工 that writes out its steps needs no helper model.
-    const shouldPlan = !direct && (singleSpeaker
+    const shouldPlan = recovered?.shouldPlan ?? (!direct && (singleSpeaker
       ? i.division || (canTrigger && proposed && namesNobody(i.mentions) && !!deps.decidePlan)
       : canTrigger && !!deps.decidePlan && (i.division || (!i.mentions.botIds.length && (!proposed || !i.mentions.all)))
-        && (!openPlan || proposed));
-    const prepared = i.attachments?.length ? await deps.prepareAttachments?.({ groupId: i.groupId, attachments: i.attachments, controllerDeviceId: origin?.controllerDeviceId }) : undefined;
-    if (i.attachments?.length && (!prepared || !prepared.ok)) {
+        && (!openPlan || proposed)));
+    const prepared = !recovered && i.attachments?.length ? await deps.prepareAttachments?.({ groupId: i.groupId, attachments: i.attachments, controllerDeviceId: origin?.controllerDeviceId }) : undefined;
+    if (!recovered && i.attachments?.length && (!prepared || !prepared.ok)) {
       const error = new Error(prepared && !prepared.ok ? prepared.errorCode === 'INVALID_PARAMS' ? 'INVALID_ATTACHMENT' : prepared.errorCode : 'INVALID_ATTACHMENT');
       deps.log?.warn('Chat attachment preparation failed', { groupId: i.groupId, trace: createHash('sha256').update(i.clientId).digest('hex').slice(0, 16), ...chatErrorDiagnostic(prepared && !prepared.ok ? new Error(prepared.message) : error) });
       throw error;
@@ -2678,18 +2699,22 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     let result: { id: string };
     let posting = false;
     try {
-      const mentions = knownQuote?.recipients ?? (membersRead ? resolveMentions(members, i.mentions) : []);
-      const uploaded = await media.upload(i.groupId, i.clientId, prepared?.ok ? prepared.attachments : [], selfId);
+      const mentions = recovered ? [] : knownQuote?.recipients ?? (membersRead ? resolveMentions(members, i.mentions) : []);
+      const uploaded = recovered ? [] : await media.upload(i.groupId, i.clientId, prepared?.ok ? prepared.attachments : [], selfId);
       // Cached only once the message may reach the server; a failure before this stored nothing.
       if (quote) {
         postedQuotes.set(quoteKey, { quote, mentions: i.mentions, recipients: mentions });
         if (postedQuotes.size > 128) postedQuotes.delete(postedQuotes.keys().next().value!);
       }
-      posting = true;
-      result = await api<{ id: string }>(`/conversations/${i.groupId}/${commentPlan ? `plans/${commentPlan.id}/messages` : 'messages'}`, 'POST', {
+      const route = recovered?.route ?? `/conversations/${i.groupId}/${commentPlan ? `plans/${commentPlan.id}/messages` : 'messages'}`;
+      const body = recovered?.body ?? {
         operationId: i.clientId, content: [ ...(quote ? [buildBotGroupQuoteCard(quote)] : []), ...(i.text ? [{ type: 'text', text: i.text }] : []),
           ...uploaded ], mentions, deferExecution: shouldPlan, ...(!direct && groupDiscussionParity ? { mentionsAll: i.mentions.all, planningMode: i.division || proposed ? 'explicit' : 'auto' } : {}),
-      });
+      };
+      if (!recovered) sendJournal.save(journalKey, signature, { snapshot: s, plans, members, quote, mentions: i.mentions,
+        shouldPlan: !!shouldPlan, route, body, attachments: prepared?.ok ? prepared.attachments : [] }, i.groupId);
+      posting = true;
+      result = await api<{ id: string }>(route, 'POST', body);
     } catch (error) {
       if (prepared?.ok) await prepared.discard();
       // A definite refusal of this post stored nothing; a lost answer, or a failure before an
@@ -2698,6 +2723,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       throw error;
     }
     if (prepared?.ok) prepared.commit();
+    sendJournal.confirm(journalKey, signature, result.id);
     deps.log?.info?.('Chat group send confirmed', { groupId: i.groupId, messageId: result.id,
       trace: createHash('sha256').update(i.clientId).digest('hex').slice(0, 16), durationMs: Date.now() - started });
     // The message exists: the send is answered now and its receipt answers any retry, so the
@@ -2725,7 +2751,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               .catch(error => deps.log?.warn('Waiting queue could not be ended', { groupId: roomId, ...chatErrorDiagnostic(error) }));
             const written = singleSpeaker && i.division && !i.mentions.all ? writtenPlanSteps(s, i.text, i.mentions.botIds) : null;
             if (written) await openWrittenPlan(s, messageId, planRequest(i.text, quote), written, intent);
-            else await decideArrangement(s, messageId, i.text, i.division === true, prepared?.ok ? prepared.attachments : [], intent, quote);
+            else await decideArrangement(s, messageId, i.text, i.division === true, recovered?.attachments ?? (prepared?.ok ? prepared.attachments : []), intent, quote);
           };
           void arrange().catch(error => deps.log?.warn('Group arrangement failed', { groupId: roomId, ...chatErrorDiagnostic(error) }));
         }
@@ -2754,11 +2780,27 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       return { ok: true as const, groups: groups.filter(group => !personalList.hidden(group.id)) };
     }),
     getGroup: (roomId, options) => safe(async () => {
-      const target = await resolveGroup(id.parse(roomId)); await syncPersonalList();
-      if (personalList.hidden(target)) throw new Error('CONVERSATION_NOT_FOUND');
-      const group = await detail(target, options);
-      if (personalList.hidden(target)) throw new Error('CONVERSATION_NOT_FOUND');
-      return { ok: true as const, group };
+      if ((options as { cacheOnly?: boolean } | undefined)?.cacheOnly === true) {
+        const group = history.read(id.parse(roomId));
+        if (!group || personalList.hidden(group.id)) throw new Error('CONVERSATION_NOT_FOUND');
+        return { ok: true as const, group };
+      }
+      let target = id.parse(roomId);
+      try {
+        target = await resolveGroup(target); await syncPersonalList();
+        if (personalList.hidden(target)) throw new Error('CONVERSATION_NOT_FOUND');
+        const group = await detail(target, options);
+        if (personalList.hidden(target)) throw new Error('CONVERSATION_NOT_FOUND');
+        if (!(options as { beforeSequence?: number } | undefined)?.beforeSequence) history.save(target, group);
+        return { ok: true as const, group };
+      }
+      catch (error) {
+        const failure = chatGroupFailure(error);
+        if (['NOT_FOUND', 'PERMISSION_DENIED'].includes(failure.errorCode)) {
+          history.forget(id.parse(roomId)); history.forget(target); sendJournal.forgetRoom(target);
+        }
+        throw error;
+      }
     }),
     createGroup: input => safe(async () => {
       const i = groupInput.parse(input); await register(); beginUpgrade();
@@ -2956,6 +2998,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (s.members.some(m => m.ownerActorId === selfId && m.role === 'owner')) await api(`/conversations/${room}`, 'PATCH', { operationId: randomUUID(), expectedRevision: s.room.revision, archived: true }, managementActor(s));
       else await api(`/conversations/${room}/members`, 'POST', { operationId: randomUUID(), actorId: selfId, action: 'leave' });
       resolvedGroups.delete(id.parse(groupId));
+      history.forget(room); history.forget(id.parse(groupId)); sendJournal.forgetRoom(room);
       changed(room); return { ok: true as const };
     }),
     continueRound: groupId => safe(async () => {

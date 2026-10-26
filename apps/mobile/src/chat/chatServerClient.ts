@@ -50,6 +50,15 @@ export function chatGroupManager(snapshot: ChatSnapshot, self: string) {
   return managers.find(member => member.role === 'owner') ?? managers.find(member => member.id === self) ?? managers[0];
 }
 
+export interface ChatSendInput {
+  conversationKind?: 'direct';
+  clientId: string; text: string; mentions: { all: boolean; botIds: string[] };
+  quote?: { messageId: string }; threadRootId?: string;
+}
+export interface ChatSendBody {
+  operationId: string; content: ChatMessage['content']; mentions: string[]; threadRootId?: string;
+}
+
 export function chatId(value: string): string {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new Error('INVALID_CHAT_ID');
   return value;
@@ -450,7 +459,11 @@ export function createChatServerClient(request: ChatRequest, personalList = crea
       if (current) { if (BigInt(readSeq) > BigInt(current.read_seq)) current.read_seq = readSeq; }
       else page.snapshot.reads.push({ thread_key: key, read_seq: readSeq });
     },
-    async send(roomId: string, input: { conversationKind?: 'direct'; clientId: string; text: string; mentions: { all: boolean; botIds: string[] }; quote?: { messageId: string }; threadRootId?: string }) {
+    async send(roomId: string, input: ChatSendInput, durable?: {
+      body?: ChatSendBody;
+      save(body: ChatSendBody): Promise<void>;
+    }) {
+      if (durable?.body) return request<ChatMessage>(`/conversations/${chatId(roomId)}/messages`, 'POST', durable.body);
       const key = JSON.stringify([roomId, input.clientId, input.text, input.mentions, input.quote?.messageId, input.threadRootId]);
       const known = input.quote ? postedQuotes.get(key) : undefined;
       const content: ChatMessage['content'] = known?.content ?? [{ type: 'text', text: input.text }];
@@ -475,8 +488,12 @@ export function createChatServerClient(request: ChatRequest, personalList = crea
         if (postedQuotes.size > 128) postedQuotes.delete(postedQuotes.keys().next().value!);
       }
       try {
-        const result = await request(`/conversations/${chatId(roomId)}/messages`, 'POST', { operationId: input.clientId,
-          content, mentions: [...mentions], ...(input.threadRootId ? { threadRootId: chatId(input.threadRootId) } : {}) });
+        const body: ChatSendBody = { operationId: input.clientId,
+          content, mentions: [...mentions], ...(input.threadRootId ? { threadRootId: chatId(input.threadRootId) } : {}) };
+        // The exact body is durable before POST. A lost response/restart must not
+        // rebuild its quote or recipients under the same operationId.
+        await durable?.save(body);
+        const result = await request<ChatMessage>(`/conversations/${chatId(roomId)}/messages`, 'POST', body);
         postedQuotes.delete(key);
         return result;
       } catch (error) {
