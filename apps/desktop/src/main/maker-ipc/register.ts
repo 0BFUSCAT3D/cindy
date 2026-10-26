@@ -16638,11 +16638,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     apply: async (sessionId, route, current) => {
       await stageSessionRouteSelection(sessionId, { ...route, agentDeviceId: route.agentDeviceId ?? null }, current.agentKind);
-      // A changed permanent companion choice supersedes the automation's saved
-      // preference, even if it selects the already-running temporary model.
-      // Profile saves retire it atomically in the DB; other route changes retire
-      // it only after staging succeeds. Never detach IM default following.
-      await updateScheduledPreference(sessionId, null);
       // Consume the same model/Harness intent as the normal send path. Its
       // verified window protection and history handoff also apply here; a Bot
       // settings save need not wait for a second user message. Busy runtimes
@@ -16650,6 +16645,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (isSessionIdleForRouteApply(sessionId)) {
         await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId, { bootstrapAfterSwitch: true });
       }
+      // Keep the durable acceptance marker if the switch failed or still waits
+      // for a safe boundary. Staging alone must not lose recovery after restart.
+      if (agentSwitchPending.get(sessionId)) {
+        throw new ScheduledModelSelectionBusyError('Saved companion route is still pending');
+      }
+      await updateScheduledPreference(sessionId, null);
     },
   });
 

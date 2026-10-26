@@ -1,0 +1,71 @@
+# #7177：接受已保存模型的旧状态恢复验证
+
+日期：2026-10-26。代码基线 `806b459005cbf21fb40721d35af91ff7e7f776c6`，包含 #6759 和 #6950。
+修复位于本记录所属提交；推送后的运行回归另行记录其源码 SHA。
+
+## 问题与修复
+
+旧包 0.1.115 的例行模型恢复会按本机目录校验旧来源；已合并修复补齐了共享执行位置和永久保存的版本标记。
+剩余缺口是存量无版本标记的恢复记录：即使永久配置已经保存，普通发送仍先尝试恢复旧来源。
+本次复用 `local-db:bots:update`，用 `acceptSavedModelSelectionVersion` 显式接受已读取的永久选择。
+同值接受也校验可用性、取得发送锁、在原事务中推进版本并写恢复标记；切换未就绪时保留标记。
+现有伙伴工具显式提交完整 `modelChain` 同样走此分支；普通改名不改变恢复状态。
+
+没有新增数据库 migration、IPC channel、UI 按钮或自动 fallback。
+
+## 自动化验证
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 修复前最小回归 | exit 1：接受后版本仍为 1，预期为 2 |
+| 四个相关文件 | 765 通过、1 失败；新增测试误用返回字段 `displayName`，已改为真实字段 `name` |
+| 修正后两项新增回归 | exit 0：2 通过；70.51 秒，其中测试体 522ms，现有大文件收集 68.19 秒 |
+| `pnpm check:test-hygiene` | exit 0 |
+| Desktop 等效类型检查 | exit 0，615.72 秒，无 TypeScript 诊断 |
+| `git diff --check` | exit 0 |
+
+四文件命令：
+
+```sh
+pnpm --filter desktop exec vitest run \
+  src/main/localDb/ipc/__tests__/botCanonicalSession.test.ts \
+  src/main/localDb/worker/opHandlers/__tests__/botTx.test.ts \
+  src/main/maker-ipc/__tests__/botModelRouteReconciler.test.ts \
+  src/main/maker-ipc/__tests__/scheduledModelSelection.test.ts --maxWorkers=1
+```
+
+修正后定向命令（上述第一文件）：`-t 'accepts the saved permanent choice|reaccepts the same model'`。
+首轮 package 类型检查 exit 1、无诊断，不计通过；等效重跑：
+
+```sh
+NODE_OPTIONS=--max-old-space-size=12288 node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json
+```
+
+新增用例属于 DB tier，通过真实配置 IPC、事务和既有冷态恢复/路由协调器验证：同值接受、冷态跳过旧来源、失败保留、成功清理、过期版本拒绝，以及工具同值提交与普通改名的区别。
+没有新增测试文件或重复导入；运行时间主要由既有大型测试文件的加载决定。
+
+## 提交前真实运行
+
+在本 worktree 的 Global 独立开发实例上验证，`desktop-whoami` 返回 `DESKTOP_DEV_VERDICT=ready`、`commitVerified=true`。
+启动器首次超时，实例随后完成初始化；未把超时当作成功。
+
+只读提取旧正式数据中的模型配置和实际无标记恢复记录，在独立 QA 伙伴上建立模型状态副本。
+未复制聊天、身份提示词或凭证，未将开发构建连接正式数据库。这是旧正式模型状态副本验收，**不是整个正式库副本或正式安装包升级验收**。
+
+| 场景 | 实际结果 |
+| --- | --- |
+| 历史永久选择 Pi + 旧 Codex 恢复记录 | 真实输入框发送前报旧来源不可用；队首保留 1 条，未回复 |
+| 显式接受已保存选择 | 配置版本 1 → 2，capabilities 完全不变 |
+| 现有重试按钮处理原输入 | 实际回复 `QA7177_LEGACY_SAVED_MODEL_OK`；原 clientId 仅落库 1 条 |
+| 恢复后手动例行 | history.status=success，实际结果 `QA7177_LEGACY_ROUTINE_OK` |
+| 例行后的普通输入 | 实际回复 `QA7177_LEGACY_AFTER_ROUTINE_OK` |
+| 当前永久共享 Codex + 同一旧恢复记录 | 接受后实际回复 `QA7177_CURRENT_SAVED_ROUTE_OK`；provider 与共享位置保持原值 |
+
+完成时队列为空、error/recovery 为 null、执行结束、旧 baseline 清空；例行保持停用，仅手动触发。
+原正式模型、provider、共享位置及 baseline 再次只读核对均未改变。
+
+## 边界与风险
+
+原正式库 schema=129，开发构建 migration 到 131；依照数据库规则，未用开发构建升级正式 profile。
+未更新、替换或重启正式 Cindy。未声称整仓测试、远端 CI、跨账号全套验收或正式包已通过。
+本记录已脱敏，不公开原始任务、伙伴、执行设备、来源标识或账号数据。
