@@ -1,7 +1,7 @@
 import { createConversationListState } from '@cindy/maker-shared/chatConversationList';
 /** The existing Chat Server HTTP contract; no device-link or executor registration. */
 import { botGroupMessageSummaryText, readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readBotGroupTaskCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
-import { botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
+import { chatGroupMemberName as memberName, botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 // The app's `@/i18n` sets up this default instance; importing it here would pull React bindings into a plain client.
 import i18next from 'i18next';
@@ -73,8 +73,6 @@ export function chatRejection(error: unknown, status: number, code: string): Rec
   const details = (error as { details?: unknown }).details;
   return details && typeof details === 'object' && !Array.isArray(details) ? details as Record<string, unknown> : {};
 }
-const memberName = (member: ChatMember) => member.kind === 'bot' && member.ownerName?.trim()
-  ? `${member.name} (${member.ownerName.trim()})` : member.name;
 // A recognized 引用回复 card renders as the quote; an unknown revision keeps its readable fallback.
 // A task card is the message's task only on a teammate's own message (bot-group-chat.md §10).
 const taskCardOf = (message: ChatMessage) => message.author.kind === 'bot' ? message.content.map(readBotGroupTaskCard).find(Boolean) ?? null : null;
@@ -101,17 +99,18 @@ export function chatRoomRow(room: ChatRoom, snapshot?: ChatSnapshot, selfId?: st
   const members = snapshot?.members.filter(member => member.state === 'joined') ?? [];
   const last = snapshot?.messages.filter(message => !message.threadRootId && !message.deleted)
     .sort((a, b) => BigInt(chatCursor(a.seq)) < BigInt(chatCursor(b.seq)) ? 1 : -1)[0];
+  const ownerMembers = room.kind === 'direct' ? [] : members;
   return { key: `chat:${room.id}`, host: { deviceId: '', deviceName: '' },
     lastReplySequence: snapshot && selfId ? chatLastReplySequence(snapshot.messages, selfId) : undefined,
     chatUnread: snapshot?.reads && selfId ? chatUnread(snapshot, selfId) : undefined,
-    groupMembers: snapshot ? members.map(chatMemberIdentity) : undefined, item: {
+    groupMembers: snapshot ? members.map(member => chatMemberIdentity(member, ownerMembers)) : undefined, item: {
     ref: { collectionId: 'bot-groups', kind: 'bot-group', id: room.id },
     revision: String(room.head ?? room.revision), display: { title: room.name,
-      subtitle: members.map(memberName).join(' · '),
-      ...(snapshot ? { preview: last ? mobileMarkdownPreviewText(botGroupMessageSummaryText({ content: contentText(last), task: taskCardOf(last) ?? undefined, deleted: last.deleted }) || mediaNames(last)).slice(0, 160) || members.map(memberName).join(' · ') : '' } : {}),
+      subtitle: members.map(member => memberName(member, ownerMembers)).join(' · '),
+      ...(snapshot ? { preview: last ? mobileMarkdownPreviewText(botGroupMessageSummaryText({ content: contentText(last), task: taskCardOf(last) ?? undefined, deleted: last.deleted }) || mediaNames(last)).slice(0, 160) || members.map(member => memberName(member, ownerMembers)).join(' · ') : '' } : {}),
       timestamp: Date.parse(last?.createdAt ?? room.updated_at),
       lastReplyAt: snapshot && selfId ? chatLastReplyAt(snapshot.messages, selfId) : undefined },
-    links: members.map(member => ({ rel: 'member', label: memberName(member),
+    links: members.map(member => ({ rel: 'member', label: memberName(member, ownerMembers),
       target: { kind: 'resource', ref: { collectionId: 'teammates', kind: 'bot', id: member.id } } })),
   } };
 }
@@ -165,8 +164,8 @@ export function chatMemberAvatar(value: string | null): Pick<BotGroupMemberView,
   return { avatar, avatarUrl: null };
 }
 
-function chatMemberIdentity(member: ChatMember) {
-  return { botId: member.id, name: memberName(member), ...chatMemberAvatar(member.avatar), avatarColor: '' };
+function chatMemberIdentity(member: ChatMember, members: readonly ChatMember[]) {
+  return { botId: member.id, name: memberName(member, members), ...chatMemberAvatar(member.avatar), avatarColor: '' };
 }
 
 /**
@@ -175,9 +174,10 @@ function chatMemberIdentity(member: ChatMember) {
  */
 export function chatGroupView(page: ChatPage, selfId: string, actors: readonly ChatActor[] = []): BotGroupRemoteChatData {
   const { room, members } = page.snapshot;
+  const ownerMembers = room.kind === 'direct' ? [] : members;
   const active = members.filter(member => member.state === 'joined');
   const memberViews: BotGroupMemberView[] = active.map(member => ({
-    ...chatMemberIdentity(member), actorId: member.id, actorKind: member.kind, isSelf: member.id === selfId,
+    ...chatMemberIdentity(member, ownerMembers), actorId: member.id, actorKind: member.kind, isSelf: member.id === selfId,
     isOwned: member.ownerActorId === selfId, role: member.role,
     ...(member.ownerActorId === selfId && member.kind === 'bot'
       ? { homeDeviceId: actors.find(actor => actor.id === member.id)?.homeDeviceId ?? null } : {}),
@@ -202,7 +202,7 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
       ...(task ? { task } : {}), threadRootId: message.threadRootId,
       authorKind: message.origin === 'system' ? 'system' : message.author.kind === 'human' ? 'user' : 'bot',
       authorBotId: message.authorId, authorName: joined && typeof joined.data?.displayName === 'string' ? joined.data.displayName
-        : member ? memberName(member) : message.author.name,
+        : member ? memberName(member, ownerMembers) : message.author.name,
       isSelf: message.authorId === selfId, content: contentText(message), mentions: { all: false, botIds: message.mentions ?? [] },
       ...(quote ? { quote: deletedIds.has(quote.messageId) ? { ...quote, originalDeleted: true } : quote } : {}),
       noticeCode: joined ? 'member-joined' : null, planId: null, files: [],
@@ -213,10 +213,10 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
     const failure = readBotGroupExecutionFailure(row, room.id);
     if (!failure) return [];
     const member = members.find(candidate => candidate.id === failure.botId);
-    return [{ ...failure, botName: member ? memberName(member) : '' }];
+    return [{ ...failure, botName: member ? memberName(member, ownerMembers) : '' }];
   });
   return { id: room.id, conversationKind: room.kind === 'direct' ? 'direct' : 'group',
-    name: room.kind === 'direct' ? active.filter(member => member.id !== selfId).map(memberName).join(', ') || room.name : room.name,
+    name: room.kind === 'direct' ? active.filter(member => member.id !== selfId).map(member => memberName(member, [])).join(', ') || room.name : room.name,
     serverBacked: true, supportsGroupLeave: room.kind !== 'direct', dissolvedAt: room.dissolved_at ?? null, archived: room.archived, selfActorId: selfId,
     topic: room.topic, description: room.description,
     supportsSettingsManagement: room.kind === 'group', supportsMemberRemoval: room.kind === 'group',
@@ -450,7 +450,7 @@ export function createChatServerClient(request: ChatRequest, personalList = crea
       if (current) { if (BigInt(readSeq) > BigInt(current.read_seq)) current.read_seq = readSeq; }
       else page.snapshot.reads.push({ thread_key: key, read_seq: readSeq });
     },
-    async send(roomId: string, input: { clientId: string; text: string; mentions: { all: boolean; botIds: string[] }; quote?: { messageId: string }; threadRootId?: string }) {
+    async send(roomId: string, input: { conversationKind?: 'direct'; clientId: string; text: string; mentions: { all: boolean; botIds: string[] }; quote?: { messageId: string }; threadRootId?: string }) {
       const key = JSON.stringify([roomId, input.clientId, input.text, input.mentions, input.quote?.messageId, input.threadRootId]);
       const known = input.quote ? postedQuotes.get(key) : undefined;
       const content: ChatMessage['content'] = known?.content ?? [{ type: 'text', text: input.text }];
@@ -463,7 +463,7 @@ export function createChatServerClient(request: ChatRequest, personalList = crea
         if (original.deleted || (original.threadRootId && original.threadRootId !== input.threadRootId) || original.origin === 'system') throw new Error('QUOTE_UNAVAILABLE');
         const member = members.find(member => member.id === original.authorId);
         const quote = botGroupQuoteFromMessage({ id: original.id, sequence: Number(original.seq), authorKind: original.author.kind === 'human' ? 'user' : 'bot',
-          authorName: member ? memberName(member) : original.author.name, content: contentText(original), task: taskCardOf(original) ?? undefined,
+          authorName: member ? memberName(member, input.conversationKind === 'direct' ? [] : members) : original.author.name, content: contentText(original), task: taskCardOf(original) ?? undefined,
           attachments: original.content.filter(block => block.type === 'media').map(block => ({ name: attachmentName(block) })) });
         // Quote positions are only an optional UI hint; never round a server cursor into it.
         if (!Number.isSafeInteger(quote.sequence)) quote.sequence = null;
