@@ -12333,6 +12333,7 @@
       "copy": "コピー",
       "blockCopied": "コピー済み",
       "duplicateFiles": "同名のファイルが {{count}} 件見つかりました。絶対パスを使用してください",
+      "fileUnavailable": "ファイルが見つからないか、アクセスできません。移動または削除された可能性があります。",
       "copyFile": "コピー",
       "copyFilePath": "パスをコピー",
       "copyLocation": "位置をコピー",

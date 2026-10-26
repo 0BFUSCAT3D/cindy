@@ -12378,6 +12378,7 @@
       "copy": "Copy",
       "blockCopied": "Copied",
       "duplicateFiles": "Found {{count}} files with the same name, please use an absolute path",
+      "fileUnavailable": "Can't find or access the file. It may have been moved or deleted.",
       "copyFile": "Copy",
       "copyFilePath": "Copy path",
       "copyLocation": "Copy Location",

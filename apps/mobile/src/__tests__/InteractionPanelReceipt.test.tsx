@@ -11,6 +11,9 @@ import { clearAllInteractionDrafts, readAskUserDraft, readPlanReviewDraft } from
 import { forwardNavigationLock } from '@/utils/navigationLock';
 import { ChatFilePathContext, type ChatFilePathContextValue } from '@/session/chatFilePathContext';
 import { QuestionReferenceText } from '@/session/QuestionReferenceText';
+import { ChatPathChipSpan } from '@/session/ChatPathChipSpan';
+import { classifyChatPathLinkTarget } from '@/session/chatPathCandidate';
+import { Text } from '@/components/AppText';
 import { _clearRemotePathVerdictCache } from '@/session/remotePathVerdict';
 import { i18n } from '@/i18n';
 import { AskCardAuthContext } from '@/session/askCardAuth';
@@ -477,6 +480,37 @@ it('keeps a changed question reference unclickable until its own verification', 
   await act(async () => root.render(<ReferenceFrame text="missing.html" />));
   expect(changedFrame).toEqual([false]);
   expect(onOpenPath).not.toHaveBeenCalled();
+});
+
+// Unit regression: previous coverage only tested auto-detected references.
+// A missing authored file link must still reach the controlled device's preview
+// (which reports read failures), without lighting up the same bare reference.
+it.each([true, false])('keeps missing file links actionable only when authored: %s', async (explicitLink) => {
+  const onOpenPath = vi.fn();
+  const fileContext: ChatFilePathContextValue = {
+    deviceId: 'd1', sessionId: 's1', workdir: '/repo', onOpenPath,
+    statPath: vi.fn(async (absPath: string) => ({ kind: 'missing' as const, resolvedPath: absPath })),
+  };
+  await act(async () => root.render(
+    <ChatFilePathContext.Provider value={fileContext}>
+      <ChatPathChipSpan
+        candidate={classifyChatPathLinkTarget('/repo/missing.html')}
+        explicitLink={explicitLink}
+        display="查看报告" SpanText={Text} chipStyle={{ textDecorationLine: 'underline' }}
+        plainStyle={{}} usePathState={useState}
+      />
+    </ChatFilePathContext.Provider>,
+  ));
+  const link = host.querySelector<HTMLElement>('[data-testid="message.markdownPathChip"]');
+  expect(!!link).toBe(explicitLink);
+  if (link) {
+    await act(async () => link.click());
+    expect(onOpenPath).toHaveBeenCalledExactlyOnceWith({
+      kind: 'file', absPath: '/repo/missing.html', relPath: 'missing.html',
+    });
+  } else {
+    expect(onOpenPath).not.toHaveBeenCalled();
+  }
 });
 
 it.each(['push-first', 'receipt-first', 'lost-receipt', 'other-client'] as const)(

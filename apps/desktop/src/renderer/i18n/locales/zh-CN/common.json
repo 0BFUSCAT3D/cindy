@@ -12333,6 +12333,7 @@
       "copy": "复制",
       "blockCopied": "已复制",
       "duplicateFiles": "找到 {{count}} 个同名文件，请改用绝对路径",
+      "fileUnavailable": "无法找到或访问文件，文件可能已移动或删除",
       "copyFile": "复制",
       "copyFilePath": "复制路径",
       "copyLocation": "复制位置",

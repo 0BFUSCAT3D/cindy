@@ -12332,6 +12332,7 @@
       "copy": "複製",
       "blockCopied": "已複製",
       "duplicateFiles": "找到 {{count}} 個同名檔案，請改用絕對路徑",
+      "fileUnavailable": "無法找到或存取檔案，檔案可能已移動或刪除",
       "copyFile": "複製",
       "copyFilePath": "複製路徑",
       "copyLocation": "複製位置",
