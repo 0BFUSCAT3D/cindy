@@ -64,10 +64,10 @@ describe('streaming answer documents', () => {
     const doc = new RichAnswerStream().update(heading(1, 'a') + heading(2, 'b') + malformed + heading(4, 'c') + heading(5, 'd'));
     expect(doc.roots).toEqual(['a', 'b', 'c', 'd']);
     expect(doc.nodes.has('bad')).toBe(false);
-    expect(doc.issues).toBe(1);
+    expect(doc.issues).toBe(2); // the malformed line itself + the skipped sequence 3
     const skipped = new RichAnswerStream().update(heading(1, 'a') + heading(3, 'c') + heading(4, 'd'));
     expect(skipped.roots).toEqual(['a', 'c', 'd']);
-    expect(skipped.issues).toBe(0);
+    expect(skipped.issues).toBe(1);
   });
 });
 it('restores persisted controls without overwriting input entered during a slow load', async () => {
