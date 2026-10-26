@@ -1,15 +1,14 @@
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { PluginPublisherBadge } from './PluginPublisherBadge';
 import { PluginSharedUsage } from './PluginSharedUsage';
-import * as Dialog from '@radix-ui/react-dialog';
-import { Check, ChevronRight, Plus, RotateCw } from 'lucide-react';
+import { ChevronRight, Plus, RotateCw } from 'lucide-react';
 import { Select } from '@/components/ui/select';
 import { Tip } from '@/components/ui/tooltip';
 import type { GhostPluginListItem } from './lib/ghostPluginViewModel';
 import type { PluginMarketDetail } from '../../../shared/pluginMarket';
 import { AccountSwitcherDialog } from '@/components/sidebar/AccountSwitcherDialog';
 import { useSignInToCindy } from '@/hooks/useSignInToCindy';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -33,6 +32,8 @@ import type {
 import { PluginDetailTopBar, usePluginDetailScrolled } from './PluginDetailTopBar';
 import { PLUGIN_MANAGEMENT_FRAME_CLASS, PluginManagementPage } from './PluginManagementLayout';
 import { GhostPluginIcon } from './GhostPluginIcon';
+import { PluginPublishDialog, type PluginPublishDialogRequest, type PluginSubmitOptions } from './PluginPublishDialog';
+export type { PluginSubmitOptions } from './PluginPublishDialog';
 import { usePluginMarketForegroundRefresh } from './lib/usePluginMarketForegroundRefresh';
 
 const copy = 'settings.ghosts.contribution';
@@ -49,12 +50,6 @@ export interface MyPluginsPageCache {
   installationRevision?: string;
   scroll?: number;
   selectedRelease?: { pluginId: string; key: string };
-}
-
-export interface PluginSubmitOptions {
-  prepared?: PreparedPluginContribution;
-  /** Closing/reopening the picker must not let an old completion navigate. */
-  isCurrent?: () => boolean;
 }
 
 /** Kept independent of transport DTOs; the Host supplies an owner-fenced read projection. */
@@ -93,13 +88,8 @@ export function MyPluginsPage({
   const navigate = useNavigate();
   const location = useLocation();
   const signIn = useSignInToCindy(`${location.pathname}${location.search}`);
-  const [pickerOwner, setPickerOwner] = useState<string | null>(null);
-  const pickerStatusId = useId();
-  const [pickerSelection, setPickerSelection] = useState<string | null>(null);
-  const [pickerRefresh, setPickerRefresh] = useState(0);
-  const [pickerPlugins, setPickerPlugins] = useState<{
-    key: string; plugins: MyPluginView[]; failure?: string;
-  } | null>(null);
+  const [picker, setPicker] = useState<PluginPublishDialogRequest | null>(null);
+  const pickerSequence = useRef(0);
   const [updateRefresh, setUpdateRefresh] = useState(0);
   const preparePreview = onPrepare ?? reader.prepare;
   const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false);
@@ -174,59 +164,11 @@ export function MyPluginsPage({
   const scrollFrame = useRef<HTMLElement>(null);
   const { scrolled, onScroll } = usePluginDetailScrolled();
   const contributor = mode === 'cloud' && (user?.membershipKind === 'personal' || user?.membershipKind === 'org');
-  const pickerOpen = contributor && ownerMatches && pickerOwner === ownerKey && !selectedId;
-  const pickerReadKey = JSON.stringify([ownerKey, installedRevision, submissionRevision]);
-  const pickerRead = pickerPlugins?.key === pickerReadKey ? pickerPlugins : null;
-  const pickerReady = Boolean(pickerRead && !pickerRead.failure);
-  const pickerItem = localPlugins.find(item => item.id === pickerSelection);
-  const pickerVersion = pickerItem?.version;
-  const pickerKey = JSON.stringify([ownerKey, location.key, pickerOpen, pickerSelection,
-    pickerVersion, installedRevision, pickerRefresh]);
-  const pickerContext = useRef({ key: pickerKey, token: {} });
-  if (pickerContext.current.key !== pickerKey) pickerContext.current = { key: pickerKey, token: {} };
-  const currentPickerDraft = useContributionPreview(pickerKey,
-    pickerOpen && pickerVersion !== undefined ? pickerSelection ?? undefined : undefined,
-    pickerVersion, preparePreview, reader.discard);
-  const pickerBlocker = currentPickerDraft?.prepared?.preflight?.blockers[0];
-  const pickerUnavailable = (local: GhostPluginListItem) => {
-    const plugin = pickerRead?.plugins.find(item => item.localInstanceId === local.id);
-    if (!plugin) return null;
-    if (plugin.publisherKind === 'official') return `${copy}.unavailable.officialGithubRequired`;
-    if (!plugin.actions.submitUpdate) return `${copy}.permissionDenied`;
-    if (plugin.latestSubmission?.reviewStatus === 'pending' && plugin.latestSubmission.revisionState === 'current')
-      return `${copy}.errors.PLUGIN_PENDING_RELEASE_EXISTS`;
-    if (plugin.market.version === local.version || plugin.latestSubmission?.version === local.version)
-      return `${copy}.errors.VERSION_ALREADY_SUBMITTED`;
-    return null;
+  const openPicker = () => {
+    setPicker({ id: ++pickerSequence.current, owner: ownerKey, open: true });
   };
-  const selectedPickerUnavailable = pickerItem ? pickerUnavailable(pickerItem) : null;
 
-  useEffect(() => {
-    let disposed = false;
-    setPickerPlugins(null);
-    if (!pickerOpen || !localPlugins.length) return;
-    // Read version facts once for this dialog, independently of the list's search
-    // and pagination. Do not prepare packages just to render the choices.
-    void (async () => {
-      const plugins: MyPluginView[] = [];
-      const cursors = new Set<string>();
-      let cursor: string | undefined;
-      do {
-        const page = await reader.list({ query: '', filter: 'all', cursor });
-        if (disposed) return;
-        plugins.push(...page.plugins);
-        cursor = page.nextCursor ?? undefined;
-        if (cursor && cursors.has(cursor)) throw new Error('Repeated contribution cursor');
-        if (cursor) cursors.add(cursor);
-      } while (cursor);
-      setPickerPlugins({ key: pickerReadKey, plugins });
-    })().catch(error => {
-      if (!disposed) setPickerPlugins({ key: pickerReadKey, plugins: [], failure: contributionErrorKey(error) });
-    });
-    return () => { disposed = true; };
-  }, [pickerOpen, pickerReadKey, reader, localPlugins.length]);
-
-  useEffect(() => { setPickerOwner(null); }, [selectedId]);
+  useEffect(() => { setPicker(null); }, [selectedId]);
 
   useEffect(() => {
     mounted.current = true;
@@ -245,7 +187,7 @@ export function MyPluginsPage({
       setDetail(null);
       setInstallationRead(null);
       setFailure(null);
-      setPickerOwner(null);
+      setPicker(null);
       setPublishedContent(null);
       setHistoryOpenKey(null);
       setSnapshots({});
@@ -449,8 +391,8 @@ export function MyPluginsPage({
     return () => { window.removeEventListener('online', online); window.removeEventListener('offline', offline); };
   }, [refreshAll]);
   useLayoutEffect(() => {
-    if (!selectedId && scrollFrame.current)
-      scrollFrame.current.scrollTop = listScroll.current;
+    if (scrollFrame.current)
+      scrollFrame.current.scrollTop = selectedId ? 0 : listScroll.current;
   }, [selectedId, page]);
 
   const loadSnapshot = useCallback(
@@ -887,9 +829,11 @@ export function MyPluginsPage({
         {canPrepareUpdate ? currentUpdateDraft?.prepared ? <>
           <p className="text-13 font-medium leading-5 text-[var(--text-primary)]">{currentUpdateDraft.prepared.name} · {currentUpdateDraft.prepared.version}</p>
           <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-secondary)]">{currentUpdateDraft.prepared.description}</p>
-          <h3 className="text-13 font-medium leading-5 text-[var(--text-secondary)]">{t(`${copy}.releaseNotes`)}</h3>
-          <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{currentUpdateDraft.prepared.releaseNotes?.trim() || t(`${copy}.notesMissing`)}</p>
-          {updateBlocker ? <p role="status" className="text-13 leading-5 text-[var(--text-secondary)]">{updateBlocker.message}</p> : null}
+          {currentUpdateDraft.prepared.releaseNotes?.trim() ? <>
+            <h3 className="text-13 font-medium leading-5 text-[var(--text-secondary)]">{t(`${copy}.releaseNotes`)}</h3>
+            <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{currentUpdateDraft.prepared.releaseNotes}</p>
+          </> : null}
+          {updateBlocker ? <p role="status" className="text-13 leading-5 text-[var(--text-secondary)]">{t(`${copy}.errors.${updateBlocker.code}`, { defaultValue: t(`${copy}.errors.PRECONDITION_FAILED`) })}</p> : null}
         </> : <p role={currentUpdateDraft?.error ? 'alert' : 'status'} className="text-13 leading-5 text-[var(--text-secondary)]">{t(currentUpdateDraft?.error ?? `${copy}.preparing`)}</p> : null}
       </section>
       <section aria-label={t(`${copy}.listedVersion`)} className="space-y-3 border-t border-[var(--border-default)] pt-5">
@@ -899,8 +843,10 @@ export function MyPluginsPage({
         {plugin.market.state !== 'available' ? <p className="text-14 leading-6 text-[var(--text-secondary)]">{t(`${copy}.market.${plugin.market.state}`)}</p>
           : published?.value ? <>
             <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{published.value.description || published.value.manifest.description}</p>
-            <h3 className="text-13 font-medium leading-5 text-[var(--text-secondary)]">{t(`${copy}.releaseNotes`)}</h3>
-            <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{published.value.manifest.releaseNotes?.trim() || t(`${copy}.notesMissing`)}</p>
+            {published.value.manifest.releaseNotes?.trim() ? <>
+              <h3 className="text-13 font-medium leading-5 text-[var(--text-secondary)]">{t(`${copy}.releaseNotes`)}</h3>
+              <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{published.value.manifest.releaseNotes}</p>
+            </> : null}
           </> : <p role="status" className="text-14 leading-6 text-[var(--text-secondary)]">{t(`${copy}.${published?.loading ? 'loading' : 'publishedContentUnavailable'}`)}</p>}
         {plugin.market.reason ? <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-secondary)]">{plugin.market.reason}</p> : null}
       </section>
@@ -919,10 +865,14 @@ export function MyPluginsPage({
             <p role="status" className="text-13 leading-5 text-[var(--text-secondary)]">{t(`${copy}.${cancelResult.cancelled ? 'cancelReviewCompleted' : 'cancelReviewAlreadyFinal'}`)}</p>
           ) : null}
           {currentSubmission.reason ? <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{currentSubmission.reason}</p> : null}
-          <h3 className="text-13 font-medium leading-5 text-[var(--text-secondary)]">{t(`${copy}.releaseNotes`)}</h3>
+          <h3 className="text-13 font-medium leading-5 text-[var(--text-secondary)]">{t('settings.ghosts.detail.infoDescription')}</h3>
           <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">
-            {typeof currentNotes === 'string' && currentNotes.trim() ? currentNotes : t(`${copy}.${currentSubmission.content ? 'notesMissing' : 'snapshotUnavailable'}`)}
+            {currentSubmission.content ? currentSubmission.content.description : t(`${copy}.snapshotUnavailable`)}
           </p>
+          {typeof currentNotes === 'string' && currentNotes.trim() ? <>
+            <h3 className="text-13 font-medium leading-5 text-[var(--text-secondary)]">{t(`${copy}.releaseNotes`)}</h3>
+            <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{currentNotes}</p>
+          </> : null}
           <details className="group/current">
             <summary className="flex cursor-pointer list-none items-center gap-2 text-13 font-medium leading-5 text-[var(--text-secondary)] [&::-webkit-details-marker]:hidden">
               <ChevronRight size={14} aria-hidden="true" className="shrink-0 group-open/current:rotate-90" />{t(`${copy}.submittedContent`)}
@@ -1011,16 +961,16 @@ export function MyPluginsPage({
               <section className="space-y-3 pt-2">
                 <div className="space-y-1">
                   <h3 className="text-14 font-medium leading-5 text-[var(--text-primary)]">
-                    {t(`${copy}.releaseNotes`)}
+                    {t('settings.ghosts.detail.infoDescription')}
                   </h3>
                 </div>
                 <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">
-                  {typeof notes === 'string' && notes.trim()
-                    ? notes
-                    : t(
-                        `${copy}.${shownRelease.content ? 'notesMissing' : 'snapshotUnavailable'}`,
-                      )}
+                  {shownRelease.content ? shownRelease.content.description : t(`${copy}.snapshotUnavailable`)}
                 </p>
+                {typeof notes === 'string' && notes.trim() ? <>
+                  <h3 className="text-14 font-medium leading-5 text-[var(--text-primary)]">{t(`${copy}.releaseNotes`)}</h3>
+                  <p className="select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-primary)]">{notes}</p>
+                </> : null}
               </section>
               <details className="group/version border-t border-[var(--border-default)] pt-4">
                 <summary className="flex cursor-pointer list-none items-center gap-2 text-13 font-medium leading-5 text-[var(--text-secondary)] [&::-webkit-details-marker]:hidden">
@@ -1067,15 +1017,17 @@ export function MyPluginsPage({
               ) : null}
               {event.submissionId ? (
                 <div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    compact
-                    loading={snapshotLoading === event.submissionId}
-                    onClick={() => void loadSnapshot(event.submissionId!)}
-                  >
-                    {t(`${copy}.submittedContent`)}
-                  </Button>
+                  {!snapshots[event.submissionId] ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      compact
+                      loading={snapshotLoading === event.submissionId}
+                      onClick={() => void loadSnapshot(event.submissionId!)}
+                    >
+                      {t(`${copy}.submittedContent`)}
+                    </Button>
+                  ) : null}
                   {snapshots[event.submissionId] ? (
                     <div className="mt-3">
                       {releaseContent(snapshots[event.submissionId])}
@@ -1113,7 +1065,6 @@ export function MyPluginsPage({
     </div>
   ) : null;
   const publishing = <section aria-label={t(`${copy}.versionManagement`)}>
-    {currentSubmission?.content?.description ? <p className="mb-6 select-text whitespace-pre-wrap break-words text-14 leading-6 text-[var(--text-secondary)]">{currentSubmission.content.description}</p> : null}
     {versions ? <div className="mb-6">{versions}</div> : null}
     {publishingContent}
   </section>;
@@ -1176,7 +1127,7 @@ export function MyPluginsPage({
               <Button
                 variant="cta"
                 disabled={!contributor || !ownerMatches}
-                onClick={() => { setPickerPlugins(null); setPickerSelection(null); setPickerOwner(ownerKey); }}
+                onClick={openPicker}
               >
                 <Plus size={16} />
                 {t(`${copy}.publishPlugin`)}
@@ -1258,8 +1209,8 @@ export function MyPluginsPage({
                     <div className="flex min-h-72 flex-col items-center justify-center gap-4 py-8 text-center text-14 leading-6 text-[var(--text-tertiary)]">
                       <p>{t(`${copy}.${query || filter !== 'all' ? 'noMatches' : 'empty'}`)}</p>
                       {!query && filter === 'all' ? (
-                        <Button variant="secondary" onClick={onViewLocal}>
-                          {t(`${copy}.viewLocal`)}
+                        <Button variant="secondary" onClick={openPicker} disabled={!ownerMatches}>
+                          {t(`${copy}.goPublish`)}
                         </Button>
                       ) : null}
                     </div>
@@ -1352,9 +1303,7 @@ export function MyPluginsPage({
                 <span>
                   {timestamp
                     ? t(`${copy}.lastRefreshed`, { time: formatDate(timestamp) })
-                    : loading
-                      ? t(`${copy}.loading`)
-                      : ''}
+                    : ''}
                 </span>
                 {!isDetail && listEmpty && !query && filter === 'all' ? refreshButton : null}
               </footer>
@@ -1362,113 +1311,23 @@ export function MyPluginsPage({
           )}
         </PluginManagementPage>
       </main>
-      <Dialog.Root
-        open={pickerOpen}
-        onOpenChange={(open) => {
-          if (!open) setPickerOwner(null);
-        }}
-      >
-        <Dialog.Portal>
-          <Dialog.Overlay className="modal-scrim fixed inset-0 z-[10000]" />
-          <Dialog.Content onInteractOutside={event => event.preventDefault()} className="modal-panel fixed left-1/2 top-1/2 z-[10000] flex max-h-[85vh] w-[calc(100vw-32px)] max-w-[460px] -translate-x-1/2 -translate-y-1/2 flex-col p-4">
-            <Dialog.Title className="text-18 font-medium text-[var(--text-primary)]">
-              {t(`${copy}.publishPlugin`)}
-            </Dialog.Title>
-            <Dialog.Description className="mt-2 text-13 leading-5 text-[var(--text-secondary)]">
-              {t(`${copy}.chooseLocal`)}
-            </Dialog.Description>
-            <div className="my-4 min-h-0 overflow-y-auto p-1">
-              {pickerOwner === ownerKey && ownerMatches
-                ? localPlugins.map((local) => {
-                  const unavailable = pickerUnavailable(local);
-                  return (
-                    <button
-                      type="button"
-                      key={local.id}
-                      className={`flex w-full min-w-0 items-center gap-3 rounded-lg border px-2 py-3 text-left enabled:hover:bg-[var(--surface-hover)] disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)] ${submitBusy || !pickerReady ? 'opacity-60' : ''} ${pickerSelection === local.id ? 'border-[var(--border-default)] bg-[var(--surface-hover)]' : 'border-transparent'}`}
-                      aria-label={`${local.name} · ${local.version} · ${local.id}`}
-                      aria-describedby={unavailable ? `${pickerStatusId}-${local.id}` : undefined}
-                      aria-pressed={pickerSelection === local.id}
-                      disabled={submitBusy || !pickerReady || Boolean(unavailable)}
-                      onClick={() => setPickerSelection(local.id)}
-                    >
-                      <GhostPluginIcon
-                        iconDataUrl={local.iconDataUrl}
-                        iconId={local.id}
-                        iconName={local.name}
-                      />
-                      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                        <span className={`block text-14 font-medium leading-5 ${unavailable ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]'}`}>
-                          {local.name}
-                        </span>
-                        <span className="mt-1 block text-12 leading-4 text-[var(--text-tertiary)]">
-                          {local.version}
-                        </span>
-                        <span className="mt-1 block text-12 leading-4 text-[var(--text-tertiary)]">
-                          {local.id}
-                        </span>
-                        {unavailable ? <span id={`${pickerStatusId}-${local.id}`} className="mt-1 block text-13 leading-5 text-[var(--text-secondary)]">
-                          {t(unavailable)}
-                        </span> : null}
-                      </span>
-                      {pickerSelection === local.id ? <Check size={16} aria-hidden="true" className="shrink-0 text-[var(--text-primary)]" /> : null}
-                    </button>
-                  );
-                })
-                : null}
-              {localPlugins.length === 0 ? (
-                <p className="text-14 leading-6 text-[var(--text-secondary)]">
-                  {t(
-                    `${copy}.${installedPluginCount === 0 ? 'noLocalPlugins' : 'noPublishablePlugins'}`,
-                  )}
-                </p>
-              ) : null}
-            </div>
-            {pickerSelection && pickerItem ? (
-              <section aria-label={t(`${copy}.publishingVersion`, { version: pickerItem.version })}
-                className="mb-4 max-h-52 space-y-2 overflow-y-auto border-t border-[var(--border-default)] pt-3 text-13 leading-5 text-[var(--text-secondary)]">
-                <p className="font-medium text-[var(--text-primary)]">{pickerItem.name} · {pickerItem.version}</p>
-                {currentPickerDraft?.prepared ? <>
-                  <p className="whitespace-pre-wrap break-words">{currentPickerDraft.prepared.description}</p>
-                  {currentPickerDraft.prepared.releaseNotes?.trim() ? <>
-                    <h3 className="font-medium">{t(`${copy}.releaseNotes`)}</h3>
-                    <p className="whitespace-pre-wrap break-words">{currentPickerDraft.prepared.releaseNotes}</p>
-                  </> : null}
-                  <p>{t(`${copy}.confirmPublic`)}</p>
-                </> : !currentPickerDraft?.error ? <p role="status">{t(`${copy}.preparing`)}</p> : null}
-              </section>
-            ) : null}
-            {localPlugins.length > 0 && !pickerRead ? <p role="status" className="mb-3 shrink-0 text-13 leading-5 text-[var(--text-secondary)]">{t(`${copy}.loading`)}</p> : null}
-            {pickerRead?.failure || currentPickerDraft?.error ? (
-              <p role="alert" className="mb-3 shrink-0 text-13 leading-5 text-[var(--text-secondary)]">
-                {t((pickerRead?.failure ?? currentPickerDraft?.error)!, { defaultValue: t(`${copy}.loadFailed`) })}
-              </p>
-            ) : pickerBlocker || selectedPickerUnavailable ? (
-              <p role="status" className="mb-3 shrink-0 text-13 leading-5 text-[var(--text-primary)]">
-                {selectedPickerUnavailable ? t(selectedPickerUnavailable) : pickerBlocker?.message}
-              </p>
-            ) : null}
-            <div className="flex shrink-0 flex-wrap justify-end gap-2">
-              <Dialog.Close asChild>
-                <Button variant="secondary">{t('settings.ghosts.detail.closeDialog')}</Button>
-              </Dialog.Close>
-              {pickerReady && !selectedPickerUnavailable && pickerItem && currentPickerDraft?.prepared?.preflight?.actions.canSubmit ? (
-                <Button variant="cta" loading={submitBusy} disabled={submitBusy || !navigator.onLine}
-                  onClick={() => {
-                    const prepared = currentPickerDraft.prepared!;
-                    const token = pickerContext.current.token;
-                    const isCurrent = () => mounted.current && pickerContext.current.token === token;
-                    void onSubmitUpdate(pickerItem.id, { prepared, isCurrent }).then(submitted => {
-                      if (!isCurrent()) return;
-                      if (submitted) setPickerOwner(null);
-                      else setPickerRefresh(value => value + 1);
-                    });
-                  }}>{t(`${copy}.submitVersion`, { version: currentPickerDraft.prepared.version })}</Button>
-              ) : null}
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
+      {picker && contributor && ownerMatches && picker.owner === ownerKey && !selectedId ? (
+        <PluginPublishDialog
+          key={picker.id}
+          open={picker.open}
+          ownerKey={ownerKey}
+          reader={reader}
+          localPlugins={localPlugins}
+          installedPluginCount={installedPluginCount}
+          onPrepare={onPrepare}
+          onSubmitUpdate={onSubmitUpdate}
+          submitBusy={submitBusy}
+          installedRevision={installedRevision}
+          submissionRevision={submissionRevision}
+          onOpenChange={open => setPicker(current => current?.id === picker.id ? { ...current, open } : current)}
+          onClosed={() => setPicker(current => current?.id === picker.id && !current.open ? null : current)}
+        />
+      ) : null}
     </div>
   );
 }

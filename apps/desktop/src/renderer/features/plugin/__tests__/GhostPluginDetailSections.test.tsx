@@ -297,7 +297,7 @@ describe('Ghost plugin detail sections', () => {
       expect(updates.open).toBe(false);
       expect(screen.getByRole('heading', { name: 'settings.ghosts.contribution.version · 1.0.0' }).closest('details')).toBe(updates);
       fireEvent.click(screen.getByText('settings.ghosts.contribution.versionUpdates'));
-      expect(screen.queryByRole('button', { name: 'settings.ghosts.contribution.submitVersion' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'settings.ghosts.contribution.publishPlugin' })).toBeNull();
       expect(screen.getByRole('status').textContent).toBe(`1.0.0 · ${status}`);
       expect(screen.getByText('Change the version before publishing again')).toBeTruthy();
       expect(screen.getByRole('heading', { name: 'settings.ghosts.contribution.version · 1.0.0' })).toBeTruthy();
@@ -308,7 +308,7 @@ describe('Ghost plugin detail sections', () => {
       expect(publish).not.toHaveBeenCalled();
       // A previous cancelled/rejected/approved result does not hide a new eligible version.
       rerender(view({ ...preview, version: '1.1.0', preflight: { ...preview.preflight!, target: { ...preview.preflight!.target, version: '1.1.0' }, pendingRelease: null, blockers: [], actions: { canSubmit: true } } }));
-      const submit = screen.getByRole('button', { name: 'settings.ghosts.contribution.submitVersion' });
+      const submit = screen.getByRole('button', { name: 'settings.ghosts.contribution.publishPlugin' });
       expect(submit).toHaveProperty('disabled', false);
       expect(screen.getByRole('heading', { name: 'settings.ghosts.contribution.publishingVersion' })).toBeTruthy();
       fireEvent.click(submit);
@@ -316,7 +316,7 @@ describe('Ghost plugin detail sections', () => {
     },
   );
 
-  it('keeps the local quick submission in the use header and release information secondary', () => {
+  it('keeps the local publishing entry in the use header and release information secondary', () => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
     const publish = vi.fn();
     render(<GhostPluginDetailView ghost={null} detail={detail} panelStatus={null}
@@ -326,13 +326,13 @@ describe('Ghost plugin detail sections', () => {
     const summary = screen.getByText('settings.ghosts.contribution.versionUpdates');
     const updates = summary.closest('details')!;
     expect(updates.open).toBe(false);
-    expect(screen.getByRole('button', { name: 'settings.ghosts.contribution.publish' }).closest('header')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'settings.ghosts.contribution.publishPlugin' }).closest('header')).toBeTruthy();
     expect(within(updates).getByRole('status').textContent).toBe('2.0.0 · Pending Review');
     const chat = screen.getByRole('button', { name: 'settings.ghosts.detail.chatAction' });
     expect(within(chat.closest('.plugin-detail-actions') as HTMLElement).getByRole('switch')).toBeTruthy();
     expect(screen.getByText('Example plugin').compareDocumentPosition(updates) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(summary);
-    const action = screen.getByRole('button', { name: 'settings.ghosts.contribution.publish' });
+    const action = screen.getByRole('button', { name: 'settings.ghosts.contribution.publishPlugin' });
     expect(within(updates).getByRole('status').textContent).toBe('2.0.0 · Pending Review');
     fireEvent.click(action);
     expect(publish).toHaveBeenCalledOnce();

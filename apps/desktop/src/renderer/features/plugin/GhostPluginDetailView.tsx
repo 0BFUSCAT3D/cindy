@@ -113,8 +113,8 @@ interface GhostPluginDetailViewProps {
   onUninstall: () => void;
   /** 导出 .cindy;当前详情非已装插件(纯市场视图)时缺省,菜单项不渲染。 */
   onExport?: () => void;
+  /** Opens publishing; package preparation and submission belong to the dialog. */
   onContribute?: () => void;
-  contributionUpdate?: boolean;
   contributionBusy?: boolean;
   contributionSummary?: string;
   publishingPreview?: PreparedPluginContribution;
@@ -159,7 +159,6 @@ export function GhostPluginDetailView({
   onUninstall,
   onExport,
   onContribute,
-  contributionUpdate = false,
   contributionBusy = false,
   contributionSummary,
   publishingPreview,
@@ -296,7 +295,7 @@ export function GhostPluginDetailView({
                   aria-describedby={contributionNoticeId}
                   title={contributionUnavailableReason}
                 >
-                  {publishingPreview ? t('settings.ghosts.contribution.submitVersion', { version: publishingPreview.version }) : t(`settings.ghosts.contribution.${contributionUpdate ? 'submitUpdate' : 'publish'}`)}
+                  {t('settings.ghosts.contribution.publishPlugin')}
                 </Button>
               ) : null}
               {/* 启用开关带明确文字(设计定稿):状态一目了然,点文字同样可切换。 */}

@@ -158,7 +158,7 @@ beforeEach(() => {
   auth.generation = 1;
   auth.membershipKind = 'personal';
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('My Plugins facts', () => {
   it.each(['personal', 'org'])('shows the actual new package notes to a %s member before submitting the same prepared package', async membershipKind => {
@@ -183,7 +183,8 @@ describe('My Plugins facts', () => {
       blockers: [{ code: 'VERSION_ALREADY_SUBMITTED', message: 'This exact new package version is already submitted.' }], actions: { canSubmit: false } } });
     view(api);
     const local = await screen.findByRole('region', { name: `${prefix}.localVersion` });
-    await within(local).findByText('This exact new package version is already submitted.');
+    await within(local).findByText(`${prefix}.errors.VERSION_ALREADY_SUBMITTED`);
+    expect(within(local).queryByText('This exact new package version is already submitted.')).toBeNull();
     expect(within(local).queryByRole('button', { name: `${prefix}.submitVersion 1.2.0` })).toBeNull();
     expect(api.submit).not.toHaveBeenCalled();
   });
@@ -291,7 +292,8 @@ describe('My Plugins facts', () => {
     view(api, false, {}, installations, submit);
     await screen.findByText(`${prefix}.empty`);
     expect(screen.queryByRole('textbox', { name: `${prefix}.search` })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: `${prefix}.publishPlugin` }));
+    expect(screen.queryByRole('button', { name: `${prefix}.viewLocal` })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: `${prefix}.goPublish` }));
     const picker = screen.getByRole('dialog');
     expect(submit).not.toHaveBeenCalled();
     expect(api.prepare).not.toHaveBeenCalled();
@@ -304,6 +306,43 @@ describe('My Plugins facts', () => {
     fireEvent.click(within(picker).getByRole('button', { name: `${prefix}.submitVersion 1.0.0` }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith('exact-instance-b', expect.objectContaining({ prepared, isCurrent: expect.any(Function) })));
     expect(screen.getByRole('dialog')).toBe(picker);
+  });
+
+  // Unit: closing used to clear the real picker while Radix kept it mounted for
+  // its exit animation, flashing Loading. Existing close/reopen cases unmounted
+  // immediately in jsdom and missed this interval. One loaded choice is enough.
+  it('retains the publishing choices and preview throughout the close animation', async () => {
+    // jsdom lacks CSS.escape; the simulated animation names are plain identifiers.
+    vi.stubGlobal('CSS', { escape: (value: string) => value });
+    const computedStyle = window.getComputedStyle.bind(window);
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(element => {
+      const style = computedStyle(element);
+      if (element.getAttribute('role') === 'dialog') {
+        Object.defineProperty(style, 'animationName', {
+          get: () => element.getAttribute('data-state') === 'closed' ? 'modal-fade-out' : 'modal-panel-in',
+        });
+      }
+      return style;
+    });
+    const api = reader();
+    view(api, false);
+    fireEvent.click(screen.getByRole('button', { name: `${prefix}.publishPlugin` }));
+    await selectPublishingPlugin('Local Plugin · 1.2.0 · exact-instance');
+    const picker = screen.getByRole('dialog');
+    await within(picker).findByText('Actual selected package');
+
+    fireEvent.click(within(picker).getByRole('button', { name: 'settings.ghosts.detail.closeDialog' }));
+    expect(picker.isConnected).toBe(true);
+    expect(within(picker).getByText('Local Plugin')).toBeTruthy();
+    expect(within(picker).getByText('Actual selected package')).toBeTruthy();
+    expect(within(picker).queryByText(`${prefix}.loading`)).toBeNull();
+    expect(within(picker).queryByText(`${prefix}.preparing`)).toBeNull();
+
+    const end = new Event('animationend', { bubbles: true });
+    Object.defineProperty(end, 'animationName', { value: 'modal-fade-out' });
+    fireEvent(picker, end);
+    await waitFor(() => expect(picker.isConnected).toBe(false));
+    await waitFor(() => expect(api.discard).toHaveBeenCalledWith('chosen-snapshot'));
   });
 
   it('explains official GitHub publishing in management and the picker despite a submission grant', async () => {
@@ -374,7 +413,8 @@ describe('My Plugins facts', () => {
     fireEvent.click(screen.getByRole('button', { name: `${prefix}.publishPlugin` }));
     await selectPublishingPlugin('Local Plugin · 0.9.0 · exact-instance');
     const picker = screen.getByRole('dialog');
-    const reason = await within(picker).findByText('This earlier version was already submitted');
+    const reason = await within(picker).findByText(`${prefix}.errors.VERSION_ALREADY_SUBMITTED`);
+    expect(within(picker).queryByText('This earlier version was already submitted')).toBeNull();
     const summary = within(picker).getByRole('region', { name: `${prefix}.publishingVersion 0.9.0` });
     expect(summary.contains(reason)).toBe(false);
     expect(reason.getAttribute('role')).toBe('status');

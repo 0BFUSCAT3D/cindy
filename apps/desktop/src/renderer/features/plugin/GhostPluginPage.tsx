@@ -1,4 +1,3 @@
-import { useContributionPreview } from './lib/useContributionPreview';
 import { CatalogDeviceScope, type CatalogDeviceControl } from './useCatalogDevice';
 import { RemotePluginPage } from './RemotePluginPage';
 import { PluginVersionFacts } from './PluginVersionFacts';
@@ -6,7 +5,7 @@ import { useSignInToCindy } from '@/hooks/useSignInToCindy';
 import { rememberContributionIntent, consumeContributionIntent, matchesContributionIntent } from './lib/contributionIntent';
 import { MyPluginsPage, contributionErrorKey, type MyPluginsPageCache, type PluginSubmitOptions } from './MyPluginsPage';
 import { localPublishingUnavailableKey } from './lib/ghostPluginDetailModel';
-import type { MyPluginView } from '../../../shared/pluginContributions';
+import { PluginPublishDialog, type PluginPublishDialogRequest } from './PluginPublishDialog';
 import { featureRetirementById, type FeatureRetirement } from '../../../shared/featureRetirements';
 import { RetiredFeatureDetail } from './RetiredFeatureDetail';
 import { Button } from '@/components/ui/button';
@@ -16,7 +15,7 @@ import { Button } from '@/components/ui/button';
  * Inputs: installed Ghost snapshots and user actions. `embedded` mounts the same
  * catalog inside Settings; `onSelectCatalogTab` keeps Plugins / Skills in-panel.
  * Outputs: the Plugin list/detail UI, recommendation-aware return navigation, and Plugin action flows.
- * Personal submissions remain in the original detail until the server confirms the result.
+ * Publishing preparation starts in the shared dialog; submission stays in-place until confirmed.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
@@ -478,8 +477,8 @@ function LocalGhostPluginPage({
   const [contributionBusy, setContributionBusy] = useState(false);
   const [submissionRevision, setSubmissionRevision] = useState(0);
   const contributing = useRef<string | null>(null);
-  const [publicationRefresh, setPublicationRefresh] = useState(0);
-  const [localContribution, setLocalContribution] = useState<{ key: string; plugin: MyPluginView | null; versionUsed: boolean; error: string | null } | null>(null);
+  const [publicationDialog, setPublicationDialog] = useState<PluginPublishDialogRequest | null>(null);
+  const publicationDialogSequence = useRef(0);
   const [recommendationNonce] = useState(() => searchParams.get('recommendation'));
   const pendingRecommendation = useSyncExternalStore(
     subscribePendingPluginSuggestion,
@@ -1690,77 +1689,12 @@ function LocalGhostPluginPage({
     const next = new URLSearchParams(searchParams); next.delete('contributionChild'); next.delete('contributionTransfer');
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
-  const localContributionKey = JSON.stringify([contributionOwner, selectedDetail?.id, selectedGhost?.dir, selectedGhost?.manifest.version, ghostInstallApprovalToken(selectedGhost?.approval), selectedGhost?.publishingSource, publicationRefresh]);
-  const localContributionResult = localContribution?.key === localContributionKey ? localContribution : null;
   const contributionUnavailableKey = localPublishingUnavailableKey(selectedGhost, selectedMarketInstall);
-  // Ordinary downloads have use/configuration details only. Unknown provenance
-  // also cannot become a first publication merely because no market card exists.
-  const showLocalPublishing = selectedGhost?.publishingSource?.kind === 'local';
-  const localPublishBlocker = localContributionResult?.plugin
-    ? !localContributionResult.plugin.actions.submitUpdate ? 'PERMISSION_DENIED'
-      : localContributionResult.plugin.latestSubmission?.reviewStatus === 'pending' && localContributionResult.plugin.latestSubmission.revisionState === 'current' ? 'PLUGIN_PENDING_RELEASE_EXISTS'
-        : localContributionResult.versionUsed ? 'VERSION_ALREADY_SUBMITTED'
-          : null
-    : null;
-  useEffect(() => {
-    let disposed = false;
-    setLocalContribution(null);
-    if (!contributor || !selectedGhost || !selectedGhost.publishingSource || selectedGhost.publishingSource.kind !== 'local' || selectedGhost.namespace !== null || selectedGhost.namespaceState !== 'confirmed' || selectedGhost.approval.state !== 'approved' || showMyPlugins) return;
-    const owner = contributionOwner;
-    const instanceId = installedGhostStoragePart(selectedGhost);
-    const read = async () => {
-      let cursor: string | undefined;
-      const listCursors = new Set<string>();
-      do {
-        const page = await window.electronAPI.pluginContributions.list({ query: selectedGhost.manifest.id, filter: 'all', cursor });
-        if (disposed || contributionOwnerRef.current !== owner) return;
-        const plugin = page.plugins.find((item) => item.localInstanceId === instanceId);
-        if (plugin) {
-          // Cancelled/rejected versions stay occupied, including versions older
-          // than latestSubmission. Do not enable an update until this read ends.
-          const version = selectedGhost.manifest.version;
-          let versionUsed = plugin.market.version === version || plugin.latestSubmission?.version === version;
-          const pending = plugin.latestSubmission?.reviewStatus === 'pending' && plugin.latestSubmission.revisionState === 'current';
-          if (plugin.actions.submitUpdate && !pending && !versionUsed) {
-            let releaseCursor: string | undefined;
-            const releaseCursors = new Set<string>();
-            do {
-              const releases = await window.electronAPI.pluginContributions.releases(plugin.pluginId, releaseCursor);
-              if (disposed || contributionOwnerRef.current !== owner) return;
-              versionUsed = releases.releases.some(release => release.version === version);
-              if (versionUsed) break;
-              releaseCursor = releases.nextCursor ?? undefined;
-              if (releaseCursor && releaseCursors.has(releaseCursor)) throw new Error('Repeated release cursor');
-              if (releaseCursor) releaseCursors.add(releaseCursor);
-            } while (releaseCursor);
-          }
-          setLocalContribution({ key: localContributionKey, plugin, versionUsed, error: null });
-          return;
-        }
-        cursor = page.nextCursor ?? undefined;
-        if (cursor && listCursors.has(cursor)) throw new Error('Repeated contribution cursor');
-        if (cursor) listCursors.add(cursor);
-      } while (cursor);
-      setLocalContribution({ key: localContributionKey, plugin: null, versionUsed: false, error: null });
-    };
-    void read().catch((error) => {
-      if (!disposed && contributionOwnerRef.current === owner) setLocalContribution({ key: localContributionKey, plugin: null, versionUsed: false, error: contributionErrorKey(error) });
-    });
-    return () => { disposed = true; };
-  }, [contributor, localContributionKey, showMyPlugins]);
-  const canPreparePublication = contributor && selectedGhost?.publishingSource?.kind === 'local' &&
-    !contributionUnavailableKey && !showMyPlugins && localContributionResult &&
-    !localContributionResult.error && !localPublishBlocker;
-  const currentPublicationDraft = useContributionPreview(localContributionKey,
-    canPreparePublication && selectedGhost ? installedGhostStoragePart(selectedGhost) : undefined,
-    selectedGhost?.manifest.version,
-    instanceId => window.electronAPI.pluginContributions.prepare(instanceId, selectedGhost ? {
-      directory: selectedGhost.dir, approvalToken: ghostInstallApprovalToken(selectedGhost.approval),
-    } : undefined),
-    preparedId => window.electronAPI.pluginContributions.discard(preparedId));
+  const showLocalPublishing = selectedGhost?.publishingSource?.kind === 'local' && !contributionUnavailableKey;
   useEffect(() => {
     if (showMyPlugins) { setSelectedId(null); setMarketDetail(null); }
   }, [showMyPlugins]);
+  useEffect(() => { setPublicationDialog(null); }, [contributionOwner, selectedDetail?.id, showMyPlugins]);
   useEffect(() => { contributing.current = null; setContributionBusy(false); }, [contributionOwner]);
 
   const openMyPlugins = (pluginId?: string) => {
@@ -1806,7 +1740,7 @@ function LocalGhostPluginPage({
       if (!clicked) throw new Error('Original installed plugin is unavailable');
       if (clicked.publishingSource?.kind !== 'local' || localPublishingUnavailableKey(clicked, marketItemForInstalledGhost(marketItems, clicked)))
         throw new Error('Current publishing source or permission is unavailable');
-      const prepared = options?.prepared ?? (currentPublicationDraft?.prepared?.instanceId === instanceId ? currentPublicationDraft.prepared : undefined) ?? await preparePublication(instanceId);
+      const prepared = options?.prepared ?? await preparePublication(instanceId);
       if (prepared.instanceId !== instanceId) throw new Error('Original installed plugin changed');
       preparedId = prepared.preparedId;
       if (contributionOwnerRef.current !== owner) return false;
@@ -1822,14 +1756,9 @@ function LocalGhostPluginPage({
       }
       if (!contributionMounted.current || contributionOwnerRef.current !== owner) return false;
       if (result.operation?.status !== 'succeeded' || !result.operation.receipt) {
-        const message = result.operation?.failure?.message;
-        toast.error(message && ![
-          '投稿处理暂不可用，请查看原操作后重试',
-          '发布处理暂不可用，请查看原操作后重试',
-        ].includes(message) ? message : t(`settings.ghosts.contribution.errors.${result.errorCode ?? 'INTERNAL'}`, {
+        toast.error(t(`settings.ghosts.contribution.errors.${result.operation?.failure?.code ?? result.errorCode ?? 'INTERNAL'}`, {
           defaultValue: t('settings.ghosts.contribution.submitFailed'),
         }));
-        if (result.stage === 'complete' && stillHere()) setPublicationRefresh(value => value + 1);
         return false;
       }
       contributionCache.current.page = null; contributionCache.current.detail = null;
@@ -1838,7 +1767,7 @@ function LocalGhostPluginPage({
         openMyPlugins(result.operation.receipt.pluginId);
       return true;
     } catch (error) {
-      if (contributionOwnerRef.current === owner) { toast.error(t(contributionErrorKey(error), { defaultValue: t('settings.ghosts.contribution.loadFailed') })); setPublicationRefresh(value => value + 1); }
+      if (contributionOwnerRef.current === owner) { toast.error(t(contributionErrorKey(error), { defaultValue: t('settings.ghosts.contribution.loadFailed') })); }
       return false;
     } finally {
       if (preparedId && contributionOwnerRef.current === owner) void window.electronAPI.pluginContributions.discard(preparedId).catch(() => undefined);
@@ -1863,6 +1792,27 @@ function LocalGhostPluginPage({
     }
     else toast.error(t('settings.ghosts.contribution.installForAccount'));
   }, [searchParams, contributor, contributionOwner, ghosts]);
+
+  const publishingInstalledRevision = JSON.stringify([installedGhostMarketKey, installedGhostLocationsKey,
+    ghosts.map(ghost => [installedGhostStoragePart(ghost), ghostInstallApprovalToken(ghost.approval), ghost.publishingSource])]);
+  const publicationDialogView = publicationDialog && publicationDialog.owner === contributionOwner && publicationDialog.instanceId === selectedDetail?.id ? (
+    <PluginPublishDialog
+      key={publicationDialog.id}
+      open={publicationDialog.open}
+      ownerKey={contributionOwner}
+      initialInstanceId={publicationDialog.instanceId}
+      reader={window.electronAPI.pluginContributions}
+      localPlugins={publishableInstalledItems}
+      installedPluginCount={allInstalledItems.length}
+      onPrepare={preparePublication}
+      onSubmitUpdate={contribute}
+      submitBusy={contributionBusy}
+      installedRevision={publishingInstalledRevision}
+      submissionRevision={submissionRevision}
+      onOpenChange={open => setPublicationDialog(current => current?.id === publicationDialog.id ? { ...current, open } : current)}
+      onClosed={() => setPublicationDialog(current => current?.id === publicationDialog.id && !current.open ? null : current)}
+    />
+  ) : null;
 
   // 面板收束:aside 只挂在插件页语境里(列表/详情/市场详情共用),
   // 路由离开本页组件整体卸载 → webview 一并回收,绝不残留到别的界面。
@@ -1915,11 +1865,16 @@ function LocalGhostPluginPage({
                   ? () => void handleExport()
                   : undefined
               }
-              onContribute={!showLocalPublishing || contributionUnavailableKey || localPublishBlocker ? undefined : () => void contribute(selectedDetail.id)}
-              contributionUnavailableReason={contributionUnavailableKey === 'officialGithubRequired' || (contributionUnavailableKey === 'reservedId' && selectedGhost?.publishingSource?.kind === 'public-market') ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : !showLocalPublishing ? undefined : contributionUnavailableKey ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : localContributionResult?.error ? t(localContributionResult.error) : localPublishBlocker ? t(`settings.ghosts.contribution.errors.${localPublishBlocker}`) : currentPublicationDraft?.error ? t(currentPublicationDraft.error, { defaultValue: t('settings.ghosts.contribution.loadFailed') }) : currentPublicationDraft?.prepared?.preflight?.blockers[0] ? currentPublicationDraft.prepared.preflight.blockers[0].message : contributor && !currentPublicationDraft?.prepared ? t('settings.ghosts.contribution.preparing') : undefined}
-              publishingPreview={currentPublicationDraft?.prepared}
-              onRefreshPublishing={() => setPublicationRefresh(value => value + 1)}
-              contributionUpdate={Boolean(localContributionResult?.plugin || (selectedGhost?.manifest.id && marketItems.some((item) => marketItemMatchesInstalledGhost(item, selectedGhost))))}
+              onContribute={!showLocalPublishing ? undefined : () => {
+                if (!contributor) { void contribute(selectedDetail.id); return; }
+                setPublicationDialog({
+                  id: ++publicationDialogSequence.current, owner: contributionOwner, open: true, instanceId: selectedDetail.id,
+                });
+              }}
+              contributionUnavailableReason={contributionUnavailableKey === 'officialGithubRequired' || (contributionUnavailableKey === 'reservedId' && selectedGhost?.publishingSource?.kind === 'public-market')
+                ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`)
+                : selectedGhost?.publishingSource?.kind === 'local' && contributionUnavailableKey
+                  ? t(`settings.ghosts.contribution.unavailable.${contributionUnavailableKey}`) : undefined}
               contributionBusy={contributionBusy}
               toggleDisabled={scopeDir !== null && selectedGhost !== null && !selectedGhost.enabled}
               onIconLoadError={handleMarketIconLoadError}
@@ -1927,6 +1882,7 @@ function LocalGhostPluginPage({
           </div>
         </div>
         {panelAside}
+        {publicationDialogView}
       </div>
   ) : null;
 
@@ -1937,8 +1893,7 @@ function LocalGhostPluginPage({
     localPlugins={publishableInstalledItems}
     installedPluginCount={allInstalledItems.length}
     onPrepare={preparePublication}
-    installedRevision={JSON.stringify([installedGhostMarketKey, installedGhostLocationsKey,
-      ghosts.map(ghost => [installedGhostStoragePart(ghost), ghostInstallApprovalToken(ghost.approval), ghost.publishingSource])])}
+    installedRevision={publishingInstalledRevision}
     renderVersionFacts={(plugin) => <PluginVersionFacts plugin={plugin} />}
     onReadPublished={window.electronAPI.pluginMarket.detail}
     submitBusy={contributionBusy}

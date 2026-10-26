@@ -391,7 +391,7 @@ describe('plugin page return navigation', () => {
     render(page('/plugins'));
     fireEvent.click(await screen.findByText('Installed Plugin'));
     fireEvent.click(screen.getByText('settings.ghosts.contribution.versionUpdates'));
-    expect(screen.queryByRole('button', { name: 'settings.ghosts.contribution.publish' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settings.ghosts.contribution.publishPlugin' })).toBeNull();
     expect(screen.getByText('settings.ghosts.contribution.unavailable.' + reason)).toBeTruthy();
   });
 
@@ -432,7 +432,7 @@ describe('plugin page return navigation', () => {
     expect(screen.queryByRole('heading', { name: 'Local Author Plugin' })).toBeNull();
   });
 
-  it.each(['VERSION_ALREADY_SUBMITTED', 'PLUGIN_PENDING_RELEASE_EXISTS', 'RELEASE_NOTES_REQUIRED'])(
+  it.each(['VERSION_ALREADY_SUBMITTED', 'PLUGIN_PENDING_RELEASE_EXISTS', 'RELEASE_NOTES_REQUIRED', 'PLUGIN_GHOST_ID_CONFLICT'])(
     'hides the unavailable submit action after reading the real preflight projection (%s)', async code => {
       auth.mode = 'cloud';
       const installed: InstalledGhost = {
@@ -449,10 +449,13 @@ describe('plugin page return navigation', () => {
       Object.assign(window.electronAPI, { pluginContributions: api });
       render(page('/plugins'));
       fireEvent.click(await screen.findByText('Local Author Plugin'));
-      await screen.findAllByText('Publication blocked');
-      expect(screen.queryByRole('button', { name: 'settings.ghosts.contribution.submitVersion' })).toBeNull();
-      fireEvent.click(screen.getByText('settings.ghosts.contribution.versionUpdates'));
-      expect(screen.getByRole('button', { name: 'settings.ghosts.contribution.refreshSummary' })).toBeTruthy();
+      expect(api.prepare).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.contribution.publishPlugin' }));
+      const picker = screen.getByRole('dialog');
+      await within(picker).findAllByText(`settings.ghosts.contribution.errors.${code}`);
+      expect(within(picker).queryByText('Publication blocked')).toBeNull();
+      expect(within(picker).queryByRole('button', { name: 'settings.ghosts.contribution.submitVersion' })).toBeNull();
+      expect(within(picker).getByRole('button', { name: 'settings.ghosts.detail.closeDialog' })).toHaveProperty('disabled', false);
       expect(api.submit).not.toHaveBeenCalled();
     },
   );
@@ -867,6 +870,10 @@ describe('organization catalog access notice', () => {
 
 describe('plugin use details and independent author management', () => {
   const prefix = 'settings.ghosts.contribution';
+  async function openLocalPublishing() {
+    fireEvent.click(await screen.findByRole('button', { name: `${prefix}.publishPlugin` }));
+    return screen.getByRole('dialog');
+  }
   function authorApi(localInstanceId: string | null = '_root__navigation-plugin') {
     const own: MyPluginDetailView = {
       plugin: { pluginId: detail.pluginId, name: 'Published snapshot name', iconUrl: null,
@@ -931,8 +938,9 @@ describe('plugin use details and independent author management', () => {
     Object.assign(window.electronAPI, { pluginContributions: { ...api, status, discard: vi.fn().mockResolvedValue(undefined) } });
     render(page(`/plugins?ghost=${installed.instanceKey}`));
     await screen.findByRole('heading', { name: 'Local Author Plugin' });
-    fireEvent.click(screen.getByText(`${prefix}.versionUpdates`));
-    const submit = await screen.findByRole('button', { name: `${prefix}.submitVersion` });
+    expect(api.prepare).not.toHaveBeenCalled();
+    const picker = await openLocalPublishing();
+    const submit = await within(picker).findByRole('button', { name: `${prefix}.submitVersion` });
     fireEvent.click(submit);
     fireEvent.click(submit);
     await waitFor(() => expect(api.submit).toHaveBeenCalledExactlyOnceWith(prepared.preparedId));
@@ -949,8 +957,9 @@ describe('plugin use details and independent author management', () => {
       fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.title' }));
       await screen.findByRole('heading', { level: 1, name: 'settings.ghosts.title' });
     } else {
-      await waitFor(() => expect(error).toHaveBeenCalledWith(message ?? `${prefix}.errors.INTERNAL`));
-      expect(screen.getByRole('heading', { name: 'Local Author Plugin' })).toBeTruthy();
+      await waitFor(() => expect(error).toHaveBeenCalledWith(`${prefix}.errors.${message ? 'PLUGIN_PACKAGE_INVALID' : 'INTERNAL'}`));
+      if (message) expect(error).not.toHaveBeenCalledWith(message);
+      expect(screen.getByText('Local Author Plugin', { selector: 'h1' })).toBeTruthy();
     }
     expect(screen.queryByText(`${prefix}.resume`)).toBeNull();
     expect(screen.queryByText(`${prefix}.retryPublish`)).toBeNull();
@@ -970,9 +979,9 @@ describe('plugin use details and independent author management', () => {
       Object.assign(window.electronAPI, { pluginContributions: api });
       render(page(`/plugins?ghost=${installed.instanceKey}`));
       await screen.findByRole('heading', { name: 'Local Author Plugin' });
-      fireEvent.click(screen.getByText(`${prefix}.versionUpdates`));
-      await screen.findByText(`${prefix}.errors.${reviewStatus === 'pending' ? 'PLUGIN_PENDING_RELEASE_EXISTS' : 'VERSION_ALREADY_SUBMITTED'}`);
-      expect(screen.queryByRole('button', { name: `${prefix}.submitUpdate` })).toBeNull();
+      const picker = await openLocalPublishing();
+      await within(picker).findAllByText(`${prefix}.errors.${reviewStatus === 'pending' ? 'PLUGIN_PENDING_RELEASE_EXISTS' : 'VERSION_ALREADY_SUBMITTED'}`);
+      expect(within(picker).queryByRole('button', { name: `${prefix}.submitVersion` })).toBeNull();
       expect(api.prepare).not.toHaveBeenCalled();
       expect(api.submit).not.toHaveBeenCalled();
     },
@@ -991,15 +1000,15 @@ describe('plugin use details and independent author management', () => {
     Object.assign(window.electronAPI, { pluginContributions: api });
     render(page(`/plugins?ghost=${installed.instanceKey}`));
     await screen.findByRole('heading', { name: 'Local Author Plugin' });
-    fireEvent.click(screen.getByText(`${prefix}.versionUpdates`));
-    await screen.findByText(`${prefix}.errors.VERSION_ALREADY_SUBMITTED`);
+    const picker = await openLocalPublishing();
+    await within(picker).findAllByText(`${prefix}.errors.VERSION_ALREADY_SUBMITTED`);
     expect(api.releases).toHaveBeenCalledWith(detail.pluginId, 'older');
-    expect(screen.queryByRole('button', { name: `${prefix}.submitUpdate` })).toBeNull();
+    expect(within(picker).queryByRole('button', { name: `${prefix}.submitVersion` })).toBeNull();
     expect(api.prepare).not.toHaveBeenCalled();
     expect(api.submit).not.toHaveBeenCalled();
   });
 
-  it('keeps submission disabled while version eligibility is loading or failed', async () => {
+  it('keeps the entry usable and offers no submission while dialog eligibility is loading or failed', async () => {
     auth.mode = 'cloud';
     const installed = localAuthorInstallation('2.0.0');
     window.electronAPI.ghosts.listSync = () => ({ ghosts: [installed] });
@@ -1009,12 +1018,15 @@ describe('plugin use details and independent author management', () => {
     api.releases.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
     Object.assign(window.electronAPI, { pluginContributions: api });
     render(page(`/plugins?ghost=${installed.instanceKey}`));
+    const action = await screen.findByRole('button', { name: `${prefix}.publishPlugin` });
+    expect(action).toHaveProperty('disabled', false);
+    expect(api.releases).not.toHaveBeenCalled();
+    const picker = await openLocalPublishing();
     await waitFor(() => expect(api.releases).toHaveBeenCalled());
-    const action = screen.getByRole('button', { name: /settings\.ghosts\.contribution\.(publish|submitUpdate)$/ });
-    expect(action).toHaveProperty('disabled', true);
-    fireEvent.click(action);
+    expect(within(picker).queryByRole('button', { name: `${prefix}.submitVersion` })).toBeNull();
     await act(async () => { fail(new Error('Offline')); });
-    expect(screen.getByRole('button', { name: /settings\.ghosts\.contribution\.(publish|submitUpdate)$/ })).toHaveProperty('disabled', true);
+    expect(await within(picker).findByRole('alert')).toHaveProperty('textContent', `${prefix}.loadFailed`);
+    expect(within(picker).queryByRole('button', { name: `${prefix}.submitVersion` })).toBeNull();
     expect(api.prepare).not.toHaveBeenCalled();
     expect(api.submit).not.toHaveBeenCalled();
   });
@@ -1041,14 +1053,15 @@ describe('plugin use details and independent author management', () => {
     api.prepare.mockImplementation(() => new Promise<ContributionTransferView['prepared']>(resolve => { finishPreview = resolve; }));
     Object.assign(window.electronAPI, { pluginContributions: { ...api, discard: vi.fn().mockResolvedValue(undefined) } });
     render(page(`/plugins?ghost=${installed.instanceKey}`));
+    expect(api.prepare).not.toHaveBeenCalled();
+    const picker = await openLocalPublishing();
     await waitFor(() => expect(api.prepare).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole('button', { name: `${prefix}.submitUpdate` })).toHaveProperty('disabled', true);
+    expect(within(picker).queryByRole('button', { name: `${prefix}.submitVersion` })).toBeNull();
     expect(api.submit).not.toHaveBeenCalled();
     await act(async () => { finishPreview(prepared); });
     if (allowed) {
       expect(await screen.findByRole('button', { name: `${prefix}.submitVersion` })).toHaveProperty('disabled', false);
-      fireEvent.click(screen.getByText(`${prefix}.versionUpdates`));
-      expect(screen.getByText('Checked update notes')).toBeTruthy();
+      expect(within(picker).getByText('Checked update notes')).toBeTruthy();
     } else {
       expect(await screen.findByText('Missing release notes')).toBeTruthy();
       expect(screen.queryByRole('button', { name: `${prefix}.submitUpdate` })).toBeNull();
@@ -1074,7 +1087,7 @@ describe('plugin use details and independent author management', () => {
       await screen.findByRole('heading', { name: 'Downloaded Plugin' });
       await act(async () => { await Promise.resolve(); });
       expect(screen.queryByRole('heading', { name: `${prefix}.publishing` })).toBeNull();
-      expect(screen.queryByRole('button', { name: `${prefix}.publish` })).toBeNull();
+      expect(screen.queryByRole('button', { name: `${prefix}.publishPlugin` })).toBeNull();
       expect(api.prepare).not.toHaveBeenCalled();
       expect(api.submit).not.toHaveBeenCalled();
       // 普通下载详情无需扫描本人投稿权限，公开安装也不能开启 UI 提审。
@@ -1147,7 +1160,9 @@ describe('plugin use details and independent author management', () => {
     const api = authorApi(null); api.list.mockRejectedValue(new Error('Offline'));
     Object.assign(window.electronAPI, { pluginContributions: api });
     render(page(`/plugins?ghost=${installed.instanceKey}`));
-    await screen.findAllByText(`${prefix}.loadFailed`);
+    expect(api.list).not.toHaveBeenCalled();
+    const picker = await openLocalPublishing();
+    await within(picker).findAllByText(`${prefix}.loadFailed`);
     expect(api.prepare).not.toHaveBeenCalled();
     expect(api.submit).not.toHaveBeenCalled();
   });
