@@ -13,14 +13,8 @@ export function useSmoothMessageFollow(
 ) {
   const previousTop = useRef<number | null>(null);
   const initialized = useRef(false);
-  const initialLayoutFrame = useRef<number | null>(null);
   const animation = useRef<Animation | null>(null);
-  const trajectory = useRef<{
-    offset: number;
-    start: number;
-    duration: number;
-    curve: number[];
-  } | null>(null);
+  const trajectory = useRef<{ offset: number; start: number; duration: number; curve: number[] } | null>(null);
 
   const currentOffset = useCallback(() => {
     const path = trajectory.current;
@@ -30,10 +24,8 @@ export function useSmoothMessageFollow(
     // seeking the running animation (seeking would itself reset its start time).
     const progress = Math.min(1, Math.max(0, (performance.now() - path.start) / path.duration));
     const [x1, y1, x2, y2] = path.curve;
-    const bezier = (t: number, a: number, b: number) =>
-      3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t ** 2 * b + t ** 3;
-    let low = 0,
-      high = 1;
+    const bezier = (t: number, a: number, b: number) => 3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t ** 2 * b + t ** 3;
+    let low = 0, high = 1;
     for (let i = 0; i < 16; i++) {
       const middle = (low + high) / 2;
       if (bezier(middle, x1, x2) < progress) low = middle;
@@ -42,38 +34,28 @@ export function useSmoothMessageFollow(
     return path.offset * (1 - bezier((low + high) / 2, y1, y2));
   }, []);
 
-  const retarget = useCallback(
-    (offset: number) => {
-      const content = contentRef.current;
-      animation.current?.cancel();
-      animation.current = null;
-      trajectory.current = null;
-      if (!content?.animate || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
-        return;
-      const style = getComputedStyle(content);
-      const duration = style.getPropertyValue('--motion-base').trim();
-      const milliseconds = Number.parseFloat(duration) * (duration.endsWith('ms') ? 1 : 1000);
-      const easing = style.getPropertyValue('--motion-ease-move').trim();
-      const curve = /^cubic-bezier\(([^)]+)\)$/.exec(easing)?.[1].split(',').map(Number);
-      if (
-        !Number.isFinite(milliseconds) ||
-        milliseconds <= 0 ||
-        curve?.length !== 4 ||
-        curve.some((n) => !Number.isFinite(n))
-      )
-        return;
-      const start = performance.now();
-      trajectory.current = { offset, start, duration: milliseconds, curve };
-      animation.current = content.animate(
-        [{ transform: `translateY(${offset}px)` }, { transform: 'translateY(0)' }],
-        { duration: milliseconds, easing, fill: 'both' },
-      );
-      // Pending animations otherwise wait for a compositor acknowledgement and
-      // can sit on their first frame while another layout update retargets them.
-      animation.current.startTime = start;
-    },
-    [contentRef],
-  );
+  const retarget = useCallback((offset: number) => {
+    const content = contentRef.current;
+    animation.current?.cancel();
+    animation.current = null;
+    trajectory.current = null;
+    if (!content?.animate || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const style = getComputedStyle(content);
+    const duration = style.getPropertyValue('--motion-base').trim();
+    const milliseconds = Number.parseFloat(duration) * (duration.endsWith('ms') ? 1 : 1000);
+    const easing = style.getPropertyValue('--motion-ease-move').trim();
+    const curve = /^cubic-bezier\(([^)]+)\)$/.exec(easing)?.[1].split(',').map(Number);
+    if (!Number.isFinite(milliseconds) || milliseconds <= 0 || curve?.length !== 4 || curve.some(n => !Number.isFinite(n))) return;
+    const start = performance.now();
+    trajectory.current = { offset, start, duration: milliseconds, curve };
+    animation.current = content.animate([
+      { transform: `translateY(${offset}px)` },
+      { transform: 'translateY(0)' },
+    ], { duration: milliseconds, easing, fill: 'both' });
+    // Pending animations otherwise wait for a compositor acknowledgement and
+    // can sit on their first frame while another layout update retargets them.
+    animation.current.startTime = start;
+  }, [contentRef]);
 
   useLayoutEffect(() => {
     if (!active) {
@@ -113,13 +95,7 @@ export function useSmoothMessageFollow(
     }
     reduced?.addEventListener('change', reduce);
     return () => {
-      if (initialLayoutFrame.current !== null) cancelAnimationFrame(initialLayoutFrame.current);
-      initialLayoutFrame.current = null;
-      initialized.current = false;
-      previousTop.current = null;
       animation.current?.cancel();
-      animation.current = null;
-      trajectory.current = null;
       scroll.removeEventListener('scroll', rememberScroll);
       for (const event of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
         scroll.removeEventListener(event, takeOver, true);
@@ -137,24 +113,7 @@ export function useSmoothMessageFollow(
     scroll.scrollTop = scroll.scrollHeight;
     const delta = scroll.scrollTop - before;
     previousTop.current = scroll.scrollTop;
-    if (!initialized.current) {
-      // A cold history load may leave the mounted list empty for many frames.
-      // Its first content still needs initial positioning, not an entrance.
-      if (!content.hasChildNodes()) return;
-      // A mount can pin several times: estimated rows, their real contents and
-      // ResizeObserver corrections all belong to initial positioning. Wait for
-      // a painted frame without another correction before animating live growth.
-      // Repeated no-op observer pins must not keep postponing that boundary.
-      if (initialLayoutFrame.current !== null && Math.abs(delta) < 0.25) return;
-      if (initialLayoutFrame.current !== null) cancelAnimationFrame(initialLayoutFrame.current);
-      initialLayoutFrame.current = requestAnimationFrame(() => {
-        initialLayoutFrame.current = requestAnimationFrame(() => {
-          initialLayoutFrame.current = null;
-          initialized.current = true;
-        });
-      });
-      return;
-    }
+    if (!initialized.current) { initialized.current = true; return; }
     if (Math.abs(delta) < 0.25) return;
     retarget(offset + delta);
   }, [scrollRef, contentRef, currentOffset, retarget, active]);
