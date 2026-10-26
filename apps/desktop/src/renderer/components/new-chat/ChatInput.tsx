@@ -41,7 +41,7 @@ import {
   ComposerListItem,
   ComposerOrderedList,
   handleStructuredListBackspace,
-  handleStructuredListBreak,
+  handleComposerListEnter,
   hasTrailingPlainListParagraph,
   isTopLevelBlockSelection,
   isTrailingEmptyTopLevelParagraph,
@@ -299,7 +299,7 @@ import {
   type ComposerSuggestionEntry,
 } from '@/lib/composerSuggestion';
 import { countUserExtraDirs, MAX_EXTRA_DIRS, pickAndAddExtraDir } from './extraDirsActions';
-import { applyListBackspace, applyListContinuation } from '@/lib/composerListContinuation';
+import { applyListBackspace } from '@/lib/composerListContinuation';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 import { getAppShortcutCombos } from '@/lib/appShortcutStore';
 import { getNextPermissionMode } from '@/lib/permissionModeCycle';
@@ -2838,21 +2838,11 @@ export function ChatInput({
           return true;
         }
 
-        // Shift/Alt+Enter — split or exit a structured item. The plain-text
-        // fallback remains for old drafts and pasted Markdown that has not
-        // gone through an input rule.
-        if (
-          event.key === 'Enter' &&
-          (event.shiftKey || event.altKey) &&
-          !event.metaKey &&
-          !event.ctrlKey &&
-          !event.isComposing
-        ) {
-          if (handleStructuredListBreak(view) || applyListContinuation(view)) {
-            event.preventDefault();
-            return true;
-          }
-          return false;
+        // Newline keys follow the send preference for both structured lists
+        // and plain Markdown restored from old drafts or pasted text.
+        if (handleComposerListEnter(view, event, getComposerSendShortcutPreference())) {
+          event.preventDefault();
+          return true;
         }
 
         // Resolve the configurable send shortcut after structured list handling.
@@ -8998,24 +8988,10 @@ export function ChatInput({
   });
   // 推荐 overlay 的可见判据:开关开启 + 有推荐词 + 输入框空 + 无附件/浏览器评论/语音草稿 + 输入框未锁定。
   // composerMutationLocked 涵盖 disabled、sendDispatchInFlight、当前输入框所属语音及远程只读/锁定状态。
-  const voiceHintEmpty =
-    !!editor && !editor.isDestroyed && composerDocIsEmpty(editor.state.doc) && !hasVoiceDraftText;
-  const voiceHint = voiceHintEmpty
-    ? voiceBusyOnCurrentComposer && voiceInput.state === 'listening'
-      ? t(
-          composerVoiceHolding || voiceButtonHolding
-            ? 'newChat.chatInput.voiceInput.speakRelease'
-            : 'newChat.chatInput.voiceInput.speakPressAgain',
-        )
-      : composerVoiceHovered && composerVoiceHoverHintReady && composerLongPressVoiceInputEnabled && !composerTypingLocked
-        ? t('newChat.chatInput.voiceInput.holdComposer')
-        : null
-    : null;
-  const showRecommendationOverlay =
-    !voiceHint && shouldShowComposerPromptRecommendation({
-      ...recommendationComposerState,
-      prompt: recommendedPrompt,
-    });
+  const showRecommendationOverlay = shouldShowComposerPromptRecommendation({
+    ...recommendationComposerState,
+    prompt: recommendedPrompt,
+  });
   // handleKeyDown 的稳定闭包只按真实可见性接受 Tab，避免隐藏推荐被误填入。
   showRecommendationRef.current = showRecommendationOverlay;
   // 首页建议悬停预览:输入框锁定(发送中 / 语音占用 / 禁用)时不预览,免得遮住进行中的状态。
@@ -9024,7 +9000,26 @@ export function ChatInput({
   const [dismissedPreviewPrompt, setDismissedPreviewPrompt] = useState<string | null>(null);
   if (!previewPrompt && dismissedPreviewPrompt !== null) setDismissedPreviewPrompt(null);
   const showPromptPreview =
-    !!previewPrompt && previewPrompt !== dismissedPreviewPrompt && !composerMutationLocked && !voiceHint;
+    !!previewPrompt && previewPrompt !== dismissedPreviewPrompt && !composerMutationLocked;
+  const voiceHintEmpty =
+    !!editor && !editor.isDestroyed && composerDocIsEmpty(editor.state.doc) && !hasVoiceDraftText;
+  // 已有推荐或建议预览优先于语音入门提示；实际录音仍由输入框锁定状态切换为录音指引。
+  const voiceHint = voiceHintEmpty
+    ? voiceBusyOnCurrentComposer && voiceInput.state === 'listening'
+      ? t(
+          composerVoiceHolding || voiceButtonHolding
+            ? 'newChat.chatInput.voiceInput.speakRelease'
+            : 'newChat.chatInput.voiceInput.speakPressAgain',
+        )
+      : !showRecommendationOverlay &&
+          !showPromptPreview &&
+          composerVoiceHovered &&
+          composerVoiceHoverHintReady &&
+          composerLongPressVoiceInputEnabled &&
+          !composerTypingLocked
+        ? t('newChat.chatInput.voiceInput.holdComposer')
+        : null
+    : null;
   promptPreviewInputGuardRef.current = () => {
     if (!showPromptPreview) return false;
     setDismissedPreviewPrompt(previewPrompt ?? null);
