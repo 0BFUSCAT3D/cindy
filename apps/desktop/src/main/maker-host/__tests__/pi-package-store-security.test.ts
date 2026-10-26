@@ -361,8 +361,17 @@ describe('Pi package executable-code boundary', () => {
     runtime.listOutput = `${entries.join('\n')}\n`;
 
     const store = await import('../pi-package-store.js');
-    const result = await store.listPiPackages();
+    // 本用例只验证超长元数据的截断与总量上限；固定时钟，避免慢速 runner 触发
+    // 单包检查时限后降级成 inspection-limit 投影（名称即来源、不截断）。
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+    let result: Awaited<ReturnType<typeof store.listPiPackages>>;
+    try {
+      result = await store.listPiPackages();
+    } finally {
+      clock.mockRestore();
+    }
     expect(result.packages).toHaveLength(128);
+    expect(result.packages.filter((pkg) => pkg.warning === 'inspection-limit')).toEqual([]);
     expect(result.packages.every((pkg) => pkg.name.endsWith('…'))).toBe(true);
     expect(result.packages.every((pkg) => pkg.version?.endsWith('…'))).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(128 * 1_024);
@@ -448,6 +457,7 @@ describe('Pi package executable-code boundary', () => {
           expect(processRuntime.killTree).toHaveBeenCalledOnce();
         }, { timeout: 1_000 });
         processRuntime.pendingTreeSettled?.();
+        // real-wait: allow the real package-runtime watcher deadline to elapse.
         await new Promise((resolve) => setTimeout(resolve, 900));
         expect(failure).toBeUndefined();
         expect(runtime.pendingClose).not.toBeNull();
@@ -2633,6 +2643,11 @@ describe('Pi package executable-code boundary', () => {
   );
 
   it('does not run a skipped descendant extension from an unverified ancestor snapshot', async () => {
+    // The aggregate snapshot warning lives in the one-second inspection cache.
+    // Control only Date so slow CI cannot expire it during real filesystem I/O.
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
     const ancestorRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-pi-package-approved-overlap-'));
     roots.push(ancestorRoot);
     const descendantRoot = path.join(ancestorRoot, 'extension');
@@ -2705,6 +2720,16 @@ describe('Pi package executable-code boundary', () => {
         { source: descendantRoot, enabled: true, warning: 'inspection-limit' },
       ],
     });
+    // After the cache expires, a fresh inspection clears this transient warning
+    // without disabling either native package or changing the returned snapshot.
+    vi.setSystemTime(now + 2_000);
+    const refreshed = await store.listPiPackages();
+    expect(refreshed.packages).toMatchObject([
+      { source: ancestorRoot, enabled: true },
+      { source: descendantRoot, enabled: true },
+    ]);
+    expect(refreshed.packages[1].warning).toBeUndefined();
+    expect(snapshot.extensions).toEqual([]);
     const state = JSON.parse(await fs.readFile(
       path.join(runtime.userData, 'pi-package-home', 'cindy-package-state.json'),
       'utf8',
@@ -3845,11 +3870,13 @@ describe('Pi package executable-code boundary', () => {
       // Recover the old legacy baseline while runtime observation stays down.
       legacyReadBlocked = false;
       await fs.writeFile(legacyToken, 'runtime:old\n');
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Simulate another Main publishing only the runtime edge while its legacy
       // mirror write fails. The legacy file intentionally stays on the old token.
       await fs.writeFile(runtimeToken, 'runtime:peer-edge\n');
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 300));
       runtimeReadBlocked = false;
       await fs.writeFile(runtimeToken, 'runtime:peer-edge\n');
@@ -3919,6 +3946,7 @@ describe('Pi package executable-code boundary', () => {
         'runtime-refresh',
         expect.objectContaining({ afterCurrentTurn: true }),
       ));
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(originListener.mock.calls.filter(([origin]) => origin === 'external-runtime')).toHaveLength(1);
       expect(maker.advanceLocalPiPackageRuntimeGeneration).toHaveBeenCalledOnce();
@@ -3956,6 +3984,7 @@ describe('Pi package executable-code boundary', () => {
       ));
       runtimeReadBlocked = false;
       await fs.writeFile(runtimeToken, 'runtime:already-present\n');
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(listener).not.toHaveBeenCalled();
     } finally {
@@ -3999,6 +4028,7 @@ describe('Pi package executable-code boundary', () => {
 
       runtimeReadBlocked = false;
       await fs.writeFile(runtimeToken, 'runtime:old\n');
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(listener.mock.calls.filter(([origin]) => origin === 'external-runtime')).toHaveLength(1);
     } finally {
@@ -4041,11 +4071,13 @@ describe('Pi package executable-code boundary', () => {
       expect(listener.mock.calls.filter(([origin]) => origin === 'external-runtime')).toHaveLength(1);
       // Keep runtime observation down for another poll. The already-notified
       // legacy edge must not become a new recovery comparison baseline.
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(listener.mock.calls.filter(([origin]) => origin === 'external-runtime')).toHaveLength(1);
 
       runtimeReadBlocked = false;
       await fs.writeFile(runtimeToken, 'runtime:old\n');
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(listener.mock.calls.filter(([origin]) => origin === 'external-runtime')).toHaveLength(1);
     } finally {
@@ -4090,6 +4122,7 @@ describe('Pi package executable-code boundary', () => {
       await vi.waitFor(() => expect(delayedRuntimeRead).toBe(true));
       await mutateAuthorized(store, { action: 'install', source: 'npm:local-publication' });
       releaseRuntimeRead();
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       expect(listener).toHaveBeenCalledWith('local');
@@ -4163,6 +4196,7 @@ describe('Pi package executable-code boundary', () => {
         'runtime-refresh',
         expect.objectContaining({ afterCurrentTurn: true }),
       ), { timeout: 2_000 });
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(originListener.mock.calls.filter(([origin]) => origin === 'external-runtime')).toHaveLength(1);
       expect(maker.advanceLocalPiPackageRuntimeGeneration).toHaveBeenCalledOnce();
@@ -4197,6 +4231,7 @@ describe('Pi package executable-code boundary', () => {
     const listener = vi.fn();
     const unsubscribe = store.onPiPackagesChanged(listener);
     try {
+      // real-wait: observe a full filesystem polling window to reject duplicate or stale runtime events.
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(listener).not.toHaveBeenCalled();
     } finally {
@@ -4234,6 +4269,7 @@ describe('Pi package executable-code boundary', () => {
       const tokenPath = path.resolve(String(target));
       if (!tokenPaths.delete(tokenPath)) return originalOpen(target, flags, mode);
       // Exercise slow initial I/O: a 50 ms sleep must not stand in for readiness.
+      // real-wait: inject slow initial filesystem I/O before the observer establishes its baseline.
       await new Promise((resolve) => setTimeout(resolve, 100));
       const handle = await originalOpen(target, flags, mode);
       return {

@@ -1,4 +1,5 @@
 {
+  "remoteBusy": "The remote computer is busy. Please try again shortly.",
   "title": "Tags",
   "more": "More tags",
   "settings": "Tag settings",
@@ -33,6 +34,7 @@
   "editLabel": "Edit “{{name}}”",
   "reorderLabel": "Reorder “{{name}}”",
   "reorderHint": "Hold the handle and drag to reorder",
+  "reorderFooter": "Touch and hold, then drag to reorder.",
   "pink": "Pink",
   "coral": "Coral",
   "teal": "Teal",

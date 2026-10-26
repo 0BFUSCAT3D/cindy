@@ -556,7 +556,7 @@ export class MobileRealtimeAsrProvider implements AsrProvider {
     if (this.pendingCommitCount > 0) this.pendingCommitCount -= 1;
     const aggregate = this.aggregateTranscript();
     if (aggregate) this.callback({ type: 'stable', text: aggregate, at: Date.now() });
-    this.clearConfirmedRealtimeAudio(event.item_id);
+    this.finishRealtimeAudio(event.item_id, itemTranscript.trim().length > 0);
     if (this.pendingCommitCount === 0) this.resolveFlushWaiters();
   }
 
@@ -686,25 +686,27 @@ export class MobileRealtimeAsrProvider implements AsrProvider {
     }
   }
 
-  private clearConfirmedRealtimeAudio(itemId: string): void {
+  private finishRealtimeAudio(itemId: string, hasTranscript: boolean): void {
+    // Completion ends the commit bookkeeping, but an empty result does not
+    // confirm its audio. Keep those bytes for the one stop-time replay.
     let commitId = this.audioCommitIdsByItem.get(itemId);
     if (commitId === undefined) {
       const turnId = this.unboundAudioItemTurnIds.get(itemId);
       if (turnId !== undefined) {
         this.unboundAudioItemTurnIds.delete(itemId);
-        this.clearUnboundRealtimeAudioTurn(turnId);
+        if (hasTranscript) this.clearUnboundRealtimeAudioTurn(turnId);
         return;
       }
       commitId = this.pendingAudioCommitIds.shift();
     }
     if (commitId === undefined) {
-      this.trimUnconfirmedAudioOlderThan(Date.now() - CONFIRMED_AUDIO_RETENTION_MS);
+      if (hasTranscript) this.trimUnconfirmedAudioOlderThan(Date.now() - CONFIRMED_AUDIO_RETENTION_MS);
       return;
     }
     this.audioCommitIdsByItem.delete(itemId);
     this.unboundAudioItemTurnIds.delete(itemId);
     this.pendingAudioCommitIds = this.pendingAudioCommitIds.filter((id) => id !== commitId);
-    this.unconfirmedAudio = this.unconfirmedAudio.filter((entry) => entry.commitId !== commitId);
+    if (hasTranscript) this.unconfirmedAudio = this.unconfirmedAudio.filter((entry) => entry.commitId !== commitId);
   }
 
   private clearUnboundRealtimeAudioTurn(turnId: number): void {
@@ -795,6 +797,8 @@ export class MobileRealtimeAsrProvider implements AsrProvider {
   }
 }
 
+type VolcengineFlushReason = 'final_response' | 'transport_closed' | 'transport_error' | 'server_error' | 'timeout' | 'stopped' | 'reset';
+
 export class MobileVolcengineSaucAsrProvider implements AsrProvider {
   private readonly credential: StoredMobileVoiceCredential;
   private readonly sourceLanguage: string;
@@ -822,7 +826,7 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
   private confirmedEndMs = 0;
   private readonly soundActivity: StopSoundActivity;
   private recovered = false;
-  private flushResolvers: Array<() => void> = [];
+  private flushResolvers: Array<(reason: VolcengineFlushReason) => void> = [];
   private stopped = false;
   private recoveryPromise?: Promise<void>;
   private pendingConnect?: PendingConnect;
@@ -933,14 +937,18 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
           }
         } else {
           this.connected = false;
-          this.resolveFlushWaiters();
+          this.resolveFlushWaiters('transport_error');
           this.callback({ type: 'error', message: redacted, at: Date.now() });
         }
       };
       socket.onclose = (event) => {
         if (this.socket !== socket) return;
         this.connected = false;
-        this.resolveFlushWaiters();
+        this.resolveFlushWaiters('transport_closed');
+        logMobileVoice('debug', 'volcengine sauc transport closed', {
+          code: typeof event.code === 'number' ? event.code : undefined,
+          finalRequested: this.finalRequested,
+        });
         if (!settled) {
           fail(new Error(this.redactError(webSocketCloseBeforeReadyMessage(
             event,
@@ -988,10 +996,12 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
     logMobileVoice('debug', 'volcengine sauc stop finalization decision', decision);
     if (decision.fastFinish) return;
     const flushStartedAt = Date.now();
-    await this.waitForFlush();
+    const reason = await this.waitForFlush();
     logMobileVoice('debug', 'volcengine sauc flush settled', {
       waitMs: Date.now() - flushStartedAt,
       hasStable: this.stableEmitted,
+      transcriptChars: this.lastTranscript.length,
+      reason,
     });
     if (this.lastTranscript && !this.stableEmitted) {
       this.finalizedTranscript = this.lastTranscript;
@@ -1003,7 +1013,7 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
   async stop(): Promise<void> {
     this.stopped = true;
     this.connected = false;
-    this.resolveFlushWaiters();
+    this.resolveFlushWaiters('stopped');
     this.clearUnconfirmedAudio();
     this.sessionTranscriptPrefix = '';
     const socket = this.socket;
@@ -1062,7 +1072,11 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
         extractErrorMessage(message.payload) ?? message.payloadText ?? 'Volcengine SAUC ASR failed.',
       );
       this.callback({ type: 'error', message: errorMessage, at: Date.now() });
-      this.resolveFlushWaiters();
+      this.resolveFlushWaiters('server_error');
+      const code = (message.payload as { code?: unknown } | undefined)?.code;
+      logMobileVoice('warn', 'volcengine sauc server error', {
+        code: typeof code === 'number' ? code : undefined,
+      });
       return;
     }
     if (message.messageType !== VOLC_MESSAGE_TYPE_FULL_SERVER_RESPONSE && message.messageType !== VOLC_MESSAGE_TYPE_SERVER_ACK) {
@@ -1071,16 +1085,19 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
 
     const rawTranscript = extractTranscript(message.payload);
     const transcript = mergeRecoveredTranscript(this.sessionTranscriptPrefix, rawTranscript);
-    // Replay bookkeeping keeps its per-utterance marker: any definite utterance
-    // lets the audio of the confirmed local turn go.
-    const hasDefinite = hasDefiniteUtterance(message.payload);
     // The stable lane requires every utterance of the aggregate to be definite;
     // a confirmed first sentence must not mark an unconfirmed tail as stable.
     const confirmation = getVolcengineTranscriptConfirmation(message.payload, rawTranscript);
     const isDefinite = confirmation.confirmed;
     const isLastResponse = isVolcengineProtocolLastResponse(message);
-    if (transcript && (hasDefinite || isLastResponse)) {
-      this.finalizedTranscript = transcript;
+    // Recovery keeps finalizedTranscript as a fixed prefix and replays only the
+    // audio after it, so it may contain definite text only: an indefinite tail
+    // must stay correctable by the replay.
+    const definiteText = isLastResponse || isDefinite
+      ? rawTranscript
+      : definiteVolcengineTranscriptPrefix(message.payload, rawTranscript);
+    if (definiteText || (isLastResponse && transcript)) {
+      this.finalizedTranscript = mergeRecoveredTranscript(this.sessionTranscriptPrefix, definiteText);
       this.clearConfirmedVolcengineAudio();
     }
     if (rawTranscript) this.confirmedEndMs = confirmation.endMs;
@@ -1090,7 +1107,14 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
       this.stableEmitted = isDefinite;
       this.callback({ type: isDefinite ? 'stable' : 'partial', text: transcript, at: Date.now() });
     }
-    if (this.finalRequested && isLastResponse) this.resolveFlushWaiters();
+    if (isLastResponse) {
+      logMobileVoice('debug', 'volcengine sauc final response', {
+        transcriptChars: rawTranscript.length,
+        finalRequested: this.finalRequested,
+        messageType: message.messageType,
+      });
+      if (this.finalRequested) this.resolveFlushWaiters('final_response');
+    }
   }
 
   /**
@@ -1209,7 +1233,7 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
     this.sequence = 1;
     this.finalRequested = false;
     this.stableEmitted = false;
-    this.resolveFlushWaiters();
+    this.resolveFlushWaiters('reset');
 
     const socket = this.socket;
     this.socket = null;
@@ -1239,18 +1263,20 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
     return socket && socket.readyState === OPEN ? socket : null;
   }
 
-  private waitForFlush(): Promise<void> {
+  private waitForFlush(): Promise<VolcengineFlushReason> {
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, this.flushTimeoutMs);
-      this.flushResolvers.push(() => {
+      const finish = (reason: VolcengineFlushReason): void => {
         clearTimeout(timer);
-        resolve();
-      });
+        this.flushResolvers = this.flushResolvers.filter((item) => item !== finish);
+        resolve(reason);
+      };
+      const timer = setTimeout(() => finish('timeout'), this.flushTimeoutMs);
+      this.flushResolvers.push(finish);
     });
   }
 
-  private resolveFlushWaiters(): void {
-    this.flushResolvers.splice(0).forEach((resolve) => resolve());
+  private resolveFlushWaiters(reason: VolcengineFlushReason): void {
+    this.flushResolvers.splice(0).forEach((resolve) => resolve(reason));
   }
 
   private resetState(): void {
@@ -1267,7 +1293,7 @@ export class MobileVolcengineSaucAsrProvider implements AsrProvider {
     this.clearUnconfirmedAudio();
     this.finalRequested = false;
     this.stableEmitted = false;
-    this.resolveFlushWaiters();
+    this.resolveFlushWaiters('reset');
   }
 
   private redactError(message: string): string {
@@ -1636,6 +1662,38 @@ export function getVolcengineTranscriptConfirmation(
   const endMs = typeof last.end_time === 'number' && Number.isFinite(last.end_time) && last.end_time > 0
     ? last.end_time : 0;
   return { confirmed: true, endMs };
+}
+
+/**
+ * The part of the aggregate transcript covered by its leading definite
+ * utterances, or '' when none is definite. A response without an utterance
+ * list keeps the legacy whole-aggregate `definite` marker.
+ */
+export function definiteVolcengineTranscriptPrefix(payload: unknown, transcript: string): string {
+  if (!transcript || !hasDefiniteUtterance(payload)) return '';
+  const results = isRecord(payload) ? (Array.isArray(payload.result) ? payload.result : [payload.result]) : [];
+  const result = results.find((item) => isRecord(item) && item.text === transcript);
+  if (!isRecord(result) || !Array.isArray(result.utterances) || !result.utterances.length) {
+    return transcript;
+  }
+  let definite = '';
+  for (const item of result.utterances) {
+    if (!isRecord(item) || item.definite !== true || typeof item.text !== 'string') break;
+    definite += item.text;
+  }
+  // Map the joined utterances onto the aggregate, ignoring whitespace that
+  // the aggregate may insert between them; unmatched text finalizes nothing.
+  const expected = definite.replace(/\s/gu, '');
+  if (!expected) return '';
+  let matched = 0;
+  for (let index = 0; index < transcript.length; index += 1) {
+    const character = transcript[index];
+    if (/\s/u.test(character)) continue;
+    if (character !== expected[matched]) return '';
+    matched += 1;
+    if (matched === expected.length) return transcript.slice(0, index + 1);
+  }
+  return '';
 }
 
 function isVolcengineProtocolLastResponse(message: ParsedVolcengineMessage): boolean {

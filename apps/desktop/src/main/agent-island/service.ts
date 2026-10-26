@@ -1,5 +1,6 @@
 import { dialog, ipcMain, screen, BrowserWindow, type Display, type OpenDialogOptions } from 'electron';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { release as getOsRelease } from 'node:os';
 import { SESSION_ACTIVITY_CHANNEL, type SessionActivityPayload } from '@cindy/device-link';
 import {
@@ -22,9 +23,13 @@ import {
 } from '@cindy/maker-shared/turn-continuation';
 import type { ApplicationMenuCommand } from '../../shared/applicationMenuCommands.js';
 
-import { hasSessionAttention as hasAppBadgeSessionAttention } from '../appBadgeService.js';
+import {
+  clearSessionAttention as clearAppBadgeSessionAttention,
+  hasSessionAttention as hasAppBadgeSessionAttention,
+} from '../appBadgeService.js';
 import { openMainWindowSession } from '../deepLink.js';
 import {
+  AGENT_ISLAND_CONSUME_ENTRY_ALERT_CHANNEL,
   AGENT_ISLAND_MAX_RESIZABLE_WIDTH,
   AGENT_ISLAND_GET_DISPLAY_OPTIONS_CHANNEL,
   AGENT_ISLAND_PREVIEW_SOUND_CHANNEL,
@@ -32,6 +37,11 @@ import {
   AGENT_ISLAND_SET_DISPLAY_TARGET_CHANNEL,
   AGENT_ISLAND_SET_ENABLED_CHANNEL,
   AGENT_ISLAND_SET_MASCOT_SKIN_CHANNEL,
+  AGENT_ISLAND_SET_REMOTE_SESSIONS_CHANNEL,
+  AGENT_ISLAND_SET_COMPANION_CHATS_CHANNEL,
+  AGENT_ISLAND_READ_COMPANION_CHAT_CHANNEL,
+  parseAgentIslandCompanionChats,
+  type AgentIslandCompanionChatInput,
   AGENT_ISLAND_SET_SOUND_SETTINGS_CHANNEL,
   AGENT_ISLAND_SET_VISIBLE_SESSION_CHANNEL,
   AGENT_ISLAND_SELECT_SOUND_FILE_CHANNEL,
@@ -52,11 +62,14 @@ import {
   normalizeAgentIslandDisplayTarget,
   normalizeAgentIslandSoundChoice,
   normalizeAgentIslandSoundSettings,
+  parseAgentIslandRemoteSessions,
   snapAgentIslandCompactHardwareContentWidth,
   AGENT_ISLAND_SESSION_SNAPSHOTS_CHANNEL,
   type AgentIslandDisplayOption,
   type AgentIslandDisplayState,
   type AgentIslandPillSnapshot,
+  type AgentIslandRemoteSessionInput,
+  type AgentIslandCompanionSnapshot,
   type AgentIslandSessionActivity,
   type AgentIslandSessionSnapshot,
   type AgentIslandDisplayTarget,
@@ -67,12 +80,26 @@ import {
   type AgentIslandSoundSettings,
   type AgentIslandScreenLayoutMetrics,
 } from '../../shared/agentIsland.js';
-import { getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
+import { getSessionRowSnapshot, patchSessionMetaInDb } from '../localDb/ipc/sessions.js';
+import { withSessionRouteLock } from '../localDb/sessionRouteLock.js';
+import { confirmIslandArchive } from './archiveConfirmation.js';
+import { remoteInvoke } from '../device-link/index.js';
+import { bindingStore } from '../im/binding.js';
+import { setAgentIslandCompanionChangeSink } from '../localDb/agentIslandSessionPatch.js';
+import {
+  companionAvatarHasArtwork,
+  companionAvatarThumbnail,
+  companionSnapshotWithoutArtwork,
+  readAgentIslandCompanion,
+  type AgentIslandCompanionIdentity,
+} from './companionIdentity.js';
 import { createLogger } from '../logger.js';
 import { t } from '../i18n.js';
 import { isAppContentWindow, isFocusedAppContentWindow } from '../windowFocusClassifier.js';
 import {
   acknowledgeAgentIslandSessionRead,
+  agentIslandCompletionToken,
+  readAgentIslandUnreadTerminalStamp,
   applyAgentIslandEvent,
   applyAgentIslandInteractionDismissed,
   applyAgentIslandInteractionRequest,
@@ -81,11 +108,13 @@ import {
   buildAllSessionActivitySnapshots,
   closeAgentIslandSessionPreservingUnread,
   completeAgentIslandSessionWithoutAttention,
+  completedReplySummary,
   createAgentIslandUserPromptRollbackToken,
   createAgentIslandState,
   dismissAgentIslandActiveReveal,
   getNextAgentIslandTimerAt,
   hasAgentIslandSessionAttention,
+  isAgentIslandDeviceSession,
   isAgentIslandPendingFocusAck,
   markAgentIslandSessionAttention,
   requestAgentIslandManualCollapse,
@@ -102,6 +131,8 @@ import {
   setAgentIslandStrings,
   setAgentIslandToolWording,
   setAgentIslandVisibleSession,
+  syncAgentIslandDeviceSessions,
+  type AgentIslandDeviceSessionEvent,
   type AgentIslandUserPromptRollbackToken,
 } from './state.js';
 import { createLocalizedToolRowWording } from './toolWording.js';
@@ -124,6 +155,10 @@ import {
   writeAgentIslandLayoutPreferences,
 } from './layoutPreferenceStore.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
+import { getActiveAppSession } from '../appSessionState.js';
+import { isDataOwnerPushStamp } from '../../shared/dataOwnerPush.js';
+import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
+import { isDeviceLinkInvoke } from '../device-link/invoke-context.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import {
   beginProtectedFolderCheck,
@@ -146,12 +181,25 @@ const REMOTE_DAEMON_CLOSED_REASON = 'remote_daemon_closed';
 // Remote close can legitimately consume the full 15s RPC timeout before the
 // renderer waits another 1.5s and resends. Keep the fallback beyond that window.
 const REMOTE_AUTH_ERROR_FALLBACK_MS = 30_000;
+// 点击卡片到主窗导航落地之间可能隔着一次 renderer 冷加载,与主窗导航保留同量级。
+const ISLAND_ENTRY_ALERT_TTL_MS = 60_000;
+const MAX_ISLAND_ENTRY_SESSION_ID_LENGTH = 128;
+const REMOTE_COMPANION_ARTWORK_RETRY_MS = 60_000;
+const MAX_ISLAND_ENTRY_ID_LENGTH = 32;
 
 interface AgentIslandSessionMeta {
   sessionId: string;
   agentKind?: string;
   workingDir?: string | null;
   workspaceKind?: string | null;
+}
+
+interface AgentIslandCachedMetadata {
+  title: string | null;
+  workingDir: string | null;
+  workspaceKind: string | null;
+  /** undefined until the Session row has been read; null for non-companion Sessions. */
+  companion?: AgentIslandCompanionIdentity | null;
 }
 
 interface AgentIslandPermissionAction {
@@ -168,12 +216,15 @@ interface AgentIslandUserPromptDebugMeta {
 }
 
 export interface AgentIslandServiceDeps {
+  isCompletionHandledByTeammate?: (sessionId: string) => Promise<boolean>;
   getMainWindow: () => BrowserWindow | null;
   nativeHost?: AgentIslandNativeRenderer;
   /** Main-process upgrade window used to classify remote daemon shutdowns. */
   isPlannedRemoteDaemonClose?: (sessionId: string) => boolean;
   /** Optional process-local consumer for task activity, such as hardware status lighting. */
   onSessionActivityChange?: (activity: readonly AgentIslandSessionActivity[]) => void;
+  /** 其它设备任务的状态跃迁。灵动岛开启时由岛面展示;关闭时才交给这里发桌面通知。 */
+  onDeviceSessionEvent?: (event: AgentIslandDeviceSessionEvent) => void;
 }
 
 interface AgentIslandNativeRenderer {
@@ -215,6 +266,12 @@ export function initAgentIslandService(deps: AgentIslandServiceDeps): AgentIslan
     ...deps,
     nativeHost: deps.nativeHost ?? (supportsNativeIsland ? undefined : HEADLESS_AGENT_ISLAND_NATIVE_HOST),
   });
+  setAgentIslandCompanionChangeSink({
+    companionChanged: (botId) => serviceSingleton?.handleCompanionProfileChanged(botId),
+    groupChanged: (groupId) => serviceSingleton?.handleBotGroupChanged(groupId),
+  });
+  // 远程任务同步与原生岛面无关:无原生岛的平台也要靠它发桌面通知。
+  serviceSingleton.registerDeviceSessionIpc();
   if (supportsNativeIsland) {
     serviceSingleton.registerIpc();
   } else {
@@ -232,6 +289,7 @@ function sessionActivitySnapshotsEqual(
   right: AgentIslandSessionActivity,
 ): boolean {
   return left.sessionId === right.sessionId
+    && left.completionToken === right.completionToken
     && left.workingPhase === right.workingPhase
     && left.phase === right.phase
     && left.currentTurnActive === right.currentTurnActive
@@ -255,6 +313,7 @@ function safeSessionActionSummary(snapshot: AgentIslandSessionSnapshot): string 
     if (snapshot.interactionKind === 'ask_user_question') return '等待用户回答';
     if (snapshot.interactionKind === 'plan_review') return '等待计划确认';
     if (snapshot.interactionKind === 'plugin_setup') return '等待插件配置';
+    if (snapshot.interactionKind === 'input_handoff') return '等待代输入';
     return '等待用户确认';
   }
   if (snapshot.phase === 'completed') return '运行已正常结束';
@@ -282,20 +341,30 @@ function canonicalSessionActivity(
  * tracking while TypeScript owns product state and session prioritization.
  */
 export class AgentIslandService {
+  private attentionCount = 0;
+  private readonly attentionCountListeners = new Set<(count: number) => void>();
   private readonly sessionActivityListeners = new Set<
     (transition: SessionActivityTransition) => void
   >();
   private sessionActivitySubscriptionCursor = new Map<string, AgentIslandSessionActivity>();
   private readonly state = createAgentIslandState();
+  private companionChats = new Map<string, {
+    input: AgentIslandCompanionChatInput;
+    companion: AgentIslandCompanionSnapshot;
+    token: string;
+  }>();
   private readonly nativeHost: AgentIslandNativeRenderer;
   private readonly headless: boolean;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly metadataCache = new Map<string, {
-    title: string | null;
-    workingDir: string | null;
-    workspaceKind: string | null;
-  }>();
+  private readonly metadataCache = new Map<string, AgentIslandCachedMetadata>();
   private readonly metadataLoading = new Set<string>();
+  private readonly remoteCompanions = new Map<string, { snapshot: AgentIslandCompanionSnapshot; retryAt: number | null }>();
+  private readonly remoteCompanionKeysInUse = new Set<string>();
+  /** Latest identity read per Session: an older read that finishes late never overwrites a newer one. */
+  private readonly companionReadSeq = new Map<string, number>();
+  /** Bumped by every companion or group change, so reads already in flight know they may be stale. */
+  private companionChangeEpoch = 0;
+  private lastDeviceSessionInputs: readonly AgentIslandRemoteSessionInput[] = [];
   private readonly layoutPreferencesByDisplayId: Map<number, AgentIslandLayoutPreference>;
   private readonly detachedLayoutPreferences: AgentIslandLayoutPreference[];
   private nativeFailureLogged = false;
@@ -315,6 +384,8 @@ export class AgentIslandService {
   private readonly silencedRunHadAttention = new Map<string, boolean>();
   private readonly silencedRunClearTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly mutedCompletionSoundSessionIds = new Set<string>();
+  /** 本轮同步首次出现的其它设备任务:进列表但不响铃。publish 后清空。 */
+  private readonly baselineSoundSessionIds = new Set<string>();
   private readonly stoppedSessionIds = new Set<string>();
   private readonly replacementTurnPendingSessionIds = new Set<string>();
   private readonly replacementTurnDispatchingSessionIds = new Set<string>();
@@ -327,6 +398,14 @@ export class AgentIslandService {
    */
   private unreadAttentionGenerationBySession = new Map<string, number>();
   private readonly sessionHadAttentionAtRunStart = new Map<string, boolean>();
+  /**
+   * 最近一次灵动岛卡片点击:点击编号 + 点击时那张卡的身份(readAgentIslandUnreadTerminalStamp)。
+   * 只留最新一次 —— 任何新点击都会取代它,包括同一任务的再次点击。只给「目标页没有处置
+   * 控件」的入口用(群专线、只读历史、不可用的委派任务):renderer 在目标地址真正提交后
+   * 带上这次的点击编号调 consumeIslandEntryAlert,编号与卡片身份都一致才按 explicit 处置。
+   */
+  private islandEntryAlert: { sessionId: string; entryId: string; stamp: string; until: number } | null = null;
+  private islandEntrySequence = 0;
   private readonly userPromptRollbackTokens = new Map<string, {
     state: AgentIslandUserPromptRollbackToken;
     attention: { existed: boolean; value: boolean };
@@ -346,15 +425,16 @@ export class AgentIslandService {
     sessionId: string;
     request: Extract<InteractionRequest, { kind: 'permission' }>;
   }>();
-  private readonly sessionActivityRelay = new SessionActivityRelay((payload) => {
-    tapWindowBroadcast(SESSION_ACTIVITY_CHANNEL, payload);
-  });
+  private readonly sessionActivityRelay: SessionActivityRelay;
   private permissionResolver: ((requestId: string, decision: AgentIslandPermissionDecision) => boolean) | null = null;
   private shouldDeferCompletion: ((sessionId: string) => boolean) | null = null;
   private layoutPreferenceWriteTimer: ReturnType<typeof setTimeout> | null = null;
   private streamingPreviewPublishTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deps: AgentIslandServiceDeps) {
+    this.sessionActivityRelay = new SessionActivityRelay((payload) => {
+      tapWindowBroadcast(SESSION_ACTIVITY_CHANNEL, payload);
+    }, { isCompletionHandledByTeammate: deps.isCompletionHandledByTeammate });
     // lazy t() 闭包跟随 locale 运行时切换,注入一次即可(strings 仍每次 publish 重建)。
     setAgentIslandToolWording(this.state, createLocalizedToolRowWording());
     this.layoutPreferencesByDisplayId = readAgentIslandLayoutPreferences();
@@ -364,6 +444,7 @@ export class AgentIslandService {
       onExpand: (displayId) => this.handleNativeExpand(displayId),
       onCollapse: () => this.handleNativeCollapse(),
       onFocusSession: (sessionId) => this.focusSession(sessionId),
+      onCompletionAction: (sessionId, action, token) => this.handleCompletionAction(sessionId, action, token),
       onOpenSettings: () => this.dispatchMainWindowCommand('open-agent-island-settings', { playSelectSound: true }),
       onNewMessage: () => this.dispatchMainWindowCommand('new-maker', { playSelectSound: true }),
       onToggleSound: () => this.dispatchMainWindowCommand('toggle-agent-island-sound'),
@@ -411,8 +492,9 @@ export class AgentIslandService {
   }
 
   /**
-   * 当某会话的排队工作因 INPUT_REMOVE / INPUT_CLEAR_SESSION 被清空(而非被派发)时调用。
-   * 若该会话有待补发的完成事件(之前因队列非空而被推迟),且现在队列确实为空,则立即补发。
+   * 当某会话的排队工作因 INPUT_REMOVE / INPUT_CLEAR_SESSION 被清空(而非被派发)、
+   * 或 Orca Lead 的最后一份 Worker 回报已结清时调用。若该会话有待补发的完成事件
+   * (之前因推迟判定成立而被压住),且现在推迟判定已不成立,则立即补发。
    */
   notifyQueueEmptied(sessionId: string): void {
     const deferred = this.deferredCompletions.get(sessionId);
@@ -479,6 +561,46 @@ export class AgentIslandService {
     this.handleInteractionDismissed(entry.sessionId, requestId);
   }
 
+  /** 各平台都注册(含无原生岛的 headless):灵动岛关闭时远程任务靠它发桌面通知。 */
+  registerDeviceSessionIpc(): void {
+    ipcMain.handle(AGENT_ISLAND_SET_COMPANION_CHATS_CHANNEL, (event, raw: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      if (event.sender !== this.deps.getMainWindow()?.webContents) return { ok: true };
+      if (!isDataOwnerPushStamp(raw)) throwIpcError('INVALID_PARAMS', 'Companion chats require an owner stamp');
+      const owner = getActiveAppSession();
+      if (!owner.dataOwnerId || raw.dataOwnerId !== owner.dataOwnerId || raw.ownerGeneration !== owner.generation) return { ok: true };
+      const payload = raw as typeof raw & { chats?: unknown };
+      const chats = parseAgentIslandCompanionChats(payload.chats);
+      if (!chats) {
+        throwIpcError('INVALID_PARAMS', 'Invalid companion chat snapshot');
+      }
+      this.setCompanionChats(chats);
+      return { ok: true };
+    });
+    ipcMain.handle('agent-island:completion-action', (event, sessionId: unknown, action: unknown, token: unknown) => {
+      if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
+      if (typeof sessionId !== 'string' || !sessionId || (action !== 'archive' && action !== 'mark-read')
+        || typeof token !== 'string' || !token || token.length > 128) {
+        throwIpcError('INVALID_PARAMS', 'Invalid completion action');
+      }
+      return this.applyOwnedCompletionAction(sessionId, action, token);
+    });
+    ipcMain.handle(AGENT_ISLAND_SET_REMOTE_SESSIONS_CHANNEL, (event, raw: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      // 只认主窗:副窗也挂侧栏,多份输入会让跃迁判定来回抖动。
+      const mainWindow = this.deps.getMainWindow();
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents !== event.sender) {
+        return { ok: true };
+      }
+      const inputs = parseAgentIslandRemoteSessions(raw);
+      if (!inputs) {
+        throwIpcError('INVALID_PARAMS', 'remote sessions payload is invalid');
+      }
+      this.setDeviceSessions(inputs);
+      return { ok: true };
+    });
+  }
+
   registerIpc(): void {
     ipcMain.handle(AGENT_ISLAND_SET_VISIBLE_SESSION_CHANNEL, (event, sessionId: unknown) => {
       const sourceWindow = BrowserWindow.fromWebContents(event.sender);
@@ -500,6 +622,23 @@ export class AgentIslandService {
         this.publish();
       }
       return { ok: true };
+    });
+
+    ipcMain.handle(AGENT_ISLAND_CONSUME_ENTRY_ALERT_CHANNEL, (event, rawSessionId: unknown, rawEntryId: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      // 导航只发生在主窗;副窗也挂 MainLayout 级组件,不能替主窗处置提醒。
+      const mainWindow = this.deps.getMainWindow();
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents !== event.sender) {
+        return { ok: true, consumed: false };
+      }
+      const sessionId = typeof rawSessionId === 'string' ? rawSessionId.trim() : '';
+      if (!sessionId || sessionId.length > MAX_ISLAND_ENTRY_SESSION_ID_LENGTH) {
+        throwIpcError('INVALID_PARAMS', 'sessionId is invalid');
+      }
+      if (typeof rawEntryId !== 'string' || !rawEntryId || rawEntryId.length > MAX_ISLAND_ENTRY_ID_LENGTH) {
+        throwIpcError('INVALID_PARAMS', 'entryId is invalid');
+      }
+      return { ok: true, consumed: this.consumeIslandEntryAlert(sessionId, rawEntryId) };
     });
 
     ipcMain.handle(AGENT_ISLAND_SET_ENABLED_CHANNEL, (_event, enabled: unknown) => {
@@ -626,6 +765,127 @@ export class AgentIslandService {
     this.publish();
   }
 
+  /**
+   * 覆盖岛上的其它设备任务(renderer 已按侧栏「任务范围」裁剪)。这些条目不进入
+   * 本机活动快照,也就不会被 relay 当作本机任务再推给控制端。
+   */
+  setDeviceSessions(inputs: readonly AgentIslandRemoteSessionInput[]): void {
+    this.lastDeviceSessionInputs = inputs;
+    this.remoteCompanionKeysInUse.clear();
+    setAgentIslandStrings(this.state, buildAgentIslandStrings());
+    const result = syncAgentIslandDeviceSessions(
+      this.state,
+      inputs,
+      Date.now(),
+      (input) => this.remoteCompanionSnapshot(input),
+    );
+    // Keep exactly the identities this input still names: bounded by the input itself, and a
+    // large roster can never evict entries it is about to read again in the same pass.
+    for (const key of this.remoteCompanions.keys()) {
+      if (!this.remoteCompanionKeysInUse.has(key)) this.remoteCompanions.delete(key);
+    }
+    for (const input of inputs) {
+      if (input.phase === 'completed' && input.completionNotification === 'silent') {
+        this.mutedCompletionSoundSessionIds.add(input.sessionId);
+      }
+    }
+    for (const sessionId of result.baselineSessionIds) this.baselineSoundSessionIds.add(sessionId);
+    if (result.changed) this.publish();
+    if (this.isEnabled()) return;
+    for (const event of result.events) {
+      try {
+        this.deps.onDeviceSessionEvent?.(event);
+      } catch (error) {
+        log.warn('device session event consumer failed', {
+          sessionId: event.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  /** Mirror existing chat read positions, without publishing synthetic runtime activity. */
+  setCompanionChats(inputs: readonly AgentIslandCompanionChatInput[]): void {
+    const previous = this.companionChats;
+    this.companionChats = new Map(inputs.map((input) => {
+      const old = previous.get(input.sessionId);
+      const entry = old && JSON.stringify(old.input) === JSON.stringify(input) ? old : {
+        input, token: randomUUID(),
+        companion: old && old.input.deviceId === input.deviceId
+          && JSON.stringify(old.input.companion) === JSON.stringify(input.companion)
+          ? old.companion : companionSnapshotWithoutArtwork(input.companion),
+      };
+      const live = this.state.sessions.get(input.sessionId);
+      // Restoring history is silent; a just-completed runtime turn still gets its configured sound
+      // when the chat query catches up with the terminal event.
+      if (!live?.revealUntil || live.revealUntil <= Date.now()) this.baselineSoundSessionIds.add(input.sessionId);
+      return [input.sessionId, entry];
+    }));
+    for (const [id, entry] of this.companionChats) {
+      if (entry.companion.imageJpeg || !entry.input.visible || !companionAvatarHasArtwork(entry.input.companion.avatar)) continue;
+      void companionAvatarThumbnail(entry.input.companion.avatar, entry.input.deviceId).then((imageJpeg) => {
+        if (!imageJpeg || this.companionChats.get(id) !== entry) return;
+        entry.companion = { ...entry.companion, imageJpeg };
+        this.publish();
+      });
+    }
+    this.publish();
+  }
+
+  private companionChatProjections() {
+    return [...this.companionChats.values()].map(({ input, companion, token }) => ({ ...input, companion, token }));
+  }
+
+  /**
+   * A remote companion's identity is drawn at once with its tint and glyph; its artwork is
+   * read through this computer's avatar copy and swapped in when ready. One object per
+   * identity, so an unchanged companion never republishes the island.
+   */
+  private remoteCompanionSnapshot(input: AgentIslandRemoteSessionInput): AgentIslandCompanionSnapshot | null {
+    const identity = input.companion;
+    if (!identity) return null;
+    const key = JSON.stringify([input.deviceId, identity.name, identity.avatar, identity.avatarColor]);
+    this.remoteCompanionKeysInUse.add(key);
+    const cached = this.remoteCompanions.get(key);
+    if (cached) {
+      // A failed read stays a glyph, but the next sync after the pause tries again; the
+      // avatar copy keeps its own failure backoff, so this never hammers the other computer.
+      if (cached.retryAt !== null && cached.retryAt <= Date.now()) this.loadRemoteCompanionArtwork(key, input, cached.snapshot);
+      return cached.snapshot;
+    }
+    const base = companionSnapshotWithoutArtwork(identity);
+    this.remoteCompanions.set(key, { snapshot: base, retryAt: null });
+    this.loadRemoteCompanionArtwork(key, input, base);
+    return base;
+  }
+
+  private loadRemoteCompanionArtwork(
+    key: string,
+    input: AgentIslandRemoteSessionInput,
+    base: AgentIslandCompanionSnapshot,
+  ): void {
+    const avatar = input.companion?.avatar;
+    if (!avatar || !companionAvatarHasArtwork(avatar)) return;
+    const entry = this.remoteCompanions.get(key);
+    if (!entry || entry.retryAt === Number.POSITIVE_INFINITY) return;
+    // Marks the read as in flight until it settles.
+    entry.retryAt = Number.POSITIVE_INFINITY;
+    void companionAvatarThumbnail(avatar, input.deviceId).then((imageJpeg) => {
+      const current = this.remoteCompanions.get(key);
+      if (!current || current.snapshot !== base) return;
+      if (!imageJpeg) {
+        current.retryAt = Date.now() + REMOTE_COMPANION_ARTWORK_RETRY_MS;
+        return;
+      }
+      this.remoteCompanions.set(key, { snapshot: { ...base, imageJpeg }, retryAt: null });
+      this.setDeviceSessions(this.lastDeviceSessionInputs);
+    });
+  }
+
+  waitForCompletionNotification(sessionId: string): Promise<boolean> | undefined {
+    return this.sessionActivityRelay.waitForCompletionNotification(sessionId);
+  }
+
   resetRuntimeState(): void {
     this.clearPublishTimer();
     this.clearStreamingPreviewPublishTimer();
@@ -635,15 +895,24 @@ export class AgentIslandService {
       this.clearSilencedRunTimer(runId);
     }
     resetAgentIslandState(this.state);
+    this.companionChats.clear();
+    this.publishAttentionCount(0);
+    this.islandEntryAlert = null;
     this.emitSessionActivityTransitions([], Date.now());
     this.metadataCache.clear();
     this.metadataLoading.clear();
+    this.remoteCompanions.clear();
+    this.remoteCompanionKeysInUse.clear();
+    this.companionReadSeq.clear();
+    this.companionChangeEpoch = 0;
+    this.lastDeviceSessionInputs = [];
     this.lastSoundDisplayState = null;
     this.soundCooldownUntilByEvent.clear();
     this.silencedRunSessionIds.clear();
     this.silencedSessionRunIds.clear();
     this.silencedRunHadAttention.clear();
     this.mutedCompletionSoundSessionIds.clear();
+    this.baselineSoundSessionIds.clear();
     this.stoppedSessionIds.clear();
     this.replacementTurnPendingSessionIds.clear();
     this.replacementTurnDispatchingSessionIds.clear();
@@ -783,15 +1052,27 @@ export class AgentIslandService {
       }
     }
     const suppressCompletionAttention = this.isCompletionEventSilenced(hydrated.sessionId, event);
+    if (isCompletionDoneEvent(event) && event.type === 'status') {
+      this.sessionActivityRelay.awaitCompletionTerminal(hydrated.sessionId);
+    }
     const changed = applyAgentIslandEvent(this.state, hydrated, event, now, {
       suppressCompletionAttention,
-      preserveCompletionAttention: suppressCompletionAttention && this.hadAttentionBeforeSilencedRun(hydrated.sessionId),
+      // Direct IM sends bypass handleUserPrompt. Running preserves unread in the
+      // live state/ledger, so use that state (including any intervening read ack).
+      preserveCompletionAttention: suppressCompletionAttention && (
+        event.turnOrigin?.surface === 'im'
+          ? hasAgentIslandSessionAttention(this.state, hydrated.sessionId)
+          : this.hadAttentionBeforeSilencedCompletion(hydrated.sessionId)
+      ),
       allowCompletionAfterTerminalError:
         isRemoteDaemonClosedErrorEvent(event) &&
         this.deps.isPlannedRemoteDaemonClose?.(hydrated.sessionId) === true,
     });
     if (suppressCompletionAttention) {
       this.mutedCompletionSoundSessionIds.add(hydrated.sessionId);
+    }
+    if (isCompletionDoneEvent(event) && event.type === 'done') {
+      this.sessionActivityRelay.completeTerminal(hydrated.sessionId);
     }
     if (!changed) return;
     this.ensureMetadata(hydrated.sessionId);
@@ -1009,10 +1290,12 @@ export class AgentIslandService {
     this.publish();
   }
 
+  /** Host-owned waits (plugin setup, input handoff) shown as attention until dismissed. */
   handlePluginSetupInteraction(
     sessionId: string,
     requestId: string,
     detail: string,
+    kind: 'plugin_setup' | 'input_handoff' = 'plugin_setup',
   ): void {
     const hydrated = this.hydrateMeta({ sessionId });
     setAgentIslandStrings(this.state, buildAgentIslandStrings());
@@ -1027,7 +1310,9 @@ export class AgentIslandService {
     applyAgentIslandInteractionRequest(
       this.state,
       hydrated,
-      { kind: 'plugin_setup', requestId, detail },
+      kind === 'input_handoff'
+        ? { kind: 'input_handoff', requestId, detail }
+        : { kind: 'plugin_setup', requestId, detail },
       Date.now(),
     );
     this.ensureMetadata(hydrated.sessionId);
@@ -1166,6 +1451,13 @@ export class AgentIslandService {
    * pending-alerts 派生收敛)显式带 'explicit' 才能清掉未处理的报错。
    */
   handleSessionAttentionCleared(sessionId: string, source: 'explicit' | 'passive' = 'passive'): void {
+    if (isAgentIslandDeviceSession(this.state, sessionId)) {
+      // 其它设备的任务:只收本机岛面的未读,本机 relay 账本与它无关。
+      if (acknowledgeAgentIslandSessionRead(this.state, sessionId, Date.now(), { source }) === 'cleared') {
+        this.publish();
+      }
+      return;
+    }
     const ack = acknowledgeAgentIslandSessionRead(this.state, sessionId, Date.now(), { source });
     // 未读 error 对 passive 免疫:state / 独立账本都未动,也**不能**给远端发收尾包。
     if (ack === 'error-immune') return;
@@ -1213,17 +1505,69 @@ export class AgentIslandService {
     sessionId: string,
     patch: { title?: string | null; workingDir?: string | null; workspaceKind?: string | null },
   ): void {
-    const current = this.metadataCache.get(sessionId) ?? {
+    const current: AgentIslandCachedMetadata = this.metadataCache.get(sessionId) ?? {
       title: null,
       workingDir: null,
       workspaceKind: null,
     };
     const next = {
+      ...current,
       title: patch.title !== undefined ? patch.title : current.title,
       workingDir: patch.workingDir !== undefined ? patch.workingDir : current.workingDir,
       workspaceKind: patch.workspaceKind !== undefined ? patch.workspaceKind : current.workspaceKind,
     };
     this.commitMetadata(sessionId, next);
+  }
+
+  /** A companion's name or avatar changed: redraw the Sessions that speak as it. */
+  handleCompanionProfileChanged(botId: string): void {
+    this.companionChangeEpoch += 1;
+    this.refreshCompanionSessions((identity) => identity.botId === botId);
+  }
+
+  /** A group was renamed or removed: redraw the group lanes that show its name. */
+  handleBotGroupChanged(groupId: string): void {
+    this.companionChangeEpoch += 1;
+    this.refreshCompanionSessions((identity) => identity.groupId === groupId);
+  }
+
+  /**
+   * The only way a companion identity is read (first load and refresh alike). Invariant: what a
+   * Session shows is the result of a read that started after the latest identity change.
+   *  - A read is superseded (undefined) when a newer read for the same Session started, so an
+   *    older, slower one never overwrites it.
+   *  - A change that lands while a read is in flight (even before the Session's companion is
+   *    known, so no refresh could target it) bumps the epoch; that read is repeated until a read
+   *    finishes with no change during it. Each repeat needs a new user edit, so this is not a
+   *    loop that can spin on its own, and giving up would leave an older identity on the card.
+   */
+  private async readCompanionIdentityFresh(sessionId: string): Promise<AgentIslandCompanionIdentity | null | undefined> {
+    const seq = (this.companionReadSeq.get(sessionId) ?? 0) + 1;
+    this.companionReadSeq.set(sessionId, seq);
+    for (;;) {
+      const epoch = this.companionChangeEpoch;
+      const identity = await readAgentIslandCompanion(sessionId);
+      if (this.companionReadSeq.get(sessionId) !== seq) return undefined;
+      if (epoch === this.companionChangeEpoch) return identity;
+    }
+  }
+
+  private refreshCompanionSessions(matches: (identity: AgentIslandCompanionIdentity) => boolean): void {
+    for (const [sessionId, cached] of this.metadataCache) {
+      if (!cached.companion || !matches(cached.companion)) continue;
+      void this.readCompanionIdentityFresh(sessionId)
+        .then((companion) => {
+          if (companion === undefined) return;
+          const latest = this.metadataCache.get(sessionId);
+          if (latest) this.commitMetadata(sessionId, { ...latest, companion });
+        })
+        .catch((err) => {
+          log.warn('companion identity refresh failed', {
+            sessionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+    }
   }
 
   /**
@@ -1248,16 +1592,20 @@ export class AgentIslandService {
    *     兜底文案,直到下一次 metadata 事件才纠正(PR #1031 review P1)。存原始值 +
    *     publish 时投影,切语言后的那次 republish 自然就是新语言,不需要任何重投影逻辑。
    */
-  private commitMetadata(
-    sessionId: string,
-    meta: { title: string | null; workingDir: string | null; workspaceKind: string | null },
-  ): void {
+  private commitMetadata(sessionId: string, meta: AgentIslandCachedMetadata): void {
     this.metadataCache.set(sessionId, meta);
-    if (!patchAgentIslandMetadata(this.state, { sessionId, ...meta })) return;
+    const { companion, ...rest } = meta;
+    if (!patchAgentIslandMetadata(this.state, {
+      sessionId,
+      ...rest,
+      ...(companion !== undefined ? { companion: companion?.companion ?? null } : {}),
+    })) return;
     this.publish();
   }
 
-  private hydrateMeta(meta: AgentIslandSessionMeta): AgentIslandSessionMeta & { title?: string | null } {
+  private hydrateMeta(
+    meta: AgentIslandSessionMeta,
+  ): AgentIslandSessionMeta & { title?: string | null; companion?: AgentIslandCompanionSnapshot | null } {
     const cached = this.metadataCache.get(meta.sessionId);
     return {
       ...meta,
@@ -1265,6 +1613,7 @@ export class AgentIslandService {
       title: cached?.title ?? null,
       workingDir: cached?.workingDir ?? meta.workingDir,
       workspaceKind: cached?.workspaceKind ?? meta.workspaceKind,
+      ...(cached?.companion !== undefined ? { companion: cached.companion?.companion ?? null } : {}),
     };
   }
 
@@ -1322,14 +1671,30 @@ export class AgentIslandService {
 
   private ensureMetadata(sessionId: string): void {
     const cached = this.metadataCache.get(sessionId);
-    if (this.metadataLoading.has(sessionId) || (cached && !isPlaceholderSessionTitle(cached.title))) return;
+    if (
+      this.metadataLoading.has(sessionId)
+      || (cached && cached.companion !== undefined && !isPlaceholderSessionTitle(cached.title))
+    ) return;
     this.metadataLoading.add(sessionId);
     void getSessionRowSnapshot(sessionId)
-      .then((row) => {
+      .then(async (row) => {
+        // Only Bot Sessions can speak as a companion; others skip the extra lookup.
+        const companion = row?.source === 'bot'
+          ? await this.readCompanionIdentityFresh(sessionId).catch((err) => {
+            log.warn('companion identity load failed', {
+              sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            return null;
+          })
+          : null;
+        // Superseded: a newer read of this Session owns the result.
+        if (companion === undefined) return;
         this.commitMetadata(sessionId, {
           title: row?.title ?? null,
           workingDir: row?.workingDir ?? null,
           workspaceKind: row?.workspaceKind ?? null,
+          companion,
         });
       })
       .catch((err) => {
@@ -1349,9 +1714,12 @@ export class AgentIslandService {
     now: number,
   ): void {
     if (!next.visible || next.smartSuppressed) return;
+    const baseline = this.baselineSoundSessionIds;
     const event = getAgentIslandSoundEventForTransition(
       previous,
-      next,
+      baseline.size > 0
+        ? { ...next, sessions: next.sessions.filter((session) => !baseline.has(session.sessionId)) }
+        : next,
       this.mutedCompletionSoundSessionIds,
       new Set(this.silencedSessionRunIds.keys()),
     );
@@ -1383,7 +1751,8 @@ export class AgentIslandService {
 
   private isCompletionEventSilenced(sessionId: string, event: AgentEvent): boolean {
     if (!isCompletionDoneEvent(event)) return false;
-    return this.silencedSessionRunIds.has(sessionId);
+    return event.agentMeta?.botTaskCoordination === true
+      || event.turnOrigin?.surface === 'im' || this.silencedSessionRunIds.has(sessionId);
   }
 
   private hadAttentionBeforeSilencedRun(sessionId: string): boolean {
@@ -1466,6 +1835,8 @@ export class AgentIslandService {
    */
   private buildSessionActivityPayload(): AgentIslandSessionActivity[] {
     return buildAllSessionActivitySnapshots(this.state).map((s) => ({
+      ...(s.completionToken ? { completionToken: s.completionToken } : {}),
+      ...(s.completionNotification ? { completionNotification: s.completionNotification } : {}),
       ...projectSessionActivity({
         sessionId: s.sessionId,
         recordStatus: 'active',
@@ -1480,7 +1851,8 @@ export class AgentIslandService {
       }),
       phase: s.phase,
       interactionKind: s.interactionKind,
-      compactDetail: s.compactDetail,
+      // 完成后这份摘要只给其它设备的完成卡片用(本机岛面直接读展示快照)。
+      compactDetail: s.phase === 'completed' ? completedReplySummary(s) : s.compactDetail,
       workingPhase: s.workingPhase,
     }));
   }
@@ -1498,6 +1870,18 @@ export class AgentIslandService {
   }
 
   /**
+   * Whether a foreground tool call is between tool_use and tool_result. A long
+   * tool (e.g. a build) emits no activity until it returns; Bot follow-up uses
+   * this public boolean so a healthy long call is not judged stuck. Never
+   * exposes the tool name or arguments.
+   */
+  isToolCallInFlight(sessionId: string): boolean {
+    const session = this.state.sessions.get(sessionId);
+    return !!session && session.running && session.phase === 'running'
+      && (session.currentToolUseId !== null || session.workingTools.size > 0);
+  }
+
+  /**
    * Subscribe to canonical activity transitions. Future Bot consumers attach here;
    * this service remains unaware of Bot/runtime implementations.
    */
@@ -1506,6 +1890,30 @@ export class AgentIslandService {
   ): () => void {
     this.sessionActivityListeners.add(listener);
     return () => this.sessionActivityListeners.delete(listener);
+  }
+
+  /** The island's final attention projection, including restored companion chats. */
+  getAttentionCount(): number {
+    return this.attentionCount;
+  }
+
+  subscribeAttentionCount(listener: (count: number) => void): () => void {
+    this.attentionCountListeners.add(listener);
+    return () => this.attentionCountListeners.delete(listener);
+  }
+
+  private publishAttentionCount(count: number): void {
+    if (count === this.attentionCount) return;
+    this.attentionCount = count;
+    for (const listener of this.attentionCountListeners) {
+      try {
+        listener(count);
+      } catch (error) {
+        log.warn('attention count listener failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   private emitSessionActivityTransitions(
@@ -1569,18 +1977,28 @@ export class AgentIslandService {
     const now = Date.now();
     if (!this.enabledSynced) {
       this.mutedCompletionSoundSessionIds.clear();
+      // 开关尚未同步时没有上一帧可比:首次出现的设备任务保留静音,等第一次真正 publish。
       this.clearStreamingPreviewPublishTimer();
       this.clearPublishTimer();
       return;
     }
+    // Sounds follow real runtime transitions. Chat read/visibility filters only own
+    // the rendered unread projection and must neither mute a fresh turn nor replay history.
+    const soundDisplayState = withAgentIslandConfig(
+      buildAgentIslandDisplayState(this.state, now), this.soundSettings, this.mascotSkin,
+    );
+    const chatDisplayState = this.companionChats.size > 0
+      ? withAgentIslandConfig(
+        buildAgentIslandDisplayState(this.state, now, this.companionChatProjections()),
+        this.soundSettings, this.mascotSkin,
+      )
+      : soundDisplayState;
     if (!this.enabled) {
       this.mutedCompletionSoundSessionIds.clear();
+      this.baselineSoundSessionIds.clear();
       this.clearStreamingPreviewPublishTimer();
-      this.lastSoundDisplayState = withAgentIslandConfig(
-        buildAgentIslandDisplayState(this.state, now),
-        this.soundSettings,
-        this.mascotSkin,
-      );
+      this.lastSoundDisplayState = soundDisplayState;
+      this.publishAttentionCount(chatDisplayState.pillSnapshot.attentionCount);
       // 侧栏卡片的逐步活动不依赖灵动岛开关:即便岛 UI 关闭,状态机仍累积,照常广播给 renderer。
       this.emitSessionActivityToRenderer();
       // Windows / headless / 用户关掉岛面时,仍要按 TTL 把完整会话迁到轻量未读账本。
@@ -1598,18 +2016,14 @@ export class AgentIslandService {
     }
 
     this.hiddenPublished = false;
-    const displayState = this.localizeDisplayState(
-      withAgentIslandConfig(
-        buildAgentIslandDisplayState(this.state, now),
-        this.soundSettings,
-        this.mascotSkin,
-      ),
-    );
+    const displayState = this.localizeDisplayState(chatDisplayState);
+    this.publishAttentionCount(displayState.pillSnapshot.attentionCount);
     this.emitSessionActivityToRenderer();
     this.scheduleNextPublish(now);
-    this.playSoundForDisplayTransition(this.lastSoundDisplayState, displayState, now);
+    this.playSoundForDisplayTransition(this.lastSoundDisplayState, soundDisplayState, now);
     this.mutedCompletionSoundSessionIds.clear();
-    this.lastSoundDisplayState = displayState;
+    this.baselineSoundSessionIds.clear();
+    this.lastSoundDisplayState = soundDisplayState;
 
     if (this.nativeHost.failed) {
       this.logNativeRendererUnavailable(displayState);
@@ -2326,10 +2740,17 @@ export class AgentIslandService {
     const nextSessionId = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
     if (!nextSessionId) return;
     const now = Date.now();
+    const islandEntryId = this.recordIslandEntryAlert(nextSessionId, now);
+    const deviceId = this.state.sessions.get(nextSessionId)?.sourceDeviceId
+      ?? this.companionChats.get(nextSessionId)?.input.deviceId;
+    const target = { ...(islandEntryId ? { islandEntryId } : {}), ...(deviceId ? { deviceId } : {}) };
     this.playConfiguredSound('select', now);
     if (this.state.appFocused && this.state.visibleSessionIds.has(nextSessionId)) {
       const focusChanged = requestAgentIslandSessionFocus(this.state, nextSessionId, now);
       if (focusChanged) this.publish();
+      // 已在看的目标未必能处置这张卡(如只读历史):这次点击仍要交给 renderer,
+      // 入口导航器发现目标地址已提交时直接按点击编号申请处置,不会再导航一次。
+      if (islandEntryId) openMainWindowSession(nextSessionId, target);
       return;
     }
 
@@ -2338,7 +2759,111 @@ export class AgentIslandService {
     // Reuse the primary-window handoff: it retains navigation while the
     // renderer reloads and restores macOS app focus. A one-shot notification
     // sent during loading is lost before MainLayout can acknowledge the task.
-    openMainWindowSession(nextSessionId);
+    openMainWindowSession(nextSessionId, Object.keys(target).length ? target : undefined);
+  }
+
+  private readonly completionActionsPending = new Set<string>();
+
+  async handleCompletionAction(sessionId: string, action: 'mark-read' | 'archive', token: string): Promise<boolean> {
+    const chat = this.companionChats.get(sessionId);
+    if (chat) {
+      const live = this.state.sessions.get(sessionId);
+      const window = this.deps.getMainWindow();
+      if (token !== chat.token || action !== 'mark-read' || !chat.input.visible || !chat.input.unread || !window || window.isDestroyed()
+        || (live && live.phase !== 'completed')) return false;
+      const owner = getActiveAppSession();
+      window.webContents.send(AGENT_ISLAND_READ_COMPANION_CHAT_CHANNEL,
+        { ...chat.input, readThroughAt: chat.input.lastMessageAt },
+        { dataOwnerId: owner.dataOwnerId, ownerGeneration: owner.generation });
+      chat.input = { ...chat.input, unread: false };
+      if (live && !chat.input.deviceId) {
+        clearAppBadgeSessionAttention(sessionId, 'explicit');
+        this.handleSessionAttentionCleared(sessionId, 'explicit');
+      }
+      // This computer's chat read position owns the action, even for an offline remote home.
+      this.publish();
+      return true;
+    }
+    const session = this.state.sessions.get(sessionId);
+    if (!session || !token || agentIslandCompletionToken(session) !== token || this.completionActionsPending.has(sessionId)) return false;
+    // Companion main tasks have their own lifecycle; only their notification may be read here.
+    if (action === 'archive' && session.companion) return false;
+    this.completionActionsPending.add(sessionId);
+    try {
+      if (action === 'archive' && !await confirmIslandArchive(sessionId, session.sourceDeviceId)) return false;
+      if (this.state.sessions.get(sessionId) !== session || agentIslandCompletionToken(session) !== token) return false;
+      if (session.sourceDeviceId) {
+        const result = await remoteInvoke(session.sourceDeviceId, 'agent-island:completion-action', [sessionId, action, token]);
+        if (!result.ok) throw new Error(result.error.message);
+        if (result.result !== true) return false;
+        const current = this.state.sessions.get(sessionId);
+        if (current && (current !== session || agentIslandCompletionToken(current) !== token)) return false;
+        clearAppBadgeSessionAttention(sessionId, 'explicit');
+        this.handleSessionAttentionCleared(sessionId, 'explicit');
+        return true;
+      }
+      return await this.applyOwnedCompletionAction(sessionId, action, token);
+    } catch (error) {
+      log.warn('island completion action failed', { action, error });
+      void dialog.showMessageBox({ type: 'error', message: t('agentIsland.native.actionFailed') });
+      return false;
+    } finally {
+      this.completionActionsPending.delete(sessionId);
+    }
+  }
+
+  /** A tunneled action is never forwarded again or downgraded to an unguarded write. */
+  private async applyOwnedCompletionAction(sessionId: string, action: 'mark-read' | 'archive', token: string): Promise<boolean> {
+    return withSessionRouteLock(sessionId, async () => {
+      const session = this.state.sessions.get(sessionId);
+      const isCurrent = () => !!session && !session.sourceDeviceId
+        && this.state.sessions.get(sessionId) === session && agentIslandCompletionToken(session) === token
+        && (action !== 'archive' || !bindingStore.findByTarget(sessionId));
+      if (!isCurrent() || (action === 'archive' && session?.companion)) return false;
+      if (action === 'archive') {
+        await patchSessionMetaInDb(sessionId, { status: 'archived' }, {
+          routeLockHeld: true,
+          // The DB writer invokes this again after its worktree/resource waits.
+          beforeWrite: () => {
+            if (!isCurrent()) throwIpcError('PRECONDITION_FAILED', 'Completed card changed');
+          },
+        });
+      }
+      // Archiving may remove this projection. The route lock still excludes a new send.
+      if (this.state.sessions.has(sessionId) && !isCurrent()) return false;
+      clearAppBadgeSessionAttention(sessionId, 'explicit');
+      this.handleSessionAttentionCleared(sessionId, 'explicit');
+      return true;
+    });
+  }
+
+  /** 记下这次点击并取代之前的任何一次;被点的卡不是未读完成 / 报错时不留可处置记录。 */
+  private recordIslandEntryAlert(sessionId: string, now: number): string | null {
+    const stamp = readAgentIslandUnreadTerminalStamp(this.state, sessionId);
+    if (!stamp) {
+      this.islandEntryAlert = null;
+      return null;
+    }
+    const entryId = String(++this.islandEntrySequence);
+    this.islandEntryAlert = { sessionId, entryId, stamp, until: now + ISLAND_ENTRY_ALERT_TTL_MS };
+    return entryId;
+  }
+
+  /**
+   * 处置用户最近一次点的那张卡,且只处置那一张:不是这次点击(被新点击取代,含同一任务的
+   * 再次点击)、已过期、或点击后又有新活动(新一轮 / 新报错 / 新完成)都不动,新的提醒照常
+   * 留着。一次点击只处置一次。走 appBadge 的 explicit 清除:岛卡、Dock 角标与远程回执即刻
+   * 收掉,重打点也唤不回这张卡;按 cindy-bots-runtime.md 6.2 的合同,任务记录、失败状态与
+   * 错误行都不动 —— 错误尾行派生的侧栏红点在报错被横幅 / 重试真正处理前仍会如实出现。
+   */
+  consumeIslandEntryAlert(sessionId: string, entryId: string, now = Date.now()): boolean {
+    const entry = this.islandEntryAlert;
+    if (!entry || entry.sessionId !== sessionId || entry.entryId !== entryId) return false;
+    this.islandEntryAlert = null;
+    if (entry.until <= now) return false;
+    if (readAgentIslandUnreadTerminalStamp(this.state, sessionId) !== entry.stamp) return false;
+    clearAppBadgeSessionAttention(sessionId, 'explicit');
+    return true;
   }
 
   private dispatchMainWindowCommand(
@@ -2416,6 +2941,8 @@ function collapseManualExpandedStateForInactiveDisplay(displayState: AgentIsland
 function buildAgentIslandStrings(): AgentIslandStrings {
   return {
     appName: BRAND_NAME,
+    markRead: t('agentIsland.native.markRead'),
+    archive: t('agentIsland.native.archive'),
     newConversationTitle: t('agentIsland.native.newConversationTitle'),
     newConversationHint: t('agentIsland.native.newConversationHint'),
     muteSound: t('agentIsland.native.muteSound'),

@@ -10,7 +10,7 @@ describe('renderOrcaLeadSystemPrompt', () => {
   const channelDisclosureRule =
     'label every delegated task with its actual execution channel: Orca Worker or native subagent.';
   const toolSurfaceRule =
-    'Tools: get_workspace_info, create_worker, create_workers, send_to_worker, interrupt_worker, get_worker_queue_status, update_queued_message, cancel_queued_message, merge_queued_messages.';
+    'Tools: get_workspace_info, create_worker, create_workers, send_to_worker, interrupt_worker, get_worker_queue_status, update_queued_message, cancel_queued_message, merge_queued_messages, update_worker.';
   const explicitCreationBoundary =
     'Use create_worker only when the user explicitly asks to open one new worker, and use create_workers only when the user explicitly asks to open multiple new workers.';
   const missingWorkerBoundary =
@@ -159,6 +159,21 @@ describe('renderOrcaLeadSystemPrompt', () => {
     );
   });
 
+  it('describes the worker report prefix with role and worker_id', () => {
+    // 与 formatAgentMessage 的 worker 前缀同步：改了任一侧都要改另一侧。
+    const prompt = renderOrcaLeadSystemPrompt(null);
+
+    expect(prompt).toContain(
+      'Messages from workers arrive prefixed with [From Orca Worker <role> (worker_id: <id>)] (role omitted when unknown). Treat them as worker reports or questions, not user messages.',
+    );
+    expect(prompt).toContain(
+      '[New message arrives: "[From Orca Worker Backend (worker_id: w-1)] Feature X is done. Changes: ..."]',
+    );
+    expect(prompt).toContain('6. When a worker report arrives (prefixed with [From Orca Worker ...]), review it');
+    expect(prompt).toContain('If you see "[Auto-bridged: ...]" in a worker message');
+    expect(prompt).not.toContain('prefixed with [From Orca Worker].');
+  });
+
   it('keeps Worker routing and disclosure rules when an initial worker exists', () => {
     const prompt = renderOrcaLeadSystemPrompt({ workerId: 'worker-1', sessionId: 'session-1' });
 
@@ -206,6 +221,21 @@ describe('renderOrcaWorkerSystemPrompt', () => {
 
     expect(prompt).toContain('worker_id=worker-1');
     expect(prompt).toContain(subagentHint);
+  });
+
+  it('teaches token hygiene to both lead and workers', () => {
+    // Orca worker 会话反复冷启、门禁类命令输出巨大：不复读已知 schema、
+    // 不重复发起仍然新鲜的调用、验证类命令只回摘要行，是协同模式 token 浪费的主要止血点。
+    // 措辞必须保留“结果已过期/改码后重验/失败重试”的豁免，否则会挡住合法的状态刷新。
+    const leadPrompt = renderOrcaLeadSystemPrompt(null);
+    expect(leadPrompt).toContain('10. Token hygiene: do not re-issue a tool call just to re-fetch a result you already have and that is still current');
+    expect(leadPrompt).toContain('Re-running a state read after something changed, re-running verification after new edits, and retrying a failed call are not repetition.');
+    expect(leadPrompt).toContain('require gate/verification commands (build/test/smoke/LSP/md5/git) to be answered with a one-line pass/fail summary naming the command, the outcome and the log file path');
+
+    const workerPrompt = renderOrcaWorkerSystemPrompt(workerMeta);
+    expect(workerPrompt).toContain('12. Token hygiene: do not re-issue a tool call just to re-fetch a result you already have and that is still current');
+    expect(workerPrompt).toContain('Re-running a state read after something changed, re-running verification (build/test/smoke/LSP) after new edits, and retrying a failed call are not repetition.');
+    expect(workerPrompt).toContain('report only a one-line pass/fail summary to the lead — command, outcome and the log file path');
   });
 
   it('keeps the Worker rule concise without the unreachable fallback', () => {

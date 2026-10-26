@@ -1,4 +1,5 @@
 import { generationCapabilities, previousModelGenerations } from './modelGeneration.js';
+import { MODEL_NATIVE_APIS } from './modelAccessBean.js';
 import type { CatalogModel } from "./types.js";
 import type {
   ModelRegistry,
@@ -6,7 +7,7 @@ import type {
   ModelRegistryRoute,
   ModelEffort,
   ModelReferencePriceGroup,
-  ModelAccessWireProtocol,
+  ModelNativeApi,
 } from "./modelAccessBean.js";
 
 // Projection-only provenance; a symbol keeps it out of the public metadata schema
@@ -17,7 +18,7 @@ type ResolvedModelMetadata = ModelMetadata & { [inheritedContextWindow]?: true }
 /** Data only. Membership, credentials, routing and billed prices never inherit. */
 export interface ModelMetadata {
   /** Manufacturer language, independent of the connection's execution protocol. */
-  nativeApi?: ModelAccessWireProtocol | null;
+  nativeApi?: ModelNativeApi | null;
   mode?: string;
   modalities?: { input: string[]; output: string[] };
   officialDocs?: string;
@@ -75,7 +76,7 @@ export function validModelMetadata(value: unknown): value is ModelMetadata {
     if (!(MODEL_METADATA_FIELDS as readonly string[]).includes(key))
       return false;
     if (key === 'nativeApi') return v === null ||
-      ['anthropic-messages', 'openai-responses', 'openai-completions', 'google-generative-ai'].includes(v as string);
+      (MODEL_NATIVE_APIS as readonly unknown[]).includes(v);
     if (key === "mode")
       return typeof v === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(v);
     if (key === "modalities") {
@@ -191,6 +192,7 @@ export function resolveModelMetadata(
   providerDefaults?: ModelMetadata,
   declaredDefaultEffort?: ModelMetadata["defaultEffort"],
   generationDefaults?: ModelMetadata,
+  interfaceDefaults?: ModelMetadata,
 ): ResolvedModelMetadata {
   const ids = [modelId];
   if (providerId === "openai" && modelId.startsWith("chatgpt/"))
@@ -245,6 +247,8 @@ export function resolveModelMetadata(
     familyDefaults,
     inheritedLiveWindow ? { contextWindow: live?.contextWindow } : undefined,
     defaults,
+    interfaceDefaults,
+    agent && matched ? pickModelMetadata(matched.entry.perAgent?.[agent as keyof NonNullable<typeof matched.entry.perAgent>]) : undefined,
     currentLive,
     // A Harness's suggested default is not a model capability. Keep the shared
     // model intent (including explicit route/Harness exceptions), then adapt it
@@ -260,7 +264,7 @@ export function resolveModelMetadata(
   );
   // Resolve the pair only after all layers: a maximum-only report is a usable
   // fallback, not a verified working-window report. Never replace a known window.
-  const hasOwnWorkingWindow = [defaults, currentLive, matched?.route.forceOverrides, user]
+  const hasOwnWorkingWindow = [defaults, interfaceDefaults, currentLive, matched?.route.forceOverrides, user]
     .some(source => source?.contextWindow !== undefined);
   if (!hasOwnWorkingWindow && currentLive?.contextWindowMax !== undefined) {
     // This model's reported maximum takes precedence over a predecessor's
@@ -270,6 +274,15 @@ export function resolveModelMetadata(
   }
   if (result.contextWindow === undefined && result.contextWindowMax !== undefined) {
     result.contextWindow = result.contextWindowMax;
+    result[inheritedContextWindow] = true;
+  }
+  // A maximum-only report can be below a public/preset working default.
+  // Tighten that default to this connection's capacity instead of discarding
+  // the live maximum. Explicit user/force windows still own their semantics.
+  if (currentLive?.contextWindowMax !== undefined && currentLive.contextWindow === undefined &&
+      user?.contextWindow === undefined && matched?.route.forceOverrides?.contextWindow === undefined &&
+      result.contextWindow !== undefined && result.contextWindow > currentLive.contextWindowMax) {
+    result.contextWindow = currentLive.contextWindowMax;
     result[inheritedContextWindow] = true;
   }
   if (result.contextWindow !== undefined && result.contextWindowMax !== undefined &&
@@ -461,6 +474,8 @@ export function applyModelMetadata(
 export interface DiscoveredModel {
   id: string;
   name: string;
+  /** Account entitlement, never inherited as public model metadata. */
+  supportsUltrafastMode?: boolean;
   contextWindow?: number;
   discoveredCost?: import("./types.js").ModelCost;
   discoveredMetadata?: ModelMetadata;
@@ -478,6 +493,11 @@ export function mergeDiscoveredRuntimeModels(
     if (!model.id || !model.name || seen.has(model.id)) continue;
     seen.add(model.id);
     const index = models.findIndex((m) => m.id === model.id);
+    // Unlike descriptive metadata, a refreshed account entitlement must not stick
+    // when the latest response no longer declares it.
+    const accountCapabilities = model.supportsUltrafastMode !== undefined ||
+      (index >= 0 && models[index].supportsUltrafastMode !== undefined)
+      ? { supportsUltrafastMode: model.supportsUltrafastMode === true } : {};
     const discoveredMetadata = mergeModelMetadata(
       index >= 0 ? models[index].discoveredMetadata : undefined,
       pickModelMetadata(model.discoveredMetadata ?? model),
@@ -493,6 +513,7 @@ export function mergeDiscoveredRuntimeModels(
       added.push({
         id: model.id,
         name: model.name,
+        ...accountCapabilities,
         discoveredMetadata,
         ...(model.discoveredCost ? { discoveredCost: model.discoveredCost } : {}),
         ...(hideNew ? { defaultEnabled: false } : {}),
@@ -500,6 +521,7 @@ export function mergeDiscoveredRuntimeModels(
     else
       models[index] = {
         ...models[index],
+        ...accountCapabilities,
         ...(!models[index].discoveredMetadata ? { nameExplicit: true } : {}),
         discoveredMetadata,
         ...(model.discoveredCost ? { discoveredCost: model.discoveredCost } : {}),

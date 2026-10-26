@@ -55,7 +55,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   assertSharedTaskMedia.mockReset();
   __testing.uploadCache.clear();
-  statMock.mockResolvedValue({ size: 42, mtimeMs: 1000 });
+  statMock.mockResolvedValue({ isFile: () => true, size: 42, mtimeMs: 1000 });
   realpathMock.mockImplementation(async (p: string) => p);
   // 默认上传回显 contentType,便于断言 result.mimeType 来源
   uploadLocalFile.mockImplementation(async (_p: string, opts?: { contentType?: string }) => ({
@@ -66,6 +66,7 @@ beforeEach(() => {
   materializeSshRemoteMedia.mockResolvedValue({
     ok: true,
     cachePath: '/cache/ssh/plot.png',
+    sourceVersion: 'ssh-source-a',
     size: 42,
     mime: 'image/png',
     relPath: 'artifacts/plot.png',
@@ -78,9 +79,27 @@ beforeEach(() => {
   });
 });
 
+it('reports a missing Host source without uploading or exposing its filesystem path', async () => {
+  imageResolve.mockReturnValue({ absPath: '/private/missing.png', mimeType: 'image/png' });
+  statMock.mockRejectedValueOnce(Object.assign(new Error('ENOENT /private/missing.png'), { code: 'ENOENT' }));
+  await expect(fetchLocalMediaToOss({ url: 'xdt-image://s/missing.png' })).rejects.toThrow('[MEDIA_SOURCE_MISSING] Media source is missing on this Host');
+  expect(uploadLocalFile).not.toHaveBeenCalled();
+});
+
 afterEach(() => {
   __testing.setThumbnailRenderer(null);
   vi.useRealTimers();
+});
+
+it('does not cache an OSS upload under a version when the source changed during upload', async () => {
+  const url = 'xdt-file://local?path=' + encodeURIComponent(path.resolve('work/report.pdf'));
+  uploadLocalFile.mockImplementation(async () => {
+    statMock.mockResolvedValue({ isFile: () => true, size: 42, mtimeMs: 2000 });
+    return { key: 'changed-source', size: 42, contentType: 'application/pdf' };
+  });
+  const result = await fetchLocalMediaToOss({ url });
+  expect(result.ossKey).toBe('changed-source');
+  expect(result.version).toBeUndefined();
 });
 
 describe('fetchLocalMediaToOss — scheme 路由', () => {
@@ -100,6 +119,18 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
     await expect(shared(() => fetchLocalMediaToOss(arg))).rejects.toThrow('PERMISSION_DENIED');
     expect(imageResolve).not.toHaveBeenCalled();
     expect(openMock).not.toHaveBeenCalled();
+    expect(uploadLocalFile).not.toHaveBeenCalled();
+  });
+
+  // Regression: the outside-file exception must survive materialization, while
+  // still pinning a single canonical file rather than opening its whole directory.
+  it('materializes exactly the referenced outside file and rejects a changed target', async () => {
+    const file = path.resolve('deliveries/report.pdf');
+    const arg = { url: 'xdt-file://local?path=' + encodeURIComponent(file) };
+    assertSharedTaskMedia.mockResolvedValue({ file });
+    await expect(shared(() => resolveAuthorizedMedia(arg))).resolves.toMatchObject({ absPath: file });
+    realpathMock.mockResolvedValue(path.resolve('deliveries/private.pdf'));
+    await expect(shared(() => fetchLocalMediaToOss(arg))).rejects.toThrow('PERMISSION_DENIED');
     expect(uploadLocalFile).not.toHaveBeenCalled();
   });
 
@@ -151,12 +182,61 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
       expect(logDebug.mock.calls.flat().join('\n')).not.toMatch(/xdt-|path=|\/cache\//);
     },
   );
+  it('returns only authorized metadata for small files when requested', async () => {
+    const read = vi.fn(), close = vi.fn();
+    openMock.mockResolvedValue({ stat: async () => ({ isFile: () => true, size: 5, mtimeMs: 1 }), read, close });
+    imageResolve.mockReturnValue({ absPath: '/cache/a.png', mimeType: 'image/png' });
+    const result = await fetchLocalMediaToOss({ url: 'xdt-image://sess/a.png', prepareOnly: true, metadataOnly: true });
+    expect(result).toMatchObject({ size: 5, transferRequired: true, version: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(result.inlineBase64).toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
+    expect(uploadLocalFile).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+  it('revalidates source identity without reading/uploading bytes, including restored mtime', async () => {
+    let ctimeMs = 1;
+    const read = vi.fn();
+    openMock.mockResolvedValue({
+      stat: async () => ({ isFile: () => true, size: 100_000, mtimeMs: 1, ctimeMs, ino: 2, dev: 3 }),
+      read, close: vi.fn(),
+    });
+    imageResolve.mockReturnValue({ absPath: '/cache/a.png', mimeType: 'image/png' });
+    const args = { url: 'xdt-image://sess/a.png', prepareOnly: true };
+    const first = await fetchLocalMediaToOss(args);
+    expect(first.version).toMatch(/^[a-f0-9]{64}$/);
+    expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
+    ctimeMs++;
+    expect((await fetchLocalMediaToOss(args)).version).not.toBe(first.version);
+    expect(read).not.toHaveBeenCalled(); expect(uploadLocalFile).not.toHaveBeenCalled();
+  });
   it('xdt-image:// → imageCacheStore.resolveSafe,mime 透传给上传', async () => {
     imageResolve.mockReturnValue({ absPath: '/cache/a.png', mimeType: 'image/png' });
     const r = await fetchLocalMediaToOss({ url: 'xdt-image://sess/a.png' });
     expect(imageResolve).toHaveBeenCalledWith('xdt-image://sess/a.png');
     expect(uploadLocalFile).toHaveBeenCalledWith('/cache/a.png', { contentType: 'image/png' });
     expect(r).toEqual({ ossKey: 'cindy/device-link/u/uuid.ext', mimeType: 'image/png', size: 42 });
+  });
+
+  it.each([5, 100_000])('keeps SSH version stable across LRU touches and cache relocation (%s bytes)', async (size) => {
+    let clock = 1;
+    let sourceVersion = 'remote-version-a';
+    let cachePath = path.join(os.tmpdir(), 'ssh-version-a.png');
+    materializeSshRemoteMedia.mockImplementation(async () => ({
+      ok: true, cachePath, sourceVersion, size, mime: 'image/png', relPath: 'artifacts/plot.png',
+    }));
+    openMock.mockResolvedValue({
+      stat: async () => ({ isFile: () => true, size, mtimeMs: clock++, ctimeMs: clock++, ino: clock++, dev: 1 }),
+      read: async (bytes: Buffer) => { bytes.fill(7); return { bytesRead: bytes.length }; },
+      close: vi.fn(),
+    });
+    const args = { url: 'xdt-file://open?path=%2Fhome%2Fu%2Fproj%2Fartifacts%2Fplot.png&sessionId=session-ssh&remoteHostId=host-1&workdir=%2Fhome%2Fu%2Fproj', prepareOnly: true };
+    const first = await fetchLocalMediaToOss(args);
+    expect(first.version).toMatch(/^[a-f0-9]{64}$/);
+    expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
+    cachePath = path.join(os.tmpdir(), 'ssh-version-b.png');
+    expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
+    sourceVersion = 'remote-version-b';
+    expect((await fetchLocalMediaToOss(args)).version).not.toBe(first.version);
   });
 
   it('xdt-video:// → videoCacheStore.resolveSafe', async () => {
@@ -203,6 +283,7 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
       ossKey: 'cindy/device-link/u/uuid.ext',
       mimeType: 'image/png',
       size: 42,
+      version: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
   });
 
@@ -393,7 +474,7 @@ describe('fetchLocalMediaToOss — 图片上传去重', () => {
 
   it('源文件 mtime 变化 → 缓存失效重传', async () => {
     await fetchLocalMediaToOss({ url: IMAGE_URL });
-    statMock.mockResolvedValue({ size: 42, mtimeMs: 2000 });
+    statMock.mockResolvedValue({ isFile: () => true, size: 42, mtimeMs: 2000 });
     nextUploadKey('key-2');
     const changed = await fetchLocalMediaToOss({ url: IMAGE_URL });
     expect(changed.ossKey).toBe('key-2');
@@ -526,7 +607,7 @@ describe('thumbnail 护栏(输入体量 + 渲染超时)', () => {
 
   it('输入超过 48MB 上限 → 不调渲染器,直接原图路径', async () => {
     imageResolve.mockReturnValue({ absPath: '/cache/huge.png', mimeType: 'image/png' });
-    statMock.mockResolvedValue({ size: __testing.THUMB_INPUT_MAX_BYTES + 1, mtimeMs: 1 });
+    statMock.mockResolvedValue({ isFile: () => true, size: __testing.THUMB_INPUT_MAX_BYTES + 1, mtimeMs: 1 });
     const renderer = vi.fn(async () => Buffer.from([1]));
     __testing.setThumbnailRenderer(renderer);
     const out = await fetchLocalMediaToOss({ url: 'xdt-image://sess/huge.png', thumbnail: true });
@@ -538,7 +619,7 @@ describe('thumbnail 护栏(输入体量 + 渲染超时)', () => {
   it('渲染超时 → 回退原图路径,invoke 不被挂住', async () => {
     vi.useFakeTimers();
     imageResolve.mockReturnValue({ absPath: '/cache/slow.png', mimeType: 'image/png' });
-    statMock.mockResolvedValue({ size: 1000, mtimeMs: 1 });
+    statMock.mockResolvedValue({ isFile: () => true, size: 1000, mtimeMs: 1 });
     __testing.setThumbnailRenderer(
       () =>
         new Promise(() => {
@@ -645,7 +726,7 @@ describe('fetchLocalMediaToOss — baseDir / maxBytes 服务端强制约束', ()
 
   it('maxBytes:stat 超限 → 上传之前就拒绝(流量一个字节都不花)', async () => {
     realpathMock.mockImplementation(async (p: string) => p);
-    statMock.mockResolvedValue({ size: 5_000_000, mtimeMs: 1 });
+    statMock.mockResolvedValue({ isFile: () => true, size: 5_000_000, mtimeMs: 1 });
     const msg = await codeOf(() =>
       fetchLocalMediaToOss({
         url: urlFor('/proj/out/big.css', '&maxBytes=2097152'),
@@ -657,7 +738,7 @@ describe('fetchLocalMediaToOss — baseDir / maxBytes 服务端强制约束', ()
 
   it('maxBytes:上限内正常放行', async () => {
     realpathMock.mockImplementation(async (p: string) => p);
-    statMock.mockResolvedValue({ size: 1024, mtimeMs: 1 });
+    statMock.mockResolvedValue({ isFile: () => true, size: 1024, mtimeMs: 1 });
     await fetchLocalMediaToOss({ url: urlFor('/proj/out/a.css', '&maxBytes=2097152') });
     expect(uploadLocalFile).toHaveBeenCalledTimes(1);
   });
@@ -677,7 +758,7 @@ describe('fetchLocalMediaToOss — baseDir / maxBytes 服务端强制约束', ()
 
   it('两个参数都不带 → 行为不变(老控制端照旧取件)', async () => {
     realpathMock.mockImplementation(async (p: string) => p);
-    statMock.mockResolvedValue({ size: 5_000_000, mtimeMs: 1 });
+    statMock.mockResolvedValue({ isFile: () => true, size: 5_000_000, mtimeMs: 1 });
     await fetchLocalMediaToOss({ url: urlFor('/proj/out/big.css') });
     expect(uploadLocalFile).toHaveBeenCalledTimes(1);
   });

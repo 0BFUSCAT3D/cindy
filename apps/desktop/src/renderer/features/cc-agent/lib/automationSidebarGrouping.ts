@@ -58,6 +58,8 @@ export interface AutomationSessionGroup {
   nextFireAt?: number;
   workingDir?: string;
   projectConfigId?: string;
+  /** 远程设备上的自动化分组（组键已按设备作用域隔离，组内会话同属这台设备）。 */
+  deviceLinkDeviceId?: string;
   title: string;
   sessions: Session[];
   attentionSessionIds: string[];
@@ -164,6 +166,7 @@ export function groupAutomationSidebarEntries(
         nextFireAt: groupInfo.nextFireAt,
         workingDir: groupInfo.workingDir,
         projectConfigId: groupInfo.projectConfigId,
+        ...(session.deviceLinkDeviceId ? { deviceLinkDeviceId: session.deviceLinkDeviceId } : {}),
         title: groupInfo.title,
         sessions: [session],
         attentionSessionIds: options.notifications.has(session.id) ? [session.id] : [],
@@ -333,7 +336,7 @@ export function getVisibleAutomationGroupSessions(
 }
 
 /**
- * 组内「最新一条」运行:按 sessionActivityMs(updatedAt / userSendAt 取较新)降序取首。
+ * 组内「最新一条」运行:按 sessionActivityMs 的换手时间及旧数据回退降序取首。
  * 侧栏组头(折叠态)用它作为整组的代表 —— 状态、running/loading、点击打开目标都跟这条一致
  * (「组头 = 最新一条运行的代理」)。group.sessions 恒非空(分组至少 2 条),返回可能仍为
  * undefined 仅为类型安全兜底。

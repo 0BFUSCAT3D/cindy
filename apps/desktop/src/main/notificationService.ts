@@ -3,8 +3,7 @@
  * ---------------------------------------------------------------------------
  * 主进程层。提供单一 IPC handler `notification:show-session-event`：
  *   - macOS / Linux / Windows：统一走 Electron 原生 `Notification`。
- *   - 点通知后把窗口拉到前台，并通过 `notification:focus-session` 把 sessionId
- *     广播给 renderer，由 renderer 路由跳转。
+ *   - 点通知后通过持久到 renderer 就绪的 deep-link 队列打开原任务及其所属电脑。
  *   - 飞书通道：payload.channels.feishu === true 时通过 feishuIm 给当前 owner
  *     私聊发通知。伙伴回复用纯文本，普通任务沿用 markdown；复用现有 IM API。
  *
@@ -29,13 +28,16 @@ import * as path from 'node:path';
 import { markSessionNeedsAttention } from './appBadgeService';
 import { getMobileNotifyGeneration, sendMobileSessionNotify } from './device-link';
 import { notificationPreview } from './notificationPreview';
+import { companionAvatarThumbnail } from './agent-island/companionIdentity';
+import { getDeepLinkMainWindow, openMainWindowChatMessage, openMainWindowSession } from './deepLink';
+import type { ChatMessageNotification } from './maker-ipc/chatMessageNotifications';
 import { readSessionNotificationPreview, type SessionNotificationPreview } from './localDb/sessionNotificationPreview';
 import { drainSessionActiveTurnWrites, getSessionNotificationTurnSignal } from './localDb/sessionActiveTurn';
 import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent } from './device-link/broadcast-tap';
-import { latestMessageText } from './localDb/latestMessageText';
 import { drainPersistQueue } from './messagePersistBroadcaster';
 import { createLogger } from './logger';
 import {
+  getNotificationImageLabel,
   getSessionExternalNotificationText,
   getSessionNotificationBody,
   getTeammateNotificationFallback,
@@ -51,6 +53,43 @@ let desktopNotificationsEnabled = true;
 /** Renderer owns persistence; main keeps the current value for scheduler-originated toasts. */
 export function getDesktopNotificationsEnabled(): boolean {
   return desktopNotificationsEnabled;
+}
+
+/** Chat uses the same system permission and global desktop preference as task notifications. */
+export async function showDesktopChatMessage(payload: ChatMessageNotification, current: () => boolean): Promise<void> {
+  const visible = () => {
+    // A group URL cannot tell which side-panel thread is being read. Thread
+    // notifications rely on the consumer's authoritative read-receipt check.
+    if (payload.threadRootId) return false;
+    const window = getDeepLinkMainWindow();
+    if (!window?.isFocused() || !window.isVisible()) return false;
+    try { return new URL(window.webContents.getURL()).hash.split('?')[0] === `#/bots/groups/${payload.groupId}`; }
+    catch { return false; }
+  };
+  if (!current() || !desktopNotificationsEnabled || visible() || !Notification.isSupported()) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const thumbnail = await Promise.race([
+    companionAvatarThumbnail(payload.avatar).catch(() => undefined),
+    new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 600); }),
+  ]).finally(() => clearTimeout(timer));
+  if (!current() || !desktopNotificationsEnabled || visible()) return;
+  const icon = thumbnail ? nativeImage.createFromBuffer(Buffer.from(thumbnail, 'base64')) : undefined;
+  const notification = new Notification({ title: payload.conversationKind === 'direct' ? payload.senderName : [payload.groupName,payload.threadName].filter(Boolean).join(' · '),
+    body: payload.conversationKind === 'direct' ? payload.preview : [payload.senderName,payload.preview].filter(Boolean).join(': '),
+    ...(icon && !icon.isEmpty() ? { icon } : devNotificationIcon ? { icon: devNotificationIcon } : {}),
+  });
+  liveNotifications.add(notification);
+  const release = () => { liveNotifications.delete(notification); };
+  notification.on('click', () => {
+    release();
+    if (current()) {
+      if (payload.conversationKind === 'direct') openMainWindowChatMessage(payload.groupId, payload.messageId, payload.threadRootId, 'direct');
+      else openMainWindowChatMessage(payload.groupId, payload.messageId, payload.threadRootId);
+    }
+  });
+  notification.on('close', release);
+  notification.on('failed', release);
+  notification.show();
 }
 
 // dev 下 electron.exe / Electron.app 自带的是默认图标，notification toast 没有
@@ -86,6 +125,8 @@ interface ShowSessionEventPayload {
    * 发送侧的防打扰(远程正在看该会话 / 短窗去重)在 device-link 模块内收口。
    */
   channels?: { desktop?: boolean; feishu?: boolean; mobile?: boolean };
+  /** 其它设备的任务传 false:未读归属那台设备,不记本机 Dock 角标。 */
+  markAttention?: boolean;
 }
 
 /**
@@ -97,7 +138,7 @@ interface ShowSessionEventPayload {
 // 时就回收掉，导致 click handler 丢失甚至触发异常事件。用 Set 持引用，等
 // close/click 后再 release。
 const liveNotifications = new Set<Notification>();
-type NotifiedReply = { eventId: string } | { fallbackSentAt: number };
+type NotifiedReply = ({ eventId: string } | { fallbackSentAt: number }) & { handledByTeammate?: true };
 const notifiedReplies = new Map<string, NotifiedReply>();
 const pendingFeishuReplies = new Set<string>();
 const pendingFeishuFallbacks = new Map<string, number>();
@@ -117,7 +158,7 @@ function wasReplyNotified(key: string, eventId: string | undefined): boolean {
   // A turn started afterwards is new, even if it finishes immediately.
   const startedAt = /^turn:(\d+):\d+$/.exec(eventId)?.[1];
   if (startedAt && Number(startedAt) < notified.fallbackSentAt) {
-    notifiedReplies.set(key, { eventId });
+    notifiedReplies.set(key, { eventId, ...(notified.handledByTeammate ? { handledByTeammate: true as const } : {}) });
     return true;
   }
   return false;
@@ -134,44 +175,55 @@ function isFeishuReplyPending(key: string, eventId: string | undefined): boolean
 const NOTIFICATION_PREVIEW_WAIT_MS = 1_000;
 
 /**
- * 把窗口拉到前台并广播 sessionId 给 renderer 路由跳转。
- *
- * Windows 防焦点劫持：非前台进程直接 `focus()` 会被系统拒绝，只让任务栏图标
- * 闪烁不抢前台。绕过办法：先 `setAlwaysOnTop(true)` 触发系统允许该窗口前置，
- * `show() + focus()` 之后立刻 `setAlwaysOnTop(false)` 回到正常 z-order，但
- * 焦点已经成功转移过来了。这是 Electron 社区在 Windows 上的稳定 hack。
- *
- * macOS 的 SetForegroundWindow 等价物是 `app.focus({ steal: true })`，但 Mac
- * 默认 `focus()` 行为已经够强，不需要多余处理；这里的 alwaysOnTop 在 Mac 上
- * 是无害 no-op（窗口本来就允许前置）。
- */
-function focusWindow(getWindow: () => BrowserWindow | null, sessionId: string): void {
-  const win = getWindow();
-  if (!win) return;
-  if (win.isMinimized()) win.restore();
-  win.setAlwaysOnTop(true);
-  win.show();
-  win.focus();
-  win.setAlwaysOnTop(false);
-  if (sessionId) win.webContents.send('notification:focus-session', sessionId);
-}
-
-/**
  * 从 main 内其它模块发送与会话通知同语义的桌面 toast。
  * Scheduler 运行在 main，必须直接调用此入口；`webContents.send` 同名 IPC 只会
  * 发给 renderer，不会命中 main 的 `ipcMain.handle`。
  */
 export function showDesktopSessionEvent(
   getWindow: () => BrowserWindow | null,
-  payload: Pick<ShowSessionEventPayload, 'sessionId' | 'title' | 'kind'> & { body?: string; teammate?: boolean },
+  payload: Pick<ShowSessionEventPayload, 'sessionId' | 'title' | 'kind'> & {
+    deviceId?: string;
+    messageClientId?: string;
+    body?: string;
+    teammate?: boolean;
+    avatarJpeg?: string;
+    /** 其它设备的任务传 false:未读归属那台设备,本机 Dock 角标不跟着记。 */
+    markAttention?: boolean;
+  },
 ): boolean {
   const { sessionId, title, kind } = payload;
-  if (sessionId) markSessionNeedsAttention(sessionId);
+  if (sessionId && payload.markAttention !== false) markSessionNeedsAttention(sessionId);
   const safeTitle = title?.trim() || sessionId.slice(0, 8) || getSessionNotificationUntitled();
-  return showDesktopToast(safeTitle, kind, () => focusWindow(getWindow, sessionId), payload.body, payload.teammate);
+  const owner = captureDataOwnerBroadcastScope();
+  return showDesktopToast(safeTitle, kind, () => {
+    if (!isDataOwnerBroadcastScopeCurrent(owner)) return;
+    if (sessionId) openMainWindowSession(sessionId, {
+      ...(payload.deviceId ? { deviceId: payload.deviceId } : {}),
+      ...(payload.messageClientId ? { messageClientId: payload.messageClientId } : {}),
+    });
+  }, payload.body, payload.teammate, payload.avatarJpeg);
+}
+
+/**
+ * 其它设备(device-link)任务的桌面通知,只在本机灵动岛关闭时由岛服务转交过来。
+ * 正文没有本机记录可读,沿用各 kind 的通用文案;未读归属那台设备,不记本机角标。
+ */
+export function showDeviceSessionDesktopEvent(
+  getWindow: () => BrowserWindow | null,
+  event: { sessionId: string; deviceId: string; title: string | null; deviceName: string | null; kind: SessionEventKind },
+): void {
+  if (!desktopNotificationsEnabled) return;
+  showDesktopSessionEvent(getWindow, {
+    sessionId: event.sessionId,
+    deviceId: event.deviceId,
+    title: [event.title ?? getSessionNotificationUntitled(), event.deviceName].filter(Boolean).join(' · '),
+    kind: event.kind,
+    markAttention: false,
+  });
 }
 
 export interface NotificationServiceDeps {
+  isCompletionHandledByTeammate?: (sessionId: string) => Promise<boolean>;
   getWindow: () => BrowserWindow | null;
   /**
    * 飞书 IM 实例,用于飞书通道发消息。来源与 scheduler-host/notifier.ts 相同
@@ -200,6 +252,7 @@ export function initNotificationService(deps: NotificationServiceDeps): void {
       // 去重与「被远程观看则不推」收口。
       assertValidSessionEventPayload(payload);
       const { sessionId, title, kind, channels } = payload;
+      const markAttention = payload.markAttention !== false;
       const generation = getMobileNotifyGeneration();
       // Capture at IPC arrival, not after the asynchronous preview: a newer
       // turn can begin while the current completion waits on persistence.
@@ -211,12 +264,8 @@ export function initNotificationService(deps: NotificationServiceDeps): void {
       const safeTitle = title.trim() || sessionId.slice(0, 8);
       const wantDesktop = channels?.desktop ?? true;
       const wantFeishu = channels?.feishu === true;
-      markSessionNeedsAttention(sessionId);
+      if (markAttention) markSessionNeedsAttention(sessionId);
 
-      // Action/error desktop notices have no transcript preview and must be immediate.
-      if (wantDesktop && kind !== 'done') {
-        showDesktopSessionEvent(getWindow, { sessionId, title: safeTitle, kind });
-      }
       // Content is read from main's transcript. Bound only enrichment, not delivery;
       // a timeout is not a dedupe window and never causes a second late toast.
       void (async () => {
@@ -225,19 +274,27 @@ export function initNotificationService(deps: NotificationServiceDeps): void {
         let teammateBotId: string | undefined;
         let postDrainPreviewReady = false;
         let detail: string | undefined;
-        if (kind === 'done' || (kind === 'needs-reply' && channels?.mobile === true)) {
+        let avatarJpeg: string | undefined;
+        if (kind === 'done' || wantDesktop || channels?.mobile === true) {
           let finished = false;
           let timer: ReturnType<typeof setTimeout> | undefined;
-          // Routing is optional: read it beside the reply so it never spends the
-          // preview's wait window, and a failed identity read costs nothing.
-          const routeRead = kind === 'needs-reply'
-            ? readSessionNotificationPreview(sessionId, false).then(
-              (identity) => { if (!finished) teammateBotId = identity.teammateBotId; },
+          // Resolve identity and artwork within the same bounded enrichment window.
+          const readAvatar = async (identity: SessionNotificationPreview) => {
+            if (!wantDesktop) return;
+            const avatar = identity.teammateAvatar;
+            const jpeg = avatar?.kind === 'jpeg' ? avatar.value
+              : avatar?.kind === 'preset' ? await companionAvatarThumbnail(`cindy://avatar/preset/${avatar.value}`) : undefined;
+            if (!finished) avatarJpeg = jpeg;
+          };
+          const routeRead = kind !== 'done'
+            ? readSessionNotificationPreview(sessionId, false, true).then(
+              async (identity) => { if (!finished) { teammateBotId = identity.teammateBotId; preview = identity; await readAvatar(identity); } },
               () => undefined)
             : undefined;
           try {
             await Promise.race([
               Promise.all([(async () => {
+                if (kind !== 'done') return; // A previous answer is neither the current question nor the error.
                 if (kind === 'done') {
                   // Read the teammate identity first so a blocked write still
                   // has the correct fallback. This snapshot may predate the
@@ -257,8 +314,7 @@ export function initNotificationService(deps: NotificationServiceDeps): void {
                   preview = await readSessionNotificationPreview(sessionId);
                   postDrainPreviewReady = true;
                   detail = preview.reply?.text;
-                } else {
-                  detail = await latestMessageText(sessionId, 'assistant');
+                  await readAvatar(preview);
                 }
               })(), routeRead]),
               new Promise<void>((resolve) => { timer = setTimeout(resolve, NOTIFICATION_PREVIEW_WAIT_MS); }),
@@ -293,15 +349,37 @@ export function initNotificationService(deps: NotificationServiceDeps): void {
         const desktopKey = replyNotificationKey(ownerKey, sessionId, 'desktop');
         const mobileKey = replyNotificationKey(generation, sessionId, 'mobile');
         const feishuKey = replyNotificationKey(ownerKey, sessionId, 'feishu');
-        const fallbackBody = teammate ? getTeammateNotificationFallback() : undefined;
+        if (kind === 'done' && notifiedReplies.get(desktopKey)?.handledByTeammate && wasReplyNotified(desktopKey, eventId)) return;
+        // Decide at the send boundary, after preview enrichment. The native
+        // receipt and durable completion handoff are authoritative, never titles.
+        const handledByTeammate = kind === 'done' && deps.isCompletionHandledByTeammate
+          ? await deps.isCompletionHandledByTeammate(sessionId).catch((error) => {
+              log.warn('delegation completion notification check failed', { error: String(error) });
+              return false;
+            }) : false;
+        if (!isDataOwnerBroadcastScopeCurrent(ownerScope)) return;
+        if (kind === 'done' && deps.isCompletionHandledByTeammate) {
+          const afterHandoffSignal = getSessionNotificationTurnSignal(sessionId);
+          if (afterHandoffSignal?.id !== signal?.id || (afterHandoffSignal && !afterHandoffSignal.ended)) return;
+        }
+        if (kind === 'done' && handledByTeammate) {
+          // Consume this event in the existing per-channel ledger. Removing a
+          // delegation later must not replay a completion already handed off.
+          for (const key of [desktopKey, mobileKey, feishuKey]) {
+            notifiedReplies.set(key, eventId ? { eventId, handledByTeammate: true } : { fallbackSentAt: Date.now(), handledByTeammate: true });
+          }
+          return;
+        }
+        const fallbackBody = teammate && kind === 'done' ? getTeammateNotificationFallback() : undefined;
         const mobileTeammateBotId = preview?.teammateBotId ?? teammateBotId;
-        if (wantDesktop && kind === 'done' && !wasReplyNotified(desktopKey, eventId)) {
+        if (wantDesktop && (kind !== 'done' || !wasReplyNotified(desktopKey, eventId))) {
           try {
             const accepted = showDesktopSessionEvent(getWindow, {
-              sessionId, title: notificationTitle, kind, teammate,
-              body: teammate ? notificationPreview(detail ?? '') || fallbackBody : undefined,
+              sessionId, title: notificationTitle, kind, teammate, markAttention, avatarJpeg,
+              messageClientId: preview?.reply?.clientId,
+              body: teammate ? notificationPreview(detail ?? '', 240, getNotificationImageLabel()) || fallbackBody : undefined,
             });
-            if (accepted) {
+            if (kind === 'done' && accepted) {
               notifiedReplies.set(desktopKey, eventId ? { eventId } : { fallbackSentAt: Date.now() });
             }
           } catch (err) {
@@ -314,6 +392,7 @@ export function initNotificationService(deps: NotificationServiceDeps): void {
               sessionId, title: notificationTitle, kind, generation, ...(detail ? { detail } : {}),
               ...(fallbackBody ? { fallbackBody } : {}), ...(mobileEventId ? { eventId: mobileEventId } : {}),
               ...(mobileTeammateBotId ? { teammateBotId: mobileTeammateBotId } : {}),
+              ...(preview?.teammateAvatar ? { teammateAvatar: preview.teammateAvatar } : {}),
             });
             if (kind === 'done' && accepted) {
               notifiedReplies.set(mobileKey, eventId ? { eventId } : { fallbackSentAt: Date.now() });
@@ -328,7 +407,7 @@ export function initNotificationService(deps: NotificationServiceDeps): void {
             pendingFeishuReplies.add(pendingKey);
             if (!eventId) pendingFeishuFallbacks.set(feishuKey, Date.now());
             try {
-              const body = teammate ? notificationPreview(detail ?? '') || fallbackBody : undefined;
+              const body = teammate ? notificationPreview(detail ?? '', 240, getNotificationImageLabel()) || fallbackBody : undefined;
               const accepted = await sendFeishuMessage(feishuIm, notificationTitle, kind, body);
               if (accepted) {
                 notifiedReplies.set(feishuKey, eventId ? { eventId } : { fallbackSentAt: Date.now() });
@@ -367,14 +446,15 @@ function assertValidSessionEventPayload(
     p.title.length > SESSION_TITLE_MAX_LENGTH ||
     typeof p.kind !== 'string' ||
     !SESSION_EVENT_KINDS.has(p.kind) ||
-    (p.channels !== undefined && (typeof p.channels !== 'object' || p.channels === null))
+    (p.channels !== undefined && (typeof p.channels !== 'object' || p.channels === null)) ||
+    (p.markAttention !== undefined && typeof p.markAttention !== 'boolean')
   ) {
     throw new TypeError('invalid session event payload');
   }
 }
 
 /** 桌面 toast 分支 — 原实现保持不变,只是拆出来便于 channels 选择性执行。 */
-function showDesktopToast(safeTitle: string, kind: SessionEventKind, onClick: () => void, previewBody?: string, teammate = false): boolean {
+function showDesktopToast(safeTitle: string, kind: SessionEventKind, onClick: () => void, previewBody?: string, teammate = false, avatarJpeg?: string): boolean {
   const body = previewBody ?? getSessionNotificationBody(kind);
 
   // Electron Notification 在某些 Linux 桌面环境下可能不可用——静默兜底。
@@ -383,13 +463,13 @@ function showDesktopToast(safeTitle: string, kind: SessionEventKind, onClick: ()
     return false;
   }
 
+  const avatar = avatarJpeg ? nativeImage.createFromBuffer(Buffer.from(avatarJpeg, 'base64')) : undefined;
   const notif = new Notification({
     title: teammate && safeTitle.trim().toLowerCase() === 'cindy'
       ? CLIENT_NOTIFICATION_NAME : `${CLIENT_NOTIFICATION_NAME} · ${safeTitle}`,
     body,
     // silent 默认 false——发声音，与 Electron 默认一致。
-    // icon 仅在 dev 下传值；packaged 时为 undefined，回到原行为(由 AUMID/.icns 兜底)。
-    ...(devNotificationIcon ? { icon: devNotificationIcon } : {}),
+    ...(avatar && !avatar.isEmpty() ? { icon: avatar } : devNotificationIcon ? { icon: devNotificationIcon } : {}),
   });
   liveNotifications.add(notif);
 

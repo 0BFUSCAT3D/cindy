@@ -22,7 +22,8 @@ export interface RoutineEvent {
 
 export type RoutineTrigger =
   | { id: string; kind: "cron"; expression: string; timezone: string }
-  | { id: string; kind: "interval"; intervalMs: number }
+  | { id: string; kind: "interval"; intervalMs: number; anchorMs?: number }
+  | { id: string; kind: "once"; at: number }
   | {
       id: string;
       kind: "event";
@@ -34,6 +35,12 @@ export type RoutineTrigger =
         value: string;
       }>;
     };
+
+/** Host-owned rules: per-teammate follow-up, the owner-enabled daily todo check, and nightly learning. */
+export type RoutineBuiltin = "follow-up" | "todo-check" | "nightly-learning";
+
+/** Stable error prefix for attempts to delete or rewrite a host-owned routine. */
+export const BUILTIN_ROUTINE_ERROR = "BUILTIN_ROUTINE";
 
 /** A single standing instruction, with OR-combined time and event triggers. */
 export interface Routine {
@@ -49,6 +56,17 @@ export interface Routine {
   silentWhenIdle?: boolean;
   /** null explicitly removes the check; omission preserves it on older clients. */
   preRunHook?: PreRunHookConfig | null;
+  /**
+   * 宿主内置规则（每个伙伴一条的「跟进」与「夜间学习」，以及主人在近况里打开的「每天查待办」）。由宿主模板生成，不接受用户/模型
+   * 改写指令与触发条件、不能删除，只能暂停（enabled）。可选字段：旧数据与旧客户端缺省即普通规则，
+   * state 版本不变。
+   */
+  builtin?: RoutineBuiltin;
+  /**
+   * 内置规则的宿主模板版本（可选，只由 ensureBuiltin 写）。版本变化时 ensure 一定重写规则；
+   * 旧数据缺省视为与任何显式版本不同，下次 ensure 补写。
+   */
+  builtinVersion?: number;
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -79,10 +97,10 @@ export function parseRoutineInput(value: unknown): RoutineInput {
     throw new Error("enabled must be boolean");
   if (
     !Array.isArray(input.triggers) ||
-    input.triggers.length < 1 ||
+    (input.enabled && input.triggers.length < 1) ||
     input.triggers.length > 32
   ) {
-    throw new Error("A routine requires between 1 and 32 triggers");
+    throw new Error("An enabled routine requires between 1 and 32 triggers; disabled drafts allow none");
   }
   const triggers = input.triggers.map((raw): RoutineTrigger => {
     const trigger = record(raw);
@@ -100,7 +118,15 @@ export function parseRoutineInput(value: unknown): RoutineInput {
       ) {
         throw new Error("Interval must be an integer of at least one minute");
       }
-      return { id, kind: "interval", intervalMs: Number(trigger.intervalMs) };
+      if (trigger.anchorMs !== undefined && (!Number.isSafeInteger(trigger.anchorMs) || Number(trigger.anchorMs) < 0))
+        throw new Error("Invalid interval anchor");
+      return { id, kind: "interval", intervalMs: Number(trigger.intervalMs),
+        ...(trigger.anchorMs === undefined ? {} : { anchorMs: Number(trigger.anchorMs) }) };
+    }
+    if (trigger.kind === "once") {
+      if (!Number.isSafeInteger(trigger.at) || Number(trigger.at) < 0)
+        throw new Error("Invalid one-time trigger");
+      return { id, kind: "once", at: Number(trigger.at) };
     }
     if (
       trigger.kind !== "event" ||
@@ -250,7 +276,10 @@ export function nextRoutineTriggerAt(
   from: number,
 ): number | undefined {
   if (trigger.kind === "event") return undefined;
+  if (trigger.kind === "once") return trigger.at > from ? trigger.at : undefined;
   return trigger.kind === "interval"
-    ? from + trigger.intervalMs
+    ? trigger.anchorMs === undefined ? from + trigger.intervalMs
+      : trigger.anchorMs > from ? trigger.anchorMs
+        : trigger.anchorMs + (Math.floor((from - trigger.anchorMs) / trigger.intervalMs) + 1) * trigger.intervalMs
     : nextRun(trigger.expression, from, trigger.timezone);
 }

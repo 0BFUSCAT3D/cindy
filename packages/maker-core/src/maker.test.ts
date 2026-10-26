@@ -20,6 +20,7 @@ import {
   AgentNotAuthenticatedError,
   AgentStartupCleanupPendingError,
   AgentStartupStoppedError,
+  LOCAL_AGENT_CLIENT,
   TurnPermissionPolicyUnsupportedError,
   type AgentSessionHandle,
   BaseAgent,
@@ -281,6 +282,49 @@ function createDeferred<T = void>(): {
   });
   return { promise, resolve };
 }
+
+describe('application-owned session lifecycle', () => {
+  // Production entry: Maker.startLocalAgentSession. Core rules §1/§2 require the
+  // existing Session lifecycle, without creating or enumerating private task rows.
+  // Existing createSession tests exercise persistent tasks, not this entry (unit).
+  it('uses normal continuation settlement without storing an application transcript in Cindy tasks', async () => {
+    const storage = createStorage(), queue = createAsyncQueue<AgentEvent>();
+    const handle = createHandle({ id: 'native-client' });
+    handle.events = () => queue;
+    handle.close = vi.fn(async () => { queue.end(); });
+    handle.beginTurnContinuationWait = id => id === 7 ? 'active' : null;
+    const maker = new Maker({ agents: { codex: createAgent(async () => handle) }, storage, logger: createLogger() });
+    const session = await maker.startLocalAgentSession('codex', { sessionId: 'client', workingDir: '/repo', model: 'm',
+      [LOCAL_AGENT_CLIENT]: { url: 'http://127.0.0.1:1', token: 'invalid-fixture', hostToolsOnly: false } });
+    const observed: string[] = [];
+    session.onEvent(event => { if (event.type === 'done') observed.push(session.getObservedCurrentTurnTerminal().kind); });
+    await session.send('hello');
+    queue.push({ type: 'done', turnContinuationId: 7, data: { status: 'completed' } });
+    await vi.waitFor(() => expect(observed).toEqual(['none']));
+    queue.push({ type: 'done', data: { status: 'completed' } });
+    await vi.waitFor(() => expect(observed).toEqual(['none', 'done']));
+    expect(session.sdkSessionId).toBe('native-client');
+    expect(await storage.list()).toEqual([]);
+    expect(maker.listActiveSessions()).toEqual([]);
+    await maker.shutdown({ reason: 'account-boundary' });
+    expect(handle.close).toHaveBeenCalledWith({ reason: 'account-boundary' });
+  });
+
+  it('closes an application handle that finishes starting after shutdown instead of publishing it', async () => {
+    const ready = createDeferred<AgentSessionHandle>(), storage = createStorage();
+    const handle = createHandle({ id: 'late-client' });
+    handle.close = vi.fn(async () => {});
+    const maker = new Maker({ agents: { codex: createAgent(() => ready.promise) }, storage, logger: createLogger() });
+    const opening = maker.startLocalAgentSession('codex', { workingDir: '/repo', model: 'm',
+      [LOCAL_AGENT_CLIENT]: { url: 'http://127.0.0.1:1', token: 'invalid-fixture', hostToolsOnly: true } });
+    const rejected = expect(opening).rejects.toThrow('stopped');
+    const stopping = maker.shutdown({ reason: 'account-boundary' });
+    ready.resolve(handle);
+    await stopping; await rejected;
+    expect(handle.close).toHaveBeenCalledWith({ reason: 'account-boundary' });
+    expect(await storage.list()).toEqual([]);
+  });
+});
 
 describe('Maker local Pi package generation fence', () => {
   it.each(['disable', 'remove', 'update'])(
@@ -561,7 +605,73 @@ describe('Maker local Pi package generation fence', () => {
   });
 });
 
+describe('Maker initial plan persistence', () => {
+  it.each([true, false, undefined])('stores initial plan mode %s with the new task', async (planMode) => {
+    const storage = createStorage();
+    const create = vi.spyOn(storage, 'create');
+    const update = vi.spyOn(storage, 'update');
+    const maker = new Maker({
+      agents: { codex: createAgent(async () => createHandle({ id: 'plan-handle' })) },
+      storage,
+      logger: createLogger(),
+    });
+    try {
+      const session = await maker.createSession({
+        agentKind: 'codex', workingDir: '/repo', model: 'm', planMode,
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create.mock.calls[0][0].planMode).toBe(planMode);
+      expect((await storage.get(session.id))?.planMode).toBe(planMode);
+      expect(update).not.toHaveBeenCalled();
+    } finally {
+      await maker.shutdown();
+    }
+  });
+
+  it.each(['codex', 'claude-code', 'pi'] as const)(
+    'cleans up %s after a failed plan-bearing insert and permits retry without an orphan',
+    async (agentKind) => {
+      const close = vi.fn(async () => undefined);
+      const start = vi.fn(async () => ({ ...createHandle({ id: 'plan-handle', agentKind }), close }));
+      const storage = createStorage();
+      const create = storage.create.bind(storage);
+      const insert = vi.spyOn(storage, 'create')
+        .mockRejectedValueOnce(new Error('storage unavailable'))
+        .mockImplementation(create);
+      const maker = new Maker({ agents: { [agentKind]: createAgent(start, agentKind) }, storage, logger: createLogger() });
+      const opts: CreateSessionOptions = { agentKind, workingDir: '/repo', model: 'm', planMode: true };
+      try {
+        await expect(maker.createSession(opts)).rejects.toThrow('storage unavailable');
+        expect(insert.mock.calls[0][0].planMode).toBe(true);
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(maker.listActiveSessions()).toEqual([]);
+        expect(await storage.list()).toEqual([]);
+        const session = await maker.createSession(opts);
+        expect(await storage.list()).toEqual([expect.objectContaining({ id: session.id, planMode: true })]);
+        expect(maker.listActiveSessions()).toHaveLength(1);
+      } finally {
+        await maker.shutdown();
+      }
+    },
+  );
+});
+
 describe('Maker session creation singleflight', () => {
+  it('persists the durable resume id while exposing a distinct transient request id', async () => {
+    const storage = createStorage();
+    const handle = { ...createHandle({ id: 'sdk-source', agentKind: 'claude-code' }), requestSessionId: 'sdk-unaccepted-fork' };
+    const maker = new Maker({
+      agents: { 'claude-code': createAgent(async () => handle, 'claude-code') },
+      storage, logger: createLogger(),
+    });
+    const session = await maker.createSession({ id: 'fork-task', agentKind: 'claude-code', workingDir: '/fixture', model: 'grok-4.6' });
+    expect(session.sdkSessionId).toBe('sdk-source');
+    expect(session.requestSessionId).toBe('sdk-unaccepted-fork');
+    expect((await storage.get('fork-task'))?.sdkSessionId).toBe('sdk-source');
+    await maker.closeSession('fork-task');
+    expect((await storage.get('fork-task'))?.sdkSessionId).toBe('sdk-source');
+  });
+
   it('reports the effective runtime cwd when recovering an existing task elsewhere', async () => {
     const storage = createStorage();
     await storage.create({ id: 'recovered-cwd', agentKind: 'codex', workDir: '/original', title: 'Existing task', model: 'test-model' });
@@ -1348,6 +1458,7 @@ describe('Maker session close events', () => {
       if (event.type === 'session:closed' && event.sessionId === 'session-crash') {
         expect(event.reason).toBe('unexpected');
         expect(maker.getSessionCloseReason(event.session)).toBe('unexpected');
+        expect(event.session.wasClosedByRuntime()).toBe(true);
         resolveClosed();
       }
     });
@@ -1753,16 +1864,20 @@ describe('Maker start-option lifecycle hooks', () => {
     expect(onStartCleanupSucceeded).not.toHaveBeenCalled();
   });
 
-  it.each([new TypeError('startup RPC failed'), 'non-Error startup failure'])(
-    'releases only the confirmed-stopped startup and preserves its original error: %s', async (startupError) => {
+  it.each((['codex', 'claude-code', 'pi'] as const).flatMap((kind) =>
+    [new TypeError('startup RPC failed'), 'non-Error startup failure'].map((error) => ({ kind, error }))))(
+    'releases only the confirmed-stopped $kind startup and permits a fresh task: $error', async ({ kind, error: startupError }) => {
       const otherStartup = {} as CreateSessionOptions;
       const leased = new Set<CreateSessionOptions>([otherStartup]);
       const onStartFailed = vi.fn(({ options, runtimeMayBeAlive }: SessionStartFailureContext) => {
         if (!runtimeMayBeAlive) leased.delete(options);
       });
       const onStartCleanupSucceeded = vi.fn();
+      const startSession = vi.fn()
+        .mockRejectedValueOnce(new AgentStartupStoppedError(startupError))
+        .mockResolvedValueOnce(createHandle({ id: 'fresh-sdk-session' }));
       const maker = new Maker({
-        agents: { pi: createAgent(vi.fn().mockRejectedValue(new AgentStartupStoppedError(startupError)), 'pi') },
+        agents: { [kind]: createAgent(startSession, kind) },
         storage: createStorage(), logger: createLogger(),
         lifecycleHooks: {
           prepareStartOptions: (_id, options) => { leased.add(options); },
@@ -1770,7 +1885,7 @@ describe('Maker start-option lifecycle hooks', () => {
         },
       });
       await expect(maker.createSession({
-        id: 'confirmed-exit', agentKind: 'pi', workingDir: '/repo', model: 'pi-model',
+        id: 'confirmed-exit', agentKind: kind, workingDir: '/repo', model: 'test-model',
       })).rejects.toBe(startupError);
       expect(onStartFailed).toHaveBeenCalledOnce();
       expect(onStartFailed).toHaveBeenCalledWith(expect.objectContaining({
@@ -1778,6 +1893,12 @@ describe('Maker start-option lifecycle hooks', () => {
       }));
       expect(leased).toEqual(new Set([otherStartup]));
       expect(onStartCleanupSucceeded).not.toHaveBeenCalled();
+      const replacement = await maker.createSession({
+        id: 'fresh-task', agentKind: kind, workingDir: '/repo', model: 'test-model',
+      });
+      expect(maker.getSession('fresh-task')).toBe(replacement);
+      expect(startSession).toHaveBeenCalledTimes(2);
+      await replacement.close();
     },
   );
 
@@ -2087,6 +2208,24 @@ describe('Maker session capabilities', () => {
       reason: 'platform-limited',
     });
     expect(agent.capabilities.rewind).toEqual({ supported: true });
+  });
+});
+
+describe('Session engine MCP tool status', () => {
+  it('reads the live engine and reports an engine without a status entry as null', async () => {
+    const read = vi.fn(async () => ({ state: 'connected' as const, tools: [{ name: 'search' }] }));
+    const codex = createAgent(async (opts) => ({
+      ...createHandle({ id: opts.sessionId ?? 'with-status' }), readMcpServerTools: read,
+    }));
+    const pi = createAgent(async (opts) => createHandle({ id: opts.sessionId ?? 'plain', agentKind: 'pi' }), 'pi');
+    const maker = new Maker({ agents: { codex, pi }, storage: createStorage(), logger: createLogger() });
+    try {
+      const withStatus = await maker.createSession({ id: 'with-status', agentKind: 'codex', workingDir: '/repo', model: 'm' });
+      const plain = await maker.createSession({ id: 'plain', agentKind: 'pi', workingDir: '/repo', model: 'm' });
+      expect(await withStatus.readMcpServerTools('custom_omc')).toEqual({ state: 'connected', tools: [{ name: 'search' }] });
+      expect(read).toHaveBeenCalledWith('custom_omc');
+      expect(await plain.readMcpServerTools('custom_omc')).toBeNull();
+    } finally { await maker.shutdown(); }
   });
 });
 
@@ -2460,6 +2599,7 @@ describe('Maker Pi runtime skill status', () => {
       vi.spyOn(fsPromises, 'realpath').mockImplementation(async (...args) => {
         if (!delayed) {
           delayed = true;
+          // real-wait: keep the realpath operation pending to exercise the cancellation race.
           await new Promise((resolve) => setTimeout(resolve, 300));
         }
         return realRealpath(...args);
@@ -3427,6 +3567,7 @@ describe('Session turn send guard', () => {
       await closed;
       expect(vi.getTimerCount()).toBe(0);
       expect(terminalErrors).toEqual([]);
+      expect(session.wasClosedByRuntime()).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -3544,6 +3685,32 @@ describe('Session turn send guard', () => {
     await closePromise;
     expect(session.getStatus()).toBe('closed');
     expect(handle.close).toHaveBeenCalledTimes(1);
+    // An external close that began first keeps ownership of the cause.
+    expect(session.wasClosedByRuntime()).toBe(false);
+  });
+
+  it('does not report direct close() or closeIfIdle() as a runtime self-close', async () => {
+    const createIdleSession = (id: string) => {
+      const handle = createHandle({ id: `thread-${id}` });
+      handle.close = vi.fn(async () => undefined);
+      return new Session({
+        id,
+        agentKind: 'codex',
+        workDir: '/repo',
+        handle,
+        capabilities: createAgent(async () => handle).capabilities,
+        logger: createLogger(),
+      });
+    };
+    const direct = createIdleSession('session-direct-close');
+    await direct.close();
+    expect(direct.getStatus()).toBe('closed');
+    expect(direct.wasClosedByRuntime()).toBe(false);
+
+    const idle = createIdleSession('session-close-if-idle');
+    await expect(idle.closeIfIdle()).resolves.toBe(true);
+    expect(idle.getStatus()).toBe('closed');
+    expect(idle.wasClosedByRuntime()).toBe(false);
   });
 
   it('does not revive a closed session when abort is called after the event iterator crashes', async () => {
@@ -4054,7 +4221,9 @@ describe('Session permission mode leases', () => {
     expect(handle.send).toHaveBeenCalledOnce();
   });
 
-  it('defers an unsafe external permission switch until a host turn lease is released', async () => {
+  // Regression: an IM turn lease must not postpone any owner permission choice.
+  // Exercise the public Session API while retaining the lease that fences new sends.
+  it.each(['ask', 'auto', 'bypassPermissions'] as const)('applies %s immediately during a host turn lease without admitting another turn', async (mode) => {
     const handle = createHandle({ id: 'permission-host-lease-thread' });
     const applied: PermissionMode[] = [];
     handle.setPermissionMode = vi.fn(async (mode: PermissionMode) => {
@@ -4086,64 +4255,24 @@ describe('Session permission mode leases', () => {
 
     const releaseLease = session.acquireTurnLease();
     const temporary = await session.setPermissionModeTracked('ask');
-    const externalChange = session.setPermissionMode('bypassPermissions');
-    await Promise.resolve();
-
-    expect(applied).toEqual(['ask']);
-    expect(session.stablePermissionModeState).toBeNull();
+    const externalChange = session.setPermissionMode(mode);
+    await expect(externalChange).resolves.toBeUndefined();
+    expect(applied).toEqual(['ask', mode]);
+    expect(session.stablePermissionModeState).toEqual({ mode, generation: 2 });
     await expect(
       session.setPermissionModeIfUnchanged(temporary, 'bypassPermissions'),
     ).resolves.toBe(false);
-    expect(applied).toEqual(['ask']);
+    expect(applied).toEqual(['ask', mode]);
 
     const nextTurn = session.send('after leased permission change');
+    await Promise.resolve();
+    expect(handle.send).not.toHaveBeenCalled();
     releaseLease();
-    await expect(externalChange).resolves.toBeUndefined();
     await expect(nextTurn).resolves.toEqual({ accepted: true });
-    expect(applied).toEqual(['ask', 'bypassPermissions']);
+    expect(applied).toEqual(['ask', mode]);
     expect(handle.send).toHaveBeenCalledOnce();
   });
 
-  it('allows a safe external permission switch during a host turn lease', async () => {
-    const handle = createHandle({ id: 'permission-safe-host-lease-thread' });
-    const applied: PermissionMode[] = [];
-    handle.setPermissionMode = vi.fn(async (mode: PermissionMode) => {
-      applied.push(mode);
-    });
-    const baseCapabilities = createAgent(async () => handle).capabilities;
-    const session = new Session({
-      id: 'permission-safe-host-lease-session',
-      agentKind: 'codex',
-      workDir: '/repo',
-      handle,
-      capabilities: {
-        ...baseCapabilities,
-        permissionModes: [
-          { id: 'ask', displayName: 'Ask' },
-          { id: 'auto', displayName: 'Auto' },
-          { id: 'bypassPermissions', displayName: 'Full access' },
-        ],
-        setPermissionModeMidSession: { supported: true },
-        turnPermissionPolicy: {
-          supported: { supported: true },
-          unsupportedPermissionModes: ['bypassPermissions'],
-        },
-      },
-      logger: createLogger(),
-      permissionMode: 'bypassPermissions',
-    });
-
-    const releaseLease = session.acquireTurnLease();
-    const temporary = await session.setPermissionModeTracked('ask');
-    await expect(session.setPermissionMode('auto')).resolves.toBeUndefined();
-    await expect(
-      session.setPermissionModeIfUnchanged(temporary, 'bypassPermissions'),
-    ).resolves.toBe(false);
-    releaseLease();
-
-    expect(applied).toEqual(['ask', 'auto']);
-    expect(session.permissionModeState).toEqual({ mode: 'auto', generation: 2 });
-  });
 });
 
 describe('Maker invalid-resume persistence bridge', () => {

@@ -1,12 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
 
+vi.mock('electron', () => ({ app: { getPath: () => '/tmp/cindy-credential-switch-test' } }));
+vi.mock('original-fs', async () => {
+  const fs = await import('node:fs');
+  return { ...fs, default: fs };
+});
+vi.mock('electron-store', () => ({ default: class {
+  get(): unknown { return undefined; }
+  set(): void {}
+  delete(): void {}
+} }));
+
 const nativeLogin = vi.hoisted(() => ({ connected: false }));
 vi.mock('../claude-native-auth.js', () => ({ hasClaudeNativeLogin: () => nativeLogin.connected }));
 
 import {
   isCodexThreadModelProviderIdentityMismatch,
-  piProxyProviderIdentity,
   prepareLocalSessionCredentialModeSwitch,
   prepareLocalCodexCredentialModeSwitch,
   shouldCloseSessionForCredentialSwitch,
@@ -384,56 +394,39 @@ describe('shouldCloseSessionForCredentialSwitch codex mode', () => {
   });
 });
 
-describe('piProxyProviderIdentity', () => {
-  it('collapses Cindy gateway aliases to the headerless proxy identity', () => {
-    expect(piProxyProviderIdentity(null)).toBeNull();
-    expect(piProxyProviderIdentity(undefined)).toBeNull();
-    expect(piProxyProviderIdentity('xd')).toBeNull();
-    expect(piProxyProviderIdentity('cindy')).toBeNull();
-    expect(piProxyProviderIdentity('  xd  ')).toBeNull();
-  });
-
-  it('pins native subscription and BYOM sources', () => {
-    expect(piProxyProviderIdentity('xai')).toBe('xai');
-    expect(piProxyProviderIdentity('openai')).toBe('openai');
-    expect(piProxyProviderIdentity('anthropic')).toBe('anthropic');
-    expect(piProxyProviderIdentity('litellm-custom')).toBe('litellm-custom');
-  });
-});
-
-describe('shouldCloseSessionForCredentialSwitch pi proxy identity', () => {
-  it('closes idle Pi when crossing xAI and OpenAI even though both are provider-oauth', () => {
+describe('shouldCloseSessionForCredentialSwitch Pi routing', () => {
+  it('leaves cross-provider viability to the Pi runtime', () => {
     expect(shouldCloseSessionForCredentialSwitch({
       agentKind: 'pi',
       currentProviderId: 'xai',
       nextProviderId: 'openai',
       currentModel: 'grok-4.6',
       nextModel: 'gpt-5.6-sol',
-    })).toBe(true);
+    })).toBe(false);
     expect(shouldCloseSessionForCredentialSwitch({
       agentKind: 'pi',
       currentProviderId: 'openai',
       nextProviderId: 'xai',
       currentModel: 'gpt-5.6-sol',
       nextModel: 'grok-4.6',
-    })).toBe(true);
+    })).toBe(false);
   });
 
-  it('closes idle Pi when crossing native xAI and Cindy AI gateway', () => {
+  it('does not infer a restart from native and gateway identities', () => {
     expect(shouldCloseSessionForCredentialSwitch({
       agentKind: 'pi',
       currentProviderId: 'xai',
       nextProviderId: 'xd',
       currentModel: 'grok-4.6',
       nextModel: 'gpt-5.6-sol',
-    })).toBe(true);
+    })).toBe(false);
     expect(shouldCloseSessionForCredentialSwitch({
       agentKind: 'pi',
       currentProviderId: 'xd',
       nextProviderId: 'xai',
       currentModel: 'gpt-5.6-sol',
       nextModel: 'grok-4.6',
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it('keeps a live Pi process for same-family model changes', () => {
@@ -742,6 +735,56 @@ describe('prepareLocalCodexCredentialModeSwitch', () => {
 
 
 describe('Codex host-scoped credential coordination', () => {
+  it('soft-closes all selected gateway hosts while preserving busy siblings and history resources', async () => {
+    const sideEffect = vi.fn(async () => undefined);
+    const closeSession = vi.fn(async (sessionId: string) => {
+      await rehydrateCloseSuppression.runOnCloseSideEffects(sessionId, sideEffect);
+    });
+    const result = await prepareLocalCodexCredentialModeSwitch({
+      hostKeys: ['local', 'local-custom-context:gateway:external-auth'],
+      maker: {
+        listActiveSessions: () => [
+          { id: 'shared', agentKind: 'codex', isTurnRunning: () => false },
+          { id: 'isolated', agentKind: 'codex', codexHostKey: 'local-custom-context:gateway:external-auth', isTurnRunning: () => false },
+          { id: 'oauth', agentKind: 'codex', codexHostKey: 'local-account:openai:oauth', isTurnRunning: () => true },
+          { id: 'remote', agentKind: 'codex', remoteHostId: 'ssh', isTurnRunning: () => true },
+        ],
+        closeSession,
+      },
+    });
+    expect(result.closedSessionIds).toEqual(['shared', 'isolated']);
+    expect(closeSession.mock.calls.map(([id]) => id)).toEqual(['shared', 'isolated']);
+    expect(sideEffect).not.toHaveBeenCalled();
+  });
+
+  it('refuses the entire key refresh before closing any selected busy host', async () => {
+    const closeSession = vi.fn(async () => undefined);
+    await expect(prepareLocalCodexCredentialModeSwitch({
+      hostKeys: ['local', 'local:external-auth'],
+      maker: {
+        listActiveSessions: () => [
+          { id: 'idle', agentKind: 'codex', codexHostKey: 'local', isTurnRunning: () => false },
+          { id: 'busy', agentKind: 'codex', codexHostKey: 'local:external-auth', isTurnRunning: () => true },
+        ],
+        closeSession,
+      },
+    })).rejects.toThrow(/busy/);
+    expect(closeSession).not.toHaveBeenCalled();
+  });
+
+  it('does not close sessions when no host uses the rotated key', async () => {
+    const closeSession = vi.fn(async () => undefined);
+    const result = await prepareLocalCodexCredentialModeSwitch({
+      hostKeys: [],
+      maker: {
+        listActiveSessions: () => [{ id: 'oauth', agentKind: 'codex', isTurnRunning: () => true }],
+        closeSession,
+      },
+    });
+    expect(result.closedSessionIds).toEqual([]);
+    expect(closeSession).not.toHaveBeenCalled();
+  });
+
   it.each(['local', 'local:external-auth'])('does not block or close a busy sibling when replacing %s', async (hostKey) => {
     const sibling = hostKey === 'local' ? 'local:external-auth' : 'local';
     const closeSession = vi.fn(async () => undefined);

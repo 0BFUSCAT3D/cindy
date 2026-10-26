@@ -26,6 +26,8 @@ import {
   PROJECT_ORDER_KEY,
   TASK_INFO_KEY,
   MANUAL_PROJECT_ORDER_KEY,
+  DEVICE_GROUP_COLLAPSED_KEY,
+  loadDeviceGroupCollapsedKeys,
   DIALOGUE_GROUP_COLLAPSED_KEY,
   DIALOGUE_GROUP_ALL_KEY,
   loadStatus,
@@ -365,8 +367,8 @@ describe('taskInfoFields（任务行右侧信息复选）', () => {
   beforeEach(() => installMemoryLocalStorage());
   afterEach(() => uninstallLocalStorage());
 
-  it("defaults to ['tags', 'time'] when storage is empty", () => {
-    expect(loadTaskInfoFields()).toEqual(['tags', 'time']);
+  it("defaults to ['time'] when storage is empty", () => {
+    expect(loadTaskInfoFields()).toEqual(['time']);
   });
 
   it('空数组是合法状态（用户显式全不选），不回落默认', () => {
@@ -378,32 +380,27 @@ describe('taskInfoFields（任务行右侧信息复选）', () => {
     persistTaskInfoFields(['pr', 'worktree', 'tokens', 'cost', 'time']);
     expect(loadTaskInfoFields()).toEqual(['pr', 'worktree', 'tokens', 'cost', 'time']);
     localStorage.setItem(TASK_INFO_KEY, JSON.stringify(['time', 'bogus', 'time', 42, 'cost']));
-    expect(loadTaskInfoFields()).toEqual(['tags', 'time', 'cost']);
+    expect(loadTaskInfoFields()).toEqual(['time', 'cost']);
   });
 
-  it('enables tags for upgraded preferences while retaining other choices and their order', () => {
+  it('标签不再是任务信息项：旧存储里的 tags 静默丢弃，其余选择与顺序保留', () => {
     localStorage.setItem(TASK_INFO_KEY, JSON.stringify(['cost', 'time', 'pr']));
-    expect(loadTaskInfoFields()).toEqual(['tags', 'cost', 'time', 'pr']);
+    expect(loadTaskInfoFields()).toEqual(['cost', 'time', 'pr']);
     localStorage.setItem(TASK_INFO_KEY, '[]');
-    expect(loadTaskInfoFields()).toEqual(['tags']);
+    expect(loadTaskInfoFields()).toEqual([]);
     localStorage.setItem(TASK_INFO_KEY, JSON.stringify(['time', 'tags']));
-    expect(loadTaskInfoFields()).toEqual(['time', 'tags']);
-  });
-
-  it('retains an explicit tag opt-out after upgrading and saving again', () => {
-    localStorage.setItem(TASK_INFO_KEY, JSON.stringify(['time']));
-    const upgraded = loadTaskInfoFields();
-    persistTaskInfoFields(nextTaskInfoAfterToggle(upgraded, 'tags'));
     expect(loadTaskInfoFields()).toEqual(['time']);
-    persistTaskInfoFields(loadTaskInfoFields());
+    localStorage.setItem(TASK_INFO_KEY, JSON.stringify({ version: 1, fields: ['tags', 'time'] }));
     expect(loadTaskInfoFields()).toEqual(['time']);
+    localStorage.setItem(TASK_INFO_KEY, JSON.stringify({ version: 1, fields: ['tags'] }));
+    expect(loadTaskInfoFields()).toEqual([]);
   });
 
   it('falls back to default on broken JSON or shape mismatch', () => {
     localStorage.setItem(TASK_INFO_KEY, '{not-json');
-    expect(loadTaskInfoFields()).toEqual(['tags', 'time']);
-    localStorage.setItem(TASK_INFO_KEY, JSON.stringify({ fields: ['time'] }));
-    expect(loadTaskInfoFields()).toEqual(['tags', 'time']);
+    expect(loadTaskInfoFields()).toEqual(['time']);
+    localStorage.setItem(TASK_INFO_KEY, JSON.stringify({ fields: ['cost'] }));
+    expect(loadTaskInfoFields()).toEqual(['time']);
   });
 
   it('nextTaskInfoAfterToggle toggles membership and allows empty', () => {
@@ -411,6 +408,22 @@ describe('taskInfoFields（任务行右侧信息复选）', () => {
     expect(nextTaskInfoAfterToggle(['time', 'cost'], 'time')).toEqual(['cost']);
     expect(nextTaskInfoAfterToggle(['cost'], 'cost')).toEqual([]);
     expect(nextTaskInfoAfterToggle([], 'pr')).toEqual(['pr']);
+  });
+});
+
+// #6615: component remount tests cover valid device preferences; this unit test
+// protects the storage boundary against malformed values before mounting React.
+describe('deviceGroupCollapsedKeys', () => {
+  beforeEach(() => installMemoryLocalStorage());
+  afterEach(() => uninstallLocalStorage());
+
+  it.each([
+    { raw: '{not-json', expected: [] },
+    { raw: '{"local":true}', expected: [] },
+    { raw: '["local",42,null,"device-1"]', expected: ['local', 'device-1'] },
+  ])('safely restores device collapse preferences from $raw', ({ raw, expected }) => {
+    localStorage.setItem(DEVICE_GROUP_COLLAPSED_KEY, raw);
+    expect([...loadDeviceGroupCollapsedKeys()]).toEqual(expected);
   });
 });
 

@@ -24,6 +24,7 @@ import { MAKER_INVOKE, MAKER_PUSH } from './channels.js';
 import type { BotDelegationService } from './botDelegationService.js';
 import { resolveBotCanonicalSession } from './botCanonicalSessionRegistry.js';
 import { broadcastBotRemoteResourceChanged } from './botRemoteResourceInvalidation.js';
+import { signalBotAutonomyBotsChanged } from '../bot-autonomy/botsChangedSignal.js';
 import {
   activeOwnerScopeKey,
   isAppSessionBoundaryPending,
@@ -44,8 +45,10 @@ export interface BotLifecycleServiceDeps {
   restartRuntime?: (sessionId: string, assertOwnerCurrent: () => void) => Promise<void>;
   now?: () => number;
   onPaused?: (botId: string) => void | Promise<void>;
-  /** Cleanup must finish before the owning profile disappears. Failure leaves deletion retryable. */
+  /** Stop external work and stage cleanup before deletion; retain data until the DB commits. */
   onBeforeDelete?: (botId: string) => void | Promise<void>;
+  /** Runs only after profile deletion; failures must retain a durable cleanup intent. */
+  onDeleted?: (botId: string, assertOwnerCurrent: () => void) => void | Promise<void>;
   /** Resume durable work owned by the Bot after lifecycle state is active. */
   onResumed?: (botId: string) => void | Promise<void>;
   /** Refresh hidden runtime services after any lifecycle ownership change. */
@@ -77,6 +80,8 @@ function broadcastBotLifecycleChanged(payload: {
   botId: string;
   action: BotLifecycleActionRequest['action'];
 }): void {
+  // 伙伴自主跟进：暂停 / 恢复 / 归档后立即重算跟进者。
+  signalBotAutonomyBotsChanged();
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     try {
@@ -348,6 +353,15 @@ export function createBotLifecycleService(deps: BotLifecycleServiceDeps) {
       sessionIds,
       request.keepTaskHistory === true,
     );
+    try {
+      assertOwnerUnchanged();
+      await deps.onDeleted?.(request.botId, assertOwnerUnchanged);
+    } catch {
+      // The DB is already committed. Keep the deletion result truthful; the
+      // owner-scoped cleanup journal retries credential removal after restart.
+      preparationWarnings.push('IMPORTED_ENVIRONMENT_CLEANUP_PENDING');
+      log.warn('Imported companion environment cleanup remains pending', { botId: request.botId });
+    }
 
     /*
       伙伴的家一起走 —— `<userData>/bots/<botId>/` 里躺着 SOUL.md、用户画像、

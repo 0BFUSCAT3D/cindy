@@ -52,6 +52,24 @@ module.exports = {
       reasons: ["native message menu assets"],
     }))
     .concat([
+      // These files are read by config plugins, then compiled/bundled into
+      // the share extension. Metro cannot update them on an installed binary.
+      ...[
+        "plugins/incoming-share-formats.swift",
+        "plugins/incoming-share-feedback.swift",
+        "plugins/incoming-share-strings.json",
+        "plugins/incoming-share-webpage.js",
+      ].map((filePath) => ({ type: "file", filePath, reasons: ["incoming share extension native resources"] })),
+      {
+        type: "dir",
+        filePath: "plugins/communication-notifications",
+        reasons: ["notification service extension native source"],
+      },
+      ...[
+        "../desktop/src/renderer/assets/bot-presets/cindy.png",
+        "../desktop/resources/legacy-teammate-avatars/dash.png",
+        "../desktop/resources/legacy-teammate-avatars/lizi.png",
+      ].map((filePath) => ({ type: "file", filePath, reasons: ["notification sender portraits"] })),
       {
         type: "dir",
         filePath: "../../packages/remote-credentials-native/Sources",

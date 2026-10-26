@@ -117,7 +117,7 @@ describe('passive shared-userData instance auth isolation', () => {
     expect(scheduleBody).toContain('refreshTimer = setTimeout(');
 
     const retryBody = sliceBody(
-      'function scheduleRefreshRetryAfterTransientFailure(): void {',
+      'function scheduleRefreshRetryAfterTransientFailure(',
       '\n}\n',
     );
     expect(retryBody).not.toContain('isPassiveSharedUserDataInstance');
@@ -126,7 +126,7 @@ describe('passive shared-userData instance auth isolation', () => {
 
   it('refresh 本身不被 passive 拦:冷启动仍能换 access token,凭证缺席仍走过期出口', () => {
     const body = sliceBody(
-      'export async function refresh(): Promise<boolean> {',
+      'export async function refresh(',
       'const diskTokenChangedBeforeRefresh',
     );
 
@@ -246,9 +246,8 @@ describe('passive shared-userData instance auth isolation', () => {
     expect(body.indexOf('prepareBuiltInSkills({')).toBeGreaterThan(ownerBoundary);
     expect(body.indexOf('prepareSharedGlobalSkillLinks({')).toBeGreaterThan(ownerBoundary);
     expect(body).not.toContain('refreshBuiltInSharedSkillLinks({');
-    expect(body.indexOf('refreshBuiltInClaudeSkillLinks({')).toBeGreaterThan(
-      body.indexOf('prepareSharedGlobalSkillLinks({'),
-    );
+    expect(body.indexOf('migrateBuiltInGlobalSkillLinks({')).toBeGreaterThan(ownerBoundary);
+    expect(body.indexOf('migrateBuiltInGlobalSkillLinks({')).toBeLessThan(body.indexOf('prepareSharedGlobalSkillLinks({'));
   });
 
   it('relogin marker:passive 不消费整机一份的 marker,也不删 primary 的 token', () => {

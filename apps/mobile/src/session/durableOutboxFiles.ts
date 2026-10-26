@@ -5,6 +5,7 @@ import { DURABLE_OUTBOX_PREFIX, type DurableOutboxRecord, type DurableUpload } f
 import type { MobileLocalAttachmentUploadCandidate } from "./mobileLocalAttachmentUpload";
 import { isAttachmentOssRef } from './attachmentOssRef';
 import { isPeerAttachmentRef } from '@cindy/device-link';
+import { sanitizeAnnotationRegions, summarizeAnnotationRegions } from '@cindy/maker-shared/image-annotation';
 
 /** Desktop path references already have their source on the controlled device. */
 export function outboxAttachmentNeedsLocalBytes(attachment: { path: string }): boolean {
@@ -15,11 +16,11 @@ function segment(value: string): string {
   return encodeURIComponent(value).replace(/\./g, "%2E");
 }
 export function durableOutboxDirectory(
-  record: Pick<DurableOutboxRecord, "accountId" | "deviceId" | "item">,
+  record: Pick<DurableOutboxRecord, "accountId" | "deviceId" | "item" | "storageSessionId">,
 ): string {
   if (!FileSystem.documentDirectory)
     throw new Error("OUTBOX_STORAGE_UNAVAILABLE");
-  return `${FileSystem.documentDirectory}message-outbox/${[record.accountId, record.deviceId, record.item.sessionId, record.item.clientId].map(segment).join("/")}/`;
+  return `${FileSystem.documentDirectory}message-outbox/${[record.accountId, record.deviceId, record.storageSessionId ?? record.item.sessionId, record.item.clientId].map(segment).join("/")}/`;
 }
 export function durableOutboxUploadUri(
   record: DurableOutboxRecord,
@@ -29,10 +30,33 @@ export function durableOutboxUploadUri(
     throw new Error("OUTBOX_FILE_INVALID");
   return durableOutboxDirectory(record) + upload.fileName;
 }
+/**
+ * 重新留存时可以传入已落盘的 DurableUpload(恢复新建任务时 new.tsx 以
+ * `{ ...oldUpload, uri }` 再次留存),它没有 candidate.annotation,但带着上一次落盘的
+ * 标注字段——这些字段必须原样沿用,否则恢复后的同一条消息会丢掉 annotated 标与区域。
+ */
+type RetainSource = MobileLocalAttachmentUploadCandidate &
+  Partial<Pick<DurableUpload, "annotated" | "annotationRegions">>;
+
+/** 标注字段随发件箱落盘(区域与乐观上传路径同一归纳算法),重投时照样带给被控端。 */
+function annotationFieldsFor(
+  source: RetainSource,
+): Pick<DurableUpload, "annotated" | "annotationRegions"> {
+  if (source.annotation) {
+    // 底图已是烧录图(旧红线位置不可知)时不带区域,见 annotationRegionsForUpload。
+    if (source.annotation.baseAnnotated) return { annotated: true };
+    const regions = summarizeAnnotationRegions(source.annotation.strokes);
+    return { annotated: true, ...(regions.length > 0 ? { annotationRegions: regions } : {}) };
+  }
+  if (source.annotated !== true) return {};
+  const regions = sanitizeAnnotationRegions(source.annotationRegions);
+  return { annotated: true, ...(regions ? { annotationRegions: regions } : {}) };
+}
+
 export async function retainOutboxFile(
   record: DurableOutboxRecord,
   slot: number,
-  source: MobileLocalAttachmentUploadCandidate,
+  source: RetainSource,
 ): Promise<DurableUpload> {
   await initializeOutboxFiles();
   const extension =
@@ -44,7 +68,7 @@ export async function retainOutboxFile(
     mimeType: source.mimeType,
     kind: source.kind,
     size: source.size,
-    ...(source.annotation ? { annotated: true } : {}),
+    ...annotationFieldsFor(source),
   };
   await FileSystem.makeDirectoryAsync(durableOutboxDirectory(record), {
     intermediates: true,
@@ -85,7 +109,10 @@ export function initializeOutboxFiles(): Promise<void> {
       if (!info.exists || !info.isDirectory) return;
       for (const name of await FileSystem.readDirectoryAsync(directory)) {
         if (!name || name === '.' || name === '..' || /[\\/]/.test(name)) continue;
-        const uri = directory + name;
+        // Native listings return decoded names, while the ledger contains URI-encoded
+        // segments. Re-encode before comparison or a realm-qualified account's retained
+        // files look unreferenced after restart. Keep the same encoding as the writer.
+        const uri = directory + (depth < 4 ? segment(name) : encodeURIComponent(name));
         if (depth < 4) await visit(uri + '/', depth + 1);
         else if (/^slot-\d+(?:-[a-z0-9]+)?\.[a-z0-9]{1,12}$/.test(name) && !retained.has(uri)) {
           await FileSystem.deleteAsync(uri, { idempotent: true });

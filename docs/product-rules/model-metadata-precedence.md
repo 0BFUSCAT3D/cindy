@@ -101,6 +101,19 @@ Pi 明确声明的 `reasoningDefaultEffort` 属于 Harness 默认例外，高于
 
 ### 多连接的身份与隔离
 
+Codex 超快是账号发现能力：`service_tiers` / `additional_speed_tiers`（live 清单为
+`serviceTiers` / `additionalSpeedTiers`）明确声明后，按连接保存 `supportsUltrafastMode`，
+不进入可继承的 `ModelMetadata`，不按套餐名、型号或公共目录授予。
+保存、重读和目录投影须保留该值；成功刷新该型号不再声明超快时清除旧资格。
+同一连接重新登录为不同身份或工作区时，接受登录前必须成功清除旧资格；
+CAS 冲突、所属用户切换或写入失败时回滚登录，不把撤权放进可忽略失败的展示刷新。
+原生模型缓存先于凭证提交清除，删除失败保留原身份；取消登录回滚凭证与缓存。
+凭证回滚后，仍属于当前用户的连接重新发布账号切换与就绪通知，废弃替换身份的在途额度读取。
+普通设置保存保留数据库中最新的超快资格，旧窗口快照不能授予或撤回资格；并发撤权时重新合并。
+原生登录进入资格提交阶段前仍可取消；进入后关闭取消入口，资格提交失败仍回滚凭证。
+仅原生 Codex 账号的 Codex 入口可用，API 同名模型及其它引擎不继承。
+回归见 `custom-provider-store.test.ts` 与 `modelDiscoveryChannels.test.ts`。
+
 同一种供应商可以有多个账号或 API 连接。沿用 `providerId` 标识连接实例，
 `model` 标识该连接下的上游模型，`agentKind` 标识执行 Harness；调用目标由三者
 共同确定。供应商与模型的显示名可以重复，也可以改名，不用于路由、凭证查找或持久化关联。
@@ -110,17 +123,26 @@ OpenAI 本机 Codex 登录与独立授权账号共享 OpenAI 公共目录及桥�
 `providerCatalogId` 仅用于公共定义查找。凭证、发现快照、限额、具体连接的价格及窗口覆盖、
 收藏与可见性继续使用连接实例 ID。三个 Harness 的公共模型资料与接入声明由服务器目录维护；
 客户端原生目录只补旧快照缺失字段及运行时兼容细节，不能作为第二份公共模型白名单。
-对使用 Registry 补存在性或 additions-only 的发现路径，未返回某个模型不等于禁止。不能把此结论推广到权威成员快照；按下面的来源表判定。
+订阅供应商的模型名单以供应商实际返回为准：Registry 只为已返回的型号补资料、标退役，
+不补入供应商没返回的型号（2026-09-27 起）。additions-only 的发现路径未返回某个模型不等于删除；按下面的来源表判定。
 
 现有协议保留两种兼容表示：Codex/Claude Code 的 Registry 根与桥接声明，及
 `providers[].models.pi` 的逐 Harness 声明。旧 Registry 的 agents 枚举不能直接加入 Pi；
-顶层 Codex/Claude Code 空数组仍由 Registry 实体化，不能解释成关闭。
+OpenAI / Anthropic 订阅的 Codex/Claude Code 根只由账号清单决定成员，Registry 条目的
+`status` 不再使其凭空出现。
 Pi 显式列表提供公共成员（包括空数组与退役条目）；缺字段才使用随包兜底。订阅账号
 发现的新型号同样进入 Pi，沿已有订阅传输执行，不要求先登记到 Pi SDK。显式空 Pi 列表
 仍关闭该公共入口，退役条目不由发现复活。Codex／Claude SDK 的发现只补 Pi 缺少的型号，
 不覆盖已有 Pi 型号的原生能力；SuperGrok 账号实报能力供三个 Harness 共用，按连接隔离。
 服务器声明的新模型不要求先出现在 Pi SDK 名单中；有明确原生协议
 即可构造 models.json。OpenAI 订阅仍使用专用 Codex Responses 认证传输。
+
+独立 OpenAI 账号恢复后，Pi 与 Codex 根使用同一份账号成员快照：优先当前发现结果，
+尚无结果时复用该账号已保存的 Codex 清单。这里只补成员和可移植资料，不把 Codex
+运行时的用户配置当成 Pi 覆盖；思考档位按 Pi 支持的档位及公共资料解析，Pi 专属
+用户覆盖仍走原有路径。原生 SDK 清单只提供同 API 的序列化细节，新型号不因缺少
+SDK 条目被隐藏；普通 API-key／自定义连接继续按自己的模型 API 和路由适配，
+不借用订阅认证。回归见 `openAiAccountCatalogParity.test.ts`、`piNativeProviders.test.ts`。
 
 旧顶层 Pi 条目的静态资料是旧格式兜底，不能标为账号 discovery；
 Registry 的公共定义／显式条目／路由／perAgent 继续覆盖旧默认，账号实报与用户覆盖另行优先。
@@ -155,9 +177,9 @@ Pi 已识别的 OpenAI 订阅连接之间可复用同一运行时：每个账号
 
 | 来源/字段 | 缺失或尚无有效发现 | 明确空数组或未返回型号 |
 | --- | --- | --- |
-| OpenAI / Anthropic 订阅的 Registry 根与发现补全 | 按对应静态/Registry 路径保留存在性，连接态另判 | 发现未返回不单独构成否定；不能用顶层 Codex/Claude 空数组禁用 Registry 实体化条目 |
+| OpenAI / Anthropic 订阅根 | 尚无账号清单时名单为空（未登录、或登录后主动读取尚未完成） | 成员只取账号返回的型号；Registry 只补资料、标退役，不补入未返回的型号。Claude SDK 以系列简称返回的当前型号，按说明里的版本生成精确 ID（Registry 未登记也显示），读不出版本才不显示 |
 | 通用 OAuth additions-only、自定义连接刷新 | 保留已有配置 | 只新增/更新，不因本次未返回而删除已有成员 |
-| xAI 订阅账号权威发现 | null 表示尚无成功账号快照，走既有静态兼容路径 | 成功空数组也是账号成员快照；不能套 additions-only 规则。Pi 同时使用该账号发现及公共声明 |
+| xAI 订阅账号权威发现 | null 或空数组表示尚无可用账号快照，走既有静态声明 + Registry 兼容路径（未绑定账号发现时唯一的名单来源） | 非空快照即账号成员，Registry 不再补入未返回的型号；不能套 additions-only 规则。Pi 同时使用该账号发现及公共声明 |
 | `providers[].models.pi` | 字段缺失才使用随包声明 | 显式 [] 不回填；非空声明允许账号发现补新型号，退役项不复活 |
 | 内置非 Gateway 的媒体数组 | 字段缺失、允许 Registry 派生时才由媒体 routes 补成员 | 显式 [] 不由 Registry 或发现结果复活；非空列表不由 Registry 增补成员，后续账号发现按下一行处理 |
 | 已接入的图片/视频账号发现 | 没有发现快照时用静态/远端声明 | 成功快照限定该发现路径的成员，不能绕过目录显式禁用；不推广为全部音频或自定义刷新规则 |
@@ -212,6 +234,12 @@ Server `catalog/providers.json` 是数据正本；客户端 `catalog/model-regis
 
 复用当前目录接口与 Registry V4 协商，不增加请求或数据库表。旧 V1/V2/V3 客户端收到展开后的旧字段；不同资料的多条路由在兼容响应中拆成独立条目，保留上游 ID，额外条目使用派生目录 ID。旧协议不支持的公共引用、覆盖指令与图片字段被移除，空默认以缺省表达。
 
-供应商总容量与客户端工作预算分开：既有 GPT 272K 工作预算继续保留；这里的 `contextWindowMax` 指客户端 CatalogModel 投影，不是 Server 字段。Registry 资料中的 contextWindow 与合法 perAgent 工作默认分别维护；用户显式窗口覆盖仍优先。协议和实际执行能力门禁继续由运行时负责，元数据不能解锁未实现协议或伪造可售性。
+供应商总容量与客户端工作预算分开：OpenAI 订阅采用 Server Registry 的 `perAgent` 工作默认，
+Pi 跟随 Codex 的订阅预算；GPT-6.1 Sol 为 500K，Astra 仍为 272K。未声明订阅预算及其它来源
+（含第三方、自定义与组织连接）继续采用至多 272K 的工作默认，不扩大较小的已解析窗口。
+不能从 route 或公共型号的总容量推导工作预算。用户显式窗口覆盖仍最高，恢复默认重新读取当前
+订阅预算或 272K 回退。这里的 `contextWindowMax` 指客户端 CatalogModel 投影，不是 Server 字段，
+不随工作默认缩小；Registry 资料中的 contextWindow 与合法 perAgent 工作默认分别维护。
+协议和实际执行能力门禁继续由运行时负责，元数据不能解锁未实现协议或伪造可售性。
 
 验收至少覆盖缺字段继承、供应商优先、force 修正、用户最高、显式 false/null/空数组、未知供应商公共识别、刷新与保存、旧版解析、离线与坏快照回退。模型推荐标准另见 [本地模型筛选](local-model-selection.md)，仍只按能力、速度和实际运行内存筛选。

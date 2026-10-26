@@ -1,6 +1,9 @@
+import { ErrorNotice } from '@/components/ui/error-notice';
 import { Button } from '@/components/ui/button';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { useSettingsSearchNavigation } from './SettingsSearchNavigation';
+import { DefaultOverrideControls } from './DefaultOverrideControls';
+import { VoiceSpeakerFilterCard } from './VoiceSpeakerFilterCard';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -224,7 +227,7 @@ function VoiceInputSelect<T extends string>({
                 {selectedOption?.label}
               </span>
               {selectedOption?.description ? (
-                <span className="truncate text-12 leading-[1.25] text-[var(--settings-section-sublabel)] opacity-75">
+                <span className="truncate text-12 leading-[1.25] text-[var(--text-secondary)]">
                   {selectedOption.description}
                 </span>
               ) : null}
@@ -352,7 +355,7 @@ function VoiceInputInlineSettingRow({
           {labelAction ? <div className="shrink-0">{labelAction}</div> : null}
         </div>
         {hint ? (
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+          <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
             {hint}
           </p>
         ) : null}
@@ -371,6 +374,7 @@ function VoiceInputInlineSettingRow({
  */
 function VoiceInputServiceSourceCard() {
   const { t } = useTranslation();
+  const customAsrUrlErrorId = useId();
   const { mode: appMode } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const {
@@ -638,15 +642,19 @@ function VoiceInputServiceSourceCard() {
             />
           </VoiceInputInlineSettingRow>
 
-          {connectionTest.status !== 'idle' ? (
+          {connectionTest.status === 'error' ? (
+            <ErrorNotice
+              role="alert"
+              aria-live="polite"
+              message={t(VOICE_INPUT_CONNECTION_TEST_FAILURE_KEYS[connectionTest.reason])}
+            />
+          ) : connectionTest.status !== 'idle' ? (
             <div
-              role={connectionTest.status === 'error' ? 'alert' : 'status'}
+              role="status"
               aria-live="polite"
               className={cn(
                 'flex items-center gap-2 rounded-[10px] border px-3 py-2 text-12 leading-[1.4]',
-                connectionTest.status === 'error'
-                  ? 'border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-fg)]'
-                  : 'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-section-sublabel)]',
+                'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-section-sublabel)]',
               )}
             >
               {connectionTest.status === 'success' ? <Check size={13} aria-hidden /> : null}
@@ -658,9 +666,7 @@ function VoiceInputServiceSourceCard() {
               <span>
                 {connectionTest.status === 'testing'
                   ? t('settings.voiceInput.serviceSource.connectionTest.testingStatus')
-                  : connectionTest.status === 'success'
-                    ? t('settings.voiceInput.serviceSource.connectionTest.success')
-                    : t(VOICE_INPUT_CONNECTION_TEST_FAILURE_KEYS[connectionTest.reason])}
+                  : t('settings.voiceInput.serviceSource.connectionTest.success')}
               </span>
             </div>
           ) : null}
@@ -702,6 +708,8 @@ function VoiceInputServiceSourceCard() {
                 <input
                   type="url"
                   value={customAsrWebsocketUrl}
+                  aria-invalid={customAsrUrlInvalid || undefined}
+                  aria-describedby={customAsrUrlInvalid ? customAsrUrlErrorId : undefined}
                   onChange={(event) => {
                     customAsrFormDirtyRef.current = true;
                     setCustomAsrWebsocketUrl(event.target.value);
@@ -713,15 +721,16 @@ function VoiceInputServiceSourceCard() {
                   className={cn(
                     'h-9 w-full rounded-full border px-3 text-13 outline-none transition-colors',
                     'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-                    'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-55',
+                    'placeholder:text-[var(--settings-input-placeholder)]',
                     'focus:border-[var(--settings-input-border-focus)]',
                   )}
                 />
               </VoiceInputInlineSettingRow>
               {customAsrUrlInvalid ? (
                 <p
+                  id={customAsrUrlErrorId}
                   role="alert"
-                  className="rounded-[10px] border border-[var(--error-border)] bg-[var(--error-bg)] px-3 py-2 text-12 leading-[1.4] text-[var(--error-fg)]"
+                  className="text-12 text-[var(--error-fg)]"
                 >
                   {t('settings.voiceInput.serviceSource.customAsr.websocketUrl.invalid')}
                 </p>
@@ -745,7 +754,7 @@ function VoiceInputServiceSourceCard() {
                   className={cn(
                     'h-9 w-full rounded-full border px-3 text-13 outline-none transition-colors',
                     'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-                    'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-55',
+                    'placeholder:text-[var(--settings-input-placeholder)]',
                     'focus:border-[var(--settings-input-border-focus)]',
                   )}
                 />
@@ -777,7 +786,7 @@ function VoiceInputServiceSourceCard() {
                   className={cn(
                     'h-9 w-full rounded-full border px-3 text-13 outline-none transition-colors',
                     'border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] text-[var(--settings-input-text)]',
-                    'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-55',
+                    'placeholder:text-[var(--settings-input-placeholder)]',
                     'focus:border-[var(--settings-input-border-focus)]',
                   )}
                 />
@@ -837,28 +846,16 @@ function VoiceInputServiceSourceCard() {
           </VoiceInputInlineSettingRow>
 
           {byokCredentialErrorText ? (
-            <div
-              className={cn(
-                'flex flex-wrap items-center justify-between gap-2 rounded-[12px] px-3.5 py-2.5',
-                'border border-[var(--error-border)] bg-[var(--error-bg)]',
-              )}
-            >
-              <p className="min-w-0 text-12 leading-[1.4] text-[var(--error-fg)]">
-                {byokCredentialErrorText}
-              </p>
-              {!credentialRecoveryInVoiceSettings ? (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  compact
-                  type="button"
-                  onClick={openProvidersTab}
-                  className="shrink-0"
-                >
-                  {t('settings.voiceInput.serviceSource.manageProviders')}
-                </Button>
-              ) : null}
-            </div>
+            <ErrorNotice
+              message={byokCredentialErrorText}
+              actions={
+                !credentialRecoveryInVoiceSettings && (
+                  <Button size="sm" compact onClick={openProvidersTab}>
+                    {t('settings.voiceInput.serviceSource.manageProviders')}
+                  </Button>
+                )
+              }
+            />
           ) : null}
         </>
       ) : null}
@@ -980,7 +977,7 @@ function VoiceInputCollapsibleTextarea({
           >
             {label}
           </p>
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+          <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
             {hint}
           </p>
         </div>
@@ -1018,7 +1015,7 @@ function VoiceInputCollapsibleTextarea({
             'mt-4 min-h-[128px] w-full resize-y rounded-[14px] px-4 py-3',
             'border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
             'text-13 leading-[1.45] text-[var(--settings-input-text)]',
-            'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-45',
+            'placeholder:text-[var(--settings-input-placeholder)]',
             'outline-none transition-colors',
             'hover:border-[var(--settings-input-border-focus)] focus-visible:border-[var(--settings-input-border-focus)]',
           )}
@@ -1045,6 +1042,10 @@ export function VoiceInputSection() {
     setRefinementInstructions,
     setAutoDictionaryEnabled,
     setDictionarySyncEnabled,
+    resetDictionarySyncEnabled,
+    setSpeakerFilterEnabled,
+    setSpeakerFilterStrictness,
+    resetSpeakerFilterStrictness,
     addDictionaryEntry: addDictionarySettingEntry,
     importDictionaryEntries: importDictionarySettingEntries,
     editDictionaryEntry: editDictionarySettingEntry,
@@ -2076,7 +2077,7 @@ export function VoiceInputSection() {
               </Button>
             </div>
           ) : (
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+            <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
               {t('settings.voiceInput.shortcut.linuxUnsupported')}
             </p>
           )}
@@ -2104,7 +2105,7 @@ export function VoiceInputSection() {
                   />
                 )}
             </div>
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+            <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
               {t('settings.voiceInput.refinement.enabled.hint')}
             </p>
           </div>
@@ -2143,7 +2144,7 @@ export function VoiceInputSection() {
                   >
                     {t('settings.voiceInput.refinement.dictionary.label')}
                   </p>
-                  <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                  <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
                     {t('settings.voiceInput.refinement.dictionary.hint')}
                   </p>
                 </div>
@@ -2184,7 +2185,7 @@ export function VoiceInputSection() {
                       <p className="text-13 font-medium text-[var(--settings-section-title)]">
                         {t('settings.voiceInput.refinement.dictionary.autoLearning.label')}
                       </p>
-                      <p className="text-12 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-70">
+                      <p className="text-12 leading-[1.35] text-[var(--text-secondary)]">
                         {t('settings.voiceInput.refinement.dictionary.autoLearning.hint')}
                         {!externalDictionaryLearningSupported ? (
                           <span className="mt-1 block">
@@ -2206,16 +2207,26 @@ export function VoiceInputSection() {
                       <p className="text-13 font-medium text-[var(--settings-section-title)]">
                         {t('settings.voiceInput.refinement.dictionary.deviceSync.label')}
                       </p>
-                      <p className="text-12 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-70">
+                      <p className="text-12 leading-[1.35] text-[var(--text-secondary)]">
                         {t('settings.voiceInput.refinement.dictionary.deviceSync.hint')}
                       </p>
                     </div>
 
-                    <Switch
-                      checked={settings.dictionarySyncEnabled}
-                      onCheckedChange={setDictionarySyncEnabled}
-                      aria-label={t('settings.voiceInput.refinement.dictionary.deviceSync.ariaLabel')}
-                    />
+                    <div className="flex shrink-0 items-center gap-2">
+                      <DefaultOverrideControls
+                        isCustomized={settings.dictionarySyncEnabledOverride != null}
+                        onReset={() => {
+                          void resetDictionarySyncEnabled().then((ok) => {
+                            if (ok) toast.success(t('settings.defaults.restored'));
+                          });
+                        }}
+                      />
+                      <Switch
+                        checked={settings.dictionarySyncEnabled}
+                        onCheckedChange={setDictionarySyncEnabled}
+                        aria-label={t('settings.voiceInput.refinement.dictionary.deviceSync.ariaLabel')}
+                      />
+                    </div>
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2298,7 +2309,7 @@ export function VoiceInputSection() {
                           'h-10 w-full rounded-full pl-9 pr-4',
                           'border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
                           'text-13 text-[var(--settings-input-text)] outline-none transition-colors',
-                          'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-45',
+                          'placeholder:text-[var(--settings-input-placeholder)]',
                           'hover:border-[var(--settings-input-border-focus)] focus-visible:border-[var(--settings-input-border-focus)]',
                         )}
                       />
@@ -2318,20 +2329,15 @@ export function VoiceInputSection() {
                     <Dialog.Portal>
                       <Dialog.Overlay
                         className={cn(
-                          'fixed inset-0 z-50 bg-[var(--overlay-modal)]',
-                          'data-[state=open]:animate-confirm-overlay-in',
-                          'data-[state=closed]:animate-confirm-overlay-out',
+                          'modal-scrim fixed inset-0 z-50',
                         )}
                         style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
                       />
                       <Dialog.Content
                         onPointerDownOutside={(event) => event.preventDefault()}
                         className={cn(
-                          'fixed left-1/2 top-1/2 z-50 w-[min(520px,calc(100vw-48px))] -translate-x-1/2 -translate-y-1/2',
-                          'rounded-[18px] border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]',
-                          'p-5 shadow-[var(--shadow-menu)] outline-none',
-                          'data-[state=open]:animate-confirm-content-in',
-                          'data-[state=closed]:animate-confirm-content-out',
+                          'modal-panel fixed left-1/2 top-1/2 z-50 w-[min(520px,calc(100vw-48px))] -translate-x-1/2 -translate-y-1/2',
+                          'p-5 outline-none',
                         )}
                         style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
                       >
@@ -2360,7 +2366,7 @@ export function VoiceInputSection() {
                             'mt-5 h-12 w-full rounded-[12px] px-4',
                             'border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)]',
                             'text-15 text-[var(--settings-input-text)] outline-none transition-colors',
-                            'placeholder:text-[var(--settings-section-sublabel)] placeholder:opacity-60',
+                            'placeholder:text-[var(--settings-input-placeholder)]',
                             'hover:border-[var(--settings-input-border-focus)]',
                             'focus-visible:border-[var(--settings-input-border-focus)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
                           )}
@@ -2496,7 +2502,7 @@ export function VoiceInputSection() {
                                       'focus-visible:border-[var(--settings-input-border-focus)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]',
                                     )}
                                   />
-                                  <span className="text-11 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-70">
+                                  <span className="text-11 leading-[1.35] text-[var(--text-secondary)]">
                                     {t('settings.voiceInput.refinement.dictionary.aliasesEditHint')}
                                   </span>
                                 </label>
@@ -2546,8 +2552,8 @@ export function VoiceInputSection() {
                                   className={cn(
                                     'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full',
                                     entry.source === 'automatic'
-                                      ? 'text-[var(--settings-section-title)] opacity-70'
-                                      : 'text-[var(--settings-section-sublabel)] opacity-45',
+                                      ? 'text-[var(--text-secondary-mid)]'
+                                      : 'text-[var(--text-tertiary)]',
                                   )}
                                   aria-label={t(
                                     `settings.voiceInput.refinement.dictionary.sources.${entry.source}`,
@@ -2563,7 +2569,7 @@ export function VoiceInputSection() {
                                     {entry.text}
                                   </p>
                                   {entry.aliases.length > 0 ? (
-                                    <p className="mt-0.5 line-clamp-2 text-11 leading-[1.35] text-[var(--settings-section-sublabel)] opacity-75">
+                                    <p className="mt-0.5 line-clamp-2 text-11 leading-[1.35] text-[var(--text-secondary)]">
                                       {t('settings.voiceInput.refinement.dictionary.aliases', {
                                         aliases: entry.aliases
                                           .map((alias) => alias.text)
@@ -2620,7 +2626,7 @@ export function VoiceInputSection() {
                       })}
                     </div>
                   ) : (
-                    <p className="rounded-[12px] border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] px-4 py-3 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                    <p className="rounded-[12px] border border-[var(--settings-input-border)] bg-[var(--settings-input-bg)] px-4 py-3 text-12 leading-[1.4] text-[var(--text-secondary)]">
                       {t(
                         dictionaryFilter === 'automatic'
                           ? 'settings.voiceInput.refinement.dictionary.emptyAutomatic'
@@ -2647,7 +2653,7 @@ export function VoiceInputSection() {
               >
                 {t('settings.voiceInput.muteSystemAudio.label')}
               </p>
-              <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+              <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
                 {t('settings.voiceInput.muteSystemAudio.hint')}
               </p>
             </div>
@@ -2659,7 +2665,7 @@ export function VoiceInputSection() {
             />
           </div>
         ) : (
-          <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+          <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
             {t('settings.voiceInput.muteSystemAudio.linuxUnsupported')}
           </p>
         )}
@@ -2675,7 +2681,7 @@ export function VoiceInputSection() {
             >
               {t('settings.voiceInput.fastActivation.label')}
             </p>
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+            <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
               {t('settings.voiceInput.fastActivation.hint')}
             </p>
           </div>
@@ -2695,7 +2701,7 @@ export function VoiceInputSection() {
             >
               {t('settings.voiceInput.interactionSound.label')}
             </p>
-            <p className="text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+            <p className="text-12 leading-[1.4] text-[var(--text-secondary)]">
               {t('settings.voiceInput.interactionSound.hint')}
             </p>
           </div>
@@ -2707,6 +2713,16 @@ export function VoiceInputSection() {
           />
         </div>
       </VoiceInputCard>
+
+      <VoiceSpeakerFilterCard
+        enabled={settings.speakerFilterEnabled}
+        strictness={settings.speakerFilterStrictness}
+        strictnessCustomized={settings.speakerFilterStrictnessOverride != null}
+        microphoneDeviceId={settings.microphoneDeviceId}
+        onEnabledChange={setSpeakerFilterEnabled}
+        onStrictnessChange={setSpeakerFilterStrictness}
+        onStrictnessReset={resetSpeakerFilterStrictness}
+      />
 
       <VoiceInputCard
         id="settings-search-voice-usage-data"
@@ -2727,7 +2743,7 @@ export function VoiceInputSection() {
       >
         <dl className="grid gap-3 sm:grid-cols-3">
           <div className="min-w-0">
-            <dt className="text-12 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dt className="text-12 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.duration')}
             </dt>
             <dd className="mt-1 truncate text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
@@ -2735,13 +2751,13 @@ export function VoiceInputSection() {
             </dd>
           </div>
           <div className="min-w-0">
-            <dt className="text-12 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dt className="text-12 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.estimatedCost')}
             </dt>
             <dd className="mt-1 truncate text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
               {formatUsd(cost.totalUsd)}
             </dd>
-            <dd className="mt-1 truncate text-11 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dd className="mt-1 truncate text-11 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.costBreakdown', {
                 asr: formatUsd(cost.asrUsd),
                 refine: formatUsd(cost.refineUsd),
@@ -2749,13 +2765,13 @@ export function VoiceInputSection() {
             </dd>
           </div>
           <div className="min-w-0">
-            <dt className="text-12 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dt className="text-12 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.sessions')}
             </dt>
             <dd className="mt-1 truncate text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">
               {stats.sessionCount}
             </dd>
-            <dd className="mt-1 text-11 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-70">
+            <dd className="mt-1 text-11 leading-[1.3] text-[var(--text-secondary)]">
               {t('settings.voiceInput.usage.outcomes', {
                 noSpeech: stats.noSpeechSessionCount,
                 failed: stats.failedSessionCount,
@@ -2785,7 +2801,7 @@ export function VoiceInputSection() {
               style={{ letterSpacing: '0.12px' }}
             >
               {t('settings.voiceInput.history.label')}
-              <span className="ml-2 text-12 font-normal text-[var(--settings-section-sublabel)] opacity-70">
+              <span className="ml-2 text-12 font-normal text-[var(--text-secondary)]">
                 ({historyEntries.length})
               </span>
             </span>
@@ -2816,7 +2832,7 @@ export function VoiceInputSection() {
                         <p className="max-h-[92px] overflow-y-auto whitespace-pre-wrap break-words text-13 leading-[1.45] text-[var(--settings-section-title)]">
                           {entry.text}
                         </p>
-                        <p className="mt-1 text-11 leading-[1.3] text-[var(--settings-section-sublabel)] opacity-60">
+                        <p className="mt-1 text-11 leading-[1.3] text-[var(--text-tertiary)]">
                           {formatHistoryTime(entry.createdAt, i18n.resolvedLanguage ?? i18n.language)}
                         </p>
                       </div>
@@ -2859,7 +2875,7 @@ export function VoiceInputSection() {
                   ))}
                 </div>
               ) : (
-                <p className="rounded-[12px] border border-[var(--settings-theme-card-border)] bg-[var(--settings-input-bg)] px-4 py-3 text-12 leading-[1.4] text-[var(--settings-section-sublabel)] opacity-70">
+                <p className="rounded-[12px] border border-[var(--settings-theme-card-border)] bg-[var(--settings-input-bg)] px-4 py-3 text-12 leading-[1.4] text-[var(--text-secondary)]">
                   {t('settings.voiceInput.history.empty')}
                 </p>
               )}

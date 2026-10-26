@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  appendedMessageKeys,
   buildMessageActionBarPresentation,
   countMessageRenderItemDiffs,
   isToolErrorLike,
@@ -19,6 +20,23 @@ import type {
   MessageRenderToolGroupItem,
   MessageRenderWorkGroupItem,
 } from '../messageRender';
+
+// Message entrance timing regression: visible arrivals, not the reply's creation timestamp,
+// decide motion. Existing presentation tests did not cover history/acknowledgement transitions.
+// Unit: the same classifier is consumed by Desktop and Mobile's real message lists.
+describe('appendedMessageKeys', () => {
+  it.each([
+    [undefined, ['recent-history'], []],
+    [[], ['first-send'], ['first-send']],
+    [['user'], ['user', 'slow-final-reply'], ['slow-final-reply']],
+    [['pending'], ['pending'], []],
+    [['user', 'reply'], ['older', 'user', 'reply'], []],
+    [['user', 'reply'], ['older', 'user', 'reply', 'next'], ['next']],
+    [['user', 'reply'], ['another-window'], []],
+  ] as const)('keeps history and stable identities still (%j → %j)', (before, after, expected) => {
+    expect([...appendedMessageKeys(before, after)]).toEqual(expected);
+  });
+});
 
 type TestMessage = MessageRenderNormalizedMessage<MessageRenderSourceMessageLike> & {
   diff?: unknown;
@@ -119,7 +137,7 @@ describe('messagePresentation', () => {
       hasTime: true,
       hasTurnCost: true,
       isStreaming: true,
-    }).items).toEqual(['streaming']);
+    }).items).toEqual([]);
   });
 
   it('summarizes tool groups as desktop-style headers without mobile detail badges', () => {
@@ -600,6 +618,13 @@ describe('messagePresentation', () => {
       title: 'Working…',
       header: { title: 'Working…' },
     });
+
+    expect(summarizeWorkGroupPresentation({ ...workGroup, durationMs: 77_516_000 })).toMatchObject({
+      title: 'Worked for 21h 31m',
+      header: { title: 'Worked for 21h 31m' },
+    });
+    expect(summarizeWorkGroupPresentation({ ...workGroup, durationMs: 183_845_000 }).title)
+      .toBe('Worked for 2d 3h 4m');
 
     expect(summarizeWorkGroupPresentation({
       ...workGroup,

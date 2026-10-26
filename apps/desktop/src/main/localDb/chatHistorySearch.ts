@@ -26,7 +26,7 @@
  *   - 上下文窗口 / content 解析复用 mapper.ts 的 messageToCamel(走 drizzle 驼峰行)。
  */
 
-import { and, asc, desc, eq, gt, inArray, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type {
   SearchChatHistoryArgs,
@@ -37,12 +37,14 @@ import type {
   HistoryRole,
 } from '@cindy/mcps';
 
+import { historyCompanionJson, parseHistoryCompanion } from './historyCompanion';
 import { getDbClient } from './client/current';
 import { messages as messagesTable, sessions as sessionsTable } from './schema';
 import { messageToCamel } from './mapper';
 import { fuseRRF, buildMessagesFtsMatch, extractMessagesFtsTokens } from './chatHistorySearch.pure';
 import { buildSnippetFromContent, SNIPPET_SOURCE_MAX_CHARS } from './cjkSeg';
 import { resolveStoredWorkingDirCandidates } from './workingDirHistoryFilter';
+import { remoteVisibleSessionSql } from './ipc/botRemoteVisibility.js';
 import { createLogger } from '../logger';
 import { getEmbeddingService } from '../embedding-host';
 import {
@@ -86,6 +88,8 @@ interface HitMeta {
 type SearchSessionStatus = 'active' | 'archived' | 'deleted';
 
 interface SearchChatHistoryEngineArgs extends SearchChatHistoryArgs {
+  /** Host-owned remote visibility scope, applied to both retrieval arms before ranking. */
+  remoteVisibleOnly?: boolean;
   /**
    * Optional host-side filters for product entry points that should only expose
    * desktop-visible conversations. MCP callers omit these and keep the original
@@ -130,7 +134,9 @@ export async function searchChatHistoryHybrid(
     args.workdir != null ? await resolveStoredWorkingDirCandidates(args.workdir) : null;
   // 空候选 ⟺ 库里不存在该目录的任何拼写(typo / 已删),必然零命中——在两路
   // arm 之前短路,避免向量 arm 白算一次 query embedding(Codex review)。
-  if (workdirCandidates !== null && workdirCandidates.length === 0) {
+  // Remote requests instead use the filtered arm/probe: the diagnostic must be
+  // identical when a directory exists only in hidden sessions or is absent.
+  if (!args.remoteVisibleOnly && workdirCandidates !== null && workdirCandidates.length === 0) {
     return {
       hits: [],
       sessions: {},
@@ -324,11 +330,25 @@ async function runVectorArm(
   if (!isDbClientVecAvailable()) {
     return { rows: [], skipReason: 'sqlite-vec 扩展未加载, 本次仅用 FTS 全文检索。' };
   }
+  const { clause, params } = buildFilterClause(args, workdirCandidates);
+  // The availability probe and KNN must see the same eligible rows. Probing the
+  // full vector table would expose hidden data through vector_used/skip_reason.
+  // Local teammate/source filters also need preselection so other conversations
+  // cannot fill the KNN candidate pool before the requested scope is applied.
+  const eligibleRowids = args.remoteVisibleOnly || args.teammateId || args.source
+    ? `rowid IN (
+        SELECT j.rowid FROM embedding_jobs j
+        JOIN messages m ON m.id = j.source_id
+        JOIN sessions s ON s.id = m.session_id
+        WHERE ${clause}
+      )`
+    : '';
   // gate 3: 向量表里有无数据? 无 → 用户没开"聊天记录语义索引"或尚未嵌完,
   // 提前短路, 不浪费一次 query embedding 的 API 调用。
   try {
     const probe = await getDbClient().queryOne<{ rowid: number }>(
-      `SELECT rowid FROM "${CHAT_VEC_TABLE}" LIMIT 1`,
+      `SELECT rowid FROM "${CHAT_VEC_TABLE}" ${eligibleRowids ? `WHERE ${eligibleRowids}` : ''} LIMIT 1`,
+      eligibleRowids ? params : [],
     );
     if (!probe) {
       return {
@@ -372,13 +392,16 @@ async function runVectorArm(
   // flatten 回外层重新触发该错误。
   // float32 必须以 Buffer(little-endian)绑定为 BLOB(better-sqlite3 不接受裸 Float32Array)。
   const f32 = Buffer.from(Float32Array.from(queryVec).buffer);
-  const { clause, params } = buildFilterClause(args, workdirCandidates);
   const vectorPoolLimit = clampInternalPoolLimit(args.vectorPoolLimit, ARM_POOL);
+  // vec0 supports rowid IN within its KNN cursor. Apply the requested scope before
+  // its candidate limit: filtering only outside the CTE lets unrelated rows starve
+  // eligible semantic hits. Reuse the arm predicate for both probe and retrieval.
   const sql = `
     WITH knn AS (
       SELECT rowid, distance
         FROM "${CHAT_VEC_TABLE}"
        WHERE embedding MATCH ?
+         ${eligibleRowids ? `AND ${eligibleRowids}` : ''}
        ORDER BY distance
        LIMIT ?
     )
@@ -401,7 +424,13 @@ async function runVectorArm(
       role: string;
       createdAt: number;
       distance: number;
-    }>(sql, [f32, vectorPoolLimit * VEC_OVERFETCH, ...params, vectorPoolLimit]);
+    }>(sql, [
+      f32,
+      ...(eligibleRowids ? params : []),
+      vectorPoolLimit * VEC_OVERFETCH,
+      ...params,
+      vectorPoolLimit,
+    ]);
     return {
       rows: rows.map((r) => ({
         messageId: r.messageId,
@@ -426,7 +455,16 @@ function buildFilterClause(
   workdirCandidates: string[] | null,
 ): { clause: string; params: unknown[] } {
   const conds: string[] = ['m.rewind_at IS NULL'];
+  if (args.remoteVisibleOnly) conds.push(remoteVisibleSessionSql('s'));
   const params: unknown[] = [];
+  if (args.teammateId) {
+    conds.push('EXISTS (SELECT 1 FROM bot_session_links hcf WHERE hcf.session_id = s.id AND hcf.bot_id = ?)');
+    params.push(args.teammateId);
+  }
+  if (args.source) {
+    conds.push('s.source = ?');
+    params.push(args.source);
+  }
   if (args.sessionIds && args.sessionIds.length > 0) {
     conds.push(`m.session_id IN (${args.sessionIds.map(() => '?').join(',')})`);
     params.push(...args.sessionIds);
@@ -578,12 +616,14 @@ async function fetchSessionsMeta(
       workingDir: sessionsTable.workingDir,
       agentKind: sessionsTable.agentKind,
       title: sessionsTable.title,
+      source: sessionsTable.source,
+      companionJson: historyCompanionJson(sql`${sessionsTable.id}`),
     })
     .from(sessionsTable)
     .where(inArray(sessionsTable.id, uniq));
   const out: Record<string, SearchChatHistorySessionMeta> = {};
   for (const r of rows) {
-    out[r.id] = { workingDir: r.workingDir, agentKind: r.agentKind, title: r.title };
+    out[r.id] = { workingDir: r.workingDir, agentKind: r.agentKind, title: r.title, source: r.source, companion: parseHistoryCompanion(r.companionJson) };
   }
   return out;
 }

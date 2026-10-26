@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { Pressable, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { Sparkles } from 'lucide-react-native';
@@ -6,11 +6,29 @@ import { GlassView } from 'expo-glass-effect';
 import Animated, { Easing, cancelAnimation, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { Text } from '@/components/AppText';
+import { AnimatedContentHeight } from './AnimatedContentHeight';
 import { useReduceMotionEnabled } from '@/hooks/useReduceMotion';
 import { Gesture, GestureDetector } from '@/platform/gestureHandler';
 import { useLiquidGlassAvailable } from '@/session/useLiquidGlassAvailable';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { iconSize, iconStroke, lineHeight, motionDuration, motionEasing, radius, spacing, typeScale } from '@/theme/tokens';
+
+/** Keep the last card in the collapsing slot so its removal has a visible trajectory. */
+export function PromptRecommendationSlot({ prompt, paddingHorizontal, onAccept, onDismiss }: {
+  prompt: string | null;
+  paddingHorizontal: number;
+  onAccept(): void;
+  onDismiss(): void;
+}) {
+  return (
+    <AnimatedContentHeight open={!!prompt} testID="session.promptRecommendationSlot">
+      <View style={{ paddingHorizontal }}>
+        <PromptRecommendation key={prompt} prompt={prompt ?? ''}
+          onAccept={onAccept} onDismiss={onDismiss} />
+      </View>
+    </AnimatedContentHeight>
+  );
+}
 
 /** Floating sibling of the composer, with a single tap target and swipe dismissal. */
 export function PromptRecommendation({ prompt, onAccept, onDismiss }: {
@@ -73,7 +91,7 @@ export function PromptRecommendation({ prompt, onAccept, onDismiss }: {
       testID="session.promptRecommendationAction"
     >
       <Sparkles color={colors.textSecondary} size={iconSize.md} strokeWidth={iconStroke.regular} />
-      <Text numberOfLines={1} style={styles.text}>{prompt}</Text>
+      <Text numberOfLines={1} ellipsizeMode="tail" style={styles.text}>{prompt}</Text>
     </Pressable>
   );
   return (
@@ -105,8 +123,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.md,
   },
   pressed: { opacity: 0.72 },
-  text: { flex: 1, color: colors.textPrimary, fontSize: typeScale.footnote, lineHeight: lineHeight.code },
+  text: { flex: 1, minWidth: 0, color: colors.textPrimary, fontSize: typeScale.bodySmall, lineHeight: lineHeight.bodySmall },
 });

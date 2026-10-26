@@ -36,6 +36,8 @@ export interface ThemeColors {
   surface: string;
   /** 抬一层的 Card / 弹窗 / 输入框 */
   surfaceElevated: string;
+  /** 首页导航抽屉投影，局部浮层例外（2026-09-27 用户要求）。 */
+  homeDrawerShadow: string;
   /** Surface 半透明(吸顶栏等,solid 非模糊——chrome/composer 热路径专用,守护测试禁 BlurView) */
   surfaceTranslucent: string;
   /** 侧栏/抽屉类面板毛玻璃底色(R1 audit 模式1,blur≈50 等效;BlurView tint 用) */
@@ -90,8 +92,6 @@ export interface ThemeColors {
   sheetActionSurface: string;
   /** Bottom sheet action group / row 描边 */
   sheetActionBorder: string;
-  /** Bottom sheet action row 正文色 */
-  sheetActionText: string;
   /** Bottom sheet / composer grabber 色 */
   sheetGrabber: string;
   /** App 内品牌 splash 背景红(仅限 splash,不进入普通 CTA 红名单) */
@@ -116,8 +116,13 @@ export interface ThemeColors {
   textPrimary: string;
   /** 次要文字 / 图标 */
   textSecondary: string;
-  /** 三级文字 / placeholder / metadata */
+  /** 三级文字 / metadata(时间、计数等真实信息) */
   textTertiary: string;
+  /**
+   * 输入框占位字专用(2026-09-27 用户定稿)。刻意低于三档文字的 4.5:1(约 3.5:1),让「还没输入」
+   * 一眼可辨;**只用于 placeholder 与同源的语音态提示**,不得当普通文字色用。
+   */
+  textPlaceholder: string;
   /** CTA / 主操作填充 —— 中性反相(常规按钮非红;红只留警告/报错。用户红色新规 2026-07-17,取代 U3+U8 全态红契约) */
   cta: string;
   /** CTA 上的文字 */
@@ -134,6 +139,10 @@ export interface ThemeColors {
   statusAccent: string;
   /** 房主皇冠标识金色；与 Desktop --warning-fg 对齐，Light / Dark 均保持醒目。 */
   warningFg: string;
+  /** 账号额度条预警填充（剩余不足 30%）；仅额度图形使用，双模式同值。 */
+  quotaBarWarn: string;
+  /** 账号额度条紧张填充（剩余不超过 10%）；仅额度图形使用，双模式同值。 */
+  quotaBarCrit: string;
   /** 会话状态点 — 等待用户回复/选择(TapTap 蓝,对齐桌面 --card-status-awaiting 与灵动岛 needs-interaction) */
   statusAwaiting: string;
   /**
@@ -146,6 +155,16 @@ export interface ThemeColors {
   statusDone: string;
   /** 自动审批权限模式强调色(Auto Approval 蓝 #417CDD,L=D 同值,设计定稿 2026-07-17;取代 M2 的 #1D4ED8/#19D2C1 拆值) */
   permAutoAccent: string;
+  /**
+   * 伙伴列表未读点(信息蓝 #417CDD,L=D 同值)。对齐桌面 `--bot-unread-bg`(DESIGN.md「Bot Unread Badge」):
+   * 表示 IM 未读语义,只用于伙伴列表行(伙伴与群聊)的未读点,不是 CTA、不是状态色,不得挪作他用。
+   */
+  botUnread: string;
+  /**
+   * PR 已合并图标色(焦点蓝 #417CDD,L=D 同值)。对齐桌面 PR_STATUS_COLOR.merged = `--focus-ring`;
+   * 只用于 PR 状态图标,不得挪作他用。其余 PR 状态复用 statusDone / statusError / textTertiary。
+   */
+  prMerged: string;
   /**
    * 错误说明文案的黑白系前景 —— **刻意跟随 textPrimary,不是红色**(黑白反色设计里成段
    * 错误文案不点红,错误语义由文案与上下文承担;"error" 是历史命名)。勿用于按钮文字
@@ -174,9 +193,11 @@ export interface ThemeColors {
   homeListFabBorder: string;
   /** 会话行右滑「置顶/取消置顶」按钮底色(Heart Orange,与 statusAccent 同值但语义独立) */
   swipeActionPin: string;
+  /** 右滑已读:沿用灵动岛青绿色语义,加深底色保证白色单勾的对比度。 */
+  swipeActionRead: string;
   /** 会话行左滑「选项」按钮底色(iOS systemGray 感的中性灰) */
   swipeActionNeutral: string;
-  /** 会话行左滑「归档」按钮底色(iOS 系统蓝;不用 statusAwaiting 青——其上白字对比不足) */
+  /** 会话行左滑「归档」按钮底色:保留手机版原有蓝色,与灵动岛归档对齐 */
   swipeActionArchive: string;
   /** swipe 按钮上的文字/图标色:两个主题都是白(按钮底色恒为深色系,不能用会反相的 ctaText) */
   swipeActionText: string;
@@ -380,12 +401,12 @@ export const loginPalettes: Record<ThemeMode, LoginSkinColors> = {
 /**
  * Default Light —— 移动端象牙白。
  * 页面 #F9F9F6(比桌面 #F2F2ED 更亮,暖度 B = R−3)/ 卡片 #FFFFFC / 选中底 #EAEAE6 /
- * 分隔线 #CCCCC8;正文 #1A1A1A 中性。由页面派生的半透明层(surfaceTranslucent /
+ * 分隔线 #CCCCC8;正文 #0F0F0F 中性。由页面派生的半透明层(surfaceTranslucent /
  * chatHeaderSurface / sheetSurface)是页面色加透明度,改页面时一起改。
  * 近白页面只给卡片留 1.05 的抬升(桌面 1.12),浮起面(卡片 / 列表行 / 浮层 / 输入容器)
  * 必须带 1px `border` 分层;需要下沉的块放到页面之下:选中底、展开块,以及代码卡 #F1F1EC。
- * 文字由深到浅:正文 → 二级 #4D4D4A → 三级 #686864,在所在底色上均 ≥ 4.5:1。
- * CTA 中性反相:#1A1A1A 底 + 白字。
+ * 文字由深到浅:正文 → 二级 #4D4D4A → 三级 #686864,在所在底色上均 ≥ 4.5:1;占位字 #858581 另列(≈3.5:1)。
+ * CTA 中性反相:#0F0F0F 底 + 白字。
  */
 export const lightColors: ThemeColors = {
   surface: '#F9F9F6',
@@ -404,6 +425,7 @@ export const lightColors: ThemeColors = {
   taskTagWhiteCheck: '#525252',
 
   surfaceElevated: '#FFFFFC',
+  homeDrawerShadow: 'rgba(0, 0, 0, 0.16)',
   surfaceTranslucent: 'rgba(249, 249, 246, 0.78)',
   surfaceTranslucentSidebar: 'rgba(255, 255, 252, 0.90)',
   chatHeaderSurface: 'rgba(249, 249, 246, 0.90)',
@@ -426,7 +448,6 @@ export const lightColors: ThemeColors = {
   sheetSurface: 'rgba(249, 249, 246, 0.96)',
   sheetActionSurface: '#FFFFFC',
   sheetActionBorder: '#CCCCC8',
-  sheetActionText: '#1A1A1A',
   sheetGrabber: '#C2C2BE',
   brandSplashBackground: '#DF0C27',
   brandSplashForeground: '#FFFFFF',
@@ -437,32 +458,38 @@ export const lightColors: ThemeColors = {
   border: '#CCCCC8',
   borderTranslucent: 'rgba(204, 204, 200, 0.62)',
   borderStrong: '#858581',
-  textPrimary: '#1A1A1A',
+  textPrimary: '#0F0F0F',
   textSecondary: '#4D4D4A',
   textTertiary: '#686864',
-  cta: '#1A1A1A',
+  textPlaceholder: '#858581',
+  cta: '#0F0F0F',
   ctaText: '#FFFFFF',
   statusReady: '#19D2C1',
   statusRecording: '#D91F37',
   statusAccent: '#EA6B17',
   warningFg: '#F3A115',
+  quotaBarWarn: '#F3A115',
+  quotaBarCrit: '#D91F37',
   statusAwaiting: '#19D2C1',
   statusError: '#D91F37',
   statusDone: '#2AAE5B',
   permAutoAccent: '#417CDD',
-  errorText: '#1A1A1A',
+  botUnread: '#417CDD',
+  prMerged: '#417CDD',
+  errorText: '#0F0F0F',
   destructive: '#f43d3f',
   sharedTaskConfirmBackground: '#ac3535',
-  sharedTaskConfirmForeground: '#fffefa',
+  sharedTaskConfirmForeground: '#FFFFFF',
   errorBorder: '#858581',
   // overlay:遮罩双模式恒深(light 原 0.24 太浅近白;0.50 实机过重,用户定稿 0.35,2026-07-21)。
   // 侧栏/抽屉毛玻璃底色另有 surfaceTranslucentSidebar,不受影响。
   overlay: 'rgba(38, 38, 38, 0.35)',
   // homeListFab:反相中性,不染品牌红(lead 裁决 2026-07-17:染红=扩张红名单,超 U8
-  // 已批决策表范围;日后要红 FAB 须单独过用户关卡)。light 对齐 textPrimary / cta 近黑 #1A1A1A。
-  homeListFab: '#1A1A1A',
+  // 已批决策表范围;日后要红 FAB 须单独过用户关卡)。light 对齐 textPrimary / cta 近黑 #0F0F0F。
+  homeListFab: '#0F0F0F',
   homeListFabBorder: 'transparent',
   swipeActionPin: '#EA6B17',
+  swipeActionRead: '#008579',
   swipeActionNeutral: '#8e8e93',
   swipeActionArchive: '#3b82f6',
   swipeActionText: '#fbfbfa',
@@ -472,7 +499,7 @@ export const lightColors: ThemeColors = {
 /**
  * Default Dark —— 纯中性近黑。
  * 页面 #121212 / 卡片 #1E1E1E / 选中底 #2A2A2A / 分隔线 #383838,不加暖。
- * 文字:正文 #EDEDED → 二级 #BDBDBD → 三级 #999999,在所在底色上均 ≥ 4.5:1。
+ * 文字:正文 #EDEDED → 二级 #BDBDBD → 三级 #999999,在所在底色上均 ≥ 4.5:1;占位字 #757575 另列(≈3.6:1)。
  * CTA 中性反相:#EDEDED 底 + #121212 字。
  */
 export const darkColors: ThemeColors = {
@@ -491,11 +518,12 @@ export const darkColors: ThemeColors = {
   taskTagWhite: '#ffffff',
   taskTagWhiteCheck: '#525252',
   surfaceElevated: '#1E1E1E',
+  homeDrawerShadow: 'rgba(0, 0, 0, 0.40)',
   surfaceTranslucent: 'rgba(18, 18, 18, 0.78)',
   surfaceTranslucentSidebar: 'rgba(10, 10, 10, 0.85)',
   chatHeaderSurface: 'rgba(18, 18, 18, 0.80)',
   chatHeaderDivider: 'rgba(255, 255, 255, 0.08)',
-  surfaceGlassPanel: 'rgba(36, 36, 36, 0.95)',
+  surfaceGlassPanel: '#242424',
   surfaceListRow: '#1E1E1E',
   surfaceListExpanded: '#121212',
   activeGlyph: '#A61629',
@@ -514,7 +542,6 @@ export const darkColors: ThemeColors = {
   sheetSurface: 'rgba(28, 28, 28, 0.96)',
   sheetActionSurface: '#262626',
   sheetActionBorder: '#383838',
-  sheetActionText: '#EDEDED',
   sheetGrabber: '#5C5C5C',
   brandSplashBackground: '#DF0C27',
   brandSplashForeground: '#FFFFFF',
@@ -528,26 +555,32 @@ export const darkColors: ThemeColors = {
   textPrimary: '#EDEDED',
   textSecondary: '#BDBDBD',
   textTertiary: '#999999',
+  textPlaceholder: '#757575',
   cta: '#EDEDED',
   ctaText: '#121212',
   statusReady: '#19D2C1',
   statusRecording: '#D91F37',
   statusAccent: '#EA6B17',
   warningFg: '#F3A115',
+  quotaBarWarn: '#F3A115',
+  quotaBarCrit: '#D91F37',
   statusAwaiting: '#19D2C1',
   statusError: '#D91F37',
   statusDone: '#2AAE5B',
   permAutoAccent: '#417CDD',
+  botUnread: '#417CDD',
+  prMerged: '#417CDD',
   errorText: '#EDEDED',
   destructive: '#f43d3f',
   sharedTaskConfirmBackground: '#ec9898',
-  sharedTaskConfirmForeground: '#272727',
+  sharedTaskConfirmForeground: '#121212',
   errorBorder: '#8A8A8A',
   overlay: 'rgba(0, 0, 0, 0.45)',
   // homeListFab:反相中性(lead 裁决,见 lightColors 注释);dark 用 #E6E6E6 柔白(比 cta 略收)。
   homeListFab: '#E6E6E6',
   homeListFabBorder: '#FFFFFF',
   swipeActionPin: '#EA6B17',
+  swipeActionRead: '#008579',
   swipeActionNeutral: '#636366',
   swipeActionArchive: '#3b82f6',
   swipeActionText: '#fbfbfa',
@@ -587,21 +620,27 @@ export const radius = {
 } as const;
 
 /**
- * 收敛后的字号阶梯(对标桌面 hierarchy,保持克制)。
- * micro..headline 为工作号;listBody/listTitle 为 CINDY List 页专用档;
- * largeTitle 是首页大标题(iOS large title 风格);hero 留给 login 品牌位。
+ * 字号阶梯(2026-09-27 用户定稿收拢为 11 档:删 14 并入 15、删 19 并入 20)。
+ * 按角色选字号(正本见 mobile-design-guide.md §3):
+ * - micro(11):徽标、极小标签;
+ * - caption(12):短元数据——时间、计数、状态词、chip 文字,**不放成句的话**;
+ * - footnote(13):说明、提示、报错、备注、分组小标签(成句的话至少 13);
+ * - bodySmall(15):次级正文——列表预览、紧凑行、面板操作项、搜索框、输入框,以及等宽代码;
+ * - body(16):界面主文字——行标题、按钮、菜单项、导航栏标题;
+ * - bodyLarge(17):对话消息正文专用;
+ * - subtitle(18):列表 / 卡片标题(首页任务、队友);
+ * - title(20):页面、弹窗、面板大标题;
+ * - headline(24)/ largeTitle(30):大数字、大标题;hero(40)留给 login 品牌位。
  * 阶梯外字号一律禁止——需要新号先回本文件扩档,不许在组件里写字面量(有守护测试拦截)。
  */
 export const typeScale = {
   micro: 11,
   caption: 12,
   footnote: 13,
-  listBody: 14,
-  code: 15,
+  bodySmall: 15,
   body: 16,
   bodyLarge: 17,
   subtitle: 18,
-  listTitle: 19,
   title: 20,
   headline: 24,
   largeTitle: 30,
@@ -609,31 +648,37 @@ export const typeScale = {
 } as const;
 
 /**
- * 与字号配对的行高。除标准配对外只有三个场景档:
- * - bodyLarge(17/26):对话消息流正文(对齐 iOS 对话类 app 的 17pt 惯例,行高略松以改善长文可读性);
- * - bodyRelaxed(16/24):login 副标题等宽松正文;
- * - listBody/listTitleCompact(14/20、19/27):CINDY List 页 M2 施工图专用;
- * - listTitle(18/28、20/28):既有首页列表标题类,行高撑触控行。
- * micro(16) 同时服务紧凑 caption 场景(diff 行、媒体 hint 等行高即盒高的地方)。
+ * 与字号配对的行高(2026-09-27 用户定稿:每个文字样式都必须配行高,守护测试拦截)。
+ * 标准配对:11/16 · 12/18 · 13/18 · 15/20 · 16/22 · 17/26 · 18/26 · 20/25 · 24/30 · 30/36 · 40/44
+ * (`textStyles` 即这组配对)。标准之外只允许以下登记场景,不要为单个页面再造行高:
+ * - bodyRelaxed(24):login 副标题、伙伴记忆等长文阅读;
+ * - listTitle(28)与 bodyLarge / body 行高:首页列表与队友行的节奏(DESIGN.md:18/28 标题、
+ *   15/26 预览、13/22 元数据),对话流 Markdown 标题;
+ * - micro / bodySmall 行高:代码、diff、媒体 hint 等「行高即盒高」的紧凑场景;
+ * - 对齐例外:要与相邻图标 / 按钮 / 行内正文对齐的文字,行高跟随被对齐对象。
+ * 单行输入框(TextInput)不设行高:iOS 上会让占位字与光标偏位;多行编辑区可配标准行高。
  */
 export const lineHeight = {
   micro: 16,
   caption: 18,
-  listBody: 20,
-  code: 20,
+  bodySmall: 20,
   body: 22,
   bodyRelaxed: 24,
   bodyLarge: 26,
   title: 25,
   subtitle: 26,
-  listTitleCompact: 27,
   listTitle: 28,
   headline: 30,
   largeTitle: 36,
   hero: 44,
 } as const;
 
-/** 字重:克制到 4 档。默认 medium;semibold 仅限大写微标签等少量强调;bold 限 login 品牌 hero 标题与消息流 markdown 强调(对齐桌面 <strong> 的 700)。 */
+/**
+ * 字重:克制到 4 档,按角色选(2026-09-26 用户定稿,正本见 mobile-design-guide.md §3):
+ * 标题 semibold;列表行 / 选项 / 卡片标题 / 按钮 medium;正文、说明、元数据 regular;分组小标签与徽标 semibold。
+ * 浅色字不配粗字重(textTertiary 只配 regular,分组小标签除外;textSecondary 只配 regular / medium)。
+ * bold 限 login 品牌 hero 标题与消息流 markdown 强调(对齐桌面 <strong> 的 700)。
+ */
 export const fontWeight = {
   regular: '400',
   medium: '500',
@@ -650,13 +695,11 @@ export const textStyles = {
   micro: { fontSize: typeScale.micro, lineHeight: lineHeight.micro },
   caption: { fontSize: typeScale.caption, lineHeight: lineHeight.caption },
   footnote: { fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
-  listBody: { fontSize: typeScale.listBody, lineHeight: lineHeight.listBody },
-  code: { fontSize: typeScale.code, lineHeight: lineHeight.code },
+  bodySmall: { fontSize: typeScale.bodySmall, lineHeight: lineHeight.bodySmall },
   body: { fontSize: typeScale.body, lineHeight: lineHeight.body },
   bodyRelaxed: { fontSize: typeScale.body, lineHeight: lineHeight.bodyRelaxed },
   bodyLarge: { fontSize: typeScale.bodyLarge, lineHeight: lineHeight.bodyLarge },
   subtitle: { fontSize: typeScale.subtitle, lineHeight: lineHeight.subtitle },
-  listTitle: { fontSize: typeScale.listTitle, lineHeight: lineHeight.listTitleCompact },
   title: { fontSize: typeScale.title, lineHeight: lineHeight.title },
   headline: { fontSize: typeScale.headline, lineHeight: lineHeight.headline },
   largeTitle: { fontSize: typeScale.largeTitle, lineHeight: lineHeight.largeTitle },
@@ -791,6 +834,16 @@ export const motionEasing = {
   move: [0.4, 0, 0.2, 1],
 } as const;
 
+/**
+ * 移动端列表展开 / 收起节奏(DESIGN.md §14.4 登记的移动端例外,2026-09-30 用户要求
+ * 「符合 iOS 节奏」,同日要求把首版 450ms 加快一倍)。手机列表用 225ms 二次缓出,约
+ * 150ms 完成九成位移,先快后缓、无回弹(桌面 base 档为 200ms)。只用于列表分组的展开 /
+ * 收起(session/listDisclosureTransition.tsx)。
+ */
+export const listDisclosureMotion = {
+  duration: 225,
+} as const;
+
 /** Shared size for floating iOS navigation/menu controls (points). */
 export const navigationChrome = {
   target: 44,
@@ -806,5 +859,11 @@ export const navigationChrome = {
       scrim: 'rgba(0, 0, 0, 0.35)',
       selected: 'rgba(255, 255, 255, 0.18)',
     },
+  },
+  // Regular glass over arbitrary page content (in-app browser): a theme tint keeps the
+  // material in the app's polarity instead of adapting to the page behind it.
+  pageTint: {
+    light: '#FFFFFCB3',
+    dark: '#1E1E1EB3',
   },
 } as const;

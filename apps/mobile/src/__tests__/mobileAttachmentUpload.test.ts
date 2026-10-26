@@ -1,4 +1,5 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { apiFetchRaw } from '@/api/client';
 import { installPeerUpload } from '@/device-link/peerFileRegistry';
 import { buildPeerAttachmentRef, parsePeerAttachmentRef } from '@cindy/device-link';
@@ -22,8 +23,50 @@ beforeAll(async () => {
 const readFileChunk = vi.fn(async (_uri: string, _position: number, length: number) =>
   Buffer.alloc(length, 0x78).toString('base64'),
 );
+beforeEach(() => setMobileAuthOwner('alice'));
 
 describe('mobileAttachmentUpload', () => {
+  // Unit: late peer completion must not retain removed uploads or an invalidated owner's pixels.
+  it.each(['cancelled', 'outbox-removed', 'account-switched'] as const)('does not retain a late upload after %s', async (reason) => {
+    const abort = new AbortController();
+    let active = true;
+    const retainImage = vi.fn();
+    const off = installPeerUpload(async (_device, _uri, metadata) => {
+      if (reason === 'cancelled') abort.abort();
+      if (reason === 'outbox-removed') active = false;
+      if (reason === 'account-switched') { setMobileAuthOwner('bob'); setMobileAuthOwner('alice'); }
+      return buildPeerAttachmentRef({ ...metadata, ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' });
+    });
+    try {
+      await uploadMobileAttachmentFromFile({ name: 'photo.png', size: 4, mimeType: 'image/png' }, 'file:///source', {
+        token: 'token', deviceId: 'computer', signal: abort.signal, isActive: () => active,
+        deps: { readFileChunk, retainImage },
+      });
+      expect(retainImage).not.toHaveBeenCalled();
+    } finally { off(); }
+  });
+  // Unit regression: background outbox calls this entry without the composer's onUploaded.
+  // The immutable snapshot must be retained before it is removed on either transport.
+  it.each(['oss', 'peer'] as const)('retains the sent %s image snapshot before cleanup', async (transport) => {
+    const order: string[] = [];
+    let retained: { ref: string; uri: string } | undefined;
+    const apiFetch = vi.fn(async () => ({ putUrl: 'https://oss.example/upload', key: 'uploads/photo.png' }));
+    const off = installPeerUpload(async (_device, _uri, metadata) => transport === 'peer'
+      ? buildPeerAttachmentRef({ ...metadata, ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }) : null);
+    try {
+      const attachment = await uploadMobileAttachmentFromFile({ name: 'photo.png', size: 4, mimeType: 'image/png' }, 'file:///draft', {
+        deviceId: 'computer', token: 'token', deps: {
+          apiFetch: apiFetch as unknown as typeof apiFetchRaw,
+          readFileChunk, uploadFile: async () => ({ status: 200 }),
+          snapshotFile: async () => ({ uri: 'file:///snapshot', size: 4, cleanup: async () => { order.push('cleanup'); } }),
+          retainImage: async (ref, uri) => { retained = { ref, uri }; order.push('retain'); },
+        },
+      });
+      expect(retained).toEqual({ ref: attachment.url ?? attachment.path, uri: 'file:///snapshot' });
+      expect(order).toEqual(['retain', 'cleanup']);
+    } finally { off(); }
+  });
+
   it('uploads prepared bytes to the captured peer without presigning OSS', async () => {
     const apiFetch = vi.fn();
     const peer = vi.fn(async (_device, _uri, metadata) => buildPeerAttachmentRef({ ...metadata, ticket: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }));
@@ -172,7 +215,7 @@ describe('mobileAttachmentUpload', () => {
     });
   });
 
-  it('rejects an unsupported local file type before any presign or PUT (no orphaned OSS object)', async () => {
+  it('rejects a file beyond the OSS limit before any presign or PUT (no orphaned OSS object)', async () => {
     const apiFetch = vi.fn();
     const fetchPut = vi.fn();
 
@@ -180,7 +223,7 @@ describe('mobileAttachmentUpload', () => {
       uploadMobileAttachment(
         {
           name: 'archive.zip',
-          size: 4096,
+          size: 2 * 1024 * 1024 * 1024 + 1,
           mimeType: 'application/zip',
         },
         new Blob(['zip'], { type: 'application/zip' }),
@@ -192,7 +235,7 @@ describe('mobileAttachmentUpload', () => {
           },
         },
       ),
-    ).rejects.toThrow('这个本机文件类型暂不支持作为附件发送。');
+    ).rejects.toThrow('文件超过 2 GB，只能在与电脑直连时发送');
 
     // 关键:校验发生在网络调用之前,绝不能 presign / PUT,否则会留下孤儿对象。
     expect(apiFetch).not.toHaveBeenCalled();
@@ -385,7 +428,7 @@ describe('mobileAttachmentUpload', () => {
     })).rejects.toThrow('附件上传失败：HTTP 403 (SignatureDoesNotMatch)');
   });
 
-  it('rejects an unsupported file type before presign in the native file path (no orphaned OSS object)', async () => {
+  it('rejects a file beyond the OSS limit before hashing or presign when no direct connection is possible', async () => {
     const apiFetch = vi.fn();
     const uploadFile = vi.fn();
 
@@ -393,7 +436,7 @@ describe('mobileAttachmentUpload', () => {
       uploadMobileAttachmentFromFile(
         {
           name: 'archive.zip',
-          size: 4096,
+          size: 2 * 1024 * 1024 * 1024 + 1,
           mimeType: 'application/zip',
         },
         'file:///tmp/archive.zip',
@@ -405,7 +448,7 @@ describe('mobileAttachmentUpload', () => {
           },
         },
       ),
-    ).rejects.toThrow('这个本机文件类型暂不支持作为附件发送。');
+    ).rejects.toThrow('文件超过 2 GB，只能在与电脑直连时发送');
 
     expect(apiFetch).not.toHaveBeenCalled();
     expect(uploadFile).not.toHaveBeenCalled();
@@ -539,6 +582,29 @@ describe('mobileAttachmentUpload', () => {
       await pending;
       progress(200);
       expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('has no fixed total deadline for a large native upload that keeps progressing', async () => {
+    vi.useFakeTimers();
+    try {
+      let finish!: (value: { status: number }) => void;
+      let progress!: (bytes: number) => void;
+      let signal!: AbortSignal;
+      const uploadFile = vi.fn((_url, _uri, _headers, opts) => {
+        progress = opts.onProgress;
+        signal = opts.signal;
+        return new Promise<{ status: number }>((resolve) => { finish = resolve; });
+      });
+      const pending = putMobileAttachmentUploadFromFile('https://oss.example/upload', 'file:///tmp/big.mov', 'video/quicktime', { uploadFile });
+      for (let minute = 1; minute <= 10; minute += 1) {
+        await vi.advanceTimersByTimeAsync(50_000);
+        progress(minute * 100 * 1024 * 1024);
+      }
+      expect(signal.aborted).toBe(false);
+      expect(uploadFile).toHaveBeenCalledTimes(1);
+      finish({ status: 200 });
+      await pending;
     } finally { vi.useRealTimers(); }
   });
 

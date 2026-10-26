@@ -9,6 +9,11 @@ import path from 'node:path';
 
 import { BUNDLED_CATALOG, PROVIDER_MODEL_CATALOG, providerModelRecord, buildUserProvider, providerPresetOAuth, parseModelsListResponse, mergeDiscoveredRuntimeModels, type Catalog } from '@cindy/model-providers';
 
+// Skill discovery is covered by managed-skills.test.ts, not this runtime/auth fixture.
+vi.mock('../managed-skills.js', () => ({
+  listCindyManagedSkills: async () => [],
+  cindyManagedSkillRoots: async () => [],
+}));
 // Account discovery persistence is outside this runtime/route fixture.
 vi.mock('../model-discovery/xai.js', () => ({
   discardXaiModelsDiskCache: vi.fn(async () => {}),
@@ -47,7 +52,7 @@ import {
   pruneAnthropicCompatForGateway,
   type PiBundledModelInfo,
 } from '../pi-host.js';
-import { getActiveCatalog, setActiveCatalog, setDiscoveredCodexModels, setXdGatewayModels, setXaiDiscoveredModels, setLocalCatalogOverrides } from '../active-catalog.js';
+import { getActiveCatalog, setActiveCatalog, setCustomProviderConfigs, setCustomProviders, setDiscoveredCodexModels, setXdGatewayModels, setXaiDiscoveredModels, setLocalCatalogOverrides } from '../active-catalog.js';
 import { EMPTY_MODEL_CATALOG_OVERRIDES, sanitizeModelCatalogOverrides } from '../model-plane/localCatalogOverrides.js';
 import { deriveAvailableModels } from '../catalog-to-descriptors.js';
 
@@ -146,6 +151,50 @@ const piBundledModel = (
   maxTokens: 128_000,
   ...over,
 });
+
+it.each(['absent', 'compatible', 'other-api'] as const)(
+  'carries a restored account model into the subscription serializer (native entry: %s)',
+  (nativeEntry) => {
+    const id = 'gpt-future-account-fixture';
+    const providerId = 'openai-restored';
+    setActiveCatalog(BUNDLED_CATALOG);
+    setCustomProviderConfigs([{
+      id: providerId, name: 'Restored account', auth: { method: 'oauth', native: 'codex' },
+      runtimes: { codex: { baseUrl: 'https://chatgpt.com/backend-api/codex', models: [{
+        id, name: id, discoveredMetadata: {
+          efforts: ['low', 'high', 'ultra'], defaultEffort: 'ultra',
+          contextWindow: 272000, maxOutputTokens: 16000, supportsImageInput: false,
+        },
+      }] } },
+    }]);
+    try {
+      const native = piBundledModel(id,
+        nativeEntry === 'compatible' ? 'openai-codex-responses' : 'openai-completions', {
+          thinkingLevelMap: { low: 'medium' }, compat: { supportsStrictTools: true },
+        });
+      const probe = new Map([['openai-codex', new Map(nativeEntry === 'absent' ? [] : [[id, native]])]]);
+      const catalog = getActiveCatalog();
+      expect(deriveAvailableModels(catalog, 'pi').some(model => model.id === `chatgpt/${id}`)).toBe(true);
+      const result = buildPiSubscriptionNativeProviders(catalog, 'http://127.0.0.1:4567', probe);
+      const provider = result.providers.find(p => p.sourceProviderId === providerId)!;
+      expect(provider).toMatchObject({
+        id: `openai-codex-${providerId}`, api: 'openai-codex-responses', inheritModels: false,
+        headers: { 'x-cindy-pi-provider-id': providerId },
+      });
+      const model = provider.models.find(m => m.id === `chatgpt/${id}`)!;
+      expect(model).toMatchObject({
+        wireId: id, api: 'openai-codex-responses', input: ['text'], maxTokens: 16000,
+        thinkingLevelMap: { low: nativeEntry === 'compatible' ? 'medium' : 'low', high: 'high', max: null },
+      });
+      expect(model.thinkingLevelMap).not.toHaveProperty('ultra');
+      expect(model.compat).toEqual(nativeEntry === 'compatible' ? native.compat : undefined);
+      expect(result.providers.find(p => p.sourceProviderId === 'openai')?.models.some(m => m.wireId === id)).toBe(false);
+    } finally {
+      setCustomProviders([]);
+      setActiveCatalog(BUNDLED_CATALOG);
+    }
+  },
+);
 
 afterEach(() => {
   setActiveCatalog(BUNDLED_CATALOG);
@@ -379,6 +428,49 @@ describe('resolvePiCindyGatewayModelApi', () => {
 });
 
 describe('buildPiNativeProvidersFromConfigs', () => {
+  // Tier 2: the actual launch builder must carry a user's V6 selection, including
+  // protocol limits, instead of reverting to the connection's Messages default.
+  it.each(['anthropic-messages', 'openai-completions', 'openai-responses'] as const)(
+    'launches Kimi through the selected V6 %s interface', (api) => {
+      const config = { id: 'kimi-v6', name: 'Kimi', runtimes: { pi: {
+        catalogPresetId: 'moonshot-kimi-code', baseUrl: 'https://api.kimi.com/coding',
+        wireProtocol: 'anthropic-messages' as const,
+        models: [{ id: 'k3.1-pro', name: 'K3.1', interfaceId: `moonshot-kimi-code-${api}` }],
+      } } };
+      const provider = buildUserProvider(config);
+      const catalog = { ...BUNDLED_CATALOG, providers: [...BUNDLED_CATALOG.providers, provider] };
+      const result = buildPiNativeProvidersFromConfigs([config], () => 'fixture-key', undefined, undefined, catalog);
+      const projected = result.providers[0].models[0];
+      expect(projected.api ?? result.providers[0].api).toBe(api);
+      expect(projected.baseUrl ?? result.providers[0].baseUrl).toBe(api === 'anthropic-messages' ? 'https://api.kimi.com/coding' : 'https://api.kimi.com/coding/v1');
+      expect(projected).toMatchObject({ wireId: 'k3.1-pro', contextWindow: 262144, maxTokens: 262144, input: ['text', 'image'] });
+    },
+  );
+
+  it.each(['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'])(
+    'sends the Google Gemini API preset %s to the native /v1beta root', (id) => {
+      const preset = BUNDLED_CATALOG.presets!.find(p => p.id === 'google-gemini-api')!;
+      const config = { id: 'google-gemini-api', name: 'Google Gemini API', runtimes: {
+        pi: { ...preset.runtimes.pi!, catalogPresetId: preset.id, models: [{ id, name: id }] },
+      } };
+      const catalog = { ...BUNDLED_CATALOG, providers: [...BUNDLED_CATALOG.providers, buildUserProvider(config, { presets: [preset] })] };
+      const { providers } = buildPiNativeProvidersFromConfigs([config], () => 'fixture-key', undefined, undefined, catalog);
+      // Discovery keeps the OpenAI-compatible connection root; the native SDK must not inherit it.
+      expect(providers[0].baseUrl).toBe('https://generativelanguage.googleapis.com/v1beta/openai');
+      expect(providers[0].models[0]).toMatchObject({
+        api: 'google-generative-ai', baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      });
+    },
+  );
+
+  it('never rewrites a custom Gemini proxy endpoint', () => {
+    const baseUrl = 'https://proxy.example/v1beta/openai';
+    const { providers } = buildPiNativeProvidersFromConfigs([{ id: 'gemini-proxy', name: 'Proxy', runtimes: {
+      pi: piRuntime({ baseUrl, wireProtocol: 'openai-chat', models: [{ id: 'gemini-3.6-flash', name: 'Gemini', piApi: 'google-generative-ai' }] }),
+    } }], () => 'fixture-key');
+    expect(providers[0].models[0].baseUrl ?? providers[0].baseUrl).toBe(baseUrl);
+  });
+
   it('carries catalog-generated suppliers through the real Pi launch mapping', () => {
     const generatedIds = ['ant-ling', 'baseten', 'cerebras', 'fireworks', 'groq',
       'huggingface', 'nvidia', 'together', 'mistral', 'opencode', 'qwen-token-plan',
@@ -2317,8 +2409,9 @@ describe('buildPiNativeProvidersFromConfigs', () => {
     );
     expect(providers).toHaveLength(1);
     expect(providers[0]).toMatchObject({ api, baseUrl: 'http://127.0.0.1:9999',
+      cacheIdentityBaseUrl: 'https://openrouter.ai/api/v1',
       headers: { 'x-cindy-pi-provider-id': 'openrouter-test', 'x-cindy-pi-session-token': '$CINDY_PI_SESSION_TOKEN' },
-      models: [{ id: 'google/gemini-test', baseUrl: 'http://127.0.0.1:9999' }],
+      models: [{ id: 'google/gemini-test', baseUrl: 'http://127.0.0.1:9999', cacheIdentityBaseUrl: 'https://openrouter.ai/api/v1' }],
     });
     expect(env).toEqual({});
   });

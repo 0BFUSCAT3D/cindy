@@ -1,5 +1,6 @@
 import { SessionTaskMenu } from './SessionTaskMenu';
 import { isSharedTaskPeer } from '@cindy/device-link';
+import { getSessionListActivityAt } from '@cindy/maker-shared/session-activity';
 import { TaskTagMenuSection, TaskTagEditor, TaskTagDots } from '@/features/task-tags/TaskTags';
 import { Button } from '@/components/ui/button';
 /**
@@ -51,11 +52,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  MENU_ITEM_CLASS,
-  MENU_ROW_CLASS,
-  MENU_SUB_CONTENT_CLASS,
-} from './menuStyles';
+import { MENU_ITEM_CLASS, MENU_ROW_CLASS } from './menuStyles';
 import { toast } from '@/lib/toast';
 import { buildSessionDeepLink } from '@/lib/deepLink';
 import { createLogger } from '@/lib/logger';
@@ -82,12 +79,17 @@ import { isRemoteSessionWriteBlocked } from '../lib/remoteSessionWriteGuard';
 import { prefetchDirtyWorktreeForRemoval } from '@/lib/worktreeRemovalWarning';
 import { resolveSessionCardBody } from './sessionCardPreview';
 import { useSessionAttentionKind } from '@/lib/sessionAttentionStore';
+import {
+  mergeOrcaLeadAttentionKind,
+  useOrcaLeadWorkerAttentionKind,
+} from '../lib/orcaLeadWorkerAttention';
 import { useSessionAttentionUrgency } from '../contexts/SessionAttentionUrgencyContext';
 import { useRemoteSessionScheduleInfo } from '@/features/device-link/remoteProjectsStore';
 import { useRemoteSessionActivity } from '@/features/device-link/remoteSessionActivityStore';
 import { useSessionBoundSchedules } from '@/features/scheduler/lib/scheduleSessionBinding';
 import { projectSidebarSessionActivity, resolveSidebarRightStatus } from './sidebarRightStatus';
 import { Tip } from '@/components/ui/tooltip';
+import { BotFollowMark, useSessionFollowers } from '@/features/bots/BotFollowMark';
 import { SidebarRightStatusIndicator } from './SidebarRightStatusIndicator';
 import { shouldPrefetchSessionOnPointerDown } from './sessionSwitchPrefetch';
 import { useCindyMakeActivity } from './useCindyMakeActivity';
@@ -103,6 +105,8 @@ const log = createLogger('SessionCard');
 
 const CARD_TITLE_STATUS_SLOT_CLASS =
   'inline-flex h-[1em] w-3 items-center justify-center align-[-0.08em]';
+/** 卡片归档确认胶囊的尺寸类:胶囊本体与标题行里的隐形占位共用,保证宽度一致。 */
+const CARD_ARCHIVE_CONFIRM_CLASS = 'w-max min-w-14 whitespace-nowrap';
 const CARD_TITLE_META_SLOT_CLASS =
   'ml-1 inline-flex h-[1em] w-3 items-center justify-center align-[-0.08em]';
 
@@ -113,12 +117,13 @@ const CARD_TITLE_META_SLOT_CLASS =
  */
 function getNeutralAwaitingKind(
   sessionId: string,
-): 'permission' | 'plan_review' | 'ask_user' | 'plugin_setup' | '' {
+): 'permission' | 'plan_review' | 'ask_user' | 'plugin_setup' | 'input_handoff' | '' {
   const info = makerChatStore.getRunningSnapshot().get(sessionId);
   if (info?.hasPendingPermission) return 'permission';
   if (info?.hasPendingPlanReview) return 'plan_review';
   if (info?.hasPendingAskUser) return 'ask_user';
   if (info?.hasPendingPluginSetup) return 'plugin_setup';
+  if (info?.hasPendingInputHandoff) return 'input_handoff';
   return '';
 }
 
@@ -159,6 +164,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
   sharedTaskRole,
 }: SessionCardProps & SidebarNavigationProps) {
   const { t } = useTranslation();
+  const followers = useSessionFollowers(session);
+  // 标题后常显的标记:任务标签色球与「伙伴在跟进」头像。浮出操作钮与归档确认胶囊按它让位。
+  const hasTitleMarks = !!session.tags?.length || followers.length > 0;
   const cindyMakeActivity = useCindyMakeActivity(session);
   const cindyMakePreparing = cindyMakeActivity === 'building' ? undefined : cindyMakeActivity;
   // mod+1..9 序号徽标:模块 store 按 sessionId 精准订阅,非按住态恒为 null。
@@ -170,7 +178,10 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
   // list 变体与文字模式共用右侧状态优先级:
   // error > awaiting > running > done > time。远程会话由被控端活动镜像覆盖
   // 本地 attention 链路，与 SessionItem 完全一致。
-  const attentionKind = useSessionAttentionKind(session.id);
+  // Orca Lead 另并入其 Worker 的出错 / 等待确认,见 lib/orcaLeadWorkerAttention.ts。
+  const ownAttentionKind = useSessionAttentionKind(session.id);
+  const orcaWorkerAttentionKind = useOrcaLeadWorkerAttentionKind(session.id);
+  const attentionKind = mergeOrcaLeadAttentionKind(ownAttentionKind, orcaWorkerAttentionKind);
   const isUrgentFromContext = useSessionAttentionUrgency(session.id);
   const remoteActivity = useRemoteSessionActivity(session.id, session.deviceLinkDeviceId);
   const remoteSchedule = useRemoteSessionScheduleInfo(session.id);
@@ -185,13 +196,16 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     isRunning: session.deviceLinkDeviceId
       ? remoteActivity?.phase === 'running'
       : isRunning || cindyMakeActivity != null,
-    hasAttentionNotification: hasAttentionNotification || remoteSchedule?.hasUnreadRun === true,
+    hasAttentionNotification:
+      hasAttentionNotification ||
+      orcaWorkerAttentionKind !== undefined ||
+      remoteSchedule?.hasUnreadRun === true,
   });
   const leftIconRunning = sessionActivity.currentTurnActive === true;
   const rightStatusKind = resolveSidebarRightStatus(sessionActivity);
   const isPinned = session.pinnedAt != null;
   const isEmpty = isEmptyDraftSession(session);
-  const activityIso = session.updatedAt;
+  const activityIso = getSessionListActivityAt(session);
   const remoteIconKind = session.deviceLinkDeviceId
     ? 'device-link'
     : session.remoteHostId
@@ -212,7 +226,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
   );
   const remoteWritesBlocked = isRemoteSessionWriteBlocked(session);
   const isAutomationGenerated = isAutomationGeneratedSession(session);
-  const boundSchedules = useSessionBoundSchedules(session.id);
+  const boundSchedules = useSessionBoundSchedules(session.id, session.deviceLinkDeviceId);
   const showScheduleBindingBadge = boundSchedules.length > 0;
   const showAutomationTimer = !showScheduleBindingBadge && isAutomationGenerated;
   const displayTitle = getSessionDisplayTitle(
@@ -255,7 +269,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
           ? t('ccAgent.sidebar.card.awaitingPlan')
           : awaitingKind === 'plugin_setup'
             ? t('ccAgent.sidebar.card.awaitingPluginSetup')
-            : t('ccAgent.sidebar.card.awaitingQuestion');
+            : awaitingKind === 'input_handoff'
+              ? t('ccAgent.sidebar.card.awaitingInputHandoff')
+              : t('ccAgent.sidebar.card.awaitingQuestion');
   const runningDetail =
     islandActivity?.phase === 'running' && islandActivity.compactDetail
       ? islandActivity.compactDetail
@@ -542,7 +558,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     !isEmpty &&
     !session.remoteHostId &&
     session.orcaRole !== 'worker' &&
-    !session.deviceLinkDeviceId;
+    !session.deviceLinkDeviceId &&
+    // Agent 在另一台电脑运行：转录在那台，本机打包不全。
+    !session.agentDeviceId;
 
   const exportShareMenuItem = canExportShare ? (
     <DropdownMenuItem onSelect={handleExportShareSelect} className={MENU_ITEM_CLASS}>
@@ -556,28 +574,18 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     !isEmpty &&
     !session.remoteHostId &&
     !session.deviceLinkDeviceId &&
+    // Agent 在另一台电脑运行的任务也可移动：那台按任务 id 定址 Agent 工作区，与本机路径无关。
     session.status !== 'archived';
 
   const moveToProjectSubmenu = canMoveToProject ? (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger className={MENU_ROW_CLASS}>
-        <span className="flex-1">{t('ccAgent.sidebar.sessionMenu.moveToProject')}</span>
-        <ChevronRight size={14} className="ml-2 shrink-0 text-[var(--cmd-palette-item-meta)]" />
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent
-        sideOffset={4}
-        className={cn(MENU_SUB_CONTENT_CLASS, 'w-[320px] overflow-hidden')}
-      >
-        <SessionProjectMoveSubmenu
-          projectOptions={projectOptions}
-          currentWorkingDir={session.workspaceKind === 'project' ? session.workingDir : null}
-          isDialogue={session.workspaceKind === 'dialogue'}
-          onSelectProject={handleMoveToProjectSelect}
-          onBrowseProject={handleMoveToProjectBrowse}
-          onMoveToDialogue={handleMoveToDialogue}
-        />
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
+    <SessionProjectMoveSubmenu
+      projectOptions={projectOptions}
+      currentWorkingDir={session.workspaceKind === 'project' ? session.workingDir : null}
+      isDialogue={session.workspaceKind === 'dialogue'}
+      onSelectProject={handleMoveToProjectSelect}
+      onBrowseProject={handleMoveToProjectBrowse}
+      onMoveToDialogue={handleMoveToDialogue}
+    />
   ) : null;
 
   const statusIconNode = (
@@ -599,6 +607,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
     showScheduleBindingBadge ? (
       <ScheduleBindingBadge
         schedules={boundSchedules}
+        deviceLinkDeviceId={session.deviceLinkDeviceId}
         size={iconSize}
         activeForeground={isActive}
       />
@@ -710,10 +719,11 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               isActive
                 ? 'bg-sidebar-item-active [--task-tag-ring-bg:hsl(var(--sidebar-item-active))] text-sidebar-item-active-foreground shadow-[inset_0_0_0_1px_var(--sidebar-item-active-border)]'
                 : cn(
-                    'hover:bg-sidebar-item-hover hover:[--task-tag-ring-bg:hsl(var(--sidebar-item-hover))]',
+                    // 标签色球描边不随 hover 换色(同 SessionItem):半透明 hover 底
+                    // 用作描边会透出色球本色,描边消失。
+                    'hover:bg-sidebar-item-hover',
                     // 菜单开着时鼠标常会离开行,行底仍保持 hover 色。
-                    menuPos !== null &&
-                      'bg-sidebar-item-hover [--task-tag-ring-bg:hsl(var(--sidebar-item-hover))]',
+                    menuPos !== null && 'bg-sidebar-item-hover',
                   ),
             )
           : cn(
@@ -722,7 +732,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               'rounded-xl bg-[var(--surface-elevated)] border',
               isActive
                 ? 'border-[var(--sidebar-item-active-border)] !bg-sidebar-item-active [--task-tag-ring-bg:hsl(var(--sidebar-item-active))] text-sidebar-item-active-foreground'
-                : 'border-sidebar-border [--task-tag-ring-bg:var(--surface-elevated)] hover:!bg-sidebar-item-hover hover:[--task-tag-ring-bg:hsl(var(--sidebar-item-hover))]',
+                : 'border-sidebar-border [--task-tag-ring-bg:var(--surface-elevated)] hover:!bg-sidebar-item-hover',
             ),
         // 多选选中态(与列表 SessionItem 同款):内描边软高亮,不与 active 互斥。
         isSelected && 'ring-1 ring-inset ring-[var(--focus-ring-soft)]',
@@ -803,6 +813,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                         })
                       : displayTitle}
                   </SidebarTitleMarquee>
+                  {/* 任务标签常显、紧跟标题，不属于任务信息复选。 */}
+                  <TaskTagDots tags={session.tags} />
+                  <BotFollowMark followers={followers} />
                   {remoteIconKind && (
                     <RemoteProjectIcon
                       kind={remoteIconKind}
@@ -816,6 +829,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                       }
                     />
                   )}
+                  {/* Agent 在另一台电脑运行(任务在本机)的标识在 Agent 图标上(信号波纹)。 */}
                   {sourceLabel ? (
                     <span
                       title={sourceLabel}
@@ -877,7 +891,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                 ? isActive
                   ? 'text-[var(--sidebar-item-active-foreground)] font-medium'
                   : 'text-[var(--card-status-awaiting)] font-medium'
-                : 'text-[var(--text-secondary)]',
+                : isActive
+                  ? 'text-[color-mix(in_srgb,currentColor_80%,transparent)]'
+                  : 'text-[var(--text-secondary)]',
             )}
             style={{ height: '1.45em' }}
           >
@@ -898,7 +914,8 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
           {!navigationOnly && !isEditing && !archivePending && (
             <div
               className={cn(
-                'absolute right-[6px] top-[6px] z-10 flex items-center gap-0.5',
+                // peer:标题行按操作钮自身的 focus-within 让位,与其显隐条件一致。
+                'peer/card-actions absolute right-[6px] top-[6px] z-10 flex items-center gap-0.5',
                 menuPos !== null
                   ? 'opacity-100'
                   : 'opacity-0 group-hover/card:opacity-100 focus-within:opacity-100',
@@ -946,7 +963,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               }}
               onPointerDown={(e) => e.stopPropagation()}
               onDoubleClick={(e) => e.stopPropagation()}
-              className="absolute right-[6px] top-[6px] z-20 w-max min-w-14 whitespace-nowrap"
+              className={cn('absolute right-[6px] top-[6px] z-20', CARD_ARCHIVE_CONFIRM_CLASS)}
               aria-label={t('ccAgent.sidebar.sessionMenu.archived')}
             >
               {t('ccAgent.sidebar.sessionMenu.archived')}
@@ -959,7 +976,21 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
             data-split-group-drag-handle={splitDragHandleActive ? 'true' : undefined}
             data-no-drag={splitDragHandleActive ? 'true' : undefined}
             draggable={splitDragHandleActive}
-            className="relative"
+            className={cn(
+              'relative flex items-start',
+              // 右上操作钮浮在内容上方:浮出时标题行右侧让出操作钮宽度(两枚固定
+              // 24px 图标钮),标题让位、紧跟标题的标签色球不被盖住。让位条件与操作钮
+              // 显隐同源(卡片 hover / 操作钮自身 focus-within / 菜单);卡片本身获得
+              // 焦点时操作钮不显示,也不让位。确认胶囊宽度随语言变化,另由下方同款
+              // 隐形占位按实际宽度让位。
+              !navigationOnly &&
+                !isEditing &&
+                !archivePending &&
+                hasTitleMarks &&
+                (menuPos !== null
+                  ? 'pr-14'
+                  : 'group-hover/card:pr-14 peer-focus-within/card-actions:pr-14'),
+            )}
           >
             <div
               className={cn(
@@ -981,6 +1012,32 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                   })
                 : displayTitle}
             </div>
+            {/* 任务标签与「伙伴在跟进」常显、紧跟标题首行；标题两行截断时不被裁掉。 */}
+            {!isEditing && hasTitleMarks ? (
+              <span className="flex h-[1.22em] shrink-0 items-center gap-1.5 text-12">
+                <TaskTagDots tags={session.tags} />
+                <BotFollowMark followers={followers} />
+              </span>
+            ) : null}
+            {/* 归档确认胶囊的隐形同款占位:与胶囊同文案同样式,按实际宽度让位。
+                外包零高度容器只取宽度,不撑高单行标题,确认态卡片高度与瀑布流不动。 */}
+            {!isEditing && canQuickArchive && archivePending && hasTitleMarks ? (
+              <span aria-hidden className="h-0 shrink-0 overflow-hidden">
+                <Button
+                  variant="secondary"
+                  tone="danger-surface"
+                  size="xxs"
+                  compact
+                  type="button"
+                  tabIndex={-1}
+                  aria-hidden
+                  data-card-archive-confirm-spacer="true"
+                  className={cn('invisible pointer-events-none shrink-0', CARD_ARCHIVE_CONFIRM_CLASS)}
+                >
+                  {t('ccAgent.sidebar.sessionMenu.archived')}
+                </Button>
+              </span>
+            ) : null}
             {isEditing && (
               <SessionRenameInput
                 sessionId={session.id}
@@ -1010,7 +1067,9 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               className={cn(
                 'mt-[4px] text-11 leading-[1.4]',
                 '[display:-webkit-box] [-webkit-box-orient:vertical] overflow-hidden',
-                'text-[var(--text-secondary)]',
+                isActive
+                  ? 'text-[color-mix(in_srgb,currentColor_80%,transparent)]'
+                  : 'text-[var(--text-secondary)]',
               )}
               style={{ WebkitLineClamp: cardPreviewLineClamp }}
             >
@@ -1169,11 +1228,6 @@ function TimeActionsSlot({
   const { t } = useTranslation();
   return (
     <div className="group/slot relative ml-auto flex h-[22px] shrink-0 items-center justify-end">
-      {pieces.find((piece) => piece.key === 'tags')?.tags?.length ? (
-        <span className="mr-1 inline-flex shrink-0 items-center">
-          <TaskTagDots tags={pieces.find((piece) => piece.key === 'tags')?.tags} />
-        </span>
-      ) : null}
       <div className="grid h-[22px] grid-cols-[max-content] items-center justify-items-end">
         {/* 默认内容:worktree + 信息槽;hover / 菜单打开 / archivePending 时淡出让位给操作钮。 */}
         <div
@@ -1188,7 +1242,7 @@ function TimeActionsSlot({
           )}
         >
           <SessionInfoMeta
-            pieces={pieces.filter((piece) => piece.key !== 'tags')}
+            pieces={pieces}
             prRef={prRef}
             worktree={worktree}
             isActive={isActive}

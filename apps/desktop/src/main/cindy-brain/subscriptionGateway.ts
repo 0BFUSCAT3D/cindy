@@ -1,3 +1,4 @@
+import type { GhostPipeHarnessEvent } from '@cindy/plugin-protocol';
 /**
  * subscriptionGateway.ts — 订阅槽①网关(旁听 did- + 拦截 will-,2026-07-12 开闸)。
  * ---------------------------------------------------------------------------
@@ -25,6 +26,8 @@ import { isTurnContinuationBoundaryEvent } from '@cindy/maker-shared/turn-contin
 import { eq } from 'drizzle-orm';
 
 import {
+  hasGhostHarnessPermission,
+  ghostInstallApprovalToken,
   GHOST_ASSISTANT_HOOK_TIMEOUT_MS,
   GHOST_HOOK_FUSE_THRESHOLD,
   GHOST_HOOK_REWRITE_MAX_CHARS,
@@ -46,6 +49,7 @@ import {
 import { isGhostOwnerScopeUsable, type GhostOwnerScope } from './ghostOwnerScope.js';
 import { getDbClient } from '../localDb/client/current.js';
 import * as localDbSchema from '../localDb/schema.js';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
 
 /** block 理由展示上限(超长截断,防意识用理由塞小作文)。 */
 const BLOCK_REASON_MAX_CHARS = 200;
@@ -201,6 +205,32 @@ export class GhostSubscriptionGateway {
     }
   }
 
+  private readonly harnessDeliveryGuards = new WeakMap<GhostPipeEventPush, () => boolean>();
+
+  /** Reuse the bounded, non-blocking transport without widening legacy subscribe permissions. */
+  publishHarness(event: Omit<GhostPipeHarnessEvent, 'seq' | 'ts'>, isCurrent: () => boolean,
+    allowed: (ghost: InstalledGhost) => boolean = () => true): void {
+    for (const ghost of this.deps.listGhosts()) {
+      if (!hasGhostHarnessPermission(ghost, 'events', event.topic) || !allowed(ghost)) continue;
+      const ghostId = installedGhostStoragePart(ghost);
+      const revision = ghostInstallApprovalToken(ghost.approval);
+      this.enqueue(ghost, seq => {
+        const contentPermission = event.topic === 'message' ? 'messages' : 'tool-content';
+        const withContent = event.data.content !== undefined && hasGhostHarnessPermission(ghost, 'read', contentPermission);
+        const data = { ...event.data };
+        if (!withContent) { delete data.content; delete data.truncated; }
+        const payload: GhostPipeHarnessEvent = { ...event, data, seq, ts: this.deps.now() };
+        this.harnessDeliveryGuards.set(payload, () => {
+          const current = this.deps.listGhosts().find(item => installedGhostStoragePart(item) === ghostId);
+          return isCurrent() && !!current && allowed(current) && ghostInstallApprovalToken(current.approval) === revision
+            && hasGhostHarnessPermission(current, 'events', event.topic)
+            && (!withContent || hasGhostHarnessPermission(current, 'read', contentPermission));
+        });
+        return payload;
+      });
+    }
+  }
+
   private entry(ghostId: string): SubEntry {
     let e = this.entries.get(ghostId);
     if (!e) {
@@ -224,7 +254,11 @@ export class GhostSubscriptionGateway {
     name: GhostDidEventName,
     data: GhostDidEventData,
   ): void {
-    const ghostId = ghost.manifest.id;
+    this.enqueue(ghost, seq => ({ type: 'event', name, topic, seq, ts: this.deps.now(), data }));
+  }
+
+  private enqueue(ghost: InstalledGhost, createEvent: (seq: number) => GhostPipeEventPush): void {
+    const ghostId = installedGhostStoragePart(ghost);
     const e = this.entry(ghostId);
     const ownerScope = this.captureOwnerScope();
     if (!this.ownerScopeUsable(ownerScope)) {
@@ -235,14 +269,7 @@ export class GhostSubscriptionGateway {
       this.invalidateOwner(ghostId, e);
     }
     e.ownerScope = ownerScope;
-    const evt: GhostPipeEventPush = {
-      type: 'event',
-      name,
-      topic,
-      seq: ++e.seq,
-      ts: this.deps.now(),
-      data,
-    };
+    const evt = createEvent(++e.seq);
 
     // 直投条件:在跑 + 缓冲已清 + 无唤醒在途——三者缺一都排队,否则新事件
     // 会插到缓冲里旧事件前面(seq 乱序)。投递失败(刚崩窗口期)同样回落缓冲。
@@ -264,7 +291,10 @@ export class GhostSubscriptionGateway {
       this.invalidateOwner(ghostId, e);
       return false;
     }
-    const payload = e.pendingDropped > 0 ? { ...evt, dropped: e.pendingDropped } : evt;
+    // Discard stale capabilities/instances at delivery time, including wake-buffered events.
+    const guard = this.harnessDeliveryGuards.get(evt);
+    if (guard && !guard()) { e.pendingDropped += 1 + ('dropped' in evt ? evt.dropped ?? 0 : 0); return true; }
+    const payload = e.pendingDropped > 0 ? { ...evt, dropped: e.pendingDropped + ('dropped' in evt ? evt.dropped ?? 0 : 0) } : evt;
     try {
       this.deps.sendToGhost(ghostId, payload);
       e.pendingDropped = 0;
@@ -281,8 +311,8 @@ export class GhostSubscriptionGateway {
     ownerScope: unknown,
   ): void {
     if (e.buffer.length >= GHOST_SUB_QUEUE_MAX) {
-      e.buffer.shift();
-      e.pendingDropped += 1;
+      const discarded = e.buffer.shift();
+      e.pendingDropped += 1 + (discarded && 'dropped' in discarded ? discarded.dropped ?? 0 : 0);
     }
     e.buffer.push(evt);
     this.kickWake(ghost, e, ownerScope);
@@ -292,28 +322,34 @@ export class GhostSubscriptionGateway {
   private kickWake(ghost: InstalledGhost, e: SubEntry, ownerScope: unknown): void {
     if (e.waking) return;
     if (!this.ownerScopeUsable(ownerScope)) {
-      this.invalidateOwner(ghost.manifest.id, e);
+      this.invalidateOwner(installedGhostStoragePart(ghost), e);
       return;
     }
     e.waking = true;
     void this.deps
       .wake(ghost)
       .then(() => {
+        if (this.entries.get(installedGhostStoragePart(ghost)) !== e) return;
         if (!this.ownerScopeUsable(ownerScope)) {
-          this.invalidateOwner(ghost.manifest.id, e);
+          this.invalidateOwner(installedGhostStoragePart(ghost), e);
           return;
         }
-        this.flush(ghost.manifest.id, e, ownerScope);
+        this.flush(installedGhostStoragePart(ghost), e, ownerScope);
       })
       .catch((err) => {
         // 唤醒失败缓冲保留(封顶丢最旧),下一条事件再试。
         this.deps.log?.warn('ghost subscribe wake failed', {
-          ghostId: ghost.manifest.id,
+          ghostId: installedGhostStoragePart(ghost),
           error: err instanceof Error ? err.message : String(err),
         });
       })
       .finally(() => {
         e.waking = false;
+        // Events queued between flush's callback and this microtask must not wait
+        // for another event to wake them up (the queued event may be terminal).
+        const id = installedGhostStoragePart(ghost);
+        if (this.entries.get(id) === e && this.ownerScopeUsable(ownerScope)
+          && e.buffer.length > 0 && this.deps.isRunning(id)) this.flush(id, e, ownerScope);
       });
   }
 
@@ -376,7 +412,7 @@ export class GhostSubscriptionGateway {
     for (const ghost of this.deps.listGhosts()) {
       if (!ghost.enabled) continue;
       if (!ghost.manifest.subscribe?.hooks?.includes('will-user-message')) continue;
-      const ghostId = ghost.manifest.id;
+      const ghostId = installedGhostStoragePart(ghost);
       const e = this.entry(ghostId);
       if (e.hookFused) continue;
       context ??= this.resolveMessageHookContext(input.sessionId, GHOST_HOOK_TIMEOUT_MS / 2);
@@ -405,7 +441,7 @@ export class GhostSubscriptionGateway {
     if (rewritten && lastRewriteGhost) {
       return {
         action: 'rewrite',
-        ghostId: lastRewriteGhost.manifest.id,
+        ghostId: installedGhostStoragePart(lastRewriteGhost),
         ghostName: lastRewriteGhost.manifest.name,
         text: currentText,
       };
@@ -440,7 +476,7 @@ export class GhostSubscriptionGateway {
     for (const ghost of this.deps.listGhosts()) {
       if (!ghost.enabled) continue;
       if (!ghost.manifest.subscribe?.hooks?.includes('will-assistant-message')) continue;
-      const ghostId = ghost.manifest.id;
+      const ghostId = installedGhostStoragePart(ghost);
       const e = this.entry(ghostId);
       if (e.hookFused) continue;
       context ??= this.resolveMessageHookContext(
@@ -475,7 +511,7 @@ export class GhostSubscriptionGateway {
     if (renderGhost) {
       return {
         action: 'render',
-        ghostId: renderGhost.manifest.id,
+        ghostId: installedGhostStoragePart(renderGhost),
         ghostName: renderGhost.manifest.name,
         html: renderHtml,
         height: renderHeight,
@@ -485,7 +521,7 @@ export class GhostSubscriptionGateway {
     if (lastRewriteGhost) {
       return {
         action: 'rewrite',
-        ghostId: lastRewriteGhost.manifest.id,
+        ghostId: installedGhostStoragePart(lastRewriteGhost),
         ghostName: lastRewriteGhost.manifest.name,
         text: currentText,
       };
@@ -504,7 +540,7 @@ export class GhostSubscriptionGateway {
     ownerStamp?: unknown,
     ownerScope?: unknown,
   ): Promise<HookVerdict | null> {
-    const ghostId = ghost.manifest.id;
+    const ghostId = installedGhostStoragePart(ghost);
     const hookId = this.deps.newHookId?.() ?? randomUUID();
     // 超时按钩子分:入口(user-message)必须快(挡发送);出口(assistant-message)
     // 是后台后置钩,容许长处理(见 GHOST_ASSISTANT_HOOK_TIMEOUT_MS)。
@@ -602,14 +638,14 @@ export class GhostSubscriptionGateway {
   ): void {
     e.hookFails += 1;
     this.deps.log?.warn('ghost hook failed (fail-open)', {
-      ghostId: ghost.manifest.id,
+      ghostId: installedGhostStoragePart(ghost),
       why,
       fails: e.hookFails,
     });
     if (e.hookFails >= GHOST_HOOK_FUSE_THRESHOLD && !e.hookFused) {
       e.hookFused = true;
       this.deps.log?.warn('ghost hook fused: degraded to observe-only', {
-        ghostId: ghost.manifest.id,
+        ghostId: installedGhostStoragePart(ghost),
       });
       this.deps.onHookFused?.(ghost, ownerStamp);
     }
@@ -636,6 +672,13 @@ export class GhostSubscriptionGateway {
 
   /** 意识停用/抽离时清态(缓冲、熔断、seq 全部归零;待决钩子按超时自然收口)。 */
   dropGhost(ghostId: string): void {
+    const entry = this.entries.get(ghostId);
+    if (entry) entry.buffer.length = 0;
+    for (const [hookId, pending] of this.pendingHooks) {
+      if (pending.ghostId !== ghostId) continue;
+      this.pendingHooks.delete(hookId);
+      pending.resolve(null);
+    }
     this.entries.delete(ghostId);
   }
 }

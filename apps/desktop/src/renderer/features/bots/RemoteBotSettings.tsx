@@ -1,3 +1,4 @@
+import { serializeModelRoutes } from '@cindy/maker-shared/model-route';
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { ArrowLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -22,11 +23,16 @@ import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { createCoalescedRefresh } from '@/lib/coalescedRefresh';
 import { extractIpcError } from '@/utils/ipcError';
 import { BotModelChainEditor } from './BotModelChainEditor';
+import { BotTaskModelEditor } from './BotTaskModelEditor';
 import { BotPortraitPicker } from './BotPortraitPicker';
 import { BotAvatar } from './BotAvatar';
 import { isManagedBotAvatarUrl, isSupportedBotAvatarValue } from '../../../shared/botAvatarValue';
 import { rewriteToRemoteMediaOrigin } from '../../../shared/remoteMediaUrl';
 import type { RemoteBot } from './remoteBotRoster';
+import { useCompanionCloud } from './companionCloudStore';
+import { cloudCompanionAt } from './companionCloudPresentation';
+import { BotHomeComputerSetting } from './BotHomeComputerSetting';
+import { CindyMergeSetting } from './CindyMergeSetting';
 import {
   readRemoteBotSettings,
   readRemoteBotModelChain,
@@ -38,6 +44,7 @@ import {
 } from './remoteBotSettingsData';
 
 interface Props {
+  initialPage?: 'home' | 'memory' | 'capabilities';
   bot: RemoteBot;
   beforeCloseRef: MutableRefObject<(() => Promise<boolean>) | null>;
   onDeleted(): void;
@@ -52,11 +59,13 @@ export function RemoteBotSettings(props: Props) {
     />
   );
 }
-function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted }: Props) {
+function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted, initialPage = 'home' }: Props) {
   const { t, i18n } = useTranslation();
+  // The main computer can be changed from here too (it is asked to hand the companion over).
+  const homeActor = cloudCompanionAt(useCompanionCloud(), bot.deviceId, bot.id);
   const { confirm } = useConfirmDialog();
   const [data, setData] = useState<RemoteBotSettingsData | null>(null);
-  const [resourceId, setResourceId] = useState(bot.id);
+  const [resourceId, setResourceId] = useState(initialPage === 'memory' ? `settings:${bot.id}/memory` : initialPage === 'capabilities' ? `settings:${bot.id}/connections` : bot.id);
   const [page, setPage] = useState<string | null>(null);
   const [draft, setDraft] = useState<SettingsValues>({});
   const [busy, setBusy] = useState(false);
@@ -395,7 +404,7 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted }: Props) {
   const fields = (item: SettingsPanel) =>
     item.action?.fields?.map((field) => {
       const id = `remote-bot-${field.id}`;
-      if (field.id === 'modelChain' || field.id === 'confirmName') return null;
+      if (['modelChain', 'taskModel', 'taskFollowsPrimary', 'confirmName'].includes(field.id)) return null;
       const change = (value: string | boolean) => {
         if (!disabled && !revisionPendingRef.current)
           setDraft((valueBefore) => ({ ...valueBefore, [field.id]: value }));
@@ -456,6 +465,7 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted }: Props) {
         void save();
       }}
     >
+      {(item.id === 'follow-up' || item.id === 'project') ? <p className="text-12 leading-5 text-[var(--text-secondary)]">{item.text}</p> : null}
       {item.id === 'avatar' ? (
         <BotPortraitPicker
           disabled={disabled}
@@ -533,7 +543,8 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted }: Props) {
         fields(item)
       )}
       {item.id === 'models' ? (
-        <BotModelChainEditor
+        <><BotModelChainEditor
+          label={t('bots.model.primary')}
           deviceId={bot.deviceId}
           value={readRemoteBotModelChain(draft.modelChain)}
           disabled={disabled || draft.followsDefault === true}
@@ -541,11 +552,22 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted }: Props) {
             if (!disabled && !revisionPendingRef.current)
               setDraft((previous) => ({
                 ...previous,
-                modelChain: JSON.stringify(chain),
+                modelChain: serializeModelRoutes(chain),
                 followsDefault: false,
               }));
           }}
         />
+        {item.action?.fields?.some(field => field.id === 'taskModel') &&
+          <BotTaskModelEditor deviceId={bot.deviceId} disabled={disabled}
+            value={draft.taskFollowsPrimary === true ? null : readRemoteBotModelChain(draft.taskModel)[0] ?? null}
+            inheritedRoute={readRemoteBotModelChain(draft.modelChain)[0]}
+            onChange={route => {
+              if (!disabled && !revisionPendingRef.current) setDraft(previous => ({ ...previous,
+                taskFollowsPrimary: route === null,
+                taskModel: serializeModelRoutes(route ? [route] : readRemoteBotModelChain(previous.modelChain).slice(0, 1)),
+              }));
+            }} />}
+        </>
       ) : null}
       <Button
         type="submit"
@@ -560,7 +582,14 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted }: Props) {
   const panels = data?.panels ?? [];
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-5 text-[var(--text-primary)]">
-      <p className="mb-4 truncate text-12 text-[var(--text-tertiary)]">{bot.deviceName}</p>
+      {homeActor ? (
+        <>
+          <BotHomeComputerSetting bot={{ id: bot.id, name: bot.name }} className="mb-4" />
+          <CindyMergeSetting bot={{ id: bot.id, name: bot.name }} className="mb-4" />
+        </>
+      ) : (
+        <p className="mb-4 truncate text-12 text-[var(--text-tertiary)]">{bot.deviceName}</p>
+      )}
       {page || resourceId !== bot.id ? (
         <Button
           variant="secondary"
@@ -574,6 +603,7 @@ function RemoteBotSettingsContent({ bot, beforeCloseRef, onDeleted }: Props) {
               resourceId === bot.id
                 ? bot.id
                 : resourceId.includes('/connections/') ||
+                    resourceId.includes('/projects/') ||
                     resourceId.includes('/skills/') ||
                     resourceId.includes('/memory/')
                   ? resourceId.slice(0, resourceId.lastIndexOf('/'))

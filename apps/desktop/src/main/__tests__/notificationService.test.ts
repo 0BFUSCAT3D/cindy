@@ -24,6 +24,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const chatWindow = vi.hoisted(() => ({ url: 'file:///app/index.html#/bots/groups/group-1' }));
+vi.mock('../deepLink', () => ({
+  getDeepLinkMainWindow: () => ({ isFocused: () => true, isVisible: () => true, webContents: { getURL: () => chatWindow.url } }),
+  openMainWindowChatMessage: vi.fn(),
+  openMainWindowSession: vi.fn(),
+}));
+vi.mock('../agent-island/companionIdentity', () => ({ companionAvatarThumbnail: async () => undefined }));
+
 type IpcHandler = (event: unknown, payload: unknown) => Promise<void> | void;
 
 // 捕获被注册的 IPC handlers。每个用例 freshModule 后重置。
@@ -31,6 +39,7 @@ const registeredHandlers = new Map<string, IpcHandler>();
 
 // Notification 构造调用计数(每条 toast 一次)。
 const notificationCtor = vi.fn();
+const notificationClicks: Array<() => void> = [];
 // Notification.isSupported() — 默认 true; 单独用例需改成 false 时,setMock 之前覆盖。
 let notificationSupported = true;
 
@@ -48,6 +57,7 @@ class FakeNotification {
   }
   on(evt: string, cb: (...args: unknown[]) => void): this {
     if (evt === 'close') this.closeCb = cb;
+    if (evt === 'click') notificationClicks.push(cb);
     return this;
   }
   show(): void {
@@ -73,6 +83,7 @@ vi.mock('electron', () => ({
   }),
   nativeImage: {
     createFromPath: () => ({ isEmpty: () => true }),
+    createFromBuffer: (bytes: Buffer) => ({ bytes, isEmpty: () => false }),
   },
 }));
 
@@ -148,6 +159,7 @@ async function freshService() {
   vi.resetModules();
   registeredHandlers.clear();
   notificationCtor.mockClear();
+  notificationClicks.length = 0;
   warn.mockClear();
   notificationSupported = true;
   ownerScopeCurrent = true;
@@ -155,7 +167,7 @@ async function freshService() {
   markSessionNeedsAttention.mockClear();
   sendMobileSessionNotify.mockReset().mockReturnValue(true);
   getMobileNotifyGeneration.mockClear();
-  latestMessageText.mockClear();
+  latestMessageText.mockReset().mockResolvedValue('');
   readSessionNotificationPreview.mockReset().mockImplementation(async (sessionId, includeReply = true) => {
     if (!includeReply) return {};
     const text = await latestMessageText(sessionId, 'assistant');
@@ -191,11 +203,126 @@ const baseDeps = (feishuIm: FakeFeishuIM) => ({
 });
 
 describe('notificationService — channels 分发', () => {
+  // Regression: OS click must keep host + original task + reply anchor through reload,
+  // and a notification from the previous account must not navigate the new account.
+  it('routes desktop notification clicks with their original host and message, fenced by owner', async () => {
+    const { showDesktopSessionEvent, initNotificationService } = await freshService();
+    const { openMainWindowSession } = await import('../deepLink');
+    vi.mocked(openMainWindowSession).mockClear();
+    showDesktopSessionEvent(() => null, {
+      sessionId: 'remote-task', deviceId: 'studio', messageClientId: 'answer', title: 'Reply', kind: 'done',
+    });
+    notificationClicks[0]!();
+    expect(openMainWindowSession).toHaveBeenLastCalledWith('remote-task', { deviceId: 'studio', messageClientId: 'answer' });
+    ownerScopeCurrent = false;
+    notificationClicks[0]!();
+    expect(openMainWindowSession).toHaveBeenCalledTimes(1);
+    ownerScopeCurrent = true;
+    initNotificationService(baseDeps(makeFeishuIm(null)));
+    readSessionNotificationPreview.mockResolvedValue({ reply: { clientId: 'reply-original', text: 'Answer' } });
+    await invokeHandler({ sessionId: 'original', title: 'Reply', kind: 'done' });
+    notificationClicks.at(-1)!();
+    expect(openMainWindowSession).toHaveBeenLastCalledWith('original', { messageClientId: 'reply-original' });
+  });
+
+  it('does not suppress an unread thread merely because its group is focused', async () => {
+    const { showDesktopChatMessage } = await freshService();
+    const payload = { groupId: 'group-1', groupName: 'Group', messageId: 'message-1', senderName: 'Other', avatar: '', preview: 'Reply' };
+    await showDesktopChatMessage(payload, () => true);
+    expect(notificationCtor).not.toHaveBeenCalled();
+    await showDesktopChatMessage({ ...payload, threadRootId: 'thread-2' }, () => true);
+    expect(notificationCtor).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ title: 'Group', body: 'Other: Reply' }));
+  });
   beforeEach(() => {
     // 每个用例重新注册 handler,避免相互污染。
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('hands off delegated completion on every external channel while preserving task attention and consuming retries', async () => {
+    const { initNotificationService } = await freshService();
+    const feishuIm = makeFeishuIm('owner');
+    const check = vi.fn().mockResolvedValue(true);
+    initNotificationService({ ...baseDeps(feishuIm), isCompletionHandledByTeammate: check });
+    getSessionNotificationTurnSignal.mockReturnValue({ id: 'turn:100:200', fallbackEventId: 'turn:100:200', ended: true });
+    const payload = { sessionId: 's1', title: 'Delegated', kind: 'done', channels: { desktop: true, feishu: true, mobile: true } };
+    await invokeHandler(payload);
+    expect(markSessionNeedsAttention).toHaveBeenCalledWith('s1');
+    expect(notificationCtor).not.toHaveBeenCalled();
+    expect(sendMobileSessionNotify).not.toHaveBeenCalled();
+    expect(feishuIm.sendMarkdownText).not.toHaveBeenCalled();
+    // Removing the relation cannot resurrect a previously consumed event.
+    check.mockResolvedValue(false);
+    getMobileNotifyGeneration.mockReturnValueOnce(8);
+    await invokeHandler(payload);
+    expect(notificationCtor).not.toHaveBeenCalled();
+    expect(sendMobileSessionNotify).not.toHaveBeenCalled();
+    getSessionNotificationTurnSignal.mockReturnValue({ id: 'turn:300:400', fallbackEventId: 'turn:300:400', ended: true });
+    await invokeHandler(payload);
+    expect(notificationCtor).toHaveBeenCalledOnce();
+    expect(sendMobileSessionNotify).toHaveBeenCalledOnce();
+    expect(feishuIm.sendMarkdownText).toHaveBeenCalledOnce();
+  });
+
+  it('does not send an old completion when handoff resolution crosses a newer turn', async () => {
+    const { initNotificationService } = await freshService();
+    const feishuIm = makeFeishuIm('owner');
+    let resolve!: (handled: boolean) => void;
+    const check = vi.fn(() => new Promise<boolean>(r => { resolve = r; }));
+    initNotificationService({ ...baseDeps(feishuIm), isCompletionHandledByTeammate: check });
+    getSessionNotificationTurnSignal.mockReturnValue({ id: 'turn:100:200', fallbackEventId: 'turn:100:200', ended: true });
+    await invokeHandler({ sessionId: 's1', title: 'Delegated', kind: 'done', channels: { desktop: true, feishu: true, mobile: true } });
+    expect(check).toHaveBeenCalledOnce();
+    getSessionNotificationTurnSignal.mockReturnValue({ id: 'turn:300:400', fallbackEventId: 'turn:300:400', ended: true });
+    resolve(false); await flushAsync();
+    expect(notificationCtor).not.toHaveBeenCalled();
+    expect(sendMobileSessionNotify).not.toHaveBeenCalled();
+    expect(feishuIm.sendMarkdownText).not.toHaveBeenCalled();
+    expect(markSessionNeedsAttention).toHaveBeenCalledWith('s1');
+  });
+
+  it('notifies only the teammate final reply after handing off its child completion', async () => {
+    const { initNotificationService } = await freshService();
+    const feishuIm = makeFeishuIm('owner');
+    initNotificationService({ ...baseDeps(feishuIm), isCompletionHandledByTeammate: async id => id === 'child' });
+    readSessionNotificationPreview.mockImplementation(async id => id === 'teammate'
+      ? { teammateName: 'Teammate', teammateBotId: 'bot-a', reply: { clientId: 'final', text: '**Final** result' }, eventId: 'final' }
+      : { eventId: 'child-result' });
+    const channels = { desktop: true, feishu: true, mobile: true };
+    await invokeHandler({ sessionId: 'child', title: 'Background task', kind: 'done', channels });
+    await invokeHandler({ sessionId: 'child', title: 'Background task', kind: 'done', channels });
+    await invokeHandler({ sessionId: 'teammate', title: 'Teammate', kind: 'done', channels });
+    await invokeHandler({ sessionId: 'teammate', title: 'Teammate', kind: 'done', channels });
+    expect(notificationCtor).toHaveBeenCalledOnce();
+    expect(notificationCtor).toHaveBeenCalledWith(expect.objectContaining({ body: 'Final result' }));
+    expect(sendMobileSessionNotify).toHaveBeenCalledOnce();
+    expect(sendMobileSessionNotify).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'teammate', teammateBotId: 'bot-a' }));
+    expect(feishuIm.sendText).toHaveBeenCalledOnce();
+    expect(feishuIm.sendMarkdownText).not.toHaveBeenCalled();
+  });
+
+  it.each(['error', 'needs-reply'])('keeps %s immediate even while a teammate completion check is blocked', async kind => {
+    const { initNotificationService } = await freshService();
+    const feishuIm = makeFeishuIm('owner');
+    const check = vi.fn(() => new Promise<boolean>(() => {}));
+    initNotificationService({ ...baseDeps(feishuIm), isCompletionHandledByTeammate: check });
+    await invokeHandler({ sessionId: 's1', title: 'Delegated', kind, channels: { desktop: true, feishu: true, mobile: true } });
+    expect(check).not.toHaveBeenCalled();
+    expect(notificationCtor).toHaveBeenCalledOnce();
+    expect(sendMobileSessionNotify).toHaveBeenCalledOnce();
+    expect(feishuIm.sendMarkdownText).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, 'reject'])('retains completion fallback when internal handoff is unavailable (%s)', async outcome => {
+    const { initNotificationService } = await freshService();
+    const feishuIm = makeFeishuIm('owner');
+    const check = outcome === false ? vi.fn().mockResolvedValue(false) : vi.fn().mockRejectedValue(new Error('fixture failure'));
+    initNotificationService({ ...baseDeps(feishuIm), isCompletionHandledByTeammate: check });
+    await invokeHandler({ sessionId: 's1', title: 'Delegated', kind: 'done', channels: { desktop: true, feishu: true, mobile: true } });
+    expect(notificationCtor).toHaveBeenCalledOnce();
+    expect(sendMobileSessionNotify).toHaveBeenCalledOnce();
+    expect(feishuIm.sendMarkdownText).toHaveBeenCalledOnce();
   });
 
   it('同步并校验 renderer 持久化的桌面通知总开关', async () => {
@@ -292,6 +419,25 @@ describe('notificationService — channels 分发', () => {
     expect(notificationCtor).toHaveBeenCalledTimes(1);
     expect(sendMobileSessionNotify).toHaveBeenCalledTimes(1);
     expect(feishuIm.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the local badge mark for remote device tasks while keeping other channels', async () => {
+    const { initNotificationService } = await freshService();
+    initNotificationService(baseDeps(makeFeishuIm('ou_owner')));
+    markSessionNeedsAttention.mockClear();
+
+    await invokeHandler({
+      sessionId: 'remote-1',
+      title: 'Fix login',
+      kind: 'needs-reply',
+      markAttention: false,
+      channels: { desktop: false, feishu: false, mobile: true },
+    });
+
+    expect(markSessionNeedsAttention).not.toHaveBeenCalled();
+    expect(sendMobileSessionNotify).toHaveBeenCalled();
+    await expect(invokeHandler({ sessionId: 'remote-1', title: 'x', kind: 'done', markAttention: 'no' }))
+      .rejects.toThrow('invalid session event payload');
   });
 
   it('does not treat a pre-drain running snapshot as a reason to lose the completion fallback', async () => {
@@ -424,6 +570,7 @@ describe('notificationService — channels 分发', () => {
     await registeredHandlers.get('notification:show-session-event')!({}, {
       sessionId: 's1', title: 'Hello', kind, channels: { desktop: true, mobile: true },
     });
+    await vi.advanceTimersByTimeAsync(0);
     expect(notificationCtor).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(sendMobileSessionNotify).toHaveBeenCalledTimes(1);
@@ -478,47 +625,47 @@ describe('notificationService — channels 分发', () => {
     initNotificationService(baseDeps(makeFeishuIm('ou_owner')));
     readSessionNotificationPreview.mockImplementation(async (_id, includeReply = true) => ({
       teammateName: 'Cindy', teammateBotId: 'bot-1', eventId: 'turn:100:200',
+      teammateAvatar: { kind: 'preset', value: 'cindy' },
       ...(includeReply ? { reply: { clientId: 'final-2', text: 'Done' } } : {}),
     }));
     await invokeHandler({ sessionId: 's1', title: 'Cindy', kind: 'done', channels: { desktop: false, feishu: false, mobile: true } });
     await flushAsync();
-    expect(sendMobileSessionNotify).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', teammateBotId: 'bot-1' }));
+    expect(sendMobileSessionNotify).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', teammateBotId: 'bot-1', teammateAvatar: { kind: 'preset', value: 'cindy' } }));
   });
 
-  it('routes a teammate approval push to the teammate chat without changing its title or fallback', async () => {
+  it.each(['error', 'needs-reply'] as const)('routes teammate %s with its actual identity and state, never an older answer', async (kind) => {
     const { initNotificationService } = await freshService();
     initNotificationService(baseDeps(makeFeishuIm('ou_owner')));
-    readSessionNotificationPreview.mockResolvedValue({ teammateName: 'Cindy', teammateBotId: 'bot-1' });
-    await invokeHandler({ sessionId: 's1', title: 'Hello', kind: 'needs-reply', channels: { desktop: false, feishu: false, mobile: true } });
+    readSessionNotificationPreview.mockResolvedValue({ teammateName: 'Cindy', teammateBotId: 'bot-1', teammateAvatar: { kind: 'jpeg', value: 'YQ==' } });
+    await invokeHandler({ sessionId: 's1', title: 'Hello', kind, channels: { desktop: true, feishu: false, mobile: true } });
     await flushAsync();
     expect(sendMobileSessionNotify).toHaveBeenCalledWith({
-      sessionId: 's1', title: 'Hello', kind: 'needs-reply', generation: 7, teammateBotId: 'bot-1',
+      sessionId: 's1', title: 'Cindy', kind, generation: 7, teammateBotId: 'bot-1', teammateAvatar: { kind: 'jpeg', value: 'YQ==' },
     });
+    expect(latestMessageText).not.toHaveBeenCalled();
+    expect(notificationCtor).toHaveBeenCalledWith(expect.objectContaining({ title: 'Cindy', icon: expect.objectContaining({ bytes: Buffer.from('a') }) }));
     // A failed identity read keeps the ordinary push.
     sendMobileSessionNotify.mockClear();
     readSessionNotificationPreview.mockRejectedValueOnce(new Error('read unavailable'));
-    await invokeHandler({ sessionId: 's2', title: 'Hello', kind: 'needs-reply', channels: { desktop: false, feishu: false, mobile: true } });
+    await invokeHandler({ sessionId: 's2', title: 'Hello', kind, channels: { desktop: false, feishu: false, mobile: true } });
     await flushAsync();
-    expect(sendMobileSessionNotify).toHaveBeenCalledWith({ sessionId: 's2', title: 'Hello', kind: 'needs-reply', generation: 7 });
+    expect(sendMobileSessionNotify).toHaveBeenCalledWith({ sessionId: 's2', title: 'Hello', kind, generation: 7 });
   });
 
-  it('does not let a slow teammate lookup spend the approval push preview window', async () => {
+  it('bounds a slow approval identity lookup without reusing the previous answer', async () => {
     const { initNotificationService } = await freshService();
     initNotificationService(baseDeps(makeFeishuIm('ou_owner')));
     vi.useFakeTimers();
     readSessionNotificationPreview.mockReturnValueOnce(new Promise(() => {}));
-    let releaseDrain!: () => void;
-    drainPersistQueue.mockReturnValueOnce(new Promise<void>((resolve) => { releaseDrain = resolve; }));
-    latestMessageText.mockResolvedValueOnce('要删除 build 目录吗？');
+    latestMessageText.mockResolvedValueOnce('上一轮已完成');
     await registeredHandlers.get('notification:show-session-event')!({}, {
       sessionId: 's1', title: 'Hello', kind: 'needs-reply', channels: { desktop: false, feishu: false, mobile: true },
     });
-    // The reply read starts without waiting for the routing lookup.
-    releaseDrain();
+    // A missing identity cannot indefinitely hide the action request.
     await vi.advanceTimersByTimeAsync(1_000);
     expect(sendMobileSessionNotify).toHaveBeenCalledTimes(1);
     expect(sendMobileSessionNotify).toHaveBeenCalledWith({
-      sessionId: 's1', title: 'Hello', kind: 'needs-reply', generation: 7, detail: '要删除 build 目录吗？',
+      sessionId: 's1', title: 'Hello', kind: 'needs-reply', generation: 7,
     });
   });
 
@@ -681,18 +828,18 @@ describe('notificationService — channels 分发', () => {
     expect(feishuIm.sendMarkdownText).not.toHaveBeenCalled();
   });
 
-  it('伙伴最终答复没有可读正文时飞书使用本地化新回复兜底', async () => {
+  it('伙伴纯图片回复使用本地化图片摘要而不是泛泛新回复', async () => {
     const { initNotificationService } = await freshService();
     const feishuIm = makeFeishuIm('ou_owner');
     initNotificationService(baseDeps(feishuIm));
     readSessionNotificationPreview.mockImplementation(async (_id, includeReply = true) => ({
       teammateName: 'Mika', eventId: 'turn:300:400',
-      ...(includeReply ? { reply: { clientId: 'final-2', text: '![image](https://example.com/chart.png)' } } : {}),
+      ...(includeReply ? { reply: { clientId: 'final-2', text: '![](https://example.com/chart.png)' } } : {}),
     }));
 
     await invokeHandler({ sessionId: 'bot-main', title: 'Old title', kind: 'done', channels: { desktop: false, feishu: true } });
 
-    expect(feishuIm.sendText).toHaveBeenCalledWith('ou_owner', 'Mika\n有新回复');
+    expect(feishuIm.sendText).toHaveBeenCalledWith('ou_owner', 'Mika\n图片');
     expect(feishuIm.sendMarkdownText).not.toHaveBeenCalled();
   });
 
@@ -788,6 +935,7 @@ describe('notificationService — channels 分发', () => {
     );
 
     notificationCtor.mockClear();
+    notificationClicks.length = 0;
     showDesktopSessionEvent(() => null, { sessionId: '', title: '', kind: 'error' });
     expect(notificationCtor).toHaveBeenCalledWith(
       expect.objectContaining({

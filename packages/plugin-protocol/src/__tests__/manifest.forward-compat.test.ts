@@ -9,7 +9,9 @@ const extension = { mode: 'future', options: [1, null, { enabled: true }] };
 
 describe('declaration forward compatibility is not Host authorization', () => {
   it.each([
+    ['mobile', { channels: ['practice-ui'], panel: 'mobile/panel.html' }],
     ['mainView', { html: 'view.html' }],
+    ['taskView', { html: 'task.html' }],
     ['panel', { html: 'panel.html' }],
     ['card', {}],
     ['agent', {}],

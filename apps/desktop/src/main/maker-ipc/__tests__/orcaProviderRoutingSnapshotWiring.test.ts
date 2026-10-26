@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { BUNDLED_CATALOG, buildRegistry, type Catalog } from '@cindy/model-providers';
 import { describe, expect, it, vi } from 'vitest';
 
-import { readOrcaWorkerProviderRoutingContext } from '../orcaProviderRoutingContext.js';
+import { localAvailableModels, readOrcaWorkerProviderRoutingContext } from '../orcaProviderRoutingContext.js';
 
 const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8').replace(
   /\r\n?/g,
@@ -27,7 +27,9 @@ describe('Orca provider routing snapshot wiring', () => {
     expect(wiring).toContain('providerService: getDesktopProviderService()');
     expect(wiring).toContain('getCatalog: getActiveCatalog');
     expect(routingSource).toContain('waitForDiscovery: true');
-    expect(registerSource).toContain('getProviderRoutingContext: async (agent, remoteHostId)');
+    expect(registerSource).toContain('getProviderRoutingContext: async (agent, remoteHostId, agentDeviceId) => agentDeviceId && !remoteHostId');
+    // lead 的 Agent 在另一台电脑运行时按那台的目录；其余与原来一致。
+    expect(registerSource).toContain("deviceWorkerRoutingContext(await readDeviceProviderViews(remoteBackgroundInvoke, agentDeviceId), agent ?? 'claude-code')");
     expect(registerSource).toContain('sshCodexWorkerRoutingContext(await readSshCodexModelList({ id: remoteHostId }, listSshCodexProviders))');
   });
 
@@ -165,5 +167,28 @@ describe('Orca provider routing snapshot wiring', () => {
     expect(routing.resolveDefaultProviderIdForModel('claude-code', 'claude-first-fire')).toBe(
       'anthropic',
     );
+  });
+});
+
+describe('localAvailableModels (#6970)', () => {
+  it('drops catalog models that no enabled provider offers', () => {
+    const models = localAvailableModels(
+      [
+        { id: 'codex/gpt-6.1-sol', displayName: 'GPT 6.1 Sol' },
+        { id: 'anthropic/claude-opus-5-5', displayName: 'Opus 5.5' },
+      ],
+      [{ id: 'chatgpt', name: 'ChatGPT', models: ['codex/gpt-6.1-sol'] }],
+      (_agent, model) => (model === 'codex/gpt-6.1-sol' ? 'chatgpt' : null),
+      'claude-code',
+    );
+    // 提供商被关后只剩目录骨架的模型(providers 会是空)不能再暴露给 Lead。
+    expect(models).toEqual([
+      {
+        id: 'codex/gpt-6.1-sol',
+        label: 'GPT 6.1 Sol',
+        providers: [{ id: 'chatgpt', name: 'ChatGPT' }],
+        defaultProviderId: 'chatgpt',
+      },
+    ]);
   });
 });

@@ -19,23 +19,27 @@ import type { SessionQueueDeps } from './list_session_queue.js';
 import { okPayload, errorPayload } from './_payload.js';
 import { encodeCursor, decodeCursor } from './_history_cursor.js';
 import { resolveHistoryScope } from './_history_scope.js';
+import { historyDeviceShape, HISTORY_DEVICE_DESCRIPTION, queryHistoryDevices } from './_history_devices.js';
 
 const DESCRIPTION = [
-  '列出本地数据库里的 session 元数据(id / title / workingDir / agentKind / model /',
+  HISTORY_DEVICE_DESCRIPTION,
+  'sessionUrl 是可直接引用的任务链接；用 [任务标题](sessionUrl) 返回给用户。',
+  '列出所选电脑数据库里的 session 元数据(id / title / workingDir / agentKind / model /',
   '时间戳 / messageCount 等), 按多种过滤条件组合查。**不返回 messages 内容** —',
   '要拉具体聊天内容请用 get_chat_history。',
   '',
+  '按话题回忆先用 search_chat_history，不要默认限制当前 workdir 或创建日期。teammate_id 只匹配已证实的伙伴关联；旧 IM 未关联记录需在已有权限内另查，不自动认领。',
   '【何时调用】用户问"我某天聊了哪些 session / 这个项目下我都开过哪些会话 /',
   '我用 codex 的所有 session 列一下"等场景。',
   '',
   '【过滤参数】所有参数可任意组合, 不传 = 不过滤:',
   '  - workdir: 精确匹配 sessions.workingDir',
-  '  - from / to: ISO 8601 时间窗 (from 含, to 不含), 过滤 sessions.createdAt',
+  '  - from / to: ISO 8601 时间窗 (from 含, to 不含), 按 time_field 过滤（默认创建时间，activity 为最近活动）',
   '  - agent_kind: cc(Claude Code) | codex',
   '  - include_deleted: 默认 false (排除 status=deleted)',
   '',
   '【输出】messageCount 已过滤被 rewind 软删的消息, 是用户可见的真实条数。',
-  'queuedCount 是当前尚未消费的输入队列条数，可用 list_session_queue 查看明细。',
+  '本机结果的 queuedCount 是当前尚未消费的输入队列条数，可用 list_session_queue 查看本机明细；远程结果不含队列计数。',
   '时间戳均为 ISO 8601 字符串(对应 DB 里的 unix ms 转换)。',
   'orcaRole / parentSessionId / userSendAt 仅在非 null 时出现(默认场景几乎全为 null, 已 omit)。',
   '',
@@ -57,6 +61,10 @@ export function registerListSessionsTool(
     category: 'history',
     description: DESCRIPTION,
     inputShape: {
+      ...historyDeviceShape,
+      teammate_id: z.string().min(1).max(256).optional().describe('按已保存的伙伴归属筛选，使用 get_teammate_state 的 profile.id；包含历史、话题和渠道专线，不按工作目录猜归属。'),
+      source: z.string().min(1).max(64).optional().describe('精确匹配任务的原始 source，如 telegram（旧独立机器人）或 bot（伙伴）；不是伙伴归属证明。'),
+      time_field: z.enum(['created', 'activity']).optional().describe('from/to 与排序使用的时间：created（默认，创建时间）；activity（最近活动，含旧建但近期聊天的任务）。'),
       workdir: z
         .string()
         .optional()
@@ -64,11 +72,11 @@ export function registerListSessionsTool(
       from: z
         .string()
         .optional()
-        .describe('ISO 8601 时间字符串(含), 过滤 sessions.createdAt >= from。例: "2026-05-01T00:00:00Z"'),
+        .describe('ISO 8601 时间字符串(含), 过滤所选 time_field >= from。例: "2026-05-01T00:00:00Z"'),
       to: z
         .string()
         .optional()
-        .describe('ISO 8601 时间字符串(不含), 过滤 sessions.createdAt < to。'),
+        .describe('ISO 8601 时间字符串(不含), 过滤所选 time_field < to。'),
       agent_kind: z
         .enum(['cc', 'codex'])
         .optional()
@@ -82,9 +90,11 @@ export function registerListSessionsTool(
       order: z
         .enum(['asc', 'desc'])
         .default('desc')
-        .describe('按 sessions.createdAt 排序, desc = 最新在前(默认)。'),
+        .describe('按 time_field 排序，desc = 最新在前（默认）。'),
     },
-    handler: async ({ workdir, from, to, agent_kind, include_deleted, limit, cursor, order }) => {
+    handler: async (args) => {
+      if (args.device !== 'local') return queryHistoryDevices(registry, deps, 'list_sessions', args);
+      const { workdir, from, to, agent_kind, include_deleted, limit, cursor, order, teammate_id, source, time_field } = args;
       const scope = await resolveHistoryScope(deps.history, deps.getSessionContext, null);
       if (!scope.ok) return errorPayload(scope.errorCode, scope.message);
       const fromMs = parseIsoMs(from);
@@ -99,6 +109,9 @@ export function registerListSessionsTool(
 
       const result = await deps.history.listSessions({
         sessionIds: scope.sessionIds,
+        ...(teammate_id ? { teammateId: teammate_id } : {}),
+        ...(source ? { source } : {}),
+        ...(time_field ? { timeField: time_field } : {}),
         workdir: workdir ?? null,
         fromMs,
         toMs,
@@ -140,6 +153,7 @@ export function registerListSessionsTool(
         sessions: page.items.map((s) => {
           const out: Record<string, unknown> = {
             id: s.id,
+            ...(deps.history.sessionUrl ? { sessionUrl: deps.history.sessionUrl(s.id) } : {}),
             title: s.title,
             workingDir: s.workingDir,
             agentKind: s.agentKind,
@@ -150,16 +164,19 @@ export function registerListSessionsTool(
             createdAt: new Date(s.createdAt).toISOString(),
             updatedAt: new Date(s.updatedAt).toISOString(),
             messageCount: s.messageCount,
+            ...(s.lastActivityAt !== undefined ? { lastActivityAt: new Date(s.lastActivityAt).toISOString() } : {}),
+            ...(s.companion !== undefined ? { companion: s.companion } : {}),
           };
           if (queuedCounts !== null) out.queuedCount = queuedCounts[s.id] ?? 0;
           if (s.orcaRole !== null) out.orcaRole = s.orcaRole;
+          if (s.orcaRemoteLead) out.orcaRemoteLead = s.orcaRemoteLead;
           if (s.parentSessionId !== null) out.parentSessionId = s.parentSessionId;
           if (s.userSendAt !== null) out.userSendAt = new Date(s.userSendAt).toISOString();
           return out;
         }),
         nextCursor: page.nextCursor ? encodeCursor(page.nextCursor) : null,
         hasMore: page.hasMore,
-        query: { workdir, from, to, agent_kind, include_deleted, limit, order },
+        query: { workdir, from, to, agent_kind, include_deleted, limit, order, teammate_id, source, time_field },
         ...(cursor && !cursorObj ? { warning: 'INVALID_CURSOR_FALLBACK_TO_FIRST_PAGE' } : {}),
       });
     },

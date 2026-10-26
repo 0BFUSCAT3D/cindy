@@ -6,6 +6,20 @@ import { BUNDLED_CATALOG } from '../catalog.js';
 
 describe('shared provider discovery', () => {
   it.each([
+    { service_tiers: [{ id: 'priority' }, { id: 'ultrafast' }] },
+    { additional_speed_tiers: ['fast', 'ultrafast'] },
+  ])('keeps account speed tiers through discovery and JSON save: %j', fields => {
+    const models = JSON.parse(JSON.stringify(mergeDiscoveredRuntimeModels([],
+      parseModelsListResponse({ models: [{ slug: 'gpt-6.1-sol', ...fields }] })!)));
+    const provider = buildUserProvider({ id: 'openai-one', name: 'Account',
+      auth: { method: 'oauth', native: 'codex' }, runtimes: { codex: {
+        baseUrl: 'https://chatgpt.com/backend-api/codex', wireProtocol: 'openai-responses', models,
+      } } }, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+    expect(provider.models.codex![0]).toMatchObject({ supportsFastMode: true, supportsUltrafastMode: true });
+    expect(models[0].discoveredMetadata).not.toHaveProperty('supportsUltrafastMode');
+  });
+
+  it.each([
     { contextWindow: 128000, contextWindowMax: 64000 },
     { context_window: 128000, contextWindowMax: 64000 },
     { contextWindow: 128000, max_context_window: 64000 },
@@ -66,6 +80,19 @@ describe('shared provider discovery', () => {
       } });
       expect(provider.models[agent]?.[0].contextWindow).toBe(272000);
       expect(provider.models[agent]?.[0].contextWindowMax).toBeUndefined();
+    }
+  });
+
+  it('retains maximum-only account capacity below the public working default', () => {
+    const models = mergeDiscoveredRuntimeModels([], parseModelsListResponse({ data: [{
+      id: 'gpt-6-astra', max_context_window: 872000,
+    }] })!);
+    for (const agent of ['claude-code', 'codex', 'pi'] as const) {
+      const provider = buildUserProvider({ id: 'relay', name: 'Relay', runtimes: {
+        [agent]: { baseUrl: 'https://relay.example/v1', models },
+      } }, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+      expect(provider.models[agent]?.[0]).toMatchObject({ contextWindow: 872000, contextWindowMax: 872000 });
+      expect(provider.models[agent]?.[0].discoveredMetadata).toEqual({ contextWindowMax: 872000 });
     }
   });
 

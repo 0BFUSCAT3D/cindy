@@ -30,6 +30,7 @@ import { Keyboard, SlidersHorizontal } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+  lineHeight,
   navigationChrome,
   fontWeight,
   iconSize,
@@ -64,7 +65,7 @@ export function RemoteDesktopToolbar(props: ComponentProps<typeof Toolbar>) {
   const { t } = useTranslation();
   const groupStyle = useNativeGlassGroupStyle("clear");
   const glass = useLiquidGlassAvailable();
-  const actions = [
+  const allActions = [
     {
       key: props.onWorkspaceLeft ? "workspaceLeft" : "allWindows",
       Icon: props.onWorkspaceLeft ? WorkspaceLeftIcon : AllWindowsIcon,
@@ -105,6 +106,10 @@ export function RemoteDesktopToolbar(props: ComponentProps<typeof Toolbar>) {
       selected: props.operations,
     },
   ];
+  // 代输入 window view: no desktop to navigate, so only keyboard and settings.
+  const actions = props.windowOnly
+    ? allActions.filter(({ key }) => key === "keyboard" || key === "operations")
+    : allActions;
   const length = target * actions.length + inset * 2;
   const Stack = props.landscape ? VStack : HStack;
   return (
@@ -224,6 +229,7 @@ export function RemoteDesktopPanel(props: ComponentProps<typeof Panel>) {
               style={{
                 color: colors.textPrimary,
                 fontSize: typeScale.body,
+                lineHeight: lineHeight.body,
                 fontWeight: fontWeight.semibold,
               }}
             >
@@ -234,6 +240,7 @@ export function RemoteDesktopPanel(props: ComponentProps<typeof Panel>) {
               style={{
                 color: colors.textPrimary,
                 fontSize: typeScale.caption,
+                lineHeight: lineHeight.caption,
               }}
             >
               {props.caption}

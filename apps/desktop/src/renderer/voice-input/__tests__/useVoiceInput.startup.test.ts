@@ -18,7 +18,9 @@ const mocks = vi.hoisted(() => ({
   startEngine: vi.fn<() => Promise<void>>(),
   stopEngine: vi.fn(),
   drainEngine: vi.fn(),
-  engines: [] as Array<{ emit: (chunk: PcmChunk) => void }>,
+  engines: [] as Array<{ emit: (chunk: PcmChunk) => void; keepAlive: boolean }>,
+  prepareMicrophone: vi.fn(),
+  releasePreparation: vi.fn(),
   promptExpired: vi.fn(),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: mocks.translate }) }));
@@ -49,9 +51,10 @@ vi.mock('../audioContextPool', () => ({
 vi.mock('../WebMicAudioEngine', () => ({
   WebMicAudioEngine: class {
     emit = (_chunk: PcmChunk) => {};
-    constructor() {
+    constructor(readonly options: { keepAlive: boolean }) {
       mocks.engines.push(this);
     }
+    get keepAlive() { return this.options.keepAlive; }
     onPcm16k(callback: (chunk: PcmChunk) => void) {
       this.emit = callback;
     }
@@ -74,6 +77,7 @@ vi.mock('../WebMicAudioEngine', () => ({
   disposeKeepAliveVoiceInputMicrophone: vi.fn().mockResolvedValue(undefined),
   prewarmVoiceInputBenchmarkFixture: vi.fn().mockResolvedValue(undefined),
   prewarmVoiceInputMicrophoneWithAutomaticFallback: vi.fn().mockResolvedValue(undefined),
+  prepareVoiceInputMicrophone: mocks.prepareMicrophone,
 }));
 
 import { useVoiceInput } from '../useVoiceInput';
@@ -101,6 +105,9 @@ function chunk(index: number, amplitude = 512): PcmChunk {
   };
 }
 
+// useVoiceInput.start() 同步 claim 录音后立刻返回是否占用;启动流程(采集、授权
+// 确认、连接)在后台继续,测试里捕获的 starting 是 claim 结果,启动收尾由 act
+// 的刷新覆盖。
 function mount() {
   const connection = deferred<{ ok: true; runId: string }>();
   const mute = deferred<{ ok: true }>();
@@ -147,6 +154,8 @@ beforeEach(() => {
   mocks.startEngine.mockReset().mockResolvedValue(undefined);
   mocks.stopEngine.mockReset();
   mocks.drainEngine.mockReset();
+  mocks.releasePreparation.mockReset();
+  mocks.prepareMicrophone.mockReset().mockReturnValue(mocks.releasePreparation);
 });
 afterEach(() => {
   cleanup();
@@ -155,12 +164,37 @@ afterEach(() => {
 });
 
 describe('local voice capture independent of startup checks and cloud', () => {
+  it('prepares only authorized devices without claiming recording or starting ASR', async () => {
+    const h = mount();
+    h.result.current.prepare();
+    expect(mocks.prepareMicrophone).not.toHaveBeenCalled();
+    h.api.getMicrophonePermissionCached.mockReturnValue({ ok: true, status: 'granted' });
+    const release = h.result.current.prepare();
+    expect(mocks.prepareMicrophone).toHaveBeenCalledOnce();
+    expect(h.result.current.state).toBe('idle');
+    expect(h.api.start).not.toHaveBeenCalled();
+    expect(mocks.engines).toHaveLength(0);
+    await act(async () => { h.result.current.start(); });
+    expect(mocks.engines[0].keepAlive).toBe(true);
+    release?.();
+    expect(mocks.releasePreparation).toHaveBeenCalledOnce();
+  });
+
+  it('releases unused press preparation when the composer unmounts', () => {
+    const h = mount();
+    h.api.getMicrophonePermissionCached.mockReturnValue({ ok: true, status: 'granted' });
+    h.result.current.prepare();
+    h.unmount();
+    expect(mocks.releasePreparation).toHaveBeenCalledOnce();
+    expect(h.api.start).not.toHaveBeenCalled();
+  });
+
   it('ends before the microphone produces its first frame and closes the late microphone', async () => {
     const h = mount();
     const device = deferred<void>();
     mocks.startEngine.mockReturnValue(device.promise);
     const endCue = vi.fn();
-    let starting!: Promise<void>;
+    let starting!: boolean;
     await act(async () => {
       starting = h.result.current.start();
     });
@@ -218,7 +252,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
   it('finishes silent capture without waiting for a pending cloud connection, and cancels a late run', async () => {
     const h = mount();
     const endCue = vi.fn();
-    let starting!: Promise<void>;
+    let starting!: boolean;
     await act(async () => {
       starting = h.result.current.start();
     });
@@ -284,7 +318,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
   it('retains all 8 seconds while both cloud and system mute are pending; signals ready only after PCM', async () => {
     const h = mount();
     const cue = vi.fn();
-    let starting!: Promise<void>;
+    let starting!: boolean;
     await act(async () => {
       starting = h.result.current.start({ onStartFeedback: cue });
     });
@@ -311,7 +345,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
   it('starts local capture before a slow preflight, and stops it if preflight declines', async () => {
     const h = mount();
     const preflight = deferred<boolean>();
-    let starting!: Promise<void>;
+    let starting!: boolean;
     await act(async () => {
       starting = h.result.current.start({ beforeStart: () => preflight.promise });
     });
@@ -334,7 +368,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
     const cue = vi.fn(() => {
       expect(mocks.startEngine).toHaveBeenCalledTimes(1);
     });
-    let starting!: Promise<void>;
+    let starting!: boolean;
     await act(async () => {
       starting = h.result.current.start({ onStartFeedback: cue });
     });
@@ -355,7 +389,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
   it('retains PCM during the start cue and mutes only after playback finishes', async () => {
     const h = mount();
     const cue = deferred<void>();
-    let starting!: Promise<void>;
+    let starting!: boolean;
     await act(async () => {
       starting = h.result.current.start({ onStartFeedback: () => cue.promise });
     });
@@ -381,7 +415,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
     const device = deferred<void>();
     mocks.startEngine.mockReturnValue(device.promise);
     const cue = vi.fn();
-    let starting!: Promise<void>;
+    let starting!: boolean;
     await act(async () => {
       starting = h.result.current.start({ onStartFeedback: cue });
     });
@@ -418,7 +452,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
 
   it('preserves buffered opening audio when Stop is pressed before cloud connects', async () => {
     const h = mount();
-    let starting!: Promise<void>;
+    let starting!: boolean;
     await act(async () => {
       starting = h.result.current.start();
     });
@@ -449,7 +483,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
 
   it('ignores the old connection after cancel and immediate restart', async () => {
     const h = mount();
-    let oldStart!: Promise<void>;
+    let oldStart!: boolean;
     await act(async () => {
       oldStart = h.result.current.start();
     });
@@ -459,7 +493,7 @@ describe('local voice capture independent of startup checks and cloud', () => {
     });
     const nextConnection = deferred<{ ok: true; runId: string }>();
     h.api.start.mockReturnValue(nextConnection.promise);
-    let nextStart!: Promise<void>;
+    let nextStart!: boolean;
     await act(async () => {
       nextStart = h.result.current.start();
     });

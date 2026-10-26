@@ -3,11 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({ key: 'account:1', endpoint: 'https://relay.example.test', authenticated: true, boundary: false, accountId: 'owner', region: 'global', token: 'test-old-token' }));
 const http = vi.hoisted(() => vi.fn());
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => state.key, isAppSessionBoundaryPending: () => state.boundary }));
-vi.mock('../../authManager.js', () => ({ getAuthState: () => ({ isAuthenticated: state.authenticated }),
+vi.mock('../../authManager.js', () => ({ getAuthState: () => ({ isAuthenticated: state.authenticated, user: { name: 'Account Guest' } }),
   getCurrentUserId: () => state.accountId, getActiveAuthRealm: () => state.region, getAccessToken: () => state.token }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => state.endpoint }));
 vi.mock('../../serverApiClient.js', () => ({ serverApiFetch: http }));
-import { captureSharedTaskBoundaryClose, sharedTaskApi } from '../sharedTaskApi.js';
+import { captureSharedTaskBoundaryClose, forgetSharedTaskList, sharedTaskApi } from '../sharedTaskApi.js';
 
 beforeEach(() => {
   state.key = 'account:1'; state.endpoint = 'https://relay.example.test'; state.authenticated = true; state.boundary = false;
@@ -15,6 +15,24 @@ beforeEach(() => {
   http.mockReset();
 });
 describe('sharedTask Main HTTP adapter', () => {
+  it('adds a fragment invitation link without changing the legacy invite result', async () => {
+    const invitation = 'A'.repeat(43);
+    http.mockResolvedValue({ sharedTaskId: 'shared', invitation });
+    await expect(sharedTaskApi.invite('shared')).resolves.toEqual({ sharedTaskId: 'shared', invitation,
+      invitationLink: state.endpoint + '/shared-task/join#' + invitation });
+  });
+  it('joins a link using the account nickname even when an old caller supplies a custom name', async () => {
+    const invitation = 'A'.repeat(43);
+    http.mockResolvedValue({ sharedTaskId: 'shared', memberId: 'member', status: 'joined', created: true });
+    await sharedTaskApi.join(state.endpoint + '/shared-task/join#' + invitation, 'Custom name');
+    expect(http).toHaveBeenCalledWith('/api/device-link/shared-tasks/join', expect.objectContaining({
+      body: { invitation, displayName: 'Account Guest' },
+    }));
+  });
+  it('rejects another service before making any request', async () => {
+    await expect(sharedTaskApi.join('https://other.example.test/shared-task/join#' + 'A'.repeat(43), 'Guest')).rejects.toThrow('REGION_MISMATCH');
+    expect(http).not.toHaveBeenCalled();
+  });
   it.each([['NOT_FOUND', 'NOT_FOUND'], ['PERMISSION_DENIED', 'PERMISSION_DENIED'],
     ['INVALID_PARAMS', 'INVALID_PARAMS'], ['NETWORK_ERROR', 'DEVICE_LINK_NOT_CONNECTED']])(
     'retains actionable %s across the Electron boundary without leaking details', async (code, ipcCode) => {
@@ -32,6 +50,15 @@ describe('sharedTask Main HTTP adapter', () => {
       });
       await expect(sharedTaskApi.create('session', 'Task')).rejects.toThrow('[' + code + '] Shared task limit reached');
     });
+  it('preserves the self-join code through redaction and Electron serialization', async () => {
+    http.mockImplementation(async (_path, options) => {
+      expect(options.allowedRedactedErrorCodes).toContain('SHARED_TASK_SELF_JOIN');
+      throw Object.assign(new Error('private invitation details'), { code: 'SHARED_TASK_SELF_JOIN' });
+    });
+    await expect(sharedTaskApi.join('x'.repeat(43), 'Owner')).rejects.toThrow(
+      '[SHARED_TASK_SELF_JOIN] Shared task request rejected',
+    );
+  });
   it('closes across a pending logout with fixed old credentials and no auth side effects', async () => {
     state.boundary = true;
     const close = captureSharedTaskBoundaryClose('owner', 'global')!;
@@ -75,5 +102,62 @@ describe('sharedTask Main HTTP adapter', () => {
       return { sharedTaskId: 'sharedTask', status: 'closed' };
     });
     await expect(sharedTaskApi.close('sharedTask')).rejects.toThrow('account or region changed');
+  });
+});
+
+// The host runtime and the guest directory both list shares; one request must
+// serve both, without ever surviving a write or crossing an account boundary.
+describe('sharedTask Main list reuse', () => {
+  const listed = (id: string) => ({ sharedTasks: [{ sharedTaskId: id, sessionId: 'session', ownerAccountId: 'owner', hostDeviceId: 'desktop', title: 'Task', revision: 1 }] });
+  const listCalls = () => http.mock.calls.filter(([path]) => path === '/api/device-link/shared-tasks').length;
+  it('shares concurrent and recent reads, but not across accounts or after a write', async () => {
+    state.key = 'list-reuse:1';
+    http.mockImplementation(async (path: string) => path.endsWith('/close') ? { sharedTaskId: 'a', status: 'closed' } : listed('a'));
+    const [first, second] = await Promise.all([sharedTaskApi.list(), sharedTaskApi.list()]);
+    expect(second).toBe(first);
+    await sharedTaskApi.list();
+    expect(listCalls()).toBe(1);
+    state.key = 'list-reuse:2';
+    await sharedTaskApi.list();
+    expect(listCalls()).toBe(2);
+    await sharedTaskApi.close('a');
+    await sharedTaskApi.list();
+    expect(listCalls()).toBe(3);
+  });
+  it('does not reuse a read that overlaps an in-flight write, nor a failed read', async () => {
+    state.key = 'list-reuse:3';
+    let finishClose!: () => void;
+    http.mockImplementation((path: string) => path.endsWith('/close')
+      ? new Promise(resolve => { finishClose = () => resolve({ sharedTaskId: 'a', status: 'closed' }); })
+      : Promise.resolve(listed('a')));
+    const closing = sharedTaskApi.close('a');
+    await sharedTaskApi.list();
+    finishClose(); await closing;
+    await sharedTaskApi.list();
+    expect(listCalls()).toBe(2);
+    state.key = 'list-reuse:4';
+    http.mockRejectedValueOnce(Object.assign(new Error('offline'), { code: 'NETWORK_ERROR' }));
+    await expect(sharedTaskApi.list()).rejects.toThrow('DEVICE_LINK_NOT_CONNECTED');
+    await expect(sharedTaskApi.list()).resolves.toHaveLength(1);
+    expect(listCalls()).toBe(4);
+  });
+  it('makes a real request after an external event forgets the recent list', async () => {
+    state.key = 'list-reuse:6';
+    http.mockResolvedValue(listed('a'));
+    await sharedTaskApi.list();
+    forgetSharedTaskList();
+    await sharedTaskApi.list();
+    await sharedTaskApi.list();
+    expect(listCalls()).toBe(2);
+  });
+  it('treats a cached list as stale after the clock moves backwards', async () => {
+    state.key = 'list-reuse:5';
+    http.mockResolvedValue(listed('a'));
+    await sharedTaskApi.list();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 3_600_000);
+    try {
+      await sharedTaskApi.list();
+      expect(listCalls()).toBe(2);
+    } finally { now.mockRestore(); }
   });
 });

@@ -31,13 +31,18 @@ const subscribe = (fn: () => void) => {
 };
 const empty: RemoteBot[] = [];
 
+/** Non-hook read for entry routing (island / notification clicks); empty while signed out. */
+export function readRemoteBots(): readonly RemoteBot[] {
+  return owner ? snapshot : empty;
+}
+
 export function useRemoteBots(): readonly RemoteBot[] {
   const { dataOwnerId, isAuthenticated } = useAuth();
   const rows = useSyncExternalStore(subscribe, () => snapshot);
   return isAuthenticated && owner === dataOwnerId ? rows : empty;
 }
 
-/** One subscription owner in BotsFeatureLayout; a failed host cannot erase another host. */
+/** One subscription owner in the main window; a failed host cannot erase another host. */
 export function useRemoteBotSync(): void {
   const { dataOwnerId, isAuthenticated } = useAuth();
   const devices = useDeviceLinkDeviceList();

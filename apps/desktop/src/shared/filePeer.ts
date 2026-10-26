@@ -1,6 +1,7 @@
 import type { DesktopIceServer } from '@cindy/device-link';
 export const FILE_PEER_LOCAL = {
   REGISTER: 'file-peer:host:register',
+  CLOSED: 'file-peer:host:closed',
   COMMAND: 'file-peer:host:command',
   REPLY: 'file-peer:host:reply',
   READ: 'file-peer:host:read',
@@ -10,16 +11,18 @@ export const FILE_PEER_LOCAL = {
 export type FilePeerCommand =
   | { action: 'offer'; connection: string; servers: DesktopIceServer[]; streaming?: boolean }
   | { action: 'stats'; connection: string }
-  | { action: 'invoke'; connection: string; payload: string }
+  /** `body`: base64 block sent as the RPC binary body (peer advertised streamAttachments). */
+  | { action: 'invoke'; connection: string; payload: string; timeoutMs?: number; body?: string }
   | { action: 'accept'; connection: string; servers: DesktopIceServer[]; sdp: string }
   | { action: 'answer'; connection: string; sdp: string }
   | { action: 'receive'; connection: string; ticket: string; size: number; sink: string }
   | { action: 'close'; connection: string };
 export interface FilePeerHostApi {
+  closed(connection: string): Promise<void>;
   register(): Promise<void>;
   onCommand(fn: (id: string, command: FilePeerCommand) => void): () => void;
   reply(id: string, ok: boolean, value?: string): Promise<void>;
   read(connection: string, ticket: string, offset: number): Promise<string>;
   write(sink: string, offset: number, base64: string): Promise<void>;
-  invoke(connection: string, payload: string): Promise<string>;
+  invoke(connection: string, payload: string, body?: Uint8Array): Promise<string>;
 }

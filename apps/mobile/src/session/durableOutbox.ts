@@ -1,3 +1,4 @@
+import type { AnnotationRegion } from "@cindy/maker-shared/image-annotation";
 import type { NewSessionDraft } from "./newSession";
 import type { ComposerDocument } from './composerDocument';
 import type { MobileOutboxItem } from "./sessionOutbox";
@@ -11,6 +12,8 @@ export interface DurableUpload {
   kind: "image" | "file";
   size: number;
   annotated?: boolean;
+  /** 标注区域(可选,见 RemoteSerializedAttachment.annotationRegions)。 */
+  annotationRegions?: AnnotationRegion[];
 }
 
 export interface DurableOutboxRecord {
@@ -18,6 +21,21 @@ export interface DurableOutboxRecord {
   /** Canonical realm-qualified auth accountKey; unqualified pre-release rows are never claimed. */
   accountId: string;
   deviceId: string;
+  /** Direct Chat Server destination; an empty deviceId never routes to a computer. */
+  chat?: {
+    roomId: string;
+    input: import('../chat/chatServerClient').ChatSendInput;
+    body?: import('../chat/chatServerClient').ChatSendBody;
+    messageId?: string;
+    quote?: import('@cindy/maker-shared/botGroupChat').BotGroupQuoteView;
+    after: number;
+    /** Server cursor; `after` above is only the local displayed row position. */
+    afterServerSequence?: string;
+  };
+  /** Permanent resource identity for sends queued from a companion, including after page exit/restart. */
+  resourceRef?: import('@cindy/device-link').RemoteResourceRef;
+  /** Stable disk/file identity when a cancelled creation is retried with a fresh session ID. */
+  storageSessionId?: string;
   item: MobileOutboxItem;
   createdAt: number;
   state: "queued" | "sending" | "confirming" | "host-owned" | "failed";
@@ -29,6 +47,8 @@ export interface DurableOutboxRecord {
   clearBoundaryMs?: number | null;
   /** Only hosts advertising durable delivery may receive an uncertain retry. */
   retrySafe?: boolean;
+  /** A persisted host user row was observed; only local history caching remains. */
+  historyConfirmed?: boolean;
   error?: string;
   cancelRequested?: boolean;
   /** Delivery is settled; retain the ledger solely until local cleanup succeeds. */
@@ -37,8 +57,18 @@ export interface DurableOutboxRecord {
   suspended?: boolean;
   template?: QueuedRemoteMessage;
   refreshUploads?: boolean;
+  /** Slot whose upload threw on the last attempt; the bubble offers a re-upload on that image only. */
+  failedUploadSlot?: number;
   creation?: {
     draft: NewSessionDraft;
+    originalWorkingDir?: string;
+    cancelled?: true;
+    /** Creation was handed back to the editor; restore its entry after restart. */
+    editReady?: true;
+    /** Content that could not be carried back, shown beside the restored attachments. */
+    notice?: string;
+    /** Messages already copied into this draft; makes interrupted consolidation idempotent. */
+    mergedFollowUpClientIds?: string[];
     deviceName: string;
     planModeArm: boolean;
     restorePermissionMode: string | null;
@@ -56,6 +86,23 @@ export function isDurableOutboxSettled(record: DurableOutboxRecord): boolean {
   return record.cleanupOutcome !== undefined;
 }
 
+/** A failed creation belongs to its editor until a new creation takes it over. */
+export function isDurableCreationDraft(record: DurableOutboxRecord): boolean {
+  return record.suspended === true && record.state === 'failed'
+    && !!(record.creation?.editReady || record.creation?.cancelled)
+    && !record.prepared && !record.template && !record.enqueueStarted && record.sendAtMs === undefined
+    && !record.cancelRequested && !isDurableOutboxSettled(record);
+}
+
+/**
+ * 已移交被控端的记录:持久投递已收下(或已落定)。会话 FIFO 只派发第一条未移交的记录,
+ * 移交后的记录只做对账,不再挡后面的消息。
+ */
+export function isDurableOutboxHandedOff(record: Pick<DurableOutboxRecord, 'state' | 'retrySafe' | 'historyConfirmed' | 'cleanupOutcome'>): boolean {
+  return (record.state === "host-owned" && (record.retrySafe === true || record.historyConfirmed === true))
+    || record.cleanupOutcome !== undefined;
+}
+
 /** Preparation is local; only a persisted pre-enqueue proof permits offline disposal.
  * Legacy records without that proof must also lack all previous-send evidence.
  */
@@ -68,10 +115,10 @@ export const DURABLE_OUTBOX_PREFIX = "cindy.mobile.outbox.v1.";
 const PREFIX = DURABLE_OUTBOX_PREFIX;
 const EMPTY: readonly DurableOutboxRecord[] = Object.freeze([]);
 const keyFor = (
-  r: Pick<DurableOutboxRecord, "accountId" | "deviceId" | "item">,
+  r: Pick<DurableOutboxRecord, "accountId" | "deviceId" | "item" | "storageSessionId">,
 ) =>
   PREFIX +
-  [r.accountId, r.deviceId, r.item.sessionId, r.item.clientId]
+  [r.accountId, r.deviceId, r.storageSessionId ?? r.item.sessionId, r.item.clientId]
     .map(encodeURIComponent)
     .join("/");
 
@@ -100,16 +147,30 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
   };
   const mutate = async (
     record: DurableOutboxRecord,
-    next: DurableOutboxRecord | null,
+    change: DurableOutboxRecord | null | ((current: DurableOutboxRecord) => DurableOutboxRecord | null),
     adding = false,
+    expectedRecords: readonly DurableOutboxRecord[] = [],
   ): Promise<DurableOutboxRecord | null> => {
     const epoch = generation;
     await store.ready();
     return serialize(async () => {
       assertOwner(record.accountId, epoch);
       const current = records.find((r) => keyFor(r) === keyFor(record));
-      if (adding ? current !== undefined : current !== record)
+      const editing = typeof change === 'function';
+      // Keystrokes share this store's write queue; each edits the preceding saved
+      // revision, never an old render snapshot. Clearing does not permit re-add.
+      if (editing && !current) return null;
+      if (editing ? (!current || current.item.sessionId !== record.item.sessionId || !isDurableCreationDraft(current))
+        : adding ? current !== undefined : current !== record)
         throw new Error("OUTBOX_STALE_WRITE");
+      const next = editing ? change(current!) : change;
+      if (expectedRecords.some((expected) => !records.includes(expected)))
+        throw new Error("OUTBOX_STALE_WRITE");
+      if (next && keyFor(next) !== keyFor(record)) throw new Error("OUTBOX_IDENTITY_CHANGED");
+      if (next && next.item.sessionId !== record.item.sessionId
+        && (!record.creation?.cancelled || !next.creation || record.prepared)) {
+        throw new Error('OUTBOX_CREATION_OWNERSHIP_UNRESOLVED');
+      }
       if (next) await storage.setItem(keyFor(record), JSON.stringify(next));
       else await storage.removeItem(keyFor(record));
       // The disk write is already committed, even if logout raced its completion.
@@ -169,29 +230,19 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
         for (const key of keys) {
           const raw = await storage.getItem(key);
           if (!raw) continue;
-          const record = JSON.parse(raw) as DurableOutboxRecord;
-          // Corruption must be visible; never overwrite or silently drop unsent work.
-          if (
-            record.version !== 1 ||
-            record.accountId !== owner ||
-            !record.deviceId ||
-            !record.item?.sessionId ||
-            !record.item.clientId ||
-            keyFor(record) !== key ||
-            !Array.isArray(record.uploads) ||
-            (record.cleanupOutcome !== undefined &&
-              record.cleanupOutcome !== 'accepted' && record.cleanupOutcome !== 'cancelled') ||
-            ![
-              "queued",
-              "sending",
-              "confirming",
-              "host-owned",
-              "failed",
-            ].includes(record.state) ||
-            !Number.isFinite(record.createdAt) ||
-            !Array.isArray(record.item.attachmentSlots)
-          )
-            throw new Error("OUTBOX_STORAGE_INVALID");
+          // One corrupt row must not fail the whole ledger. On Android that threw
+          // during every session's draft hydration, and send() returns immediately
+          // while composerDraftHydrated stays false. Leave the bytes in place.
+          let record: unknown;
+          try {
+            record = JSON.parse(raw);
+          } catch {
+            continue;
+          }
+          if (!isLoadableOutboxRecord(record, owner, key)) {
+            console.warn('[outbox] skipped unreadable ledger row', key);
+            continue;
+          }
           loaded.push(record);
         }
         assertOwner(owner, epoch);
@@ -204,7 +255,7 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
       return ready;
     },
     async add(record: DurableOutboxRecord) {
-      if (!record.accountId || !record.deviceId)
+      if (!record.accountId || (!record.deviceId && !validChatDestination(record)))
         throw new Error("OUTBOX_OWNER_REQUIRED");
       await store.ready();
       if (records.some((r) => keyFor(r) === keyFor(record)))
@@ -214,17 +265,61 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
     update: (
       record: DurableOutboxRecord,
       patch: Partial<DurableOutboxRecord>,
+      expectedRecords: readonly DurableOutboxRecord[] = [],
     ) =>
       mutate(record, {
         ...record,
         ...patch,
         accountId: record.accountId,
         deviceId: record.deviceId,
-      }) as Promise<DurableOutboxRecord>,
+      }, false, expectedRecords) as Promise<DurableOutboxRecord>,
     remove: (record: DurableOutboxRecord) => mutate(record, null),
+    editCreationDraft: (record: DurableOutboxRecord, edit: (current: DurableOutboxRecord) => DurableOutboxRecord | null) =>
+      mutate(record, edit),
     ready: (): Promise<void> => store.activate(accountId),
   };
   return store;
+}
+
+function isLoadableOutboxRecord(
+  record: unknown,
+  owner: string,
+  key: string,
+): record is DurableOutboxRecord {
+  if (!record || typeof record !== 'object') return false;
+  const row = record as DurableOutboxRecord;
+  return row.version === 1
+    && row.accountId === owner
+    && (row.chat === undefined ? !!row.deviceId : validChatDestination(row))
+    && !!row.item?.sessionId
+    && !!row.item.clientId
+    && (row.resourceRef === undefined || (row.resourceRef !== null
+      && typeof row.resourceRef.collectionId === 'string' && !!row.resourceRef.collectionId
+      && typeof row.resourceRef.kind === 'string' && !!row.resourceRef.kind
+      && typeof row.resourceRef.id === 'string' && !!row.resourceRef.id))
+    && (row.storageSessionId === undefined
+      || (typeof row.storageSessionId === 'string' && row.storageSessionId.length > 0))
+    && keyFor(row) === key
+    && Array.isArray(row.uploads)
+    && (row.historyConfirmed === undefined || typeof row.historyConfirmed === 'boolean')
+    && (row.cleanupOutcome === undefined
+      || row.cleanupOutcome === 'accepted'
+      || row.cleanupOutcome === 'cancelled')
+    && ["queued", "sending", "confirming", "host-owned", "failed"].includes(row.state)
+    && Number.isFinite(row.createdAt)
+    && Array.isArray(row.item.attachmentSlots);
+}
+
+function validChatDestination(row: DurableOutboxRecord): boolean {
+  const chat = row.chat;
+  if (chat?.afterServerSequence !== undefined && !/^[1-9][0-9]{0,18}$/.test(chat.afterServerSequence)) return false;
+  return !!chat && row.deviceId === '' && typeof chat.roomId === 'string' && !!chat.roomId
+    && row.item?.sessionId === chat.roomId && chat.input?.clientId === row.item.clientId
+    && typeof chat.input.text === 'string' && typeof chat.input.mentions?.all === 'boolean'
+    && Array.isArray(chat.input.mentions.botIds) && chat.input.mentions.botIds.every(id => typeof id === 'string')
+    && (chat.input.threadRootId === undefined || typeof chat.input.threadRootId === 'string')
+    && (!chat.body || (chat.body.operationId === row.item.clientId
+      && Array.isArray(chat.body.content) && Array.isArray(chat.body.mentions)));
 }
 
 export type DurableOutboxStore = ReturnType<typeof createDurableOutbox>;

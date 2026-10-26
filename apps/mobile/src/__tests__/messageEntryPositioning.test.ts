@@ -41,6 +41,7 @@ function fixture(focused: string | null = null, saved?: object) {
     mobileMessageHistoryRowKeyByIdentity: vi.fn(),
     lastAppliedFocusKeyRef: ref(null), userScrollForOlderRef: ref(false), lastAutoLoadEarlierKeyRef: ref(null),
     focusRunKey: focused ? `request:${focused}` : null, focusedItemKey: focused,
+    cancelTailMotion: vi.fn(), syncingWhileEmpty: false, historyPositioning: true,
   };
   bindings.revealPositionedHistory = callback('if (!initialAnchorDoneRef.current || !animation)', bindings);
   bindings.scrollToIndexProgrammatically = callback('return listRef.current?.scrollToIndex', bindings);
@@ -50,6 +51,30 @@ function fixture(focused: string | null = null, saved?: object) {
 }
 
 describe('message entry lifecycle', () => {
+  // Regression: retained history can stay blank on reentry after native reveal
+  // cancellation. Existing tests never settled the native fallback as cancelled.
+  // Execute the production layout callback with that minimum native result;
+  // unit tier checks visible reveal state, including stale-generation isolation.
+  it.each([true, false])('reveals the current history when native animation settles (finished=%s)', (finished) => {
+    const h = fixture();
+    let settle!: (result: { finished: boolean }) => void;
+    h.bindings.Animated.timing = () => ({ start: (done: typeof settle) => { settle = done; }, stop: vi.fn() });
+    h.layout();
+    expect(h.state.revealed).toBe(false);
+    settle({ finished });
+    h.layout();
+    expect(h.state.revealed).toBe(true);
+    expect(h.bindings.scrollToEndProgrammatically).toHaveBeenCalledTimes(1);
+  });
+  it.each([true, false])('ignores an old native animation after changing histories (finished=%s)', (finished) => {
+    const h = fixture();
+    let settle!: (result: { finished: boolean }) => void;
+    h.bindings.Animated.timing = () => ({ start: (done: typeof settle) => { settle = done; }, stop: vi.fn() });
+    h.layout();
+    h.bindings.initialRevealGenerationRef.current++;
+    settle({ finished });
+    expect(h.state.revealed).toBe(false);
+  });
   it('positions explicit navigation first and reveals on seek completion without visiting the tail', async () => {
     const h = fixture('older');
     let finish!: () => void;
@@ -82,12 +107,16 @@ describe('message entry lifecycle', () => {
     finish(); await Promise.resolve();
     expect(h.state.revealed).toBe(false);
   });
-  it('opens normal histories at the latest row once, including a previously empty cache', () => {
+  it('keeps an already-visible empty history positioned when its first live row arrives', () => {
     const h = fixture();
     h.bindings.listData = []; h.layout();
     expect(h.state.revealed).toBe(true);
     h.bindings.listData = [{ key: 'latest' }]; h.layout(); h.layout();
-    expect(h.bindings.scrollToEndProgrammatically).toHaveBeenCalledExactlyOnceWith(false);
+    // A first live row uses the existing content-follow path; do not replay
+    // the initial full-history conceal/reveal or force a separate layout jump.
+    expect(h.bindings.scrollToEndProgrammatically).not.toHaveBeenCalled();
+    expect(h.bindings.initialRevealProgress.setValue).not.toHaveBeenCalledWith(0);
+    expect(h.state.revealed).toBe(true);
     expect(h.bindings.nearBottomRef.current).toBe(true);
   });
   it('restores deliberate history reading and lets an explicit link override the bookmark', () => {
@@ -117,7 +146,10 @@ it('reconciles late attachment, composer and keyboard measurements through the p
     });
     const bindings = {
       scrollMetricsRef: metrics, nearBottomRef: nearBottom, readingOlderRef: readingOlder,
+      nativeKeyboardInset: ref(0),
       historyPrependTransactionRef: ref(null),
+      // Companion receipt behavior is covered by the mounted MessageRenderer tests.
+      acknowledgeCompanionReadRef: ref(vi.fn()),
       reconcileReopeningAnchor: vi.fn(), markMobileMvcpSettle: vi.fn(),
       getTailFollower: () => follower, runStickToLatestVerify: () => follower.reconcile(),
     };

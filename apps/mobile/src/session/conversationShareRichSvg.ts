@@ -2,6 +2,7 @@ import { latexToUnicodeApproximation } from "@cindy/maker-shared/math-markdown";
 import { i18n } from "@/i18n";
 import { tokenizeCode } from "@/session/codeHighlight";
 import {
+  mobileMarkdownInlineHasMark,
   parseMobileMarkdown,
   type MobileMarkdownBlock,
   type MobileMarkdownInline,
@@ -164,15 +165,15 @@ export function layoutConversationShareRichBody(
               ? latexToUnicodeApproximation(inline.text)
               : inline.text,
         color: inline.type === "code" ? colors.inlineCode : colors.textPrimary,
-        bold: bold || inline.type === "strong",
-        italic: inline.type === "emphasis",
+        bold: bold || mobileMarkdownInlineHasMark(inline, "strong"),
+        italic: mobileMarkdownInlineHasMark(inline, "emphasis"),
         monospace: inline.type === "code",
-        decoration:
-          inline.type === "link"
+        // SVG 只能画一种装饰线;图片里的链接点不动,删除线(内容已作废)优先于链接下划线。
+        decoration: mobileMarkdownInlineHasMark(inline, "strikethrough")
+          ? "line-through"
+          : inline.type === "link"
             ? "underline"
-            : inline.type === "strikethrough"
-              ? "line-through"
-              : undefined,
+            : undefined,
       });
     }
     flush();
@@ -198,7 +199,7 @@ export function layoutConversationShareRichBody(
                 top + padding,
                 cellWidth - padding * 2,
                 typeScale.footnote,
-                lineHeight.code,
+                lineHeight.bodySmall,
                 rowIndex === 0,
               ),
           );
@@ -249,7 +250,7 @@ export function layoutConversationShareRichBody(
           cursor + 12,
           width - 24,
           typeScale.footnote,
-          lineHeight.code,
+          lineHeight.bodySmall,
         ) +
         12;
       rectangles.push({

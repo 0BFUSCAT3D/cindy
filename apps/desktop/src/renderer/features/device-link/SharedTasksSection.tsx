@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Crown, FileText, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isSharedTaskPeer, type SharedTaskOwnedItem } from '@cindy/device-link';
-import { Button } from '@/components/ui/button';
 import { SessionCard } from '@/features/cc-agent/sidebar/SessionCard';
 import { SessionItem } from '@/features/cc-agent/sidebar/SessionItem';
 import { sessionActivityMs } from '@/features/cc-agent/lib/dateSessionGrouping';
@@ -17,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { useRemoteProjectSessions, remoteProjectsStore } from './remoteProjectsStore';
 import { JoinSharedTaskDialog } from './JoinSharedTaskDialog';
 import { sharedTaskErrorKey } from './sharedTaskCompatibility';
+import { filterVisibleSharedTasks } from './sharedTaskVisibility';
 
 /** Uses the existing session mirror; choosing a task must not reconnect or fetch it again. */
 const EMPTY_IDS: ReadonlySet<string> = new Set();
@@ -75,7 +75,9 @@ export function SharedTasksSection({ activeSessionId, localSessions = [], runnin
       loading = true;
       try {
         const items = await window.electronAPI.sharedTask.account({ action: 'owned' }) as SharedTaskOwnedItem[];
-        if (captured === epoch.current && isDataOwnerGenerationCurrent(owner)) setOwned(items);
+        const current = () => captured === epoch.current && isDataOwnerGenerationCurrent(owner);
+        const visible = await filterVisibleSharedTasks(items, current);
+        if (current()) setOwned(visible);
       } catch { /* Retain the last confirmed list during transient network failures. */ }
       finally { loading = false; }
     };
@@ -161,7 +163,7 @@ export function SharedTasksSection({ activeSessionId, localSessions = [], runnin
         {collapsed ? <ChevronRight size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
         {t('sharedTask.title')}
       </button>
-      <Button variant="secondary" className="w-8 shrink-0 border-transparent bg-transparent p-0" aria-label={t('sharedTask.join')} title={t('sharedTask.join')} onClick={() => setJoinOpen(true)}><Plus size={16} aria-hidden /></Button>
+      <button type="button" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--sidebar-list-muted)] transition-colors hover:bg-sidebar-item-hover hover:text-[var(--sidebar-nav-text)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)]" aria-label={t('sharedTask.join')} title={t('sharedTask.join')} onClick={() => setJoinOpen(true)}><Plus size={15} aria-hidden /></button>
     </div>
     {!collapsed && rows.map(row => {
       if (row.role === 'joined') {

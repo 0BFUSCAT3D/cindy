@@ -30,6 +30,7 @@ Catalog (version)
 ├─ providers[]                 内置接入、授权、routing、各引擎 models
 ├─ presets[].runtimes          新建连接的地址、协议和默认资料
 └─ modelRegistry (schemaVersion / updatedAt)
+   ├─ interfaceProfiles[]      V6：产品作用域内的接口模板
    ├─ baseModels[]             公共型号
    ├─ models[]                 接入条目：modelRef → baseModels；perAgent 与 routes 同级
    ├─ nativeApiRules[]         原生协议判定
@@ -57,6 +58,73 @@ Catalog (version)
 Pi 走 `providers[].models.pi`（用户补丁 perAgent.pi 另属合法 schema）。媒体 route 使用 `agents: []`。
 `contextWindowMax` 是客户端容量投影，不能填进 Registry；容量与工作预算见 [运行时细则](model-catalog-runtime.md)。
 
+### 多接口目录（Registry V6）
+
+一个模型的身份与其接口绑定分开维护。`interfaceProfiles` 正本位于 Server 的
+`source/registry/interface-profiles.json`：`id/providerId/api/baseUrl/inputBaseUrls` 声明接口与精确
+凭证作用域；`requestPath` 为可选相对路径；`defaults` 为通道能力；`compatibility/requires`
+只引用客户端已实现的具名能力。`inputBaseUrls` 必须与目标同源，不能借目录把密钥换域发送。
+`modelIds` 限制旧配置自动采用该模板的成员，显式 `routes[].interfaces` 为新模型绑定已有模板。
+
+`routes[].interfaces[]` 通过 `profileId` 绑定模板，可声明 `wireModelId/defaults/compatibility/requires/retired`；
+`preferredInterfaces` 按 Claude Code、Codex、Pi 分别列优先级。模板被撤回、绑定被撤回或必需能力未知时，
+该绑定不可执行；不能回填离线数据复活。`nativeApis` 是经核实的型号原生协议集合（`null` 明确未知），
+不从 Pi adapter 或代理协议反推。保留 `nativeApi` 作为旧客户端的稳定声明。
+
+三引擎共用 `availableModelInterfaces/providerInterfaceModelRoute`。能力覆盖依次为公共/产品默认、
+接口默认、引擎差异、实报、`forceOverrides`、用户覆盖；数组整体替换，`false/null/[]` 不丢失。
+界面展示当前接口的能力，输入不支持时不自动重放到另一协议。`interfaceId: "auto"` 跟随目录默认；
+显式 profile ID 固定用户选择。旧 `api/piApi/route/requestPath` 保留；仅已声明的旧导入修正规则
+通过 `legacyApis` 迁移。用户配置只保存原始选择，不保存解析后的 API、模板或完整快照。
+高级模型设置沿用既有入口显示自动与可用接口；手机/设备互联仍使用执行端投影，不在控制端重新选路。
+
+任务首次派发把非敏感接口、模型 ID 与能力快照存入 owner-scoped `model-interface-snapshots/`，
+同一任务/来源/引擎/型号在目录刷新与重启后保留接口。旧任务首次恢复按保存的 transport 迁移。
+鉴权、来源是否存在、暂停与撤回仍实时检查；快照不存 Key/headers。删除任务清理其快照；
+归档和关闭不清理。SSH 由执行宿主复用选路结果；新接口若不能由既有远端协议表达，沿用启动前明确报错。
+
+V6 请求使用 `registrySchemaVersion=6&registryMedia=1&registryLocalRuntimes=1`；旧服务端返回低版本时，
+在同一时间预算内重试一次 V5。缓存按实际 URL 变体隔离；同 revision 的 V5→V6 只有旧形状完全相等
+才视为升级，反向不覆盖 V6。服务端 V5/V4/冻结 legacy 投影不泄漏新字段或新默认接口。
+
+维护步骤：
+
+1. 在 Server 正本修改模型绑定/通道能力/优先级，增加 `updatedAt`，运行 `pnpm --filter model-access-server catalog:generate`。
+2. 更新离线副本时，在客户端运行 `node packages/model-providers/scripts/sync-registry.mjs <Server生成的providers.json>`；
+   运行解析、目录一致性及受影响路由回归。旧 `provider-interface-models.json` 与客户端硬编码接口表已删除。
+3. 新型号绑定已有模板可以只发目录。新增/改变模板端点、鉴权边界或兼容行为走常规服务发布；
+   新执行行为还必须发布客户端。发布门比较组装后的模板，不能通过换分片绕过。
+4. 回撤用新的完整 revision 和 `retired`，不回发旧日期快照。先部署可兼容投影的 Server，再发布客户端，
+   最后调整目录默认；目录发布与真实上游推理验收分别记录。
+
+回归入口：`providerInterfaceRoutes`、`source-registry`、`modelAccessValidator`、Desktop `providerRoute`
+（真实 HTTP 目录→解析→三接口出站、快照冷恢复）、`codexProxyHost`、`piProviderTransport`。
+“客户端已实现”“服务已部署”“账号真实推理通过”是三个独立结论。
+
+### Gateway 复杂价目展示
+
+Model Access V5 通过 `X-Cindy-Model-Capabilities: display_pricing` 协商可选 `displayPricing`。
+聊天和媒体目录都保留该字段与同一连接快照的 `currency`、`costDiscount`；不进入公共
+Registry/defaults、ModelPriceQuote 或 token 成本估算，不跨供应商补价。
+成功刷新缺字段或价目不可解析时清除旧价目，模型仍正常更新；新增属性忽略，未知单位保留。
+展示字段变化不构成整份目录失败；网络或核心模型协议失败仍沿用既有目录恢复语义。
+
+Desktop 设置页模型详情有 `displayPricing.summary` 时优先按输入、输出、缓存读取、缓存写入
+展示主报价，每个角色允许 1–4 段、各带单位与数量，区间统一用 `maxPrice` 表示。摘要的
+`priceType` 仅允许缺省、`exact` 或 `estimated`；任一段为 `starting_at` 时整份 summary 无效，
+只丢弃摘要，保留价目表。items 的已发布契约不变，仍支持 `starting_at`。summary 缺失或无效时
+沿用原价目表；summary 无效只清除摘要，不丢价目表。补充价目表仅在以下条件全部满足时隐藏：
+有 summary 且没有 notes；所有 item 都没有 tier，priceType 缺省或 exact；item 总数等于
+所有角色报价段数，且每个 item 能按 unit、quantity、price 一一匹配不同的摘要报价，
+匹配报价没有 maxPrice 或 tier。其余情况保留在摘要下方。设置页列表对带 displayPricing 的
+模型不显示价格；选择器、浮层和聊天价格档位逻辑保持原样。详情中的有效折扣仍单列显示。
+摘要的 tier 单独一行使用次要文字，金额、原价区间和单位分别保持完整，同一角色的多段报价逐条换行、靠右对齐，不插入分隔点。
+`price` / `maxPrice` 为每 `quantity` 个 `unit` 的折扣前报价，只在展示时应用一次折扣，保留币种
+与“约”的语义；items 另外保留“起价”语义。角色和已知单位本地化，label、tier、notes 仅按纯文本呈现，未知单位不猜换算。
+数量 1 省略，百万按语言简写，其余按本地数字格式显示。共享目录可传递这些可选展示字段，旧端
+缺字段仍合法，不新增能力声明；此 UI 仅覆盖 Desktop 设置页。解析与展示回归见
+`modelDisplayPricing.test.ts`、`DisplayPricingDetails.test.tsx` 与 `ModelAdvancedDrawer.test.tsx`。
+
 ### 覆盖顺序
 
 这里是**模型资料字段**的优先级，右边覆盖左边；成员、权限、实际计费、显示开关不套用此链：
@@ -72,22 +140,96 @@ Pi 走 `providers[].models.pi`（用户补丁 perAgent.pi 另属合法 schema）
 `defaultEffort` 的已配置默认优先于供应商实报的推荐档，再适配实际支持能力，force / 用户覆盖仍优先。
 详细字段及成员空值规则以 [模型资料优先级](../product-rules/model-metadata-precedence.md) 为唯一正本。
 
-<a id="ordering"></a>
-## 模型排序：账号优先，目录兜底
+### 远程推理档位快照兼容
 
-OpenAI（Codex 订阅）与 Anthropic（Claude 订阅）的 root 有账号模型清单时，`sortOrder` 以账号
+Desktop 主机向能力清单和 `maker:provider:list` 的模型条目显式投影既有的
+`effortsUnknown` 布尔值：`false` 表示能力已知，`true` 表示未声明。控制端收到旧主机
+缺少该字段的空档位表时保留已有选择，只有显式 `false` 的空表才清空；非空表照常校准。
+草稿播种与最终提交使用同一兼容口径，不在控制端给缺失字段补 `false`。
+无档位选择落库使用既有空串哨兵，任务后续发送也保留“未指定”，不提交输入框显示兜底档位。
+Codex 在实际 `turn/start` 请求中省略该档位字段，计划模式的 `reasoning_effort` 使用协议允许的
+`null`；运行时切换与恢复重试同样不发送空串，服务端默认档位快照不覆盖明确的无档位选择。
+回归见 `packages/maker-core/src/agents/codex/index.test.ts` 的 no-effort 用例。
+实现与回归见 `catalog-to-descriptors.ts`、`providerHandlers.ts`、
+`deviceLinkDraftDefaults.test.ts`、`deviceLinkCreateArgs.test.ts` 与 `chatInputModelLoading.test.tsx`。
+
+<a id="ordering"></a>
+## 模型排序与成员：以账号为准
+
+OpenAI（Codex 订阅）与 Anthropic（Claude 订阅）的 root **成员只来自账号清单**：Registry 只给
+已返回的型号补资料、标退役，不补入账号没返回的型号；没有账号清单时名单为空。`sortOrder` 以账号
 返回顺序为准：Codex 取 `models_cache.json` 的 `priority` 或 app-server `model/list` 的返回位置，
-Claude 取 SDK `supportedModels()` 的返回位置。只在 Registry 里有、账号没返回的模型按 Registry
-`sortOrder` 接在其后。装配时重写为连续 `sortOrder`，选择器、设置页、新对话默认与 Claude Code
-bridge 共用这一顺序；OpenAI 订阅的 Pi 清单成员与能力仍来自 Pi 目录，但同样按账号顺序排列，
-并沿用 Registry 条目的 `defaultEnabled: false`；用户本地 `sortOrder` patch 仍最高。拿不到账号清单时才用 Registry `sortOrder`。
+Claude 取 SDK `supportedModels()` 的返回位置。用户本地 addition 按 Registry / 本地 `sortOrder`
+接在其后。装配时重写为连续 `sortOrder`，选择器、设置页、新对话默认与 Claude Code
+bridge 共用这一顺序；OpenAI 订阅的 Pi 以公共 Pi 目录为基础，按同一账号的当前发现／恢复
+清单补入新型号并排序，能力按 Pi 协议适配，沿用 Registry 条目的 `defaultEnabled: false`；
+用户本地 `sortOrder` patch 仍最高。
+
+Claude 订阅没有 HTTP 清单接口，清单来自内置 Claude Code 的 SDK `supportedModels()`：会话启动时
+捕获；此外 maker 就绪、登录／认领 Claude 登录以及手动刷新时，用本机 CLI 起一个空闲 Query 只读
+清单（不发消息、不产生模型调用）。SDK 对每个系列的当前型号常只给简称（`opus` / `sonnet` /
+`default`）并把版本写在说明里（如 “Opus 5.5 · …”）；简称按说明拼出 `claude-<系列>-<主>-<次>`。
+Registry 尚未登记的新版本照样显示（资料用未知模型默认值，并记日志提示补登记），**绝不映射到
+相邻旧版本**；说明里读不出版本时才跳过。SDK 的 displayName 只有系列名（如 “Fable”）时不作为
+型号名称，改用 Registry 名称，Registry 未登记则按 ID 推导（`claude-fable-5-2` → “Fable 5.2”）。
 xAI 保留 Registry 声明顺序，XD 以 Gateway `/models` 为准，均不受此规则影响。
 第三方 API key 连接（MiMo、Kimi Code 等预设及自定义端点）没有 sortOrder，按连接配置里的
 顺序排：首次添加用接口返回的顺序；之后刷新发现的新型号排在已有型号之前（保持接口返回的
 相对顺序），已有型号位置不动（`mergeDiscoveredRuntimeModels`）。
 
-新对话默认模型不跟排序绑定的例外只有服务端按区域下发的 `newSessionDefault`；公共 Registry 的
+来源内的默认推荐可由服务端按区域下发的 `newSessionDefault` 指定；公共 Registry 的
 同名字段不进入活动目录。未标记时取排序第一的默认可见模型，即账号返回的第一个可见模型。
+
+未手动选择模型时，客户端出厂来源顺序为 Codex 订阅 GPT-6.1 Sol（Codex）、
+Claude 订阅 Opus 5.5（Claude Code）、服务端指定的 Cindy Auto（Pi），最后保留 xAI 回退。
+订阅按认证身份识别独立账号，始终保留实际账号 ID。Cindy Auto 由服务端决定：在 Cindy AI 与
+企业号池供应商（`source: organization`）中跟随被标为 Pi 新任务默认的 Auto 系列模型
+（预设 `auto` 或模型组 Auto `auto/<组ID>`），没有标记时（旧服务端）回退 Cindy AI 的预设 `auto`。
+只认 Auto 系列的标记：个人目录仍把旧 GLM 标为 Pi 默认，客户端不采纳，也不把 Auto 替换成固定型号。
+服务端保证每个引擎只标一个默认；管理员恰在两次拉取之间改配置、两类来源短暂各标一个时，
+以 Cindy AI 为准，不取决于来源列表顺序。未手选的普通草稿记着 Cindy AI 或号池来源时，只有
+当前引擎在任一 Cindy 来源中存在服务端标为 `newSessionDefault` 的组 Auto（`auto/<组ID>`），
+且该候选可连接、未停用、符合本地可见性与聊天准入条件，才跨两类来源寻找出厂默认；沿用同一
+候选筛选和排序规则。没有合格的组默认时保留旧的来源范围，避免旧服务端下把号池草稿改走平台。
+草稿本身已记着组 Auto 时仍保留跨来源跟随，以及组 Auto 被撤销后的回退；用户手选、加载期、
+固定来源约束（`requiredProviderId`）和自定义来源的保护不变。
+草稿发送校准与无人值守默认解析复用同一策略，避免初始化选中 Auto 后又被旧标记改回 GLM。
+同一订阅策略先在全部匹配账号中寻找推荐型号，再取该来源按目录排序可见的其他型号；
+无人值守入口没有本地显示开关时按 `defaultEnabled` 判断，不能因缺少推荐型号提前换到下一供应商。
+策略在 `apps/desktop/src/shared/newMakerDefaultTuple.ts`；连接、型号和对应引擎必须实际可用，
+不能为了满足推荐而把 Sol / Opus 放入另一个引擎。用户手动选择及型号开关始终优先，
+不修改已有任务的运行配置；伙伴默认复用应用选择，不另造一套来源优先级。
+定时任务、`/learn`、IM 新建任务与分享导入等不由用户当场选模型的入口，
+没指定模型时同样按新建任务口径解析（`apps/desktop/src/shared/draftModelCalibration.ts`
+的 `resolveNewTaskDefaultRoute`），不在代码里写死型号；一个可用来源都没有时明确失败或留空让用户选。
+
+Auto 只按模型 ID 认（`isCindyAutoModelId`）：服务端可以把同一个 Auto 在 Cindy AI 与企业号池
+之间挪动。记住的来源是这两类之一且已不再提供它时，`effectiveSourceIdForModel` 改用当前提供它
+的那一家（同样限于这两类），新建任务提交与手机端 `resolveRecentModelAndProvider` 复用同一规则；
+记住的来源仍列着它（只是断连或停用）、或是用户自己接的供应商时不改道。
+手机端新建任务、恢复或切换引擎、目录校准及提交终检，均必须传入完整供应商目录来识别旧来源，
+即使旧来源已没有可见模型行也不能用行列表反推身份；提交守卫的目录与行必须来自同一份响应。
+Pi 的空来源代表 Cindy AI，先按该身份尝试组 Auto 跟随，再走普通空来源回退。改道目标必须存在于
+当前可见模型行中，不能选中隐藏的目标或误用同名自定义模型。
+
+目录刷新后，仍记着旧来源的进行中任务登记一次「下一条消息前切换」：引擎与模型 ID 不变，只换
+供应商与 Key（`apps/desktop/src/main/maker-ipc/cindyAutoRouteFollow.ts`）。用户点选、跨引擎或跨电脑
+的切换，以及等待生效的换凭证、运行时选择都不覆盖；运行时覆盖本身不算改道——目录刷新按原路由重新加载
+进行中任务时也会写上它，这时它就是当前路由，照常跟随——只有故障切换中（`fallbackHop > 0`）的任务
+不跟随。系统登记的 Auto 换来源（configStaged、同引擎、同一个 Auto、只换来源）在 Auto 再次挪动时按
+当前位置重新核对。首次登记时验证两端都是 Cindy 分发来源，并在内存意图里记录来源身份；
+后续目录删除某个来源时，只要记录仍匹配当前路由和登记目标，就仍可撤销或改登记。没有该记录时
+仍要求目录中的两端均属 Cindy；目录中明确属于自定义来源的两端始终不跟随。伙伴或 IM 配置登记的
+用户自定义来源切换不能被撤销或改登记。重核后：目标仍提供就不动；当前位置又能用、
+或哪里都没有了就撤销登记；去了别的来源就改登记到那里。远程主机与另一台电脑上运行的任务不在本机改道。Auto 没有推理档位（任务里 effort
+为空串）时按 null 登记。Cindy AI 列表或企业号池目录任一边刷新后 Auto ID 有增减，会顺带刷新另一边
+（`cindyAutoModelIdsChanged`），跟随在两边都更新后才看到一致的位置；只刷新一边会把旧位置当成仍有效。
+请求被拒后刷新目录重试不在客户端处理。
+存下来的「来源 + Auto」（伙伴自己的模型链与用户自定义的伙伴默认、IM 渠道默认路由）在使用时套用
+同一规则（`movedCindyAutoSourceId`，Pi 的 null 来源即 Cindy AI），不改写保存的配置；IM 跟随渠道
+默认时把 Auto 的新旧位置视为同一路由，避免跟过去后被误判成用户单独改过。
+伙伴异步读取 Auto 目录后必须复核当前账号；读取期间退出或切换账号时拒绝旧结果，
+包括目录读取失败的回退分支。同账号的目录读取失败仍保留原链，交给既有路由校验。
 
 设置页管理列表组内与选择器同序：组内每项都带 `sortOrder` 时按它排；只要有一项缺失，退回
 按系列名 A–Z、同系列版本号降序，避免局部权重把新型号压到旧策展位置之后。
@@ -151,6 +293,72 @@ localModels 整域缺失才用随包本地域，显式空不兜底。
 兼容补全只能补缺项：旧快照缺失 nativeApi 可由内置补全；明确协议、null、retired 优先。
 它不改窗口、价格、成员资格，也不从 Gateway wireProtocol 或 Pi piApi 猜原生协议。
 旧格式迁移中若两份 Registry 有差异，必须使用不同 revision 并记录原因，不能伪造同版本一致。
+
+## llama.cpp 托管接入
+
+客户端的「添加供应商」有两个 llama.cpp 入口，互不影响：托管入口（`cindy-local-llamacpp`）
+点击立即保存并进入详情，不等待安装或连接，安装与下载在详情中进行；目录中的 `llamacpp`
+预设用于连接用户已运行的服务（默认 `http://127.0.0.1:8080/v1`，地址可改），出现在
+「检测到本机服务」或「更多本机服务」，走普通预设连接流程，不调用托管安装或启动。
+与 Ollama 共用 `LocalModelDownloadUI.tsx` 的安装提示、目录搜索、模型卡片、量化标签、
+下载按钮、进度操作与手动下载布局，各运行时只适配传输和状态。
+实现位于 `apps/desktop/src/main/local-model-runtime/llamaCpp*.ts`，界面为
+`LlamaCppProviderDetail.tsx`。运行环境从 llama.cpp 官方 GitHub Releases 安装到
+userData 下的 `llamacpp-runtime`；macOS 使用对应架构构建，Windows / Linux 先使用
+CPU 构建。下载校验官方 SHA-256，不调用系统包管理器。
+
+模型可从共用清单一键下载，也可由用户指定公开 Hugging Face 仓库并选择 GGUF 文件；下载固定到仓库 revision，
+校验大小与 LFS SHA-256，自动补齐分片，全部完成后才移入已安装列表。取消或失败清理
+本次暂存文件；磁盘不足在下载前提示。当前支持文本模型，不自动下载视觉 projector，
+下载清单复用 Server Registry 的 `localModels.models[].llamacpp[]`，只增加
+`repo / file / quantization / sizeBytes / verifiedAt` 下载资料，不维护第二份模型名单。
+名称、搜索别名、五语简介、顺序来自同一模型条目和 `featuredIds`；两个运行时共用分档推荐。
+GGUF 的型号级试用主推复用 `recommendForHost` 与 `featuredIds`，显示实际芯片和内存；
+只保留存在 GGUF 包装且文件大小小于物理内存的主推型号。未知硬件、主推撤下或包装缺失时不从其他候选补位。
+这是共用型号筛选，不是该 GGUF 的运行内存测量；卡片标明「主推 · 先试这个」，并说明本机速度与峰值内存待实测。
+不继承 Ollama 包装的思考配置或实测结论，也不因内存充裕把其他候选自动提升为主推。
+2026-09-26 按用户要求将 Flash-Next 显式加入共用主推首位（现有 192 GB 门槛），27B 为轻量备选。
+`localModelBrowserItems` 统一过滤已安装项、保留活动下载、搜索与去重；已安装主推也从默认下载区隐藏。
+下载支持同一次运行中的暂停/继续：保留暂存字节，按固定 revision 用 HTTP Range 续传，重新校验完整 SHA-256。
+取消清理本次暂存；退出应用仍会取消，尚不恢复跨进程的下载。当前一次只执行一个托管操作。
+`verifiedAt` 表示文件存在与大小核验日期，不能解释为运行验证；分片大小为总和。
+明确空的 `llamacpp: []` 撤下该模型的 GGUF 候选，旧快照缺字段也不按型号猜下载地址。
+试验范围与维护记录见 [llama.cpp 试验清单](../llamacpp-trial.md)。
+
+托管服务只绑定 `127.0.0.1:11435`，与原手动预设的 8080 分开；端口被占用时不接管。
+router 按请求加载模型，最多同时加载一个模型，默认上下文 32,768、单并发。
+2026-09-26 经用户授权，当前 bartowski Flash-Next 试验包装使用 262,144；
+按模型生成原生 INI preset，不用全局 CLI 窗口覆盖其它模型。发布模型资料时同步升级旧的托管默认值。
+下载完成后自动同步供应商模型列表并广播刷新。服务运行时保留当前模型清单和上下文，
+下载模型或修改上下文后，由拥有方在「管理服务」中手动重启生效；停止后的下次使用自动启动并应用最新配置。
+普通使用不探测空闲后重载，不因待生效配置阻止已有模型继续使用；手动重启会中断当前生成。
+添加时创建 `cindy-local-llamacpp` 连接，经现有 Chat 协议桥供 Pi / Codex / Claude Code 使用，
+并保留已有模型的用户设置。后续使用该连接时自动启动服务；Cindy 退出时停止自有子进程。
+2026-09-26 用户确认按需启动：安装后不立即启动，详情页不展示启动按钮，停止时显示「按需启动」。
+会话启动和 Pi provider 装配均复用 preflight；下载不依赖服务运行。高级管理中保留停止/重启用于排障。
+这不代表任意 GGUF 都支持工具调用。Flash-Next 可选 1,000,000 tokens，并自动配置 YaRN；
+已完成本机单次 982,003 token 合成检索验证，不能据此承诺其他包装或复杂任务质量。
+
+安装与下载管理目前与既有 Ollama 管理入口一样，只在执行端 Desktop 设置页开放，
+不新增远程 privileged IPC 白名单。手机仍可通过已有执行端模型目录使用已连接模型；
+SSH 执行路径跳过本机启动，不会把本机模型安装到远端。
+安装与手动下载独立于服务端；共用目录的后续更新需要配套发布 Server。
+客户端请求增加 `registryLocalRuntimes=1`，服务端仅向同时声明 media 和本能力的 V4/V5
+客户端下发 `llamacpp`，旧端剥离该字段并重新计算 ETag。未知能力值等同未声明。
+初次同步的完整 Registry 与 Server `dash/llamacpp-catalog` 工作树的生成快照一致，revision 为
+`2026-09-26T00:00:00.000Z`（包含 26 日更新的主推顺序）；此为工作副本核验，不代表已合并或部署。同步前将客户端
+已有但 Server 主干尚缺的 Grok 4.7 / Build Fast 配置原样补入 Server，避免回退已有型号。
+没有仅拼入本地域、改变用户 override 或发布到线上。
+随后同步客户端主干 #5119 的目录变更，保留其订阅排序与默认显示资料，以及本 PR 的本地包装和主推顺序；
+2026-09-29 再次同步主干目录后，合并快照使用独立递增 revision `2026-09-29T19:00:00.002Z`，
+避免与主干 `2026-09-29T19:00:00.001Z` 同版本不同内容。
+此合并快照尚未同步 Server 工作树或部署，不能继续声称当前两边整表一致。
+2026-09-30 用户确认 Server 配置更新单独推进，不作为客户端 PR #5118 的合并前置。
+客户端可先使用随包目录；Server 完整目录同步、兼容下发及部署仍需分别核验，不能以客户端
+合并代替 Server 发布，也不因审查线程关闭而声称线上已更新。
+
+回归测试为 `llamaCppDownloads.test.ts`、`llamaCppService.test.ts`、`llamaCppIpc.test.ts`、
+`managedLlamaCppProvider.test.ts` 与 `LlamaCppProviderDetail.test.tsx`。
 
 ## 通用供应商导入
 

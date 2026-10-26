@@ -3,18 +3,20 @@ import { useRef, useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { sharedTaskHostPeer, SHARED_TASK_HOST_CHANNEL, type SharedTaskDetail } from '@cindy/device-link';
+import { parseSharedTaskInvitation, sharedTaskHostPeer, SHARED_TASK_HOST_CHANNEL, type SharedTaskDetail } from '@cindy/device-link';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { SharedTaskButton } from '../SharedTaskButton';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import type { Session } from '@/lib/ccAgent.types';
 import { toast } from '@/lib/toast';
-const state = vi.hoisted(() => ({ invoke: vi.fn(), openLink: vi.fn(), host: vi.fn(), account: vi.fn(), closeLink: vi.fn(), removeDevice: vi.fn(), resetFence: vi.fn() }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+const state = vi.hoisted(() => ({ invoke: vi.fn(), openLink: vi.fn(), host: vi.fn(), account: vi.fn(), closeLink: vi.fn(), removeDevice: vi.fn(), resetFence: vi.fn(), findById: vi.fn(), rawSessions: vi.fn() }));
+vi.mock('@/lib/sessionsStore', () => ({ sessionsStore: { findById: state.findById } }));
+vi.mock('@/lib/sessionService', () => ({ get: vi.fn() }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, values?: { title: string; link: string }) => key === 'sharedTask.invitationMessage' ? `Join “${values?.title}”\n${values?.link}\nOpen the link, or copy it and open Cindy on mobile.` : key }) }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ dataOwnerId: 'owner', isAuthenticated: true }) }));
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock('@/lib/remoteDataOwnerPushFence', () => ({ resetRemoteDataOwnerPushFence: state.resetFence, bindSharedTaskPushOwner: vi.fn() }));
-vi.mock('../remoteProjectsStore', () => ({ remoteProjectsStore: { getDeviceName: () => undefined, removeDevice: state.removeDevice }, isRemoteDeviceMarkedDisconnected: () => false }));
+vi.mock('../remoteProjectsStore', () => ({ remoteProjectsStore: { getDeviceName: () => undefined, removeDevice: state.removeDevice, getDeviceSessions: state.rawSessions }, isRemoteDeviceMarkedDisconnected: () => false }));
 const ownerSession = { id: 'session-1', title: 'Task A' } as Session;
 const detail = {
   sharedTaskId: 'st1', sessionId: 'session-1', ownerAccountId: 'owner', hostDeviceId: 'device-a',
@@ -26,6 +28,9 @@ const memberDetail: SharedTaskDetail = { ...detail,
 };
 beforeEach(() => {
   vi.clearAllMocks(); setDataOwnerGeneration('owner');
+  state.findById.mockImplementation(sessionId => ({ id: sessionId, source: 'desktop' }));
+  state.rawSessions.mockImplementation((deviceId: string) => ['device-a', 'other-pc'].includes(deviceId)
+    ? ['session-1', 'other-session'].map(id => ({ id, source: 'desktop' })) : []);
   state.host.mockResolvedValue({ available: true, detail });
   state.openLink.mockResolvedValue(undefined); state.closeLink.mockResolvedValue(undefined);
   state.account.mockImplementation(async ({ action, sharedTaskId }) => {
@@ -75,10 +80,30 @@ it('starts an unshared task and loads its members', async () => {
 it('distinguishes a clipboard failure from a request failure and allows retry', async () => {
   const copy = vi.fn().mockRejectedValue(new DOMException('Not focused', 'NotAllowedError'));
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
-  state.host.mockImplementation(async c => c.action === 'invite' ? { invitation: 'test-invitation' } : { available: true, detail });
+  const invitationLink = 'https://relay.example.test/shared-task/join#' + 'A'.repeat(43);
+  state.host.mockImplementation(async c => c.action === 'invite' ? { invitation: 'test-invitation', invitationLink } : { available: true, detail });
   await openWindow(); click('invite'); await waitFor(() => expect(toast.error).toHaveBeenCalledWith('sharedTask.invitationCopyFailed'));
   expect(toast.success).not.toHaveBeenCalled(); copy.mockResolvedValue(undefined); click('invite');
   await waitFor(() => expect(toast.success).toHaveBeenCalledWith('sharedTask.invitationCopied'));
+  const content = copy.mock.lastCall![0] as string;
+  expect(content).toContain('Task A');
+  expect(content).toContain(invitationLink);
+  expect(content).toContain('copy it and open Cindy on mobile');
+  expect(parseSharedTaskInvitation(content, 'https://relay.example.test')).toEqual({ ok: true, invitation: 'A'.repeat(43) });
+});
+it('copies a usable invitation when the task title contains a web link', async () => {
+  const copy = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+  const title = 'Review https://docs.example.test/page';
+  const invitation = 'A'.repeat(43);
+  const invitationLink = 'https://relay.example.test/shared-task/join#' + invitation;
+  state.host.mockImplementation(async command => command.action === 'invite'
+    ? { invitation, invitationLink } : { available: true, detail: { ...detail, title } });
+  await openWindow(); click('invite');
+  await waitFor(() => expect(copy).toHaveBeenCalled());
+  const content = copy.mock.lastCall![0] as string;
+  expect(content).toContain(title);
+  expect(parseSharedTaskInvitation(content, 'https://relay.example.test')).toEqual({ ok: true, invitation });
 });
 it('does not copy when generating an invitation fails', async () => {
   const copy = vi.fn(); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });

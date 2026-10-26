@@ -161,7 +161,8 @@ async function startPlanSession(
         systemPrompt?: { append?: string };
         hooks?: {
           PreToolUse?: Array<{
-            hooks: Array<(input: Record<string, unknown>) => Promise<Record<string, unknown>>>;
+            hooks: Array<(input: Record<string, unknown>, toolUseId?: string,
+              options?: { signal: AbortSignal }) => Promise<Record<string, unknown>>>;
           }>;
         };
       }
@@ -584,7 +585,7 @@ describe('ClaudeCodeAgent plan mode', () => {
         for (const hook of group.hooks) {
           const decision = await hook({
             hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: {},
-          });
+          }, undefined, { signal: new AbortController().signal });
           expect(decision.hookSpecificOutput).not.toMatchObject({ permissionDecision: 'deny' });
         }
       }
@@ -1151,6 +1152,7 @@ describe('ClaudeCodeAgent plan mode', () => {
     expect(resolveRemoteClaudeRoute).toHaveBeenCalledWith({
       providerId: 'custom-provider',
       model: 'custom-model',
+      sessionId: 'session-remote-materialized-route',
     });
     expect(starts).toHaveLength(1);
     const env = starts[0]?.env as Record<string, string> | undefined;
@@ -1479,8 +1481,12 @@ describe('ClaudeCodeAgent plan mode', () => {
       { reviewAutoPermissionAction },
       'auto',
     );
+    const feedback = ['Do not publish.', 'Only change parser files.'];
+    let response = 0;
     handle.setInteractionResolver(async (req): Promise<InteractionDecision> => {
-      if (req.kind === 'plan_review') return { kind: 'plan_review', behavior: 'allow' };
+      if (req.kind === 'plan_review') return response < feedback.length
+        ? { kind: 'plan_review', behavior: 'deny', reason: feedback[response++] }
+        : { kind: 'plan_review', behavior: 'allow' };
       return { kind: 'permission', behavior: 'allow' };
     });
     const canUseTool = queryOptions.canUseTool;
@@ -1490,6 +1496,7 @@ describe('ClaudeCodeAgent plan mode', () => {
       type: 'user',
       content: 'Refactor the parser without changing public behavior',
     });
+    for (let i = 0; i < feedback.length; i++) await canUseTool('ExitPlanMode', { plan: 'draft' }, { toolUseID: `rejected-${i}` });
     await canUseTool(
       'ExitPlanMode',
       { plan: '1. Inspect parser call sites\n2. Update parser\n3. Run focused tests' },
@@ -1503,7 +1510,7 @@ describe('ClaudeCodeAgent plan mode', () => {
 
     expect(reviewAutoPermissionAction).toHaveBeenCalledWith(expect.objectContaining({
       userIntent: {
-        earlierUserMessages: ['Refactor the parser without changing public behavior'],
+        earlierUserMessages: ['Refactor the parser without changing public behavior', ...feedback],
         currentUserMessage: 'Approved plan:\n1. Inspect parser call sites\n2. Update parser\n3. Run focused tests',
       },
     }));
