@@ -232,6 +232,7 @@ export interface AgentIslandServiceDeps {
 
 interface AgentIslandNativeRenderer {
   readonly failed: boolean;
+  readonly available?: boolean;
   readonly headless?: boolean;
   prepare?(): void;
   publish(
@@ -861,7 +862,7 @@ export class AgentIslandService {
 
   /** True means this surface owns the alert; otherwise the caller uses the OS notification. */
   notifyGroupChat(groupId: string): boolean {
-    if (!this.isEnabled() || this.headless || this.nativeHost.failed) return false;
+    if (!this.isEnabled() || this.headless || this.nativeHost.failed || this.nativeHost.available === false) return false;
     const chat = this.state.sessions.get(groupChatIslandId(groupId))?.groupChat;
     if (!chat) return false;
     const window = this.deps.getMainWindow();
@@ -1103,7 +1104,7 @@ export class AgentIslandService {
       suppressCompletionAttention,
       // Direct IM sends bypass handleUserPrompt. Running preserves unread in the
       // live state/ledger, so use that state (including any intervening read ack).
-      preserveCompletionAttention: suppressCompletionAttention && !this.metadataCache.get(hydrated.sessionId)?.companion?.groupId && (
+      preserveCompletionAttention: suppressCompletionAttention && !this.isGroupLaneEvent(hydrated.sessionId, event) && (
         event.turnOrigin?.surface === 'im'
           ? hasAgentIslandSessionAttention(this.state, hydrated.sessionId)
           : this.hadAttentionBeforeSilencedCompletion(hydrated.sessionId)
@@ -1801,8 +1802,13 @@ export class AgentIslandService {
   private isCompletionEventSilenced(sessionId: string, event: AgentEvent): boolean {
     if (!isCompletionDoneEvent(event)) return false;
     return event.agentMeta?.botTaskCoordination === true
-      || !!this.metadataCache.get(sessionId)?.companion?.groupId
+      || this.isGroupLaneEvent(sessionId, event)
       || event.turnOrigin?.surface === 'im' || this.silencedSessionRunIds.has(sessionId);
+  }
+
+  private isGroupLaneEvent(sessionId: string, event: AgentEvent): boolean {
+    // Accepted-input provenance reaches this event independently of avatar loading.
+    return event.agentMeta?.botGroupLane === true || !!this.metadataCache.get(sessionId)?.companion?.groupId;
   }
 
   private hadAttentionBeforeSilencedRun(sessionId: string): boolean {

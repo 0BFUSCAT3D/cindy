@@ -588,7 +588,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     pendingChanges.set(roomId, setTimeout(() => {
       pendingChanges.delete(roomId);
       if (!current()) return;
-      if (roomId && attentionGroups.has(roomId)) void refreshGroupAttention(roomId);
+      if (roomId && deps.onChatGroupAttention && rooms.has(roomId)) void refreshGroupAttention(roomId);
       deps.onChanged?.({ groupId: roomId, change: 'messages' }, scope);
       // A restored route may still contain the local ID until the user navigates.
       for (const [sourceId, targetId] of upgradedGroups)
@@ -1132,7 +1132,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
 
   function publishGroupAttention(s: Snapshot): void {
-    if (!current() || !isGroupRoom(s.room)) return;
+    if (!current() || (!deps.onChatGroupAttention && !deps.onChatMessageNotification) || !isGroupRoom(s.room)) return;
     if (!notificationBaselines.has(s.room.id)) notificationBaselines.set(s.room.id,
       s.messages.reduce((max, message) => BigInt(message.seq) > max ? BigInt(message.seq) : max, 0n));
     if (!deps.onChatGroupAttention) return;

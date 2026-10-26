@@ -1635,6 +1635,8 @@ export function revealAgentIslandGroupChat(state: AgentIslandState, groupId: str
     && (!chat.input.mentioned || chat.lastAlertMention)) return;
   chat.lastAlertAt = now;
   chat.lastAlertMention = chat.input.mentioned;
+  // An @ replaces the content of a visible group card without restarting its dwell.
+  if (state.activeTransientSessionId === session.sessionId && session.revealUntil !== null && session.revealUntil > now) return;
   // A pointer already on the island must not receive a surprise automatic reveal later.
   if (!isPointerInsideIsland(state) && !state.hoverExpanded) enqueueTransientReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
 }

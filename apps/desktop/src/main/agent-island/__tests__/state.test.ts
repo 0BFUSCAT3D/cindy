@@ -118,13 +118,13 @@ describe('group message cards', () => {
     expect(buildAgentIslandDisplayState(state, now + 1).pillSnapshot.attentionCount).toBe(0);
   });
 
-  it('coalesces a burst in place, does not extend its dwell, and lets a new mention alert', () => {
+  it.each([false, true])('coalesces a burst without extending its dwell (mention during dwell: %s)', mentionDuringDwell => {
     const state = createAgentIslandState();
     sync(state);
     revealAgentIslandGroupChat(state, input.groupId, 100);
     expect(buildAgentIslandDisplayState(state, 100).displayPolicy).toBe('transient');
     const until = state.sessions.get('chat-group:group')!.revealUntil!;
-    sync(state, { messageId: 'next', preview: 'Sam: next' }, 200);
+    sync(state, { messageId: 'next', preview: 'Sam: next', mentioned: mentionDuringDwell }, 200);
     revealAgentIslandGroupChat(state, input.groupId, 200);
     expect(state.sessions.get('chat-group:group')!.revealUntil).toBe(until);
     expect(buildAgentIslandDisplayState(state, 200).sessions).toHaveLength(1);
@@ -132,7 +132,7 @@ describe('group message cards', () => {
     sync(state, { mentioned: true }, until + 2);
     revealAgentIslandGroupChat(state, input.groupId, until + 2);
     expect(buildAgentIslandDisplayState(state, until + 2).sessions[0].groupChat?.mentionLabel).toBe('@you');
-    expect(buildAgentIslandDisplayState(state, until + 2).displayPolicy).toBe('transient');
+    expect(buildAgentIslandDisplayState(state, until + 2).mode).toBe(mentionDuringDwell ? 'compact' : 'expanded');
   });
 
   it('keeps a pending approval above mentions, and pins existing rows under the pointer', () => {

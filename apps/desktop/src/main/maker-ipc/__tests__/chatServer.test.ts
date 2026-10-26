@@ -225,7 +225,9 @@ describe('Chat Server result delivery and refresh', () => {
     await vi.advanceTimersByTimeAsync(150);
     expect(attention.mock.calls.at(-1)?.[1]).toBeNull();
     snapshot.reads[0].muted = false;
-    await service.getGroup(roomId);
+    readChanged();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(attention.mock.calls.at(-1)?.[1]).toMatchObject({ messageId: message('3').id, mentioned: false });
     const received = (seq: string) => socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: seq,
       changes: [{ type: 'message.created', entityId: message(seq).id }] }));
     received('3');

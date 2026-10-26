@@ -581,13 +581,16 @@ describe('AgentIslandService native publishing', () => {
     takePendingDeepLink();
     const publish = vi.fn<(state: AgentIslandDisplayState) => boolean>(() => true);
     const playSound = vi.fn();
-    const nativeHost = { failed: false, publish, playSound, suspend: () => undefined };
+    const nativeHost = { failed: false, available: false, publish, playSound, suspend: () => undefined };
     const service = new AgentIslandService({ getMainWindow: () => null, nativeHost });
     syncEnabledForTest(service, publish);
     const input = { groupId: 'group', name: 'Product', messageId: 'message', threadRootId: 'topic',
       mentioned: true, preview: 'Chris: hello', lastMessageAt: 1, members: [] };
     service.setGroupChat(input.groupId, input);
     expect(publish.mock.calls.at(-1)![0].mode).toBe('compact');
+    expect(service.notifyGroupChat(input.groupId)).toBe(false);
+    expect(publish.mock.calls.at(-1)![0].mode).toBe('compact');
+    nativeHost.available = true;
     expect(service.notifyGroupChat(input.groupId)).toBe(true);
     expect(publish.mock.calls.at(-1)![0].displayPolicy).toBe('transient');
     expect(playSound).not.toHaveBeenCalled();
@@ -653,6 +656,35 @@ describe('AgentIslandService native publishing', () => {
     service.setGroupChat('group', { groupId: 'group', name: 'Product', messageId: 'reply', mentioned: false,
       preview: 'Chris: done', lastMessageAt: Date.now(), members: [] });
     expect(publish.mock.calls.at(-1)?.[0].pillSnapshot.attentionCount).toBe(1);
+    service.resetRuntimeState();
+  });
+
+  // #7307 review: accepted group input provenance exists before the avatar/identity read.
+  // Unit: done arriving during that read must never emit completion attention or sound.
+  it('silences a fast group reply before companion identity finishes loading', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    let finishIdentity!: (identity: AgentIslandCompanionIdentity | null) => void;
+    mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active', title: 'Chris', userSendAt: null,
+      workingDir: '/home', workspaceKind: null, source: 'bot' });
+    mocks.readAgentIslandCompanion.mockReturnValueOnce(new Promise(resolve => { finishIdentity = resolve; }));
+    const publish = vi.fn<(state: AgentIslandDisplayState) => boolean>(() => true);
+    const playSound = vi.fn();
+    const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish, playSound } });
+    syncEnabledForTest(service, publish);
+    service.handleUserPrompt({ sessionId: 'fast-lane' }, 'please help');
+    await vi.waitFor(() => expect(finishIdentity).toBeTypeOf('function'));
+    playSound.mockClear();
+    service.handleAgentEvent({ sessionId: 'fast-lane' }, { type: 'done', source: 'codex',
+      agentMeta: { botGroupLane: true }, data: { result: 'done' } });
+    expect(publish.mock.calls.at(-1)?.[0].sessions).toEqual([]);
+    expect(service.getSessionActivitySnapshot('fast-lane')).toBeNull();
+    expect(playSound).not.toHaveBeenCalled();
+    finishIdentity({ botId: 'bot', groupId: 'group', companion: { name: 'Chris', groupName: 'Product', hue: 'blue', glyph: 'C', glyphIsInitial: true } });
+    await vi.waitFor(() => expect((service as unknown as {
+      metadataCache: Map<string, { companion?: AgentIslandCompanionIdentity | null }>;
+    }).metadataCache.get('fast-lane')?.companion?.groupId).toBe('group'));
+    expect(publish.mock.calls.at(-1)?.[0].sessions).toEqual([]);
+    expect(playSound).not.toHaveBeenCalled();
     service.resetRuntimeState();
   });
 
