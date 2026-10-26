@@ -1,5 +1,57 @@
 {
-  "localAgent": {"title":"Local App Connections","empty":"No connected apps","description":"Authorized local apps can use Cindy models and agent capabilities. Cindy keeps supplier credentials.","revoke":"Revoke Connection","failed":"Could not read app connections.","connectTitle":"Connect a Local App","connectMessage":"Allow “{{app}}” to use Cindy?","connectDetail":"This app can list models and providers, create its own executions, and supply tools. Native execution can read and write files and run commands with your system user permissions; the working directory does not restrict access. Provider credentials stay in Cindy. Revoke individual connections in Settings → Remote Connections → Local App Connections.","cancel":"Cancel","allow":"Allow Connection","revokeMessage":"Revoke all local app connections?","revokeDetail":"All local app connections will stop working and their running tasks will stop. Apps can request a new connection when needed.","clientIdentity":"App-reported ID: {{id}}\nVersion: {{version}}\nThe requesting app supplies its name and ID; Cindy has not verified its publisher.","revokeOneMessage":"Revoke this connection for “{{app}}”?","revokeOneDetail":"Tasks running through this connection will stop. Other app connections will keep working. The app can request a new connection when needed.","revokeConnection":"Revoke connection for “{{app}}”","clientId":"App ID: {{id}}","operationFailed":"Could not confirm the local app operation. Check its current state before continuing.","invalidConnection":"The app connection ID is invalid.","revokeFailed":"Could not confirm the revocation. Check the current connection state.","loading":"Loading app connections…","revoking":"Revoking connection…","authorizationRequired":"This operation requires valid local app authorization.","pairExpired":"The connection request expired or was cancelled. Request a new connection from the app.","busy":"A local app execution is still running or the execution limit is reached. End unused executions first.","limitReached":"The local app connection limit is reached. Revoke unused connections in Settings.","invalidWorkspace":"The app must specify an existing absolute working directory on this computer.","sessionExists":"This execution ID is already in use by this app connection.","executionUnavailable":"The requested execution or tool call is unavailable. Messages and tool operations were not replayed.","selectionUnavailable":"The selected model, provider, or reasoning effort is unavailable. Select an available option in the app.","requestNotReplayed":"This request was not repeated. Check the original operation result in the app.","storageUnavailable":"Could not read or save local app connection data. Existing authorization records were retained.","stopUnconfirmed":"Further messages to this execution are blocked, but the process has not been confirmed stopped.","interactionUnavailable":"The engine requires an interaction that this app cannot receive.","interrupted":"This send was interrupted.","toolTimeout":"The app tool timed out. It was not automatically retried.","connectResult":"Return to the requesting app for the connection result. Authorization is decided in the Cindy confirmation window.","invalidRequest":"The app request is invalid or the operation is unsupported.","hostInUse":"Another Cindy instance manages local app connections for this profile. View the connections in that instance.","developerConnection":"Development Connection","copyCode":"Copy Connection Code","codeCopied":"Connection code copied","codeCopyFailed":"Could not copy the connection code","developerState":{"ready":"For temporary connections from apps on this computer. Approval in this Cindy is still required. Copy a new code after restarting.","starting":"Preparing connection…","owner-unavailable":"Sign in or enter local mode first","host-in-use":"Another Cindy manages connections for this data folder","failed":"The local connection could not start","stopped":"The local connection has stopped"}},
+  "localAgent": {
+    "title": "Local App Connections",
+    "empty": "No connected apps",
+    "description": "Authorized local apps can use Cindy models and agent capabilities. Cindy keeps supplier credentials.",
+    "revoke": "Revoke Connection",
+    "failed": "Could not read app connections.",
+    "connectTitle": "Connect a Local App",
+    "connectMessage": "Allow “{{app}}” to use Cindy?",
+    "connectDetail": "This app can list models and providers, create its own executions, and supply tools. Native execution can read and write files and run commands with your system user permissions; the working directory does not restrict access. Provider credentials stay in Cindy. Revoke individual connections in Settings → Remote Connections → Local App Connections.",
+    "cancel": "Cancel",
+    "allow": "Allow Connection",
+    "revokeMessage": "Revoke all local app connections?",
+    "revokeDetail": "All local app connections will stop working and their running tasks will stop. Apps can request a new connection when needed.",
+    "clientIdentity": "App-reported ID: {{id}}\nVersion: {{version}}\nThe requesting app supplies its name and ID; Cindy has not verified its publisher.",
+    "revokeOneMessage": "Revoke this connection for “{{app}}”?",
+    "revokeOneDetail": "Tasks running through this connection will stop. Other app connections will keep working. The app can request a new connection when needed.",
+    "revokeConnection": "Revoke connection for “{{app}}”",
+    "clientId": "App ID: {{id}}",
+    "operationFailed": "Could not confirm the local app operation. Check its current state before continuing.",
+    "invalidConnection": "The app connection ID is invalid.",
+    "revokeFailed": "Could not confirm the revocation. Check the current connection state.",
+    "loading": "Loading app connections…",
+    "revoking": "Revoking connection…",
+    "authorizationRequired": "This operation requires valid local app authorization.",
+    "pairExpired": "The connection request expired or was cancelled. Request a new connection from the app.",
+    "busy": "A local app execution is still running or the execution limit is reached. End unused executions first.",
+    "limitReached": "The local app connection limit is reached. Revoke unused connections in Settings.",
+    "invalidWorkspace": "The app must specify an existing absolute working directory on this computer.",
+    "sessionExists": "This execution ID is already in use by this app connection.",
+    "executionUnavailable": "The requested execution or tool call is unavailable. Messages and tool operations were not replayed.",
+    "selectionUnavailable": "The selected model, provider, or reasoning effort is unavailable. Select an available option in the app.",
+    "requestNotReplayed": "This request was not repeated. Check the original operation result in the app.",
+    "storageUnavailable": "Could not read or save local app connection data. Existing authorization records were retained.",
+    "stopUnconfirmed": "Further messages to this execution are blocked, but the process has not been confirmed stopped.",
+    "interactionUnavailable": "The engine requires an interaction that this app cannot receive.",
+    "interrupted": "This send was interrupted.",
+    "toolTimeout": "The app tool timed out. It was not automatically retried.",
+    "connectResult": "Return to the requesting app for the connection result. Authorization is decided in the Cindy confirmation window.",
+    "invalidRequest": "The app request is invalid or the operation is unsupported.",
+    "hostInUse": "Another Cindy instance manages local app connections for this profile. View the connections in that instance.",
+    "developerConnection": "Development Connection",
+    "copyCode": "Copy Connection Code",
+    "codeCopied": "Connection code copied",
+    "codeCopyFailed": "Could not copy the connection code",
+    "developerState": {
+      "ready": "For temporary connections from apps on this computer. Approval in this Cindy is still required. Copy a new code after restarting.",
+      "starting": "Preparing connection…",
+      "owner-unavailable": "Sign in or enter local mode first",
+      "host-in-use": "Another Cindy manages connections for this data folder",
+      "failed": "The local connection could not start",
+      "stopped": "The local connection has stopped"
+    }
+  },
   "attachmentAccessConfirmation": {
     "title": "Confirm Attachment Access",
     "message": "Cindy cannot read this attachment. Select the original file to continue sending this message. Cancelling keeps your draft.",
@@ -786,6 +838,120 @@
       "addedAccounts_other": "Added {{count}} accounts to the {{provider}} provider group",
       "removed": "Removed {{name}} from the provider group",
       "deleted": "Deleted the {{provider}} provider group"
+    }
+  },
+  "regionScreenshot": {
+    "moveToolbar": "Move toolbar left or right",
+    "hint": "Click to select a window or element, or drag to select an area · Scroll to change scope · Space: full screen · C: copy color · Esc: exit",
+    "hintWithLast": "Click to select a window or element, or drag to select an area · Scroll to change scope · Space: full screen · R: last area · C: copy color · Esc: exit",
+    "copy": "Copy",
+    "cancel": "Exit Screenshot",
+    "captureFailed": "Could not capture the screen",
+    "permission": {
+      "title": "Screen Recording Permission Required",
+      "detail": "To take screenshots, allow {{appName}} in System Settings > Privacy & Security > Screen & System Audio Recording, then reopen {{appName}}.",
+      "openSettings": "Open System Settings",
+      "later": "Not Now"
+    },
+    "undo": "Undo",
+    "redo": "Redo",
+    "pinToScreen": "Pin to Screen",
+    "pin": {
+      "copy": "Copy",
+      "save": "Save…",
+      "ask": "Ask {{appName}}",
+      "opacity": "Opacity",
+      "originalSize": "Original Size",
+      "passThrough": "Click Through",
+      "close": "Close",
+      "closeAll": "Close All Pins",
+      "unlock": "Restore Mouse Input"
+    },
+    "save": "Save",
+    "cindy": "Send to {{appName}}",
+    "tools": {
+      "rect": "Rectangle",
+      "ellipse": "Ellipse",
+      "line": "Line",
+      "arrow": "Arrow",
+      "pen": "Pen",
+      "marker": "Highlighter",
+      "text": "Text",
+      "mosaic": "Mosaic",
+      "blur": "Blur",
+      "step": "Number"
+    },
+    "ai": {
+      "ask": "Ask {{appName}}",
+      "translate": "Translate",
+      "explain": "Explain",
+      "extract": "Extract Text"
+    },
+    "size": {
+      "stroke": {
+        "0": "Thin",
+        "1": "Medium",
+        "2": "Thick"
+      },
+      "text": {
+        "0": "Small",
+        "1": "Medium",
+        "2": "Large"
+      },
+      "strength": {
+        "0": "Light",
+        "1": "Medium",
+        "2": "Strong"
+      }
+    },
+    "colors": {
+      "red": "Red",
+      "yellow": "Yellow",
+      "green": "Green",
+      "blue": "Blue",
+      "black": "Black",
+      "white": "White"
+    },
+    "magnifier": {
+      "copyHint": "C: copy color"
+    },
+    "saveFileName": "Screenshot",
+    "saveFailed": "Couldn't save the screenshot",
+    "prompt": {
+      "translate": "Recognize the text in this screenshot and translate it into English. Keep the original paragraphs and lists, and output only the translation. If the text is already in English, translate it into Simplified Chinese.",
+      "explain": "Explain what this screenshot shows. If it's an error, explain the cause and how to fix it. If it's a chart, code, or an interface, explain what it shows and the key points.",
+      "extract": "Extract the text from this screenshot exactly as written, keeping the original line breaks, paragraphs, and lists. Output tables as Markdown tables. Output only the extracted text."
+    },
+    "live": {
+      "scroll": "Scrolling Screenshot",
+      "video": "Record Region",
+      "gif": "Record GIF",
+      "recording": "Recording…",
+      "preview": "Capture preview",
+      "cursor": "Show pointer",
+      "keys": "Show keys (includes typing)",
+      "start": "Start Recording",
+      "pause": "Pause",
+      "resume": "Resume",
+      "finish": "Finish",
+      "paused": "Capture paused",
+      "done": "Capture ready to save",
+      "saved": "Saved",
+      "scrollHint": "Scroll up or down in the selection, or choose Auto Scroll.",
+      "recordHint": "Draw on the preview to annotate the recording. No audio.",
+      "overlap": "This part could not be joined. Scroll back a little, or finish with the captured content.",
+      "limit": "Capture limit reached. Finish and save this capture.",
+      "captureFailed": "Capture stopped. Resume to try again or save the captured portion.",
+      "encodeFailed": "Could not encode this recording. Close and start a new capture.",
+      "exportFailed": "Could not save this capture. Choose Save to try again.",
+      "keysUnavailable": "Key display is unavailable. On macOS, allow Input Monitoring for Cindy.",
+      "noRoom": "Cannot start. Select an area at least 32 × 32 pixels and leave room beside it for the preview.",
+      "image": "Screenshot",
+      "startScroll": "Start Scrolling Screenshot",
+      "autoScroll": "Auto Scroll",
+      "stopScroll": "Stop Scrolling",
+      "edit": "Edit",
+      "autoUnavailable": "Auto scrolling stopped. You can scroll manually in the selection."
     }
   },
   "privacyExit": {
@@ -6109,9 +6275,15 @@
         "conflict": "Conflicts with \"{{name}}\"",
         "voiceConflict": "Conflicts with the voice input shortcut",
         "composerVoiceConflict": "Conflicts with the voice input shortcut. Change either the composer send shortcut or the voice input shortcut.",
-        "menuAccelerator": "This combination cannot be registered as a menu shortcut"
+        "menuAccelerator": "This combination cannot be registered as a menu shortcut",
+        "globalUnusable": "This combination cannot be used as a system-wide shortcut",
+        "globalOccupied": "Already in use by another app. Choose a different combination."
       },
       "items": {
+        "region-screenshot": {
+          "label": "Screenshot",
+          "description": "Take a screenshot in any app, then annotate it, pin it to the screen, or send it to {{appName}}"
+        },
         "toggle-sidebar": {
           "label": "Toggle sidebar",
           "description": "Collapse or expand the session list sidebar"
@@ -12676,7 +12848,13 @@
     }
   },
   "ccAgent": {
-    "sessionEntry": {"missing":"This session could not be found. It may have been deleted.","denied":"This account or computer cannot access this session.","failed":"Could not load this session.","back":"Back to Sessions","retry":"Reload Session"},
+    "sessionEntry": {
+      "missing": "This session could not be found. It may have been deleted.",
+      "denied": "This account or computer cannot access this session.",
+      "failed": "Could not load this session.",
+      "back": "Back to Sessions",
+      "retry": "Reload Session"
+    },
     "contextWindowBudget": {
       "menuTitle": "Task context window",
       "triggerLabel": "Task context window, currently {{window}}",

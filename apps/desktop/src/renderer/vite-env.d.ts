@@ -1249,6 +1249,8 @@ interface ElectronAPI {
     getState: () => {
       overrides: import('../shared/appShortcuts').AppShortcutOverrides;
       platform: string;
+      /** 运行态: 注册失败 (多为被其它应用占用) 的全局快捷键 id。 */
+      globalFailures?: unknown;
     };
     setOverride: (
       id: import('../shared/appShortcuts').AppShortcutId,
@@ -1262,6 +1264,7 @@ interface ElectronAPI {
     onChanged: (
       callback: (payload: {
         overrides: import('../shared/appShortcuts').AppShortcutOverrides;
+        globalFailures?: unknown;
       }) => void,
     ) => () => void;
   };
@@ -3095,6 +3098,12 @@ interface ElectronAPI {
     | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing' | 'remote-control'; connect?: string; intent?: 'topup' }
     | null
   >;
+
+  /** 全局截图交给新任务: main 唤醒后取走待处理请求 (只有主窗口能取)。 */
+  regionScreenshotCompose?: {
+    onWake: (callback: () => void) => () => void;
+    take: () => Promise<import('../shared/regionScreenshot').RegionScreenshotComposeRequest | null>;
+  };
 
   // ── TextLightbox (text-lightbox F4/F5) ──
   /**

@@ -1,5 +1,57 @@
 {
-  "localAgent": {"title":"로컬 앱 연결","empty":"연결된 앱 없음","description":"승인된 로컬 앱이 Cindy 모델과 실행 기능을 사용할 수 있습니다. 제공자 인증 정보는 Cindy가 관리합니다.","revoke":"연결 해제","failed":"앱 연결을 불러오지 못했습니다.","connectTitle":"로컬 앱 연결","connectMessage":"“{{app}}”의 Cindy 사용을 허용할까요?","connectDetail":"이 앱은 모델과 제공자 목록을 확인하고 자체 실행을 만들며 도구를 제공할 수 있습니다. 네이티브 실행은 현재 시스템 사용자 권한으로 파일을 읽고 쓰거나 명령을 실행할 수 있으며, 작업 디렉터리가 접근 범위를 제한하지 않습니다. 제공자 인증 정보는 Cindy가 보관합니다. 설정 → 원격 연결 → 로컬 앱 연결에서 개별 연결을 해제할 수 있습니다.","cancel":"취소","allow":"연결 허용","revokeMessage":"모든 로컬 앱 연결을 해제할까요?","revokeDetail":"모든 로컬 앱 연결이 무효화되고 실행 중인 작업이 중지됩니다. 필요하면 다시 연결할 수 있습니다.","clientIdentity":"앱이 제공한 ID: {{id}}\n버전: {{version}}\n이름과 ID는 요청 앱이 제공하며, Cindy가 게시자를 확인했다는 의미가 아닙니다.","revokeOneMessage":"“{{app}}”의 이 연결을 취소할까요?","revokeOneDetail":"이 연결에서 실행 중인 작업이 중지됩니다. 다른 앱 연결에는 영향을 주지 않습니다. 필요하면 다시 연결할 수 있습니다.","revokeConnection":"“{{app}}” 연결 취소","clientId":"앱 ID: {{id}}","operationFailed":"로컬 앱 작업 결과를 확인하지 못했습니다. 현재 상태를 확인한 후 계속하세요.","invalidConnection":"앱 연결 ID가 유효하지 않습니다.","revokeFailed":"연결 해제 결과를 확인하지 못했습니다. 현재 연결 상태를 확인하세요.","loading":"앱 연결을 불러오는 중…","revoking":"연결 해제 중…","authorizationRequired":"이 작업에는 유효한 로컬 앱 승인이 필요합니다.","pairExpired":"연결 요청이 만료되었거나 취소되었습니다. 앱에서 새 연결을 요청하세요.","busy":"로컬 앱 실행이 진행 중이거나 실행 한도에 도달했습니다. 사용하지 않는 실행을 먼저 종료하세요.","limitReached":"로컬 앱 연결 한도에 도달했습니다. 설정에서 사용하지 않는 연결을 해제하세요.","invalidWorkspace":"앱은 이 컴퓨터에 존재하는 작업 디렉터리의 절대 경로를 지정해야 합니다.","sessionExists":"이 앱 연결에서 해당 실행 ID를 이미 사용하고 있습니다.","executionUnavailable":"요청한 실행 또는 도구 호출을 사용할 수 없습니다. 메시지와 도구 작업은 다시 실행되지 않았습니다.","selectionUnavailable":"선택한 모델, 제공자 또는 추론 강도을 사용할 수 없습니다. 앱에서 사용 가능한 항목을 선택하세요.","requestNotReplayed":"이 요청은 다시 실행되지 않았습니다. 앱에서 원래 작업 결과를 확인하세요.","storageUnavailable":"로컬 앱 연결 데이터를 읽거나 저장하지 못했습니다. 기존 승인 기록은 유지되었습니다.","stopUnconfirmed":"이 실행에 추가 메시지를 보내는 것은 차단되었지만 프로세스가 중지되었는지는 확인되지 않았습니다.","interactionUnavailable":"엔진에 필요한 상호작용을 이 앱이 받을 수 없습니다.","interrupted":"이번 전송이 중단되었습니다.","toolTimeout":"앱 도구 호출 시간이 초과되었습니다. 자동으로 재시도하지 않았습니다.","connectResult":"연결 결과는 요청한 앱에서 확인하세요. 승인은 Cindy 확인 창에서 결정합니다.","invalidRequest":"앱 요청이 유효하지 않거나 지원하지 않는 작업입니다.","hostInUse":"이 프로필의 로컬 앱 연결은 다른 Cindy 인스턴스가 관리합니다. 해당 인스턴스에서 연결을 확인하세요.","developerConnection":"개발용 연결","copyCode":"연결 코드 복사","codeCopied":"연결 코드를 복사했습니다","codeCopyFailed":"연결 코드를 복사하지 못했습니다","developerState":{"ready":"이 컴퓨터의 앱에서 임시로 연결합니다. 이 Cindy에서 승인이 필요합니다. 다시 시작하면 코드를 다시 복사하세요.","starting":"연결 준비 중…","owner-unavailable":"먼저 로그인하거나 로컬 모드로 들어가세요","host-in-use":"다른 Cindy가 이 데이터 폴더의 연결을 관리하고 있습니다","failed":"로컬 연결을 시작하지 못했습니다","stopped":"로컬 연결이 중지되었습니다"}},
+  "localAgent": {
+    "title": "로컬 앱 연결",
+    "empty": "연결된 앱 없음",
+    "description": "승인된 로컬 앱이 Cindy 모델과 실행 기능을 사용할 수 있습니다. 제공자 인증 정보는 Cindy가 관리합니다.",
+    "revoke": "연결 해제",
+    "failed": "앱 연결을 불러오지 못했습니다.",
+    "connectTitle": "로컬 앱 연결",
+    "connectMessage": "“{{app}}”의 Cindy 사용을 허용할까요?",
+    "connectDetail": "이 앱은 모델과 제공자 목록을 확인하고 자체 실행을 만들며 도구를 제공할 수 있습니다. 네이티브 실행은 현재 시스템 사용자 권한으로 파일을 읽고 쓰거나 명령을 실행할 수 있으며, 작업 디렉터리가 접근 범위를 제한하지 않습니다. 제공자 인증 정보는 Cindy가 보관합니다. 설정 → 원격 연결 → 로컬 앱 연결에서 개별 연결을 해제할 수 있습니다.",
+    "cancel": "취소",
+    "allow": "연결 허용",
+    "revokeMessage": "모든 로컬 앱 연결을 해제할까요?",
+    "revokeDetail": "모든 로컬 앱 연결이 무효화되고 실행 중인 작업이 중지됩니다. 필요하면 다시 연결할 수 있습니다.",
+    "clientIdentity": "앱이 제공한 ID: {{id}}\n버전: {{version}}\n이름과 ID는 요청 앱이 제공하며, Cindy가 게시자를 확인했다는 의미가 아닙니다.",
+    "revokeOneMessage": "“{{app}}”의 이 연결을 취소할까요?",
+    "revokeOneDetail": "이 연결에서 실행 중인 작업이 중지됩니다. 다른 앱 연결에는 영향을 주지 않습니다. 필요하면 다시 연결할 수 있습니다.",
+    "revokeConnection": "“{{app}}” 연결 취소",
+    "clientId": "앱 ID: {{id}}",
+    "operationFailed": "로컬 앱 작업 결과를 확인하지 못했습니다. 현재 상태를 확인한 후 계속하세요.",
+    "invalidConnection": "앱 연결 ID가 유효하지 않습니다.",
+    "revokeFailed": "연결 해제 결과를 확인하지 못했습니다. 현재 연결 상태를 확인하세요.",
+    "loading": "앱 연결을 불러오는 중…",
+    "revoking": "연결 해제 중…",
+    "authorizationRequired": "이 작업에는 유효한 로컬 앱 승인이 필요합니다.",
+    "pairExpired": "연결 요청이 만료되었거나 취소되었습니다. 앱에서 새 연결을 요청하세요.",
+    "busy": "로컬 앱 실행이 진행 중이거나 실행 한도에 도달했습니다. 사용하지 않는 실행을 먼저 종료하세요.",
+    "limitReached": "로컬 앱 연결 한도에 도달했습니다. 설정에서 사용하지 않는 연결을 해제하세요.",
+    "invalidWorkspace": "앱은 이 컴퓨터에 존재하는 작업 디렉터리의 절대 경로를 지정해야 합니다.",
+    "sessionExists": "이 앱 연결에서 해당 실행 ID를 이미 사용하고 있습니다.",
+    "executionUnavailable": "요청한 실행 또는 도구 호출을 사용할 수 없습니다. 메시지와 도구 작업은 다시 실행되지 않았습니다.",
+    "selectionUnavailable": "선택한 모델, 제공자 또는 추론 강도을 사용할 수 없습니다. 앱에서 사용 가능한 항목을 선택하세요.",
+    "requestNotReplayed": "이 요청은 다시 실행되지 않았습니다. 앱에서 원래 작업 결과를 확인하세요.",
+    "storageUnavailable": "로컬 앱 연결 데이터를 읽거나 저장하지 못했습니다. 기존 승인 기록은 유지되었습니다.",
+    "stopUnconfirmed": "이 실행에 추가 메시지를 보내는 것은 차단되었지만 프로세스가 중지되었는지는 확인되지 않았습니다.",
+    "interactionUnavailable": "엔진에 필요한 상호작용을 이 앱이 받을 수 없습니다.",
+    "interrupted": "이번 전송이 중단되었습니다.",
+    "toolTimeout": "앱 도구 호출 시간이 초과되었습니다. 자동으로 재시도하지 않았습니다.",
+    "connectResult": "연결 결과는 요청한 앱에서 확인하세요. 승인은 Cindy 확인 창에서 결정합니다.",
+    "invalidRequest": "앱 요청이 유효하지 않거나 지원하지 않는 작업입니다.",
+    "hostInUse": "이 프로필의 로컬 앱 연결은 다른 Cindy 인스턴스가 관리합니다. 해당 인스턴스에서 연결을 확인하세요.",
+    "developerConnection": "개발용 연결",
+    "copyCode": "연결 코드 복사",
+    "codeCopied": "연결 코드를 복사했습니다",
+    "codeCopyFailed": "연결 코드를 복사하지 못했습니다",
+    "developerState": {
+      "ready": "이 컴퓨터의 앱에서 임시로 연결합니다. 이 Cindy에서 승인이 필요합니다. 다시 시작하면 코드를 다시 복사하세요.",
+      "starting": "연결 준비 중…",
+      "owner-unavailable": "먼저 로그인하거나 로컬 모드로 들어가세요",
+      "host-in-use": "다른 Cindy가 이 데이터 폴더의 연결을 관리하고 있습니다",
+      "failed": "로컬 연결을 시작하지 못했습니다",
+      "stopped": "로컬 연결이 중지되었습니다"
+    }
+  },
   "attachmentAccessConfirmation": {
     "title": "첨부 파일 접근 확인",
     "message": "Cindy가 이 첨부 파일을 읽을 수 없습니다. 원본 파일을 선택하면 이 메시지 전송을 계속합니다. 취소하면 초안이 유지됩니다.",
@@ -774,6 +826,120 @@
       "addedAccounts_other": "계정 {{count}}개를 {{provider}} 제공자 그룹에 추가했습니다",
       "removed": "{{name}}을(를) 제공자 그룹에서 제외했습니다",
       "deleted": "{{provider}} 제공자 그룹을 삭제했습니다"
+    }
+  },
+  "regionScreenshot": {
+    "moveToolbar": "도구 모음을 좌우로 이동",
+    "hint": "클릭하여 창이나 요소 선택, 드래그하여 영역 선택 · 스크롤로 범위 변경 · Space 전체 화면 · C 색상 복사 · Esc 종료",
+    "hintWithLast": "클릭하여 창이나 요소 선택, 드래그하여 영역 선택 · 스크롤로 범위 변경 · Space 전체 화면 · R 이전 영역 · C 색상 복사 · Esc 종료",
+    "copy": "복사",
+    "cancel": "스크린샷 종료",
+    "captureFailed": "화면을 캡처하지 못했습니다",
+    "permission": {
+      "title": "화면 기록 권한이 필요합니다",
+      "detail": "스크린샷을 찍으려면 시스템 설정 > 개인정보 보호 및 보안 > 화면 및 시스템 오디오 기록에서 {{appName}}을(를) 허용한 다음 {{appName}}을(를) 다시 여세요.",
+      "openSettings": "시스템 설정 열기",
+      "later": "나중에"
+    },
+    "undo": "실행 취소",
+    "redo": "다시 실행",
+    "pinToScreen": "화면에 고정",
+    "pin": {
+      "copy": "복사",
+      "save": "저장…",
+      "ask": "{{appName}}에 묻기",
+      "opacity": "불투명도",
+      "originalSize": "원래 크기",
+      "passThrough": "마우스 클릭 통과",
+      "close": "닫기",
+      "closeAll": "고정한 이미지 모두 닫기",
+      "unlock": "마우스 조작 복원"
+    },
+    "save": "저장",
+    "cindy": "{{appName}}에 보내기",
+    "tools": {
+      "rect": "사각형",
+      "ellipse": "타원",
+      "line": "직선",
+      "arrow": "화살표",
+      "pen": "펜",
+      "marker": "형광펜",
+      "text": "텍스트",
+      "mosaic": "모자이크",
+      "blur": "흐리게",
+      "step": "번호"
+    },
+    "ai": {
+      "ask": "{{appName}}에 묻기",
+      "translate": "번역",
+      "explain": "설명",
+      "extract": "텍스트 추출"
+    },
+    "size": {
+      "stroke": {
+        "0": "가늘게",
+        "1": "보통",
+        "2": "굵게"
+      },
+      "text": {
+        "0": "작게",
+        "1": "보통",
+        "2": "크게"
+      },
+      "strength": {
+        "0": "약하게",
+        "1": "보통",
+        "2": "강하게"
+      }
+    },
+    "colors": {
+      "red": "빨간색",
+      "yellow": "노란색",
+      "green": "초록색",
+      "blue": "파란색",
+      "black": "검은색",
+      "white": "흰색"
+    },
+    "magnifier": {
+      "copyHint": "C 색상 복사"
+    },
+    "saveFileName": "스크린샷",
+    "saveFailed": "스크린샷을 저장하지 못했습니다",
+    "prompt": {
+      "translate": "이 스크린샷의 텍스트를 인식해 한국어로 번역해 주세요. 원래의 문단과 목록 구조를 유지하고 번역문만 출력해 주세요. 원문이 이미 한국어라면 영어로 번역해 주세요.",
+      "explain": "이 스크린샷의 내용을 설명해 주세요. 오류라면 원인과 해결 방법을, 차트·코드·화면이라면 무엇을 나타내는지와 핵심 내용을 설명해 주세요.",
+      "extract": "이 스크린샷의 텍스트를 그대로 추출해 주세요. 원래의 줄바꿈, 문단, 목록을 유지하고 표는 Markdown 표로 출력해 주세요. 추출한 텍스트만 출력해 주세요."
+    },
+    "live": {
+      "scroll": "스크롤 스크린샷",
+      "video": "영역 녹화",
+      "gif": "GIF 녹화",
+      "recording": "녹화 중…",
+      "preview": "캡처 미리 보기",
+      "cursor": "포인터 표시",
+      "keys": "키 표시 (입력 내용 포함)",
+      "start": "녹화 시작",
+      "pause": "캡처 일시 정지",
+      "resume": "캡처 계속",
+      "finish": "완료",
+      "paused": "캡처가 일시 정지되었습니다",
+      "done": "캡처를 저장할 수 있습니다",
+      "saved": "저장됨",
+      "scrollHint": "선택 영역에서 위아래로 스크롤하거나 자동 스크롤을 선택하세요",
+      "recordHint": "미리 보기에 그린 주석은 녹화에 포함됩니다. 소리는 녹음하지 않습니다.",
+      "overlap": "이 부분을 연결하지 못했습니다. 조금 위로 스크롤하거나 지금까지 캡처한 내용으로 완료하세요.",
+      "limit": "캡처 한도에 도달했습니다. 완료하고 저장하세요.",
+      "captureFailed": "캡처가 중지되었습니다. 다시 시작하거나 캡처된 내용을 저장할 수 있습니다.",
+      "encodeFailed": "녹화를 인코딩하지 못했습니다. 닫은 뒤 다시 녹화하세요.",
+      "exportFailed": "저장하지 못했습니다. 저장을 다시 선택하세요.",
+      "keysUnavailable": "키를 표시할 수 없습니다. macOS에서는 Cindy의 입력 모니터링을 허용하세요.",
+      "noRoom": "시작할 수 없습니다. 32 × 32 픽셀 이상의 영역을 선택하고 옆에 미리보기 공간을 남겨 주세요.",
+      "image": "스크린샷",
+      "startScroll": "스크롤 스크린샷 시작",
+      "autoScroll": "자동 스크롤",
+      "stopScroll": "스크롤 중지",
+      "edit": "편집",
+      "autoUnavailable": "자동 스크롤이 중지되었습니다. 선택 영역에서 직접 스크롤할 수 있습니다."
     }
   },
   "privacyExit": {
@@ -6078,9 +6244,15 @@
         "conflict": "\"{{name}}\"과(와) 충돌합니다",
         "voiceConflict": "음성 입력 단축키와 충돌합니다",
         "composerVoiceConflict": "음성 입력 단축키와 충돌합니다. 메시지 입력의 보내기 단축키 또는 음성 입력 단축키를 변경하세요.",
-        "menuAccelerator": "이 조합은 메뉴 단축키로 등록할 수 없습니다"
+        "menuAccelerator": "이 조합은 메뉴 단축키로 등록할 수 없습니다",
+        "globalUnusable": "이 조합은 시스템 전체 단축키로 사용할 수 없습니다",
+        "globalOccupied": "다른 앱에서 사용 중입니다. 다른 조합을 선택하세요"
       },
       "items": {
+        "region-screenshot": {
+          "label": "스크린샷",
+          "description": "어떤 앱에서든 스크린샷을 찍고 주석을 달거나, 화면에 고정하거나, {{appName}}에 보낼 수 있습니다"
+        },
         "toggle-sidebar": {
           "label": "사이드바 전환",
           "description": "왼쪽 세션 목록을 접거나 펼칩니다"
@@ -12622,7 +12794,13 @@
     }
   },
   "ccAgent": {
-    "sessionEntry": {"missing":"이 세션을 찾을 수 없습니다. 삭제되었을 수 있습니다.","denied":"현재 계정 또는 컴퓨터에서 이 세션에 접근할 수 없습니다.","failed":"이 세션을 불러오지 못했습니다.","back":"세션 목록으로 돌아가기","retry":"세션 다시 불러오기"},
+    "sessionEntry": {
+      "missing": "이 세션을 찾을 수 없습니다. 삭제되었을 수 있습니다.",
+      "denied": "현재 계정 또는 컴퓨터에서 이 세션에 접근할 수 없습니다.",
+      "failed": "이 세션을 불러오지 못했습니다.",
+      "back": "세션 목록으로 돌아가기",
+      "retry": "세션 다시 불러오기"
+    },
     "contextWindowBudget": {
       "menuTitle": "이 작업의 컨텍스트 창",
       "triggerLabel": "작업 컨텍스트 창, 현재 {{window}}",

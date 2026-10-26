@@ -794,6 +794,43 @@ export function catalogSurfaces() {
       rendererEntryModules: { resourceUsageWindow: './resource-usage-entry' },
     },
     {
+      id: 'desktop.window.region-screenshot',
+      platform: 'desktop',
+      title: '全局截图浮层',
+      productionEntry:
+        '`?regionScreenshot=1` → renderer/region-screenshot-entry.tsx（不走 router.tsx）',
+      reachableComponents: ['RegionScreenshotOverlay', 'ScreenshotToolbar', 'ScreenshotStyleBar', 'Magnifier', 'Button', 'Tip'],
+      styleRoots: [
+        'apps/desktop/src/renderer/region-screenshot-entry.tsx',
+        'apps/desktop/src/renderer/features/region-screenshot',
+        'apps/desktop/src/renderer/components/ui/button.tsx',
+        'apps/desktop/src/renderer/components/ui/button.css',
+        'apps/desktop/src/renderer/components/ui/tooltip.tsx',
+        'apps/desktop/src/main/region-screenshot',
+        'apps/desktop/src/renderer/styles/globals.css',
+        'apps/desktop/src/renderer/styles/generated/tokens.css',
+      ],
+      routerPaths: [],
+      rendererEntryModules: { regionScreenshot: './region-screenshot-entry' },
+    },
+    {
+      id: 'desktop.window.region-screenshot-pin',
+      platform: 'desktop',
+      title: '截图贴图窗口',
+      productionEntry:
+        '`?regionScreenshotPin=1` → renderer/region-screenshot-pin-entry.tsx（不走 router.tsx）',
+      reachableComponents: ['PinView'],
+      styleRoots: [
+        'apps/desktop/src/renderer/region-screenshot-pin-entry.tsx',
+        'apps/desktop/src/renderer/features/region-screenshot/PinView.tsx',
+        'apps/desktop/src/main/region-screenshot/pins.ts',
+        'apps/desktop/src/renderer/styles/globals.css',
+        'apps/desktop/src/renderer/styles/generated/tokens.css',
+      ],
+      routerPaths: [],
+      rendererEntryModules: { regionScreenshotPin: './region-screenshot-pin-entry' },
+    },
+    {
       id: 'desktop.window.remote-desktop',
       platform: 'desktop',
       title: '远程桌面独立窗口',

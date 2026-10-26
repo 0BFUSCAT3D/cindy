@@ -1,5 +1,57 @@
 {
-  "localAgent": {"title":"本機應用程式連線","empty":"尚未連接應用程式","description":"允許已授權的本機應用程式使用 Cindy 的模型與執行能力。供應商登入仍由 Cindy 管理。","revoke":"撤銷連線","failed":"無法讀取應用程式連線。","connectTitle":"連接本機應用程式","connectMessage":"允許「{{app}}」使用 Cindy？","connectDetail":"此應用程式可以查看模型與供應商目錄、建立自己的執行並提供工具。原生執行可以依目前系統使用者的權限讀寫檔案、執行命令；工作目錄不限制存取範圍。供應商憑證保留在 Cindy。可在設定 → 遠端連線 → 本機應用程式連線中個別撤銷連線。","cancel":"取消","allow":"允許連接","revokeMessage":"撤銷所有本機應用程式連線？","revokeDetail":"所有本機應用程式連線將失效，正在執行的接入任務會停止。需要時可重新申請連線。","clientIdentity":"應用程式自報編號：{{id}}\n版本：{{version}}\n名稱與編號由申請方提供，不代表 Cindy 已驗證其發行者。","revokeOneMessage":"撤銷「{{app}}」的這條連線？","revokeOneDetail":"透過此連線執行的任務會停止。其他應用程式連線不受影響，需要時可重新申請連線。","revokeConnection":"撤銷「{{app}}」的連線","clientId":"應用程式編號：{{id}}","operationFailed":"無法確認本機應用程式操作的結果，請先查看目前狀態。","invalidConnection":"應用程式連線編號無效。","revokeFailed":"無法確認撤銷結果，請查看目前連線狀態。","loading":"正在讀取應用程式連線…","revoking":"正在撤銷連線…","authorizationRequired":"此操作需要有效的本機應用程式授權。","pairExpired":"連線申請已過期或取消，請從應用程式重新申請連線。","busy":"本機應用程式仍有執行正在運行，或已達執行上限，請先結束不用的執行。","limitReached":"已達本機應用程式連線上限，請在設定中撤銷不用的連線。","invalidWorkspace":"應用程式須指定此電腦上已存在的絕對工作目錄。","sessionExists":"此應用程式連線已在使用該執行編號。","executionUnavailable":"所請求的執行或工具呼叫無法使用，訊息與工具操作未被重播。","selectionUnavailable":"所選模型、供應商或推理強度無法使用，請在應用程式中重新選擇。","requestNotReplayed":"此請求未被重複執行，請在應用程式中查看原操作結果。","storageUnavailable":"無法讀取或儲存本機應用程式連線資料，已保留現有授權紀錄。","stopUnconfirmed":"已阻止繼續向此執行傳送訊息，但尚未確認程序已停止。","interactionUnavailable":"引擎需要此應用程式無法接收的互動操作。","interrupted":"本次傳送已中斷。","toolTimeout":"應用程式工具呼叫已逾時，未自動重試。","connectResult":"請返回申請連線的應用程式查看結果，授權由 Cindy 確認視窗決定。","invalidRequest":"應用程式請求無效，或該操作不受支援。","hostInUse":"此設定檔的本機應用程式連線正由另一個 Cindy 執行個體管理，請在該執行個體中查看連線。","developerConnection":"開發連線","copyCode":"複製連線碼","codeCopied":"連線碼已複製","codeCopyFailed":"無法複製連線碼","developerState":{"ready":"供此電腦上的應用程式暫時連線，仍需在此 Cindy 中授權。重新啟動後需重新複製。","starting":"正在準備連線…","owner-unavailable":"請先登入或進入本機模式","host-in-use":"此資料目錄的連線正由另一個 Cindy 管理","failed":"本機連線未能啟動","stopped":"本機連線已停止"}},
+  "localAgent": {
+    "title": "本機應用程式連線",
+    "empty": "尚未連接應用程式",
+    "description": "允許已授權的本機應用程式使用 Cindy 的模型與執行能力。供應商登入仍由 Cindy 管理。",
+    "revoke": "撤銷連線",
+    "failed": "無法讀取應用程式連線。",
+    "connectTitle": "連接本機應用程式",
+    "connectMessage": "允許「{{app}}」使用 Cindy？",
+    "connectDetail": "此應用程式可以查看模型與供應商目錄、建立自己的執行並提供工具。原生執行可以依目前系統使用者的權限讀寫檔案、執行命令；工作目錄不限制存取範圍。供應商憑證保留在 Cindy。可在設定 → 遠端連線 → 本機應用程式連線中個別撤銷連線。",
+    "cancel": "取消",
+    "allow": "允許連接",
+    "revokeMessage": "撤銷所有本機應用程式連線？",
+    "revokeDetail": "所有本機應用程式連線將失效，正在執行的接入任務會停止。需要時可重新申請連線。",
+    "clientIdentity": "應用程式自報編號：{{id}}\n版本：{{version}}\n名稱與編號由申請方提供，不代表 Cindy 已驗證其發行者。",
+    "revokeOneMessage": "撤銷「{{app}}」的這條連線？",
+    "revokeOneDetail": "透過此連線執行的任務會停止。其他應用程式連線不受影響，需要時可重新申請連線。",
+    "revokeConnection": "撤銷「{{app}}」的連線",
+    "clientId": "應用程式編號：{{id}}",
+    "operationFailed": "無法確認本機應用程式操作的結果，請先查看目前狀態。",
+    "invalidConnection": "應用程式連線編號無效。",
+    "revokeFailed": "無法確認撤銷結果，請查看目前連線狀態。",
+    "loading": "正在讀取應用程式連線…",
+    "revoking": "正在撤銷連線…",
+    "authorizationRequired": "此操作需要有效的本機應用程式授權。",
+    "pairExpired": "連線申請已過期或取消，請從應用程式重新申請連線。",
+    "busy": "本機應用程式仍有執行正在運行，或已達執行上限，請先結束不用的執行。",
+    "limitReached": "已達本機應用程式連線上限，請在設定中撤銷不用的連線。",
+    "invalidWorkspace": "應用程式須指定此電腦上已存在的絕對工作目錄。",
+    "sessionExists": "此應用程式連線已在使用該執行編號。",
+    "executionUnavailable": "所請求的執行或工具呼叫無法使用，訊息與工具操作未被重播。",
+    "selectionUnavailable": "所選模型、供應商或推理強度無法使用，請在應用程式中重新選擇。",
+    "requestNotReplayed": "此請求未被重複執行，請在應用程式中查看原操作結果。",
+    "storageUnavailable": "無法讀取或儲存本機應用程式連線資料，已保留現有授權紀錄。",
+    "stopUnconfirmed": "已阻止繼續向此執行傳送訊息，但尚未確認程序已停止。",
+    "interactionUnavailable": "引擎需要此應用程式無法接收的互動操作。",
+    "interrupted": "本次傳送已中斷。",
+    "toolTimeout": "應用程式工具呼叫已逾時，未自動重試。",
+    "connectResult": "請返回申請連線的應用程式查看結果，授權由 Cindy 確認視窗決定。",
+    "invalidRequest": "應用程式請求無效，或該操作不受支援。",
+    "hostInUse": "此設定檔的本機應用程式連線正由另一個 Cindy 執行個體管理，請在該執行個體中查看連線。",
+    "developerConnection": "開發連線",
+    "copyCode": "複製連線碼",
+    "codeCopied": "連線碼已複製",
+    "codeCopyFailed": "無法複製連線碼",
+    "developerState": {
+      "ready": "供此電腦上的應用程式暫時連線，仍需在此 Cindy 中授權。重新啟動後需重新複製。",
+      "starting": "正在準備連線…",
+      "owner-unavailable": "請先登入或進入本機模式",
+      "host-in-use": "此資料目錄的連線正由另一個 Cindy 管理",
+      "failed": "本機連線未能啟動",
+      "stopped": "本機連線已停止"
+    }
+  },
   "attachmentAccessConfirmation": {
     "title": "確認附件存取",
     "message": "Cindy 無法讀取這個附件。請選擇原始檔案，確認後繼續傳送這則訊息；取消會保留草稿。",
@@ -774,6 +826,120 @@
       "addedAccounts_other": "已把 {{count}} 個帳號加入 {{provider}} 的供應商組",
       "removed": "已把 {{name}} 移出供應商組",
       "deleted": "已刪除 {{provider}} 的供應商組"
+    }
+  },
+  "regionScreenshot": {
+    "moveToolbar": "左右拖動工具列",
+    "hint": "按一下選取視窗或元素，拖曳框選 · 滾輪切換範圍 · 空白鍵全螢幕 · C 複製顏色 · Esc 結束",
+    "hintWithLast": "按一下選取視窗或元素，拖曳框選 · 滾輪切換範圍 · 空白鍵全螢幕 · R 上次區域 · C 複製顏色 · Esc 結束",
+    "copy": "複製",
+    "cancel": "結束截圖",
+    "captureFailed": "無法擷取螢幕",
+    "permission": {
+      "title": "需要螢幕錄製權限",
+      "detail": "截圖需要在「系統設定 > 隱私權與安全性 > 螢幕與系統錄音」中允許 {{appName}}，開啟後請重新開啟 {{appName}}。",
+      "openSettings": "打開系統設定",
+      "later": "暫不開啟"
+    },
+    "undo": "復原",
+    "redo": "重做",
+    "pinToScreen": "釘選到螢幕",
+    "pin": {
+      "copy": "複製",
+      "save": "儲存…",
+      "ask": "問 {{appName}}",
+      "opacity": "不透明度",
+      "originalSize": "原始大小",
+      "passThrough": "滑鼠穿透",
+      "close": "關閉",
+      "closeAll": "關閉所有釘選圖片",
+      "unlock": "恢復滑鼠操作"
+    },
+    "save": "儲存",
+    "cindy": "交給 {{appName}}",
+    "tools": {
+      "rect": "矩形",
+      "ellipse": "橢圓",
+      "line": "直線",
+      "arrow": "箭頭",
+      "pen": "畫筆",
+      "marker": "螢光筆",
+      "text": "文字",
+      "mosaic": "馬賽克",
+      "blur": "模糊",
+      "step": "編號"
+    },
+    "ai": {
+      "ask": "問 {{appName}}",
+      "translate": "翻譯",
+      "explain": "解釋",
+      "extract": "擷取文字"
+    },
+    "size": {
+      "stroke": {
+        "0": "細",
+        "1": "中",
+        "2": "粗"
+      },
+      "text": {
+        "0": "小",
+        "1": "中",
+        "2": "大"
+      },
+      "strength": {
+        "0": "弱",
+        "1": "中",
+        "2": "強"
+      }
+    },
+    "colors": {
+      "red": "紅色",
+      "yellow": "黃色",
+      "green": "綠色",
+      "blue": "藍色",
+      "black": "黑色",
+      "white": "白色"
+    },
+    "magnifier": {
+      "copyHint": "C 複製顏色"
+    },
+    "saveFileName": "截圖",
+    "saveFailed": "無法儲存截圖",
+    "prompt": {
+      "translate": "請辨識這張截圖中的文字並翻譯成繁體中文，保留原有的段落和清單結構，只輸出譯文。如果原文已經是中文，就翻譯成英文。",
+      "explain": "請解釋這張截圖的內容。如果是錯誤訊息，說明原因與解決方法；如果是圖表、程式碼或介面，說明它在表達什麼、有哪些重點。",
+      "extract": "請將這張截圖中的文字原樣擷取出來，保留原有的換行、段落和清單；表格以 Markdown 表格輸出。只輸出擷取的文字。"
+    },
+    "live": {
+      "scroll": "捲動截圖",
+      "video": "區域錄影",
+      "gif": "錄製 GIF",
+      "recording": "正在錄製…",
+      "preview": "擷取預覽",
+      "cursor": "顯示滑鼠",
+      "keys": "顯示按鍵（包含輸入內容）",
+      "start": "開始錄製",
+      "pause": "暫停擷取",
+      "resume": "繼續擷取",
+      "finish": "完成",
+      "paused": "擷取已暫停",
+      "done": "擷取完成，可以儲存",
+      "saved": "已儲存",
+      "scrollHint": "在選取範圍內向上或向下捲動，也可點擊自動捲動",
+      "recordHint": "在預覽上繪製標註，標註會出現在錄影中。不錄製聲音",
+      "overlap": "這一段未能接上。可稍往回捲動，或完成已擷取的部分。",
+      "limit": "已達擷取上限，請完成並儲存這段內容",
+      "captureFailed": "擷取已停止，可以繼續重試或儲存已擷取內容",
+      "encodeFailed": "錄製內容編碼失敗，請關閉後重新錄製",
+      "exportFailed": "儲存失敗，請再次選擇儲存",
+      "keysUnavailable": "按鍵顯示無法使用。macOS 請為 Cindy 開啟輸入監控權限",
+      "noRoom": "無法開始。請選取至少 32 × 32 像素的範圍，並在旁邊留出預覽空間。",
+      "image": "截圖",
+      "startScroll": "開始捲動截圖",
+      "autoScroll": "自動捲動",
+      "stopScroll": "停止捲動",
+      "edit": "編輯",
+      "autoUnavailable": "自動捲動已停止，可在選取範圍內手動捲動"
     }
   },
   "privacyExit": {
@@ -6078,9 +6244,15 @@
         "conflict": "與「{{name}}」衝突",
         "voiceConflict": "與語音輸入快捷鍵衝突",
         "composerVoiceConflict": "與語音輸入快捷鍵衝突，請修改傳送或語音輸入快捷鍵。",
-        "menuAccelerator": "該組合鍵無法註冊為選單快捷鍵"
+        "menuAccelerator": "該組合鍵無法註冊為選單快捷鍵",
+        "globalUnusable": "此組合鍵不能用作全域快捷鍵",
+        "globalOccupied": "已被其他應用程式佔用，請換一個組合鍵"
       },
       "items": {
+        "region-screenshot": {
+          "label": "截圖",
+          "description": "在任何應用程式中截圖，可以加上標註、釘選到螢幕，或交給 {{appName}} 處理"
+        },
         "toggle-sidebar": {
           "label": "切換側邊欄",
           "description": "收起或展開左側任務列表"
@@ -12622,7 +12794,13 @@
     }
   },
   "ccAgent": {
-    "sessionEntry": {"missing":"找不到這條任務，它可能已被刪除。","denied":"目前帳號或電腦無法存取這條任務。","failed":"未能載入這條任務。","back":"返回任務列表","retry":"重新載入任務"},
+    "sessionEntry": {
+      "missing": "找不到這條任務，它可能已被刪除。",
+      "denied": "目前帳號或電腦無法存取這條任務。",
+      "failed": "未能載入這條任務。",
+      "back": "返回任務列表",
+      "retry": "重新載入任務"
+    },
     "contextWindowBudget": {
       "menuTitle": "任務上下文視窗",
       "triggerLabel": "任務上下文視窗，目前 {{window}}",
