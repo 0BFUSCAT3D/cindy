@@ -78,7 +78,11 @@
    本地安装另有一条临时例外，只对 root 实例生效，见 §4.7：仅 `ghostId` 精确等于 `mivo-canvas`、namespace 为 null 或尚未确认，且精确 oidc-token host 仅为 `mivo-canvas.dsworks.cn` 的组织成员本地安装可解析 audience；
 4. 安装后再让用户 `$<command> <内容>` 试一单，看聊天图卡/面板是否符合预期。
 
-企业组织成员需要发布时，调用 `ghost_forge_pack({ dir: '<绝对路径>', intent: 'publish' })`。
+发布前先确定目标：沿用用户在当前请求与上下文中已明确的发布目标；仍无法确定是公开市场还是当前组织时，
+先询问“发布到公开市场，还是当前组织？”，确认后再选择对应提审工具。不得仅根据登录身份推断发布目标；
+目标已明确时不重复确认。
+
+用户明确要求发布到当前组织时，调用 `ghost_forge_pack({ dir: '<绝对路径>', intent: 'publish' })`。
 该意图不会弹装入确认，也不会返回可供自行拼接的 Host 路径；它只返回绑定本次包 id 与
 完整字节的一次性 `publishToken`。随后把该票据传给
 `ghost_forge_publish({ token: '<publishToken>' })`，工具会立即返回 `transferId`，发布在
