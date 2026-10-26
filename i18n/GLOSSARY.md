@@ -295,6 +295,10 @@ device-link 里「可以选择在哪台机器上运行」这一维度，两端�
 
 OAuth 2.0 Device Authorization Grant 中由用户在另一设备验证页输入的一次性代码。当前先采用各语言直译，作为待产品裁决术语登记，避免后续界面出现“设备代码／配对码／认证码”等多套说法。
 
+### Device Simulator
+
+官方插件 cindy-simulator 的用户可见名称。2026-10-23 用户确认中文「设备模拟器」与英文 Device Simulator，为后续设备和平台扩展保留命名空间；名称不代表未发布的平台支持。原内置 iOS 模拟器的历史称呼不变。其余语言随迁移提示同步登记，译法整体暂保留 proposed。
+
 ### DingTalk
 
 钉钉机器人连接的产品名称，沿用官方品牌写法；先登记为 proposed，待产品术语评审后再决定是否固化。
@@ -373,7 +377,7 @@ Agent 遇到需要主人填写的界面（选择、文本、密码、验证码�
 
 ### iOS Simulator
 
-Apple Simulator 的用户可见名称，也用于原内置模拟器的下线说明。Cindy 已移除内置查看器能力。iOS 保留官方大小写；中文使用「模拟器」，日语使用「シミュレータ」，韩语使用「시뮬레이터」。译法仍为 proposed。
+Apple Simulator 的用户可见名称，也用于原内置 iOS 模拟器的历史与下线说明。Cindy 已移除内置查看器能力；替代插件 cindy-simulator 使用独立术语 Device Simulator。iOS 保留官方大小写；中文使用「模拟器」，日语使用「シミュレータ」，韩语使用「시뮬레이터」。译法仍为 proposed。
 
 ### Lark
 
@@ -422,6 +426,10 @@ V4 模型类型 audio_generation，包含通用声音生成；与 audio_speech �
 ### Compression
 
 issue #882：模型管理/新对话选择器的分类标签，对应网关的文档压缩类模型（如 ai-gateway-doc）。此前被硬编码为笼统的 other 分类。
+
+### Decision
+
+模型分类 evaluation 对应 Decisions 接口，不进入 Agent 对话模型清单。日文沿用 Jev 开发者项目中的意思決定モデル，韩文沿用 IBM 韩文文档与 KAIST 文献中的 의사결정 모델，分类标签省略模型。
 
 ### Realtime Audio
 

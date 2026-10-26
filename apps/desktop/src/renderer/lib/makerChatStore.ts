@@ -44,7 +44,7 @@ import { parsePluginConnectionInput, type InputHandoffSnapshot } from '@cindy/de
 
 import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
-import { nextHistoryCacheReceipt, isHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
+import { nextHistoryCacheReceipt, isHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, readContinuousHistoryPage, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
 import { SESSION_SYNC_CHANNEL } from '@cindy/device-link';
 import { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from '@cindy/maker-shared/message-window';
 import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
@@ -815,6 +815,7 @@ export interface PendingPermission {
   description?: string;
   suggestions?: unknown[];
   autoReviewUnavailable?: boolean;
+  autoReviewReason?: string;
   /** Renderer-only delivery state; never part of the permission decision. */
   submitting?: boolean;
   submissionFailed?: boolean;
@@ -1938,6 +1939,9 @@ function isRemoteAroundClientIdMiss(error: unknown): boolean {
  * settling outbox record.
  */
 function isTerminalRemoteInputError(error: unknown): boolean {
+  // Local attachment preparation failed before dispatch. A disconnected target cannot
+  // make that delivery ambiguous; restore the draft without a remote reconciliation probe.
+  if (extractIpcError(error)?.code === 'DEVICE_LINK_MEDIA_ACCESS_DENIED') return true;
   const formatted = formatRemoteError(error);
   return formatted.includes('NOT_FOUND') || formatted.includes('REMOTE_OPTIMISTIC_SESSION_PURGED');
 }
@@ -2641,6 +2645,7 @@ export interface SessionChatState {
    * 这里把“能不能重试、重试哪条”收口到 store，避免展示层猜错。
    */
   errorRetryText: string | null;
+  errorCanContinue?: boolean;
   /**
    * 当前 live 终态错误预留的持久化 error 行 clientId。广播 payload.persistId
    * 写入;无可靠恢复依据(计划内升级关闭 / 自愈压住)时为 null。同一 turn 的重复
@@ -2956,6 +2961,7 @@ export type SessionChatLightState = Pick<
   | 'toolLoop'
   | 'recoverableError'
   | 'errorRetryText'
+  | 'errorCanContinue'
   | 'errorPersistId'
   | 'disposedErrorPersistId'
   | 'credentialSwitchWait'
@@ -4489,11 +4495,20 @@ function getOrCreateState(sessionId: string): SessionChatState {
 function setState(
   sessionId: string,
   updater: (prev: SessionChatState) => SessionChatState,
-  opts: { deferNotification?: boolean } = {},
+  opts: { deferNotification?: boolean; fromInputProjection?: boolean } = {},
 ): void {
   const prev = getOrCreateState(sessionId);
-  const next = updater(prev);
+  let next = updater(prev);
   if (next === prev) return;
+  // Only an input projection can confirm eligibility. Every other transition
+  // may retain it solely for an unchanged live error (e.g. its paired done).
+  // Clearing/replacing the error therefore revokes it at one shared boundary,
+  // including direct turns and deferred persistence without another projection.
+  if (next.errorCanContinue && (!next.error || (!opts.fromInputProjection
+    && (!prev.errorCanContinue || !prev.error
+      || !liveErrorTextMatchesRow(next.error, prev.error, next.errorReason ?? undefined))))) {
+    next = { ...next, errorCanContinue: false };
+  }
   if (prev.error !== next.error) {
     _liveErrorEpoch.set(sessionId, (_liveErrorEpoch.get(sessionId) ?? 0) + 1);
   }
@@ -5016,6 +5031,7 @@ function applyInputProjection(
       recoverableError:
         projection.error || projection.credentialSwitchWait ? null : s.recoverableError,
       errorRetryText: projection.errorRetryText,
+      errorCanContinue: projection.errorCanContinue === true,
       errorPersistId: projection.error ? s.errorPersistId : null,
       credentialSwitchWait: projection.credentialSwitchWait ?? null,
       usageLimitWait:
@@ -5032,7 +5048,7 @@ function applyInputProjection(
       inputRecovery: projection.recovery ?? null,
       ...(authRetryProjectionError ? { _authRetryPersistOnProjectionError: undefined } : {}),
     };
-  });
+  }, { fromInputProjection: true });
   if (deferredPersistFromProjection.payload) {
     persistTurnErrorDeferredTracked(
       projection.sessionId,
@@ -6704,6 +6720,7 @@ export function handleStreamEvent(
         description?: string;
         suggestions?: unknown[];
         autoReviewUnavailable?: boolean;
+        autoReviewReason?: string;
       };
       return {
         ...state,
@@ -6717,6 +6734,7 @@ export function handleStreamEvent(
           sourceDescription: data.sourceDescription,
           suggestions: data.suggestions,
           autoReviewUnavailable: data.autoReviewUnavailable === true,
+          autoReviewReason: data.autoReviewReason,
           ...(state.pendingPermission?.requestId === data.requestId
             ? {
                 submitting: state.pendingPermission.submitting,
@@ -8665,6 +8683,8 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
         description: typeof request.description === 'string' ? request.description : undefined,
         suggestions: Array.isArray(request.suggestions) ? request.suggestions : undefined,
         autoReviewUnavailable: metadata?.autoReviewUnavailable === true,
+        autoReviewReason: typeof metadata?.autoReviewReason === 'string' && metadata.autoReviewReason.trim()
+          ? metadata.autoReviewReason.trim() : undefined,
         sourceDescription: typeof metadata?.imSourceDescription === 'string' ? metadata.imSourceDescription : undefined,
       };
       setState(sessionId, (s) =>
@@ -9962,6 +9982,7 @@ function selectLightState(state: SessionChatState): SessionChatLightState {
     toolLoop: state.toolLoop,
     recoverableError: state.recoverableError,
     errorRetryText: state.errorRetryText,
+    errorCanContinue: state.errorCanContinue,
     errorPersistId: state.errorPersistId,
     disposedErrorPersistId: state.disposedErrorPersistId,
     credentialSwitchWait: state.credentialSwitchWait,
@@ -10014,6 +10035,7 @@ function lightStateEquals(a: SessionChatLightState, b: SessionChatLightState): b
     a.toolLoop === b.toolLoop &&
     a.recoverableError === b.recoverableError &&
     a.errorRetryText === b.errorRetryText &&
+    a.errorCanContinue === b.errorCanContinue &&
     a.errorPersistId === b.errorPersistId &&
     a.disposedErrorPersistId === b.disposedErrorPersistId &&
     a.credentialSwitchWait === b.credentialSwitchWait &&
@@ -11414,7 +11436,8 @@ function settleRemoteOptimisticFailure(sessionId: string, clientId: string, erro
     ),
     ...(error !== undefined
       ? {
-          error: decodeRemoteErrorMessage(error instanceof Error ? error.message : String(error)),
+          // Keep the code so the banner can expose recovery guidance in its active locale.
+          error: remoteErrorMessageForBanner(error instanceof Error ? error.message : String(error)),
           usageLimitRecovery: null,
           errorReason: null,
           toolLoop: null,
@@ -11992,21 +12015,27 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
           // Capture write authority before the read, like an open view does.
           const write = remoteHistoryCacheWriter(deviceId, session.id);
           const readReceipt = nextHistoryCacheReceipt();
-          let page: HistoryViewPage<Message>;
+          const readPage = async (before?: string): Promise<HistoryViewPage<HistoryChatMessage> | null> => {
+            const page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
+              [session.id, { lazyDetails: true, ...(before ? { before } : {}) }]) as HistoryViewPage<Message> | null;
+            return page && { ...page, items: mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
+              ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
+            }))) };
+          };
+          let page: HistoryViewPage<HistoryChatMessage> | null;
+          let latestPage: HistoryViewPage<HistoryChatMessage> | null;
           try {
-            page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
-              [session.id, { lazyDetails: true }]) as HistoryViewPage<Message>;
+            page = latestPage = await readPage();
+            if (page) page = await readContinuousHistoryPage(page, previous, readPage,
+              () => isCurrent(session.id) && token === sessionCacheInvalidationToken(session.id) && !getRemoteHistoryView(session.id));
           } catch (error) {
             // A Host without the history view serves tasks the old way; nothing to read ahead.
             if (isHistoryViewUnavailable(error)) return;
             throw error;
           }
           if (page == null || !isCurrent(session.id) || getRemoteHistoryView(session.id)) continue;
-          const items = mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
-            ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
-          })));
-          const snapshot = historySnapshotForCache({ ...page, items }, previous,
-            (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)));
+          const snapshot = historySnapshotForCache(page, previous,
+            (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)), latestPage ?? page);
           if (!snapshot) continue;
           write({ ...snapshot, readReceipt });
         }

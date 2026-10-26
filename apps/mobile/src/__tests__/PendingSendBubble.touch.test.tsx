@@ -9,6 +9,16 @@ import { MessageBodyText } from '@/session/ShareMessageCheckbox';
 import { buildQueueRowPresentation, EMPTY_INPUT_PROJECTION } from '@/session/inputProjection';
 import type { MobilePendingSendItem } from '@/session/pendingSendItems';
 import { collectMobileMessageGalleryImages, lightboxImagesForPayload } from '@/session/messageGallery';
+import { usePendingOutboxActions, usePendingSendActions } from '@/session/usePendingSendActions';
+import { remoteSessionStore } from '@/session/remoteSessionStore';
+import type { DurableOutboxRecord } from '@/session/durableOutbox';
+import type { TFunction } from 'i18next';
+
+const outbox = vi.hoisted(() => ({ records: [] as DurableOutboxRecord[], update: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('@/session/mobileDurableOutbox', () => ({
+  getCurrentMobileOutboxRecords: () => outbox.records,
+  mobileDurableOutbox: { update: outbox.update },
+}));
 
 const { handlers, frames, durableThumbs } = vi.hoisted(() => ({
   handlers: new Map<string, Record<string, unknown>>(),
@@ -43,6 +53,9 @@ vi.mock('lucide-react-native', () => ({ Check: () => null, AlertCircle: () => nu
   Bot: () => null, Ghost: () => null, Send: () => null, Timer: () => null,
   Monitor: () => null, Smartphone: () => null, Clock: () => null, ChevronDown: () => null }));
 vi.mock('@/session/SentInlineAtomBody', () => ({ SentInlineAtomBody: () => null }));
+// The height wrapper has its own lifecycle tests; keep this suite on pending
+// actions and native text selection without importing the native animation runtime.
+vi.mock('@/session/AnimatedContentHeight', () => ({ AnimatedContentHeight: ({ children }: { children: ReactNode }) => children }));
 vi.mock('@/session/sentAttachmentThumbStore', () => ({ getSentAttachmentThumbUri: (ref: string) => durableThumbs.get(ref) ?? null,
   useSentAttachmentThumbsVersion: () => 0 }));
 vi.mock('react-i18next', () => ({ initReactI18next: { type: '3rdParty', init: () => undefined },
@@ -153,6 +166,66 @@ it('lets a real body link consume the pending tap before the frame commits', () 
   show(); touch('Start'); touch('End');
   act(() => host.querySelector<HTMLElement>('[data-testid="link"]')!.click());
   flush(); expect(openLink).toHaveBeenCalledOnce(); expect(select).not.toHaveBeenCalled();
+});
+
+// #7083 unit regression: the production hooks feed the real bubble. Existing
+// touch tests inject static callbacks, so they cannot catch callback churn or
+// a retry/edit routed to the previous task after a task switch. Minimal input:
+// two tasks with the same client ID, plus an unrelated parent render.
+it('keeps pending actions stable and routes bubble actions to the current task', async () => {
+  outbox.records = ['task-a', 'task-b'].map((sessionId): DurableOutboxRecord => ({
+    version: 1, accountId: 'test', deviceId: 'pc', createdAt: 1, state: 'failed', uploads: [],
+    item: { clientId: 'a', sessionId, text: sessionId, quotesEncoded: false,
+      agentReferences: [], pastedTextRanges: [], slashCommandRanges: [], permissionModeAtSend: 'plan',
+      attachmentSlots: [], slotMeta: [], slotByLocalId: {}, waitingIds: [], failedIds: [],
+      enqueueError: null, phase: 'uploading' },
+  }));
+  const bindings = {
+    deviceId: 'pc', deviceName: 'Computer', router: { push: vi.fn() },
+    outboxSessionAliveRef: { current: 'task-a' }, setError: vi.fn(),
+    setQueueSelectedClientId: select, t: ((key: string) => key) as TFunction,
+  };
+  const renderText = vi.fn(() => <span>pending message</span>);
+  const renderMedia = () => null;
+  const failedItem: MobilePendingSendItem = { ...item, phase: 'failed', actions: null };
+  let actions!: PendingSendBubbleActions;
+  function Screen({ sessionId, queueBusy = false, queued = false }: {
+    sessionId: string; queueBusy?: boolean; queued?: boolean;
+  }) {
+    const { retryOutboxItem, removeOutboxItem } = usePendingOutboxActions({ ...bindings, sessionId });
+    actions = usePendingSendActions({
+      retryOutboxItem, removeOutboxItem, sessionId, queueBusy, queueSelectedClientId: null,
+      setQueueSelectedClientId: select, beginQueueEdit: edit, steerQueueItem: steer,
+      removeQueueItem: remove, moveQueueItem: move,
+    });
+    return <PendingSendBubble item={queued ? item : failedItem} actions={actions}
+      renderText={renderText} renderFile={renderMedia} renderImage={renderMedia} />;
+  }
+  const showScreen = (sessionId = 'task-a', queueBusy = false, queued = false) =>
+    act(() => root.render(<Screen {...{ sessionId, queueBusy, queued }} />));
+  try {
+    showScreen();
+    const initial = actions;
+    for (let n = 0; n < 30; n++) showScreen();
+    expect(actions).toBe(initial);
+    await act(async () => host.querySelector<HTMLElement>('[data-testid="pendingSend.outboxRetry.a"]')!.click());
+    expect(outbox.update).toHaveBeenLastCalledWith(outbox.records[0], expect.objectContaining({ state: 'queued' }));
+    showScreen('task-b');
+    await act(async () => host.querySelector<HTMLElement>('[data-testid="pendingSend.outboxRetry.a"]')!.click());
+    expect(outbox.update).toHaveBeenLastCalledWith(outbox.records[1], expect.objectContaining({ state: 'queued' }));
+    const queued = { clientId: 'a', text: 'new task message', persistedContent: 'new task message',
+      model: 'model', workingDir: '/synthetic', createOpts: {}, chatMessage: { role: 'user' as const } };
+    remoteSessionStore.setInputProjection('task-b', { ...EMPTY_INPUT_PROJECTION, pendingQueue: [queued] });
+    showScreen('task-b', false, true);
+    const menu = handlers.get('pendingSend.queueMenu.a')!;
+    act(() => (menu.onPressAction as (e: { nativeEvent: { event: string } }) => void)({ nativeEvent: { event: 'edit' } }));
+    expect(edit).toHaveBeenLastCalledWith(queued);
+    showScreen('task-b', true, true);
+    expect(actions.busy).toBe(true);
+  } finally {
+    outbox.records = [];
+    remoteSessionStore.clear();
+  }
 });
 it.each(['queued', 'uploading', 'sending', 'settling', 'editing', 'failed'] as const)(
   'previews a %s image without changing queue selection or cancelling the send', (phase) => {

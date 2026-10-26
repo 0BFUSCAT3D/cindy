@@ -40,6 +40,20 @@ Cindy 的产品形态不止本地桌面单机。同一个功能可能运行在�
    同步 topic 路由；不登记，手机／远程控制端就永远调不通。
 3. 手机版需不需要对应的入口／UI／交互？
 
+## 远程新建 SSH 项目的目录归属（#7117）
+
+`maker:create-session` 的路径守卫先按执行端点识别目录：显式 `remoteHostId` 经既有
+SSH 就绪与目录探测后，将主机和规范化路径一同交给创建处理器，不用本机文件系统探测
+SSH 路径。旧控制端省略主机时，按当前账号的 session 记录查找唯一 SSH 归属；本地目录
+与 SSH 同时命中、或多个 SSH 主机命中时拒绝猜测。记录只能解析归属，不能替代实时探测。
+显式 `remoteHostId: null` 选择本地；`agentDeviceId` 指定另一电脑运行 Agent 时，文件仍属
+被控电脑，不反查 SSH。探测失败不降级到本机创建，探测期间撤权或切账号也不能继续创建。
+
+`worktree:create` 等其它入口保留本地目录与网络盘超时检查。此修复不改变 wire 字段、
+allowlist、重试或 relay 生命周期；手机端完整保留“主机 + 路径”的选择与记忆仍需单独适配。
+实现与回归：`device-link/remote-workdir-guard.ts`、`device-link/dispatch.ts`、
+`maker-ipc/register.ts` 与 `__tests__/deviceLinkHostDispatch.test.ts`（均相对 Desktop main）。
+
 ## 远程任务存档的即时反馈
 
 桌面与手机的远程任务列表在点击存档后立即乐观移走任务行，不能等待远程预检或写入
@@ -399,6 +413,11 @@ Mobile 历史读取在 relay 已在线且目标 presence 不是明确不可用�
 历史控制器与页面同步；也不能为了放行读取伪造在线快照。明确离线／停用或 relay 未在线时
 仍只展示缓存，授权、撤权和旧代结果拦截继续由原链路处理。
 
+Mobile 项目标题的电脑图标同样使用共享连接状态、当前 presence、无响应与撤权证据，
+不从页面局部设备清单的缺失、旧快照或列表读取失败推导断连。首页、任务抽屉与宽屏常驻列表
+共用此判据；重建列表与普通同步不会重置连接图标，真实断连与恢复仍随共享状态更新。
+实现与回归见 `homeProjectMachineIdentity.ts`、`HomeSurface.tsx` 与 `homeProjectMachineIdentity.test.ts`。
+
 Mobile 返回任务或恢复网络时，历史视图只恢复展示，由页面既有同步协调器发起快照，
 不再由视图激活另读一页。已有缓存且订阅尚未确认时，最多等待 2 秒合并本次列表／详情
 订阅确认；以当前 ACK 表为准，不复用前一次聚焦／连接已完成的 Promise。等待期间只
@@ -534,6 +553,22 @@ Desktop 的同账号远程 Cindy Make 任务同样消费该投影：准备与测
 动作，重连与操作超时后只重读状态。旧主机不提供该 placement 时保留只读历史卡片。
 实现与回归见 Desktop Renderer 的 `features/device-link/useSessionResourceCards.ts`、
 `SessionResourceCards.tsx` 及同目录测试；SSH 工作区不由此获得 Make 执行能力。
+
+## 桌面远程控制的伙伴设置（`management:settings`，2026-10-22）
+
+产品规则见 [`../product-rules/cindy-bots-runtime.md`](../product-rules/cindy-bots-runtime.md)「伙伴设置」。落点：
+
+- **走 Remote Resource，不新增通道**：`teammates` 集合声明集合动作 `management:settings`，`input.op` 选固定操作，结果放在
+  `RemoteActionInvokeResponse.result`（`{ ok, value | code, message }`）。`allowlist.ts` 不变；伙伴 `settings-*` 等原始 IPC 仍不放行。
+- **主机沿用本机服务**：每个操作调用本机 IPC 同一份服务，凭证、本机路径、运行时快照不进结果；写入口白名单（`BOT_SETTINGS_PATCH_FIELDS`），
+  拒绝 `permissions`；消息平台操作只触达该伙伴自己的连接，没有接收凭证的操作。
+- **控制端兼容**：用集合动作 + `caps` 探测，主机不支持（旧版）整页回退到通用表单页；手机与旧桌面不变。
+- **故障半径三问**：① 故障层级：单个请求（读取 / 写入某个设置）；对方离线只标记页面状态，不判定设置失败。
+  ② 动作层级：仅该 peer 上该伙伴的请求，不重建 link、不断 relay、不重放写操作；写入失败沿用自动保存的回滚与重试，读取只在
+  推送 / 重连 / 聚焦后 400ms 合并重读，消息平台状态每 5 秒读取一次（仅页面打开且可见）。
+  ③ 多 peer：主机按请求内的控制端校验授权与撤权，一个控制端的写入不影响另一个的在途读取；回归见
+  `botRemoteSettingsHost.test.ts`（授权、可见性、owner 切换后丢弃结果、冲突形状、凭证 / 路径不出主机）与
+  `remoteBotSettingsTarget.test.ts`、`remoteTeammateSettings.test.tsx`。
 
 ## 本机与远程共用查询策略
 

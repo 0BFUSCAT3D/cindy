@@ -62,10 +62,6 @@ Desktop 信任来源已经完成的版本选择，不再按 `minCindyVersion` �
 用户主动导入的本地包、以及用户添加的自定义市场也遵循同一安装策略。这个字段仍必须
 准确填写：它供发布服务选择兼容 release，也记录插件真实依赖的首个 Host 版本。
 
-### releaseNotes:更新说明
-
-v2/v3 可选纯文本，首次上架可省略；更新说明与预检要求见 §7.3。缺字段仍可打包、安装。
-
 ### whenToUse:只写发现线索,不写使用规则
 
 在作者契约里,`whenToUse` 是专门给模型做插件发现与判断的唯一字段;
@@ -168,6 +164,9 @@ v3 直接用顶层字段声明插件贡献项与自主 Host 能力，不再有 `
 邮件插件声明 `mail: true`，调用 Cindy 内置 `cindyMail.register(adapter)`
 （version 1），不生成卡片 HTML、不打包公共流程；纯邮件插件不需要 `card`。
 阅读邮件可声明 `mailReader:{tool,hosts}`，工具接收 `{url}` 并返回 MailMessage，默认只读。
+可选 `participantPhotos:[{email,url}]` 最多 64 项，按小写邮箱精确匹配；照片 URL 仅 HTTPS，
+无凭据、自定义端口。缺照片/权限时省略，不阻断阅读；旧宿主忽略。桌面回退公开头像、
+企业图标和首字；头像不证明身份。正文外图仍需单独点击显示。
 `mail` 只能省略或写字面量 `true`；声明 `mailReader` 时必须同时有 `mail: true`，
 且 `tool` 必须指向本清单 `tools` 中的工具。协议校验与桌面安装校验都会拒绝不完整组合。
 支持打开即已读时增加 `mailReader.markRead:true`，读取工具接受可选 `markRead:true`；

@@ -2,6 +2,7 @@ const path = require('path');
 const { getDefaultConfig } = require('expo/metro-config');
 
 const config = getDefaultConfig(__dirname);
+config.transformer.babelTransformerPath = require.resolve('./babel-transformer');
 const workspaceRoot = path.resolve(__dirname, '../..');
 // Shared endpoint discovery bundles the public manifests from the repository config directory.
 config.watchFolders = [...config.watchFolders, path.join(workspaceRoot, 'config')];

@@ -36,6 +36,8 @@
 
 - 首次接触本仓、需要定位功能代码位置或判断新代码归属模块时，先读仓库地图
   `docs/dev-rules/repo-map.md`。
+- 只为检查界面而需要启动 Desktop 或 Mobile 模拟器、且不需要真实账号时，用 `--mock`
+  免登录模拟数据启动；新增或修改模拟任务、`--mock` 行为前先读 `docs/dev-rules/ui-mock-data.md`。
 - 首次安装、修复依赖或准备新 worktree 时，必须先读
   `docs/dev-rules/environment-setup.md`。
 - 首次理解模型配置架构，新增模型／供应商，更新模型窗口／价格／推理档位／默认值／本地推荐，
@@ -66,6 +68,8 @@
   `docs/product-rules/message-source.md`：界面标签与模型说明同源，两侧一起改。
 - 修改伙伴（Bot）的身份、Session 生命周期、模型 fallback、工作目录、Skill / MCP 装配、
   委派协作或伙伴设置前，必须先读 `docs/product-rules/cindy-bots-runtime.md`。
+- 修改伙伴调用任务写工具的身份判定（主人代办 / 受托 / 自主）、自主轮可做的范围、转达主人原话的
+  核实凭证，或伙伴提示词里对应的说法前，必须先读 `docs/product-rules/teammate-authority.md`。
 - 修改伙伴的跨电脑身份、主力电脑（登记、接管、交出、降级）、云端对话层与资料上传，或
   `apps/desktop/src/main/companion-cloud/`、Chat Server 的伙伴 actor／1:1 房间合同前，必须先读
   `docs/product-rules/cloud-companions.md`。
