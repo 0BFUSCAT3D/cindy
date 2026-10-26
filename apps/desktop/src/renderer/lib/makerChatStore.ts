@@ -44,7 +44,7 @@ import { parsePluginConnectionInput, type InputHandoffSnapshot } from '@cindy/de
 
 import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
-import { nextHistoryCacheReceipt, isHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
+import { nextHistoryCacheReceipt, isHistoryCacheReceipt, historyCacheReceiptFollows, mergeHistoryPrefetchRequest, readContinuousHistoryPage, type HistoryCacheReceipt, type HistoryPrefetchRequest } from '@cindy/maker-shared/message-window';
 import { SESSION_SYNC_CHANNEL } from '@cindy/device-link';
 import { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from '@cindy/maker-shared/message-window';
 import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
@@ -815,6 +815,7 @@ export interface PendingPermission {
   description?: string;
   suggestions?: unknown[];
   autoReviewUnavailable?: boolean;
+  autoReviewReason?: string;
   /** Renderer-only delivery state; never part of the permission decision. */
   submitting?: boolean;
   submissionFailed?: boolean;
@@ -2303,7 +2304,6 @@ export function invalidateLiveIngressForDataOwnerBoundary(): void {
   pendingTextDeltaBatches.clear();
   clearDeferredStateNotificationTimer();
   pendingDeferredStateNotifications.clear();
-  pendingMessageCreatedPatches.clear();
   remotePresenceOnlineByDevice.clear();
   resetRemoteDataOwnerPushFence();
 }
@@ -2644,6 +2644,7 @@ export interface SessionChatState {
    * 这里把“能不能重试、重试哪条”收口到 store，避免展示层猜错。
    */
   errorRetryText: string | null;
+  errorCanContinue?: boolean;
   /**
    * 当前 live 终态错误预留的持久化 error 行 clientId。广播 payload.persistId
    * 写入;无可靠恢复依据(计划内升级关闭 / 自愈压住)时为 null。同一 turn 的重复
@@ -2959,6 +2960,7 @@ export type SessionChatLightState = Pick<
   | 'toolLoop'
   | 'recoverableError'
   | 'errorRetryText'
+  | 'errorCanContinue'
   | 'errorPersistId'
   | 'disposedErrorPersistId'
   | 'credentialSwitchWait'
@@ -3299,11 +3301,10 @@ const HIGH_FREQUENCY_NOTIFY_INTERVAL_MS = 32;
 const TYPING_PRIORITY_NOTIFY_INTERVAL_MS = 250;
 const HIGH_FREQUENCY_NOTIFY_MAX_SESSIONS_PER_TICK = 8;
 const pendingDeferredStateNotifications = new Set<string>();
-const pendingMessageCreatedPatches = new Map<string, string>();
 let deferredStateNotificationTimer: ReturnType<typeof setTimeout> | null = null;
 
 function hasDeferredStateWork(): boolean {
-  return pendingDeferredStateNotifications.size > 0 || pendingMessageCreatedPatches.size > 0;
+  return pendingDeferredStateNotifications.size > 0;
 }
 
 function clearDeferredStateNotificationTimer(): void {
@@ -3328,18 +3329,12 @@ function emitStateNotifications(sessionId: string): void {
   });
 }
 
-function flushPendingMessageCreatedPatch(sessionId: string): void {
-  const updatedAt = pendingMessageCreatedPatches.get(sessionId);
-  if (!updatedAt) return;
-  pendingMessageCreatedPatches.delete(sessionId);
-  emitPatch(sessionId, { updatedAt });
-}
-
 function flushDeferredStateNotifications(): void {
   deferredStateNotificationTimer = null;
-  const sessionIds = [
-    ...new Set([...pendingDeferredStateNotifications, ...pendingMessageCreatedPatches.keys()]),
-  ].slice(0, HIGH_FREQUENCY_NOTIFY_MAX_SESSIONS_PER_TICK);
+  const sessionIds = [...pendingDeferredStateNotifications].slice(
+    0,
+    HIGH_FREQUENCY_NOTIFY_MAX_SESSIONS_PER_TICK,
+  );
   let stateChanged = false;
   for (const sessionId of sessionIds) {
     if (pendingDeferredStateNotifications.delete(sessionId)) {
@@ -3352,7 +3347,6 @@ function flushDeferredStateNotifications(): void {
       cb();
     });
   }
-  for (const sessionId of sessionIds) flushPendingMessageCreatedPatch(sessionId);
   if (hasDeferredStateWork()) scheduleDeferredStateNotifications();
 }
 
@@ -3361,16 +3355,8 @@ function queueDeferredStateNotification(sessionId: string): void {
   scheduleDeferredStateNotifications();
 }
 
-function queueMessageCreatedPatch(sessionId: string, updatedAt: string): void {
-  pendingMessageCreatedPatches.set(sessionId, updatedAt);
-  // patch 也进入同一个 FIFO session 集合。否则 Map-only 的 no-op DB echo 会永远排在
-  // 持续活跃的前 8 个 state session 之后，slice 上限会让 sidebar patch 饥饿。
-  queueDeferredStateNotification(sessionId);
-}
-
 function discardDeferredStateWork(sessionId: string): void {
   pendingDeferredStateNotifications.delete(sessionId);
-  pendingMessageCreatedPatches.delete(sessionId);
   if (!hasDeferredStateWork()) clearDeferredStateNotificationTimer();
 }
 
@@ -4492,11 +4478,20 @@ function getOrCreateState(sessionId: string): SessionChatState {
 function setState(
   sessionId: string,
   updater: (prev: SessionChatState) => SessionChatState,
-  opts: { deferNotification?: boolean } = {},
+  opts: { deferNotification?: boolean; fromInputProjection?: boolean } = {},
 ): void {
   const prev = getOrCreateState(sessionId);
-  const next = updater(prev);
+  let next = updater(prev);
   if (next === prev) return;
+  // Only an input projection can confirm eligibility. Every other transition
+  // may retain it solely for an unchanged live error (e.g. its paired done).
+  // Clearing/replacing the error therefore revokes it at one shared boundary,
+  // including direct turns and deferred persistence without another projection.
+  if (next.errorCanContinue && (!next.error || (!opts.fromInputProjection
+    && (!prev.errorCanContinue || !prev.error
+      || !liveErrorTextMatchesRow(next.error, prev.error, next.errorReason ?? undefined))))) {
+    next = { ...next, errorCanContinue: false };
+  }
   if (prev.error !== next.error) {
     _liveErrorEpoch.set(sessionId, (_liveErrorEpoch.get(sessionId) ?? 0) + 1);
   }
@@ -4523,9 +4518,6 @@ function setState(
   globalListeners.forEach((cb) => {
     cb();
   });
-  // messages:created 的侧栏时间戳与 chat state 保持原有先后：先通知消息，再 patch 列表。
-  flushPendingMessageCreatedPatch(sessionId);
-  if (!hasDeferredStateWork()) clearDeferredStateNotificationTimer();
 }
 
 /**
@@ -5019,6 +5011,7 @@ function applyInputProjection(
       recoverableError:
         projection.error || projection.credentialSwitchWait ? null : s.recoverableError,
       errorRetryText: projection.errorRetryText,
+      errorCanContinue: projection.errorCanContinue === true,
       errorPersistId: projection.error ? s.errorPersistId : null,
       credentialSwitchWait: projection.credentialSwitchWait ?? null,
       usageLimitWait:
@@ -5035,7 +5028,7 @@ function applyInputProjection(
       inputRecovery: projection.recovery ?? null,
       ...(authRetryProjectionError ? { _authRetryPersistOnProjectionError: undefined } : {}),
     };
-  });
+  }, { fromInputProjection: true });
   if (deferredPersistFromProjection.payload) {
     persistTurnErrorDeferredTracked(
       projection.sessionId,
@@ -6707,6 +6700,7 @@ export function handleStreamEvent(
         description?: string;
         suggestions?: unknown[];
         autoReviewUnavailable?: boolean;
+        autoReviewReason?: string;
       };
       return {
         ...state,
@@ -6720,6 +6714,7 @@ export function handleStreamEvent(
           sourceDescription: data.sourceDescription,
           suggestions: data.suggestions,
           autoReviewUnavailable: data.autoReviewUnavailable === true,
+          autoReviewReason: data.autoReviewReason,
           ...(state.pendingPermission?.requestId === data.requestId
             ? {
                 submitting: state.pendingPermission.submitting,
@@ -8668,6 +8663,8 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
         description: typeof request.description === 'string' ? request.description : undefined,
         suggestions: Array.isArray(request.suggestions) ? request.suggestions : undefined,
         autoReviewUnavailable: metadata?.autoReviewUnavailable === true,
+        autoReviewReason: typeof metadata?.autoReviewReason === 'string' && metadata.autoReviewReason.trim()
+          ? metadata.autoReviewReason.trim() : undefined,
         sourceDescription: typeof metadata?.imSourceDescription === 'string' ? metadata.imSourceDescription : undefined,
       };
       setState(sessionId, (s) =>
@@ -8990,10 +8987,6 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       },
       { deferNotification },
     );
-    // sidebar 排序时间轴 — 让接管路径下新消息也能 bump session 顺序。
-    const updatedAt = new Date().toISOString();
-    if (deferNotification) queueMessageCreatedPatch(sessionId, updatedAt);
-    else emitPatch(sessionId, { updatedAt });
   }
 
   // 消息本地删除推送:本机多窗口与 device-link 控制端共用同一 reducer。
@@ -9884,7 +9877,6 @@ function __teardownGlobalListeners(): void {
   remoteMessageRepairTimers.clear();
   clearDeferredStateNotificationTimer();
   pendingDeferredStateNotifications.clear();
-  pendingMessageCreatedPatches.clear();
   _pendingErrorClearOnLeave.clear();
   _deferredTurnErrorPersist.clear();
   _liveErrorEpoch.clear();
@@ -9965,6 +9957,7 @@ function selectLightState(state: SessionChatState): SessionChatLightState {
     toolLoop: state.toolLoop,
     recoverableError: state.recoverableError,
     errorRetryText: state.errorRetryText,
+    errorCanContinue: state.errorCanContinue,
     errorPersistId: state.errorPersistId,
     disposedErrorPersistId: state.disposedErrorPersistId,
     credentialSwitchWait: state.credentialSwitchWait,
@@ -10017,6 +10010,7 @@ function lightStateEquals(a: SessionChatLightState, b: SessionChatLightState): b
     a.toolLoop === b.toolLoop &&
     a.recoverableError === b.recoverableError &&
     a.errorRetryText === b.errorRetryText &&
+    a.errorCanContinue === b.errorCanContinue &&
     a.errorPersistId === b.errorPersistId &&
     a.disposedErrorPersistId === b.disposedErrorPersistId &&
     a.credentialSwitchWait === b.credentialSwitchWait &&
@@ -11996,21 +11990,27 @@ async function prefetchRemoteHistories(deviceId: string, sessionIds?: ReadonlySe
           // Capture write authority before the read, like an open view does.
           const write = remoteHistoryCacheWriter(deviceId, session.id);
           const readReceipt = nextHistoryCacheReceipt();
-          let page: HistoryViewPage<Message>;
+          const readPage = async (before?: string): Promise<HistoryViewPage<HistoryChatMessage> | null> => {
+            const page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
+              [session.id, { lazyDetails: true, ...(before ? { before } : {}) }]) as HistoryViewPage<Message> | null;
+            return page && { ...page, items: mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
+              ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
+            }))) };
+          };
+          let page: HistoryViewPage<HistoryChatMessage> | null;
+          let latestPage: HistoryViewPage<HistoryChatMessage> | null;
           try {
-            page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
-              [session.id, { lazyDetails: true }]) as HistoryViewPage<Message>;
+            page = latestPage = await readPage();
+            if (page) page = await readContinuousHistoryPage(page, previous, readPage,
+              () => isCurrent(session.id) && token === sessionCacheInvalidationToken(session.id) && !getRemoteHistoryView(session.id));
           } catch (error) {
             // A Host without the history view serves tasks the old way; nothing to read ahead.
             if (isHistoryViewUnavailable(error)) return;
             throw error;
           }
           if (page == null || !isCurrent(session.id) || getRemoteHistoryView(session.id)) continue;
-          const items = mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
-            ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
-          })));
-          const snapshot = historySnapshotForCache({ ...page, items }, previous,
-            (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)));
+          const snapshot = historySnapshotForCache(page, previous,
+            (candidate) => fitsRemoteHistoryCache(encodeRemoteHistory(candidate)), latestPage ?? page);
           if (!snapshot) continue;
           write({ ...snapshot, readReceipt });
         }
@@ -14381,8 +14381,7 @@ function prewarmSession(
 function touchSessionUserSend(sessionId: string, workingDir: string, wasFirst: boolean): void {
   const sendAt = new Date();
   const userSendAtIso = sendAt.toISOString();
-  // 侧栏时间轴读 sessions.updatedAt,乐观更新同步 bump 让 sidebar 立即跳到"刚发过"
-  // (main 侧 touchUserSendInDb 也会写 updatedAt,广播回来的 patch 值一致、幂等)。
+  // 真人发送保留旧时间字段的乐观投影；换手时间由 main 的 sessions:patched 下发。
   emitPatch(
     sessionId,
     wasFirst

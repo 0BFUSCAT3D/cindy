@@ -4,6 +4,48 @@ import { alignModelApiRoute, providerInterfaceModelRoute } from '../providerInte
 import { BUNDLED_CATALOG } from '../catalog.js';
 
 describe('documented supplier interfaces', () => {
+  // r4365890304 (unit): import saved Model Studio connections through the
+  // production resolver. Previous coverage checked protocol shape, not whether
+  // these products actually exposed a selected catalog interface.
+  it.each([
+    ['aliyun-model-studio-cn', 'https://dashscope.aliyuncs.com'],
+    ['aliyun-model-studio-global', 'https://dashscope-intl.aliyuncs.com'],
+  ])('selects the declared %s saved interfaces without changing user settings', (presetId, host) => {
+    const provider = buildUserProvider({ id: 'studio', name: 'Studio', runtimes:
+      Object.fromEntries(['claude-code', 'codex', 'pi'].map(agent => [agent, {
+        baseUrl: `${host}/${agent === 'codex' ? 'compatible-mode/v1' : 'apps/anthropic'}`,
+        wireProtocol: agent === 'codex' ? 'openai-chat' : 'anthropic-messages', catalogPresetId: presetId,
+        models: [{ id: 'qwen3.7-flash', contextWindow: 64000, defaultEnabled: false }],
+      }])) });
+    for (const agent of provider.agents) {
+      const api = agent === 'codex' ? 'openai-completions' : 'anthropic-messages';
+      expect(provider.models[agent]![0]).toMatchObject({
+        api, contextWindow: 64000, defaultEnabled: false,
+        selectedInterface: { profileId: `${presetId}-${api}`, route: {
+          baseUrl: `${host}/${agent === 'codex' ? 'compatible-mode/v1' : 'apps/anthropic'}`,
+        } },
+      });
+    }
+  });
+  it.each([
+    ['zhipu-glm-cn', 'https://open.bigmodel.cn/api/coding/paas/v4'],
+    ['zhipu-glm-global', 'https://api.z.ai/api/coding/paas/v4'],
+  ])('declares the server %s Coding endpoint without redirecting public API connections', (presetId, codingBase) => {
+    const preset = BUNDLED_CATALOG.presets!.find(p => p.id === presetId)!;
+    for (const [baseUrl, profileId] of [
+      [codingBase, `${presetId}-coding-openai-completions`],
+      [codingBase.replace('/coding/', '/'), `${presetId}-openai-completions`],
+    ]) {
+      const provider = buildUserProvider({ id: 'glm', name: 'GLM', runtimes: { codex: {
+        ...preset.runtimes.codex!, baseUrl, catalogPresetId: presetId,
+        models: [{ id: 'glm-5.3-flash', name: 'GLM', contextWindow: 64000, defaultEnabled: false }],
+      } } }, { presets: BUNDLED_CATALOG.presets });
+      expect(provider.models.codex![0]).toMatchObject({
+        api: 'openai-completions', contextWindow: 64000, defaultEnabled: false,
+        selectedInterface: { profileId, route: { baseUrl, wireProtocol: 'openai-chat' } },
+      });
+    }
+  });
   it('imports OpenCode Go DeepSeek 4.1 Flash capabilities for every engine', () => {
     const preset = BUNDLED_CATALOG.presets!.find(p => p.id === 'opencode-go')!;
     const provider = buildUserProvider({ id: 'go', name: 'Go', runtimes:

@@ -75,6 +75,7 @@
     }
   },
   "mailReader": {
+    "showExternalImages": "外部画像を表示",
     "markReadFailed": "既読状態を同期できませんでした。メールボックスの認証を確認して開き直してください。",
     "title": "メール",
     "openMailbox": "メールボックスで開く",
@@ -1119,6 +1120,15 @@
     "details": "エラー詳細"
   },
   "localDbFatal": {
+    "schemaLease": {
+      "title": "ローカルデータをまだ開けません",
+      "retry": "ローカルデータを開き直す",
+      "writer-active": "別の Cindy がローカルデータを保守しています。完了後に開き直してください。",
+      "readers-active": "別の Cindy がこのローカルデータを使用しています。そちらを終了してから開き直してください。",
+      "lock-corrupt": "ローカルデータの保守ロック記録が破損しているため、使用中か確認できません。パソコンを再起動してから Cindy を開いてください。解決しない場合はサポートにお問い合わせください。データベースファイルは削除しないでください。",
+      "lock-unreadable": "ローカルデータの保守ロックを読み取り、または保存できません。データフォルダーへのアクセス権を確認し、アクセスを復旧してから開き直してください。解決しない場合はサポートにお問い合わせください。",
+      "recovery-busy": "別の Cindy がローカルデータの保守ロックを確認しています。しばらくしてから開き直してください。"
+    },
     "databaseCleanup": {
       "interruptedTitle": "データベースのクリーンアップが中断されました",
       "interruptedDescription": "データベースのクリーンアップが予期せず中断されました。Cindy を再起動してください。保存されたメンテナンス状態に基づいて安全に復旧します。",
@@ -1389,6 +1399,8 @@
       "moreTasks_other": "ほか {{n}} 件のタスク",
       "running": "実行中",
       "openApp": "Cindy を開く",
+      "remoteControlTitle": "リモート操作中",
+      "remoteControlBody": "ほかのデバイスがこのコンピュータの Cindy にアクセスしています。",
       "gateTitle": "ログインすると残りを確認できます",
       "gateBody": "Cindy にログインするか、ログインをスキップすると、ここにサブスクリプションの残りと今日の使用量が表示されます。",
       "settings": "管理",
@@ -1986,7 +1998,20 @@
       "wecomGroupToggleFailed": "WeCom グループ通知の設定を更新できませんでした",
       "wecomGroupClear": "削除",
       "wecomGroupCleared": "Webhook を削除しました",
-      "wecomGroupClearFailed": "Webhook を削除できませんでした"
+      "wecomGroupClearFailed": "Webhook を削除できませんでした",
+      "chat": {
+        "image": "画像",
+        "audio": "音声メッセージ",
+        "video": "動画",
+        "file": "ファイル",
+        "message": "新しいメッセージ",
+        "teammate": "パートナー",
+        "sender": "不明な送信者",
+        "mention": "あなたにメンション",
+        "reply": "あなたに返信",
+        "threadReply": "スレッドへの返信",
+        "thread": "スレッド"
+      }
     },
     "windowBehavior": {
       "menubar": {
@@ -3290,6 +3315,7 @@
           "claudeDesc": "Claude Code は Anthropic プロトコルに従います（x-api-key で認証）。この提供元の Claude Code 用 baseURL・キー・モデルを入力します。空欄にするとこの提供元は Claude Code を提供しません。",
           "codex": "Codex",
           "codexDesc": "Codex は OpenAI Responses プロトコルを使用します。Responses ネイティブ、または Chat Completions / Anthropic Messages を Cindy でブリッジする方式を選べます。このプロバイダーの Codex 用ベース URL・キー・モデルを入力します。空欄にすると Codex では利用しません。",
+          "codexUpstream": "現在の上流プロトコル：",
           "pi": "Pi",
           "piDesc": "Pi はマルチプロトコルのハーネスです:カスタム/ローカルモデル(Ollama、vLLM、自ホストのエンドポイント)は Cindy の互換プロキシを経由せず、そのまま接続します。下で API タイプを選び、この提供元の Pi 用 base URL・キー・モデルを入力してください。空欄なら Pi は設定しません。"
         },
@@ -8189,8 +8215,8 @@
       "coverage": "日別集計は {{date}} から",
       "col": {
         "task": "セッション",
-        "model": "モデル",
-        "provider": "プロバイダー",
+        "model": "現在のモデル",
+        "provider": "現在のプロバイダー",
         "tokens": "累計トークン",
         "context": "コンテキスト使用率",
         "lastActive": "最終アクティブ"
@@ -9171,6 +9197,7 @@
       "descriptionOn": "{{name}}がセッションの変化に応じて要約を確認し、お知らせします。",
       "movedFrom": "{{name}}からここに移しました",
       "heldBy": "現在は{{name}}が担当しています。オンにするとここに移ります。",
+      "routineScopeHint": "あなたが作成したセッションも担当します。下の標準フォローが、担当セッションの変化に対応します。",
       "heldByNobody": "未設定",
       "restoreDefault": "デフォルトに戻す（{{name}}）",
       "saveFailed": "保存できませんでした。もう一度お試しください",
@@ -9198,7 +9225,8 @@
       "conflict": "別のデバイスで設定が変更されました。保存する前に再読み込みしてください。",
       "unsupported": "これらの設定を編集するには、別のデバイスの Cindy を更新してください。",
       "discardDescription": "再読み込みすると、未保存の設定が破棄されます。",
-      "leaveDescription": "移動すると、未保存の設定が破棄されます。"
+      "leaveDescription": "移動すると、未保存の設定が破棄されます。",
+      "finishOnHost": "{{device}} で操作してください。"
     },
     "devicePicker": {
       "local": "この端末",
@@ -9348,6 +9376,7 @@
       "title": "メモリ",
       "enabled": "メモリを使う",
       "disabledHint": "オフです。メモリの読み取りも保存もしません",
+      "aboutMe": "私についての記憶",
       "search": "メモリを検索",
       "empty": "まだメモリはありません",
       "noResults": "一致するメモリはありません",
@@ -9972,6 +10001,7 @@
       "selectedHint": "この一覧では、仲間は選択した項目だけを使用できます。",
       "personalHint": "この仲間が学んだスキルです。仲間のプロフィールと共に読み込まれます。",
       "unavailableHint": "このコンピュータまたは実行環境では利用できません。接続やシステム権限を設定してください。",
+      "notOnThisComputer": "このパソコンでは利用できません",
       "configure": "設定を開く",
       "empty_toolset": "この実行環境には利用できる内蔵ツールがありません。",
       "empty_mcp": "カスタム MCP サーバーはまだ追加されていません。",
@@ -10102,7 +10132,7 @@
       "homeLabel": "メインのパソコン",
       "thisComputer": "このパソコン",
       "homeOffline": "メインのパソコン「{{device}}」がオフラインです",
-      "homeUnreachable": "メインのパソコン「{{device}}」はリモート操作を許可していません",
+      "homeControlOff": "メインのパソコン「{{device}}」はリモート操作を許可していません",
       "continueHere": "このパソコンで続ける",
       "takeOverHint": "このパソコンで続けると、{{name}} はこちらで動作し、下の会話も引き継がれます。",
       "takingOver": "このパソコンで {{name}} を準備しています…",
@@ -10119,6 +10149,7 @@
       "loadingDevices": "パソコンの一覧を読み込んでいます…",
       "devicesFailed": "パソコンの一覧を読み込めませんでした",
       "noTargets": "引き継げるパソコンがありません。別のパソコンがオンラインで、同じアカウントでログインし、「同一アカウントのデバイスによる操作を許可」をオンにしている必要があります",
+      "hereControlOff": "このパソコンは「同一アカウントのデバイスによる操作を許可」がオフのため、ここからは選べません。設定 → リモート接続 でオンにしてからもう一度お試しください",
       "resumeToMove": "{{name}} を再開してから別のパソコンに移動してください",
       "transferBusy": "{{name}} はまだ返信中です。返信が終わってから移動してください",
       "targetUnavailable": "「{{device}}」は今は使えません。オンラインでリモート操作がオンになっている必要があります",
@@ -10139,6 +10170,8 @@
       "switchFailed": "{{name}} を「{{device}}」に移せませんでした",
       "homeOutdated": "メインのパソコン「{{device}}」の Cindy が古いバージョンです。更新するか、そのパソコンで変更してください",
       "arrivingLater": "{{name}} はこのパソコンに移り、準備中です。まもなくチームメイト一覧に表示されます",
+      "arrivalPermissions": "{{name}} はこのパソコンの既定の権限で動作します。",
+      "arrivalModel": "{{name}} の保存済みモデルはこのパソコンでは使えないため、このパソコンの既定モデルを使います。",
       "busyTitle": "{{name}} はまだ返信中です",
       "busyDescription": "この返信が終わってから「{{device}}」に移すか、返信を止めてすぐに移せます。",
       "busyWait": "終わってから移す",
@@ -10240,8 +10273,10 @@
         }
       },
       "lanes": {
-        "title": "非表示のタスク",
-        "hint": "グループ、トピック、ほかの人からの DM ごとに非表示のタスクがあります。止まったり話がかみ合わなくなったりしたら、やり直せます。履歴は残ります。",
+        "title": "{{platform}}のタスク",
+        "expand": "{{platform}}のタスクを展開",
+        "collapse": "{{platform}}のタスクを折りたたむ",
+        "hint": "グループ、トピック、ほかの人からの DM ごとにタスクがあります。止まったり話がかみ合わなくなったりしたら、やり直せます。履歴は残ります。アーカイブは一覧の項目を非表示にするだけで、タスクの実行、コンテキスト、履歴には影響しません。新しいメッセージがあると再び表示されます。",
         "ownerName": "あなたとの DM",
         "kind": {
           "ownerDm": "メインタスク",
@@ -10259,15 +10294,17 @@
         "resetAria": "「{{lane}}」をやり直す",
         "resetConfirm": {
           "title": "「{{lane}}」をやり直しますか？",
-          "description": "次のメッセージはまっさらなコンテキストから始まり、進行中の返信は停止します。履歴はこの非表示のタスクにすべて残り、{{name}} の記憶は変わりません。",
+          "description": "次のメッセージはまっさらなコンテキストから始まり、進行中の返信は停止します。履歴はこのタスクにすべて残り、{{name}} の記憶は変わりません。",
           "ownerDescription": "これは {{name}} のメインタスクで、デスクトップでの会話とこの DM で共有しています。次のメッセージはまっさらなコンテキストから始まり、進行中の返信は停止します。履歴、記憶、ファイルはすべて残ります。",
           "confirm": "やり直す",
           "cancel": "キャンセル"
         },
         "resetDone": "「{{lane}}」をやり直しました。次のメッセージはまっさらなコンテキストから始まります。",
         "resetFailed": "やり直せませんでした。しばらくしてからもう一度お試しください",
-        "loadFailed": "非表示のタスクを読み込めませんでした",
-        "empty": "グループやほかの人からの DM はまだありません。グループや DM で誰かが {{name}} に話しかけると、ここに表示されます。"
+        "loadFailed": "タスクを読み込めませんでした",
+        "empty": "グループやほかの人からの DM はまだありません。グループや DM で誰かが {{name}} に話しかけると、ここに表示されます。",
+        "archiveAria": "「{{lane}}」をアーカイブ",
+        "archiveFailed": "タスクをアーカイブできませんでした"
       },
       "add": {
         "button": "プラットフォームを追加",
@@ -10849,11 +10886,12 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "million": "100万",
         "free": "無料",
         "estimated": "約 {{price}}",
         "startingAt": "{{price}} から",
         "units": {
-          "token": "トークン",
+          "token": "tokens",
           "character": "文字",
           "image": "枚",
           "second": "秒",
@@ -10934,6 +10972,7 @@
         "stt": "音声認識",
         "realtime": "リアルタイム音声",
         "embedding": "埋め込み",
+        "decision": "意思決定",
         "compression": "圧縮",
         "ungrouped": "未分類",
         "other": "その他"
@@ -11210,6 +11249,9 @@
         "start": "音声入力を開始",
         "stop": "音声入力を停止",
         "releaseToStop": "音声入力中、離すと終了",
+        "holdComposer": "入力欄を長押しして音声入力",
+        "speakRelease": "話してください。離すと終了",
+        "speakPressAgain": "話してください。もう一度押すと終了",
         "releaseToSend": "離すと送信",
         "finishAndSend": "音声入力を終了して送信",
         "refining": "整えています",
@@ -11356,6 +11398,12 @@
       "alwaysAllowScopedHint": "このセッション全体に適用され、ここに挙げた範囲にのみ及びます。",
       "alwaysAllowSessionHint": "この 1 回のリクエストだけでなく、このセッション全体に適用されます。",
       "autoReviewUnavailable": "自動レビューを完了できませんでした。この操作を許可するか確認してください。",
+      "autoReviewReason": "自動承認があなたの判断を求めています：{{reason}}",
+      "titleCommand": "このコマンドの実行を許可しますか？",
+      "titleFileRead": "ファイルの読み取りを許可しますか？",
+      "titleFileWrite": "ファイルの変更を許可しますか？",
+      "titleBrowser": "このブラウザ操作を許可しますか？",
+      "titlePlugin": "プラグイン「{{plugin}}」の使用を許可しますか？",
       "ruleSeparator": "、",
       "submitting": "確認を送信中…",
       "submissionFailed": "確認結果を受信できませんでした。接続を確認し、確認画面がまだ表示されている場合はもう一度クリックしてください。",
@@ -11388,6 +11436,38 @@
           "label": "このメールへの返信を下書きする",
           "prompt": "このメールへの返信の下書きを作って。これまでのやり取りと私の考えを踏まえて、まだ送信しないで。"
         }
+      }
+    },
+    "branchSync": {
+      "multiple-checkouts": "{{branch}} が複数のディレクトリで開かれているため、更新できません",
+      "changed": "ブランチの状態が変わりました。再試行してください",
+      "action": "{{remote}}/{{remoteBranch}} の最新コミットを取得",
+      "remoteAction": "{{remote}}/{{remoteBranch}} の最新コミットを取得",
+      "checkedOut": "現在のブランチのコミット済みファイルも更新します。未コミットの変更は保持されます",
+      "fetching": "取得中…",
+      "updated_other": "{{count}} 件のコミットを取り込みました",
+      "current": "すでに最新です",
+      "keptAhead_other": "未プッシュのコミットが {{count}} 件あります。更新は不要です",
+      "failed": "取得失敗：{{reason}}",
+      "diverged": "ローカルと {{remote}} の両方に新しいコミットがあり、自動更新できません",
+      "conflict": "未コミットの変更がリモートの更新と競合しています。先にコミットまたは stash してください",
+      "missing-remote": "{{remote}} に {{remoteBranch}} がありません",
+      "no-remote": "リモートリポジトリが未設定です",
+      "not-local": "ローカルブランチまたはリモートの既定ブランチを選択してください",
+      "ahead_other": "{{remote}} より {{count}} コミット先行",
+      "behind_other": "{{remote}} より {{count}} コミット遅れ",
+      "dirty_other": "未コミットのファイル {{count}} 件",
+      "diverging_other": "{{ahead}} コミット先行、{{behind}} コミット遅れ（{{remote}}）",
+      "remoteGroup": "リモート",
+      "localGroup": "ローカルブランチ",
+      "errors": {
+        "git": "Git でブランチを更新できません。リポジトリへのアクセスを確認して再試行してください。",
+        "timeout": "Git がタイムアウトしました。接続を確認して再試行してください。",
+        "auth": "Git の認証に失敗しました。リモートの認証情報を確認してください。",
+        "network": "リモートリポジトリに接続できません。接続を確認してください。",
+        "missing": "リモートブランチは存在しません。",
+        "busy": "リポジトリは使用中です。後で再試行してください",
+        "changed": "チェックアウト中のブランチが変更されました。再試行してください。"
       }
     }
   },
@@ -12611,6 +12691,20 @@
     }
   },
   "ccAgent": {
+    "sessionEntry": {"missing":"このセッションが見つかりません。削除された可能性があります。","denied":"このアカウントまたはコンピューターでは、このセッションにアクセスできません。","failed":"このセッションを読み込めませんでした。","back":"セッション一覧に戻る","retry":"セッションを再読み込み"},
+    "contextWindowBudget": {
+      "menuTitle": "このタスクのコンテキストウィンドウ",
+      "triggerLabel": "タスクのコンテキストウィンドウ、現在 {{window}}",
+      "menuHint": "このタスクのみ。次のメッセージから適用。",
+      "optionDefault": "モデル既定",
+      "optionPercent": "{{percent}}%",
+      "inputPrice": "入力 {{price}}/M",
+      "remoteUnsupported": "被制御デバイスのバージョンではこのタスクのコンテキストウィンドウを変更できません",
+      "remoteTightenOnly": "接続先の上限が読めないため、縮小方向のみ提示します。",
+      "readOnlyHint": "読み取り専用のタスクです。段階と価格帯は確認できますが、変更はできません。",
+      "shrinkWarning": "現在 {{used}} 使用中。小さいウィンドウにすると先に圧縮または切り替えが発生します。",
+      "saveFailed": "コンテキストウィンドウの保存に失敗しました"
+    },
     "agentStatus": {
       "readingMemory": "記憶を読んでいます…",
       "savingMemory": "記憶を保存しています…",
@@ -13163,11 +13257,11 @@
         "unarchiveAll": "すべてアーカイブ解除",
         "openInExplorer": "ファイルマネージャーで開く",
         "newInDirectory": "このディレクトリで新規セッション",
-        "copyDeepLink": "ディープリンクをコピー",
+        "copyDeepLink": "プロジェクトリンクをコピー",
         "search": "このプロジェクト内のセッションを検索"
       },
       "deepLink": {
-        "copied": "ディープリンクをコピーしました",
+        "copied": "リンクをコピーしました",
         "copyFailed": "コピーに失敗しました。手動でコピーしてください",
         "projectNotFound": "対応するプロジェクトが見つかりません。アーカイブされたか、このデバイスに存在しない可能性があります"
       },
@@ -14061,6 +14155,13 @@
     },
     "builtinTemplates": {
       "schedule": {
+        "everyMinute": "毎分",
+        "hourlyAt": "毎時 {{minutes}} 分",
+        "atTimes": "{{times}}",
+        "atHoursMinutes": "{{hours}} 時の {{minutes}} 分",
+        "monthDays": "毎月 {{days}} 日",
+        "daysOrWeekdays": "{{days}} または毎週 {{weekdays}}",
+        "inMonths": "{{months}}",
         "daily": "毎日 {{time}}",
         "weekdays": "平日 {{time}}",
         "weekly": "{{weekday}} {{time}}",
@@ -16131,6 +16232,9 @@
     "compression": "長い内容を短くまとめるために。"
   },
   "routines": {
+    "onEvent": "イベント：{{source}} · {{event}}",
+    "triggerDetails": "実行条件を表示（{{count}} 件・いずれかで実行）",
+    "noTriggers": "実行条件は未設定",
     "unsavedTitle": "未保存の変更があります",
     "unsavedDescription": "戻ると、このルーチンへの変更が破棄されます。",
     "discard": "変更を破棄",
@@ -16202,8 +16306,8 @@
     "timeoutMs": "確認のタイムアウト（ミリ秒、空欄は無制限）",
     "advancedSettings": "詳細設定",
     "builtinFollowUp": {
-      "name": "フォロー（組み込み）",
-      "hint": "セッションが止まったとき、返信待ちになったとき、エラーになったとき、使用量の上限に達したとき、完了したときに起こします。組み込みのため、一時停止と再開のみできます。"
+      "name": "担当セッションのフォロー（標準）",
+      "hint": "担当セッションの停滞、返答待ち、エラー、利用上限、完了を受けてフォローします。"
     },
     "builtinTodoCheck": {
       "name": "毎日の Todo 確認（組み込み）",

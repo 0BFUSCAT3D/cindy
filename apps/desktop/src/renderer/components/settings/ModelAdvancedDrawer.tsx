@@ -1,4 +1,5 @@
-import { DisplayPricingDetails } from '@/components/DisplayPricingDetails';
+import { isDisplayPricingTableRedundant } from '@/lib/displayPricingFormat';
+import { DisplayPricingDetails, DisplayPricingQuote } from '@/components/DisplayPricingDetails';
 import { Button } from '@/components/ui/button';
 import { localizedModelDescription } from '@/lib/modelDescriptions';
 import { localizedModelName, localizedBrandName } from '@/lib/modelDisplayNames';
@@ -441,6 +442,10 @@ export function ModelAdvancedDrawer({
   );
   const description = localizedModelDescription(primaryModel, t);
   const price = pricePresentationOf(primaryAgent, primaryModel);
+  // Ordinary Gateway chat models carry effective cost; keep their inferred discount.
+  const discount =
+    (!primaryModel.displayPricing && price?.kind === 'priced' ? price.discount : undefined) ??
+    primaryModel.costDiscount;
   const protocols = modelProtocolComparison(provider, row.byAgent);
   const protocolLabel = (api: PiModelApi | null) =>
     api ? MODEL_PROTOCOL_LABEL[api] ?? null : t('settings.providers.models.advanced.undeclared');
@@ -469,8 +474,7 @@ export function ModelAdvancedDrawer({
     ? getProviderModelEffort(primaryAgent, provider.id, primaryModel.id) ?? primaryModel.defaultEffort
     : null;
   const effortMixed = efforts.length > 0 && commonEfforts.length === 0;
-  const currentEffort = preferredEffort && commonEfforts.some((effort) => effort === preferredEffort)
-    ? preferredEffort : commonEfforts[0] ?? null;
+  const currentEffort = preferredEffort ?? commonEfforts[0] ?? null;
   const shownEfforts = EFFORT_ORDER.filter((effort) =>
     chatAgents.some((agent) => {
       const model = row.byAgent[agent];
@@ -995,7 +999,29 @@ export function ModelAdvancedDrawer({
 
                   <Section title={t('settings.providers.models.advanced.pricing')}>
                     {primaryModel.displayPricing && primaryModel.currency ? (
-                      <DisplayPricingDetails model={primaryModel} />
+                      <>
+                        {(['input', 'output', 'cacheRead', 'cacheWrite'] as const).map((role) => {
+                          const quotes = primaryModel.displayPricing?.summary?.[role];
+                          if (!quotes?.length) return null;
+                          return (
+                            <Row
+                              key={role}
+                              label={t(`settings.providers.models.advanced.price.${role === 'cacheWrite' ? 'cacheCreate' : role}`)}
+                            >
+                              <span className="flex flex-col items-end gap-1">
+                                {quotes.map((quote, index) => (
+                                  <DisplayPricingQuote
+                                    key={index}
+                                    quote={quote}
+                                    currency={primaryModel.currency!}
+                                    costDiscount={discount}
+                                  />
+                                ))}
+                              </span>
+                            </Row>
+                          );
+                        })}
+                      </>
                     ) : price === null ? (
                       <Row label={t('settings.providers.models.advanced.pricingLabel')} muted>
                         {t(
@@ -1028,7 +1054,7 @@ export function ModelAdvancedDrawer({
                         </Row>
                       ))
                     )}
-                    {!primaryModel.displayPricing && price?.kind === 'priced' && price.discount !== undefined && (
+                    {discount !== undefined && discount > 0 && discount <= 1 && (
                       <Row label={t('settings.providers.models.advanced.discount')}>
                         <span
                           className="inline-flex items-center rounded-full px-2 py-[1px] text-10 font-medium"
@@ -1037,10 +1063,17 @@ export function ModelAdvancedDrawer({
                             backgroundColor: `color-mix(in srgb, ${EFFORT_TIER_COLORS.low} 14%, transparent)`,
                           }}
                         >
-                          {`↓${Math.round(price.discount * 100)}%`}
+                          {`↓${Math.round(discount * 100)}%`}
                         </span>
                       </Row>
                     )}
+                    {/* Keep conditions and notes after the primary quotes and their discount. */}
+                    {primaryModel.displayPricing && primaryModel.currency &&
+                      !isDisplayPricingTableRedundant(primaryModel.displayPricing) && (
+                        <div className={primaryModel.displayPricing.summary ? 'pt-3' : undefined}>
+                          <DisplayPricingDetails model={primaryModel} />
+                        </div>
+                      )}
                     {/* 自定义报价:原「⋯」菜单的一项,搬到它真正相关的段落里。
                     XD 网关的价格由服务端定,不给覆盖入口(与 IPC 侧的拒绝一致)。 */}
                     {provider.id !== 'xd' && !isOrganizationManagedProvider(provider) && !paymentRequired && (

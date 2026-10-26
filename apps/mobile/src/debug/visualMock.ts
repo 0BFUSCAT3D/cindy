@@ -2,6 +2,7 @@ import { SHARED_REMOTE_CONTROL_FIXTURE } from '@cindy/maker-shared/fixtures';
 import { buildUiMockRows, type UiMockSessionRow } from '@cindy/maker-shared/ui-mock';
 import { projectHistoryView } from '@cindy/maker-shared/message-window';
 import { TASK_TAG_COLORS, type TaskTagRequest, type TaskTagResult } from '@cindy/maker-shared';
+import { BOT_GROUP_CHAT_PRIMITIVE, BOT_GROUP_REMOTE_COLLECTION_ID, BOT_GROUP_REMOTE_RESOURCE_KIND } from '@cindy/maker-shared/botGroupChat';
 import { ApiError, type ApiFetchOptions } from '@/api/client';
 import type { DeviceView, LinkAcceptPayload } from '@cindy/device-link';
 import type { MobileUser } from '@/auth/AuthContext';
@@ -21,6 +22,7 @@ import type {
 } from '@/device-link/mobileMakerTransport';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
 import { pluginVisualFixture } from '@/debug/pluginVisualFixture';
+import { teammateVisualFixture, VISUAL_TEAMMATE_SESSION_ID } from '@/debug/teammateVisualFixture';
 import { markdownPreviewFixture } from '@/debug/markdownPreviewFixture';
 import type { InputProjection, PendingInteraction, RemoteMessage, RemoteSession } from '@/session/types';
 
@@ -216,9 +218,40 @@ async function visualMockInvoke<T = unknown>(
   channel: string,
   args: unknown[] = [],
 ): Promise<T> {
+  // #6713 native regression: open /companions/groups/table-qa?deviceId=cindy-visual-mock-mac.
+  // Only reachable through the existing __DEV__ visual-mock provider; no real account or server.
+  if (process.env.EXPO_PUBLIC_CINDY_GROUP_TABLE_DEMO === '1'
+    && channel === 'maker:remote-resources:get'
+    && (args[0] as { ref?: { collectionId?: string; id?: string } })?.ref?.collectionId === BOT_GROUP_REMOTE_COLLECTION_ID
+    && (args[0] as { ref?: { id?: string } })?.ref?.id === 'table-qa') {
+    const content = [
+      '窄屏表格：短表铺满正文，宽表横向滑动。',
+      '', '| A | B |', '| --- | --- |', '| 1 | 2 |', '| 3 | [链接](https://example.com) |',
+      '', '| ![x](https://example.com/a.png) | ![](https://example.com/b.png) |', '| --- | --- |',
+      '| ![](https://example.com/b.png) | ![y](https://example.com/a.png) |',
+      '', '| 项目 | 说明 | 状态 | 最后一列 |', '| --- | --- | --- | --- |',
+      '| A | **长说明在单元格内换行，行高应随内容增加，下一行仍按相同列宽对齐。** | 完成 | 末列可见 |',
+      '| B | | 进行中 | 末列第二行 |',
+      '', '~~~text', 'code | unchanged', '~~~',
+      '', '表格后正文：上下滚动仍可阅读。',
+    ].join('\n');
+    return {
+      ref: { collectionId: BOT_GROUP_REMOTE_COLLECTION_ID, kind: BOT_GROUP_REMOTE_RESOURCE_KIND, id: 'table-qa' }, revision: '1',
+      display: { title: 'Table QA · Synthetic data' }, actions: [], links: [],
+      blocks: [{ id: 'chat', primitive: BOT_GROUP_CHAT_PRIMITIVE, fallbackMarkdown: content, data: {
+        id: 'table-qa', name: 'Table QA · Synthetic data',
+        members: [{ botId: 'table-bot', name: 'QA Partner', status: 'active' }],
+        messages: [{ id: 'table-message', sequence: 1, kind: 'message', authorKind: 'bot',
+          authorBotId: 'table-bot', authorName: 'QA Partner', content, createdAt: NOW }],
+        plans: [], createdAt: NOW, updatedAt: NOW,
+      } }],
+    } as T;
+  }
   const realData = await loadVisualRealDataSnapshot();
   const pluginResult = realData ? undefined : pluginVisualFixture(channel, args);
   if (pluginResult !== undefined) return pluginResult as T;
+  const teammateResult = realData ? undefined : teammateVisualFixture(channel, args);
+  if (teammateResult !== undefined) return teammateResult as T;
   if (channel === 'local-db:task-tags:execute') {
     const request = args[0] as TaskTagRequest;
     if (request.action !== 'list' && request.action !== 'get') {
@@ -502,6 +535,9 @@ function catalogSession(row: UiMockSessionRow): RemoteSession {
 }
 
 function visualMockSession(id: string): RemoteSession {
+  if (id === VISUAL_TEAMMATE_SESSION_ID) return {
+    ...visualMockSession('ui-mock-rich-answer'), id, source: 'bot', title: 'Cindy · 演示群任务',
+  };
   return visualMockSessions('all').find((session) => session.id === id) ?? visualMockSessions()[0];
 }
 
@@ -523,6 +559,9 @@ function sessionFromShared(
 }
 
 function visualMockMessages(sessionId: string): RemoteMessage[] {
+  if (sessionId === VISUAL_TEAMMATE_SESSION_ID) return visualMockMessages('ui-mock-rich-answer').map(row => ({
+    ...row, id: `${sessionId}-${row.id}`, clientId: `${sessionId}-${row.clientId}`, sessionId,
+  }));
   if (sessionId === VISUAL_MOCK_SESSION_ID) {
     return SHARED_REMOTE_CONTROL_FIXTURE.rawMessages.map((message) => ({
       ...message,

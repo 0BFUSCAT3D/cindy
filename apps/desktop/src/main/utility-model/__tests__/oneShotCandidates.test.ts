@@ -2996,9 +2996,10 @@ describe('utility one-shot candidates', () => {
   });
 
   it.each([
-    { candidateIndex: 1, model: 'gpt-5.4-nano' },
-    { candidateIndex: 2, model: 'gpt-6-luna' },
-  ])('uses $model with a tool-free subscription Responses body', async ({ candidateIndex, model }) => {
+    // Codex's review model is reachable for ChatGPT accounts without being a catalog entry.
+    { candidateIndex: 1, model: 'codex-auto-review', catalogModel: 'gpt-5.4-nano' },
+    { candidateIndex: 2, model: 'gpt-6-luna', catalogModel: 'gpt-6-luna' },
+  ])('uses $model with a tool-free subscription Responses body', async ({ candidateIndex, model, catalogModel }) => {
     activeCatalog.mockReturnValue({
       providers: [{
         id: 'openai',
@@ -3013,7 +3014,7 @@ describe('utility one-shot candidates', () => {
           },
         },
         models: {
-          codex: [{ id: model, name: model, contextWindow: 272_000 }],
+          codex: [{ id: catalogModel, name: catalogModel, contextWindow: 272_000 }],
         },
       }],
     } as never);

@@ -109,10 +109,21 @@ Registry/defaults、ModelPriceQuote 或 token 成本估算，不跨供应商补�
 成功刷新缺字段或价目不可解析时清除旧价目，模型仍正常更新；新增属性忽略，未知单位保留。
 展示字段变化不构成整份目录失败；网络或核心模型协议失败仍沿用既有目录恢复语义。
 
-Desktop 模型详情优先展示结构化价目，缺字段沿用原有价格。`price` 为每 `quantity` 个
-`unit` 的折扣前报价，只在展示时应用一次折扣，保留币种与“约/起价”语义；label、tier、
-notes 仅按纯文本呈现，未知单位不猜换算。列表不新增价格入口，统一从既有模型详情查看，也不从混合单位挑最低价。
-共享目录可传递这些可选展示字段，旧端缺字段仍合法；首期 UI 仅覆盖 Desktop 现有详情入口。
+Desktop 设置页模型详情有 `displayPricing.summary` 时优先按输入、输出、缓存读取、缓存写入
+展示主报价，每个角色允许 1–4 段、各带单位与数量，区间统一用 `maxPrice` 表示。摘要的
+`priceType` 仅允许缺省、`exact` 或 `estimated`；任一段为 `starting_at` 时整份 summary 无效，
+只丢弃摘要，保留价目表。items 的已发布契约不变，仍支持 `starting_at`。summary 缺失或无效时
+沿用原价目表；summary 无效只清除摘要，不丢价目表。补充价目表仅在以下条件全部满足时隐藏：
+有 summary 且没有 notes；所有 item 都没有 tier，priceType 缺省或 exact；item 总数等于
+所有角色报价段数，且每个 item 能按 unit、quantity、price 一一匹配不同的摘要报价，
+匹配报价没有 maxPrice 或 tier。其余情况保留在摘要下方。设置页列表对带 displayPricing 的
+模型不显示价格；选择器、浮层和聊天价格档位逻辑保持原样。详情中的有效折扣仍单列显示。
+摘要的 tier 单独一行使用次要文字，金额、原价区间和单位分别保持完整，同一角色的多段报价逐条换行、靠右对齐，不插入分隔点。
+`price` / `maxPrice` 为每 `quantity` 个 `unit` 的折扣前报价，只在展示时应用一次折扣，保留币种
+与“约”的语义；items 另外保留“起价”语义。角色和已知单位本地化，label、tier、notes 仅按纯文本呈现，未知单位不猜换算。
+数量 1 省略，百万按语言简写，其余按本地数字格式显示。共享目录可传递这些可选展示字段，旧端
+缺字段仍合法，不新增能力声明；此 UI 仅覆盖 Desktop 设置页。解析与展示回归见
+`modelDisplayPricing.test.ts`、`DisplayPricingDetails.test.tsx` 与 `ModelAdvancedDrawer.test.tsx`。
 
 ### 覆盖顺序
 

@@ -16,6 +16,7 @@ import { readChannelToolScope } from '../im/shared/channelToolScope.js';
 import { BUILTIN_ROUTINE_SCHEDULE_PREFIX } from '../../shared/botAutonomy.js';
 import {
   admitTaskAction,
+  isolateTaskActionAuthorizer,
   createTaskActionAuthorizer,
   DELEGATED_TASK_ACTIONS,
   NEEDS_OWNER_REQUEST,
@@ -212,7 +213,7 @@ export function createDesktopTaskActionAuthorizer(deps: {
       scheduleId: origin?.kind === 'scheduler' ? origin.scheduleId : undefined,
     });
   };
-  return async (call) => {
+  return isolateTaskActionAuthorizer(async (call) => {
     if ((call.server === 'cindy_helper' && TEAMMATE_STANDING_GRANT_TOOLS.has(call.tool))
       || (call.server === 'cindy_scheduler' && TEAMMATE_SCHEDULER_WRITE_TOOLS.has(call.tool))) {
       if (!call.sessionId) return { ok: true };
@@ -472,5 +473,5 @@ export function createDesktopTaskActionAuthorizer(deps: {
     })(call);
     return rejectedDecision ?? (decision.ok && admittedScope
       ? admitTaskAction(call, admittedScope, fingerprint) : decision);
-  };
+  });
 }

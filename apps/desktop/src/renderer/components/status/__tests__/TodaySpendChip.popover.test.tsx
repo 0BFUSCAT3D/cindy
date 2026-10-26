@@ -287,6 +287,36 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// PR #7031: replace the brittle three-route source regex with actual navigation.
+// Unit/jsdom: each selected provider has its own observable URL; gateway stays local.
+it.each<{
+  vendorKey: 'cc' | 'codex' | 'pi';
+  providerId: string;
+  upstream?: string;
+  label: string;
+  url: string | null;
+}>([
+  { vendorKey: 'cc', providerId: 'anthropic', label: '打开 Claude 用量页面', url: 'https://claude.ai/settings/usage' },
+  { vendorKey: 'codex', providerId: 'openai', label: '打开 Codex 用量页面', url: 'https://chatgpt.com/codex/settings/usage' },
+  { vendorKey: 'pi', providerId: 'xai', label: '打开 Grok 用量页面', url: 'https://grok.com' },
+  { vendorKey: 'pi', providerId: 'deepseek', upstream: 'https://api.deepseek.com', label: 'providerAccountUsage.openDashboard', url: 'https://platform.deepseek.com/usage' },
+  { vendorKey: 'pi', providerId: 'glm', upstream: 'https://open.bigmodel.cn/api/coding/paas/v4', label: 'providerAccountUsage.zhipuCodingPlan.usage', url: 'https://www.bigmodel.cn/coding-plan/personal/usage' },
+  { vendorKey: 'cc', providerId: 'xd', label: '用量明细', url: null },
+])('opens the selected $providerId account dashboard', async ({ vendorKey, providerId, upstream, label, url }) => {
+  if (upstream) {
+    mocks.providers = [{
+      id: providerId, auth: { method: 'apiKey' },
+      routing: { pi: { upstream, authStrategy: 'api-key-header' } },
+    } as ProviderView];
+    mocks.fetchProviderAccountUsage.mockResolvedValue({ status: 'unsupported' });
+  }
+  render(<TodaySpendChip vendorKey={vendorKey} providerId={providerId} sessionId="session-1" />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole('button', { name: label }));
+  if (url) expect(mocks.openExternal).toHaveBeenCalledExactlyOnceWith(url);
+  else expect(mocks.openExternal).not.toHaveBeenCalled();
+});
+
 // PR #7031: service error mapping alone does not verify the real chip's visible
 // result. Unit/jsdom, no saved snapshot + an auth/network failure must end waiting.
 it.each(['auth', 'network'])('shows API account %s errors instead of waiting forever', async (error) => {

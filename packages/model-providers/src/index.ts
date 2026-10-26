@@ -1,4 +1,4 @@
-export { parseModelDisplayPricing, type ModelDisplayPricing } from './modelDisplayPricing.js';
+export { parseModelDisplayPricing, type ModelDisplayPricing, type ModelDisplayPricingSummary, type SummaryQuote } from './modelDisplayPricing.js';
 export { providerProtocolCandidates, type ProviderProtocolCandidate } from './providerProtocolProbe.js';
 export { remoteInvocationModels } from './remoteModels.js';
 /**

@@ -29,6 +29,7 @@ import {
   useNewSessionWorkspaceActions,
   useNewSessionInitialWorkspace,
 } from '@/session/useNewSessionWorkspace';
+import { useRemoteProjectAliases } from '@/session/useRemoteProjectAliases';
 import { useIncomingShareComposer } from '@/session/useIncomingShareComposer';
 import { ModelSpeedIcon } from '@/session/ModelSpeedIcon';
 import { useNewSessionHostDefaults } from '@/session/useNewSessionHostDefaults';
@@ -51,6 +52,10 @@ import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRouter } f
 import { NewTaskSelectionSheet } from '@/session/NewTaskSelectionSheet';
 import { resolveWorkspacePickerFrame, type WorkspacePickerFrame } from '@/session/workspacePickerPlacement';
 import { simpleScreenSafeAreaEdges } from '@/platform/chrome/SimpleStackHeader';
+import { NativeChromeBackButton } from '@/platform/chrome/NativeChromeBackButton';
+import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome/SystemNavigationBack';
+import { NewSessionLayout } from '@/session/NewSessionLayout';
+import { useSessionPaneLayout } from '@/session/ResidentHomeList';
 import { readComposerEntry, useComposerDock } from '@/session/composerMorph';
 import { useComposerPillOpen } from '@/session/useComposerPillOpen';
 import { useComposerImageExpansion } from '@/session/useComposerImageExpansion';
@@ -471,9 +476,17 @@ interface WorktreeBranchCompatibilitySelection {
 }
 
 export default function NewRemoteSessionScreen() {
+  const creatingRef = useRef(false);
+  return <NewSessionLayout creatingRef={creatingRef}><NewRemoteSessionContent creatingRef={creatingRef} /></NewSessionLayout>;
+}
+
+function NewRemoteSessionContent({ creatingRef }: { creatingRef: { current: boolean } }) {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
+  const paneLayout = useSessionPaneLayout();
+  const systemBack = useSystemNavigationBack();
+  const paneHeader = Platform.OS === 'ios' && paneLayout.persistent && !systemBack;
   // Dev-only:把构建信息从全局浮层挪到这里的顶部展示(试 Fast Refresh)。
   const buildLabel = __DEV__
     ? formatMobileBuildLabel(normalizeBuildInfo({
@@ -570,12 +583,15 @@ export default function NewRemoteSessionScreen() {
   const selectedDeviceLabel = selectedDeviceOption?.name || selectedDeviceName || selectedDeviceId || t('session.new.selectDevice');
   const maker = useMobileMakerTransport(selectedDeviceId);
   const sessions = useRemoteSessions();
+  const projectAliases = useRemoteProjectAliases([selectedDeviceId]);
   const recentWorkspaces = useMemo(
     () => buildRecentWorkspaceOptions(
       sessions.filter((session) => session.deviceLinkDeviceId === selectedDeviceId),
       selectedDeviceId,
+      6,
+      projectAliases,
     ),
-    [selectedDeviceId, sessions],
+    [selectedDeviceId, sessions, projectAliases],
   );
   const [draft, setDraft] = useState<NewSessionDraft>(() => createInitialNewSessionDraft({
     initialWorkingDir, visualInitialDraft, routeDraft: params.draft, suggestion: params.suggestion, t,
@@ -986,7 +1002,6 @@ export default function NewRemoteSessionScreen() {
   const voiceStartupSeqRef = useRef(0);
   const voiceControllerSessionRef = useRef<MobileVoiceControllerSession | null>(null);
   const voiceDictionaryLearningTrackerRef = useRef<MobileVoiceDictionaryLearningTracker | null>(null);
-  const creatingRef = useRef(false);
   const [firstMessageInputContentHeight, setFirstMessageInputContentHeight] = useState(MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT);
   const [firstMessageInputFocused, setFirstMessageInputFocused] = useState(visualFocusComposer);
   const [voiceDraftCaretFrame, setVoiceDraftCaretFrame] = useState({ left: 0, top: 0 });
@@ -5037,8 +5052,12 @@ export default function NewRemoteSessionScreen() {
     : draft.firstMessage.trim();
 
   return (
-    <SafeAreaView edges={composerDock.enabled ? ['left', 'right'] : simpleScreenSafeAreaEdges()} style={styles.safeArea} testID="newSession.screen">
-      {Platform.OS === 'ios' ? (
+    <SafeAreaView edges={paneLayout.persistent
+      ? (composerDock.enabled ? ['top'] : ['top', 'bottom'])
+      : composerDock.enabled ? ['left', 'right'] : simpleScreenSafeAreaEdges()} style={styles.safeArea} testID="newSession.screen">
+      {Platform.OS === 'ios' && paneLayout.persistent ? (
+        <SystemNavigationBack label={t('shared.back')} onPress={handleBack} />
+      ) : Platform.OS === 'ios' ? (
         <>
           <Stack.Screen options={{ headerShown: true, headerBackVisible: false, headerShadowVisible: false, title: '', headerStyle: { backgroundColor: colors.surface }, headerTintColor: colors.textPrimary }} />
           <Stack.Toolbar placement="left">
@@ -5056,9 +5075,11 @@ export default function NewRemoteSessionScreen() {
         )}
         style={styles.keyboard}
       >
-        <View style={[styles.screen, composerDock.enabled && { paddingHorizontal: composerGeometry.horizontalInset }]}>
-          {Platform.OS !== 'ios' || buildLabel || creating ? <View style={styles.topBar}>
-            {Platform.OS !== 'ios' ? <ScreenBackButton
+        <View style={[styles.screen, paneHeader && styles.paneScreen, composerDock.enabled && { paddingHorizontal: composerGeometry.horizontalInset }]}>
+          {Platform.OS !== 'ios' || paneHeader || buildLabel || creating ? <View style={[styles.topBar, paneHeader && styles.paneTopBar]}>
+            {paneHeader ? <NativeChromeBackButton
+              label={t('shared.back')} onPress={handleBack} testID="newSession.backButton"
+            /> : Platform.OS !== 'ios' ? <ScreenBackButton
               hitSlop={12}
               onPress={handleBack}
               style={styles.backButton}
@@ -6193,6 +6214,14 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     minHeight: 62,
+  },
+  // Match the embedded Home header: safe area + lg, then a 44pt button and md below.
+  paneScreen: {
+    paddingTop: spacing.lg,
+  },
+  paneTopBar: {
+    minHeight: navigationChrome.target + spacing.md,
+    paddingBottom: spacing.md,
   },
   buildLabel: {
     color: colors.textTertiary,

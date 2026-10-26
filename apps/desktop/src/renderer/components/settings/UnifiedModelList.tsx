@@ -117,6 +117,7 @@ const CAPABILITY_CATEGORIES = new Set<ModelCategory>([
   'stt',
   'realtime',
   'embedding',
+  'decision',
   'compression',
   'other',
 ]);

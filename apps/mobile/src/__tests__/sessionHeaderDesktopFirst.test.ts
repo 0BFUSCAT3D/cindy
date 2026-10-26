@@ -96,7 +96,7 @@ describe('mobile session header desktop-first surface', () => {
     expect(source).toContain("topInset={Platform.OS === 'android' ? 0 : topOverlayHeight}");
     // 输入区同理:安卓整块经根浮层盖在消息层上,外框高度取键盘避让容器的实测高度。
     expect(source).toContain("const androidFrostedComposer = Platform.OS === 'android' && !companionChat;");
-    expect(source).toContain('bottomInset={androidFrostedComposer ? 0 : bottomOverlayHeight}');
+    expect(source).toContain('bottomInset={androidFrostedComposer || androidComposerClearance ? 0 : bottomOverlayHeight}');
     expect(source).toContain('height={keyboardAreaHeight ?? windowDimensions.height}');
     expect(source).toContain('<View onLayout={handleKeyboardAreaLayout} pointerEvents="none" style={StyleSheet.absoluteFill} />');
     expect(source).toContain('testID="session.composerFrost"');
@@ -166,7 +166,8 @@ describe('mobile session header desktop-first surface', () => {
     expect(source).toContain('if (sessionListDrawerClosingRef.current || pendingDrawerNavigationRef.current) return;');
     expect(source).toContain('sessionListDrawerClosingRef.current = true;\n    pendingDrawerNavigationRef.current = action;');
     expect(source).toContain('const closeSessionListDrawer = useCallback(() => {\n    if (!sessionListDrawerOverlayMounted) return;\n    if (sessionListDrawerClosingRef.current) return;\n    sessionListDrawerClosingRef.current = true;');
-    expect(source).toContain('if (targetSession.id === sessionId && !focusClientId) {\n      closeSessionListDrawer();');
+    // Same-task selection versus search navigation is exercised through the actual
+    // layout callback in sideChatTaskBoundary.test.tsx, rather than a source literal.
     expect(source).toContain('onClosed={handleSessionListDrawerClosed}');
     expect(source).toContain('const action = pendingDrawerNavigationRef.current;\n    sessionListDrawerClosingRef.current = false;\n    setSessionListDrawerOverlayMounted(false);');
     expect(source).toContain('pendingDrawerNavigationRef.current = null;\n    action();');

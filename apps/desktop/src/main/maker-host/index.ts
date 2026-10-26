@@ -7,6 +7,7 @@ import { createCompanionImportProvider } from '../bot-import/importProvider.js';
 import { createCompanionConnectionsProvider } from '../bot-import/connectionProvider.js';
 import { resolveCompanionRuntimeEnvironment } from '../bot-import/runtime.js';
 import { registerCodexTextOnlyPolicy } from './codex-text-only-policy.js';
+import { ensureCodexCliLauncher } from '../agent-binaries/codex-cli-launcher.js';
 import { readDisabledSkillPaths } from '../skillhub/activationPreferences';
 import { cindyMakeManager } from '../cindy-make/manager.js';
 import { makeSourceRoot } from '../cindy-make/sourcePaths.js';
@@ -204,7 +205,7 @@ import {
   resolveModelDefaultContextWindow,
 } from './catalog-to-descriptors.js';
 import { readModelContextLimit } from './model-context-limit-store.js';
-import { resolveDesktopModelContextProviderId, resolveDesktopModelEfforts } from './model-context-settings.js';
+import { resolveDesktopModelContextProviderId, resolveDesktopModelEfforts, readStoredSessionContextWindowBudget, resolveConfiguredContextWindow, applySessionContextWindowBudgetToCreateOpts } from './model-context-settings.js';
 import {
   prepareCodexCustomContextCatalog,
   prepareCodexGuestModelCatalog,
@@ -669,6 +670,15 @@ export async function refreshCodexGatewayHost(
 // clears owner-scoped bookkeeping by epoch. Keep it across resetMaker; IPC is not
 // registered again after an account switch. MCP factories bind before it is ready.
 let _resolveBotCapabilityAgentKind: BotCapabilityServiceDeps['resolveBotAgentKind'] | null = null;
+// Bootstrap owns IM/hook modules that depend back on this host. Bind their reader
+// once, but read the current owner's stores on each call (including after resetMaker).
+let _readBotConversationConnections: BotCapabilityServiceDeps['readConversationConnections'];
+export function setBotConversationConnectionsReader(
+  reader: NonNullable<BotCapabilityServiceDeps['readConversationConnections']>,
+): void {
+  _readBotConversationConnections = reader;
+}
+
 export function setBotCapabilityAgentKindResolver(
   resolver: BotCapabilityServiceDeps['resolveBotAgentKind'] | null,
 ): void {
@@ -897,6 +907,10 @@ function createDesktopBotCapabilityService() {
   return createBotCapabilityService({
     getMaker, getPluginRegistry, isBotToolsetAvailable,
     listMcpServers: listBotRuntimeMcpServers,
+    readConversationConnections: async (botId) => {
+      if (!_readBotConversationConnections) throw new Error('Bot conversation connections reader is not initialized');
+      return _readBotConversationConnections(botId);
+    },
     resolveBotAgentKind: async (sessionId, chain) => _resolveBotCapabilityAgentKind?.(sessionId, chain) ?? null,
   });
 }
@@ -999,6 +1013,7 @@ export function getMaker(): Maker {
         'getMaker: Codex binary not provisioned (bootstrap must run agent-binaries.prepare("codex") before getMaker)',
       );
     }
+    ensureCodexCliLauncher(codexPath);
     // bundled ripgrep 检查与上面 claude/codex 二进制同层:真正的启动期 fail-fast
     // 在 splash check-environment(Phase 2.5,缺 rg 时 splash 进失败态可重试);
     // 这里是防御性断言 —— 走到本函数说明 bootstrap 已完成环境检查,缺 rg 即顺序
@@ -2964,6 +2979,13 @@ export function getMaker(): Maker {
             opts.fastModePolicy = createSubscriptionFastPolicy(sessionId, () => getSessionProvider(sessionId)
               ?? resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), opts.agentKind, null, opts.model));
           }
+          // 任务级工作上下文预算：调用方显式带值时同样按目录上限与模型级上限重新收敛；
+          // 未带则读本任务已保存的档位。口径见 applySessionContextWindowBudgetToCreateOpts
+          // （worker 唤醒等其它启动入口也走它，避免只在钩子这条路上生效）。
+          await applySessionContextWindowBudgetToCreateOpts(
+            sessionId, opts as Parameters<typeof applySessionContextWindowBudgetToCreateOpts>[1],
+            getActiveCatalog(),
+          );
           await preparePersistedOrcaSessionStart(sessionId, opts as MakerSessionCreateOpts);
           if (opts.agentKind === 'pi' && opts.thinkingEnabled === undefined) {
             const thinkingEnabled = getThinkingEnabledFromMemory(

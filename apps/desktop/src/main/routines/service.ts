@@ -22,6 +22,7 @@ import {
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { createLogger } from '../logger.js';
+import { runTaskActionRequest } from '../maker-ipc/taskActionAuthorization.js';
 import { RoutineFileStore } from './store.js';
 import { assertPreRunHookCommandSyntax } from '../scheduler-host/pre-run-hook.js';
 import { untrustedJsonBlock } from '../../shared/untrustedPrompt.js';
@@ -328,7 +329,10 @@ export async function getRoutineEngine(): Promise<RoutineEngine> {
       },
       execute: (routine, run, signal, canDispatch) => {
         if (epoch !== generation) throw new Error('Routine service was reset');
-        return execute(scope, routine, run, signal, canDispatch);
+        // A queued routine is an independent Host execution, not a continuation
+        // of the tool that published its event (or lazily started the timer).
+        // Keep account/revision/permission checks inside execute and the runner.
+        return runTaskActionRequest(() => execute(scope, routine, run, signal, canDispatch));
       },
       id: randomUUID,
       now: Date.now,
