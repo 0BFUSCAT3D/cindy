@@ -8,7 +8,7 @@ export default {
   notCovered: 'Full MessageStream, remote history loading, rich cards and account data',
   cases: {
     default: {
-      about: 'Initial virtualized layout and reopening stay still; later content follows smoothly',
+      about: 'Initial virtualized layout and reopening stay still; later content pins without whole-column motion',
     },
   },
   async ready(page) {
@@ -47,7 +47,7 @@ export default {
       }
       return false;
     });
-    assert.equal(didAnimate, true, 'later content still follows smoothly');
+    assert.equal(didAnimate, false, 'later height changes must not translate the whole column');
     await page.waitForFunction(() => {
       const el = document.querySelector('[data-thread-scroll]');
       return (

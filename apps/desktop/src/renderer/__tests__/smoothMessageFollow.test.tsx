@@ -4,9 +4,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useSmoothMessageFollow } from '../components/chat/useSmoothMessageFollow';
 
-// Regression: reopening a long running task animated its initial layout by 452px.
-// The virtualizer tests do not mount the real follow hook. This unit fixture
-// exercises repeated initial pins, later streaming and gesture/lifecycle takeover.
+// Regression (#7123/#7278): history arriving after two quiet frames was treated
+// as live motion, and subsequent native navigation retargeted the whole column.
+// Existing virtualizer tests do not exercise this follow hook. The minimal unit
+// case is a settled list followed by a delayed height change, then navigation.
 let host: HTMLDivElement;
 let root: Root;
 let follow: () => void;
@@ -95,7 +96,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it('pins all initial layout corrections directly, then animates later content', async () => {
+it('pins initial and delayed history corrections without moving the content layer', async () => {
   await act(async () => root.render(<Fixture />));
   await grow(2452); // virtualized rows mount again before the first paint
   expect(top).toBe(1852);
@@ -109,19 +110,16 @@ it('pins all initial layout corrections directly, then animates later content', 
   await settle();
   await grow(2627);
   expect(top).toBe(2027);
-  expect(animate.mock.calls.at(-1)?.[0]).toEqual([
-    { transform: 'translateY(40px)' },
-    { transform: 'translateY(0)' },
-  ]);
+  expect(animate).not.toHaveBeenCalled();
 });
 
-it('does not starve settling when observers repeat an unchanged pin', async () => {
+it('keeps repeated observer pins and subsequent growth instantaneous', async () => {
   await act(async () => root.render(<Fixture />));
   await frame();
   await act(async () => follow());
   await frame();
   await grow(2040);
-  expect(animate).toHaveBeenCalledTimes(1);
+  expect(animate).not.toHaveBeenCalled();
 });
 
 it('keeps a delayed first history page in initial positioning', async () => {
@@ -135,7 +133,7 @@ it('keeps a delayed first history page in initial positioning', async () => {
   expect(animate).not.toHaveBeenCalled();
   await settle();
   await grow(2492);
-  expect(animate).toHaveBeenCalledTimes(1);
+  expect(animate).not.toHaveBeenCalled();
 });
 
 it('restarts initial positioning after deactivation', async () => {
@@ -143,7 +141,6 @@ it('restarts initial positioning after deactivation', async () => {
   await settle();
   await grow(2040);
   await act(async () => root.render(<Fixture active={false} />));
-  expect(cancel).toHaveBeenCalled();
   animate.mockClear();
   await act(async () => root.render(<Fixture />));
   await grow(2600);
@@ -151,14 +148,14 @@ it('restarts initial positioning after deactivation', async () => {
   expect(animate).not.toHaveBeenCalled();
 });
 
-it('hands the displayed offset to a user gesture without keeping an animation', async () => {
+it('leaves native scroll position unchanged when a user takes over', async () => {
   vi.spyOn(performance, 'now').mockReturnValue(100);
   await act(async () => root.render(<Fixture />));
   await settle();
   await grow(2040);
   await act(async () => host.firstElementChild!.dispatchEvent(new Event('wheel')));
-  expect(top).toBeCloseTo(1400, 2);
-  expect(cancel).toHaveBeenCalled();
+  expect(top).toBe(1440);
+  expect(animate).not.toHaveBeenCalled();
 });
 
 it('keeps reduced motion instantaneous after initial positioning', async () => {
@@ -175,4 +172,21 @@ it('cancels pending initialization when the stream is deactivated', async () => 
   await frame();
   await act(async () => root.render(<Fixture active={false} />));
   expect(frames.size).toBe(0);
+});
+
+it('does not reinterpret programmatic navigation as a follow correction', async () => {
+  await act(async () => root.render(<Fixture />));
+  await settle();
+  await grow(2452);
+  top = 500;
+  await act(async () => host.firstElementChild!.dispatchEvent(new Event('scroll')));
+  expect(top).toBe(500);
+  expect(animate).not.toHaveBeenCalled();
+});
+
+it('does not pin a deactivated stream', async () => {
+  await act(async () => root.render(<Fixture active={false} />));
+  await grow(2452);
+  expect(top).toBe(0);
+  expect(animate).not.toHaveBeenCalled();
 });
