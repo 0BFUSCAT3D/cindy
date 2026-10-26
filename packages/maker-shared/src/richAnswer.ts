@@ -182,7 +182,8 @@ export class RichAnswerStream {
         throw Error("sequence");
       const seq = Number(op.seq);
       if (seq <= this.seq) return;
-      if (seq !== this.seq + 1) throw Error("gap");
+      // A malformed or absent line leaves a numbering gap; committed content stays
+      // and later lines still apply instead of being orphaned behind the gap.
       this.seq = seq;
       if (op.version !== undefined && op.version !== 1) throw Error("version");
       if (typeof op.id !== "string" || !ID.test(op.id)) throw Error("id");
