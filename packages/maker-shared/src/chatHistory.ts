@@ -51,7 +51,13 @@ export function createChatHistory(input: { api: Api; store: ChatHistoryStore; cu
           states.delete(room); checked.delete(room); metadataConnection.delete(room);
           if (errorCode(error) === 'CHAT_CACHE_CONFLICT' && attempt < 2) continue;
           if (['FORBIDDEN', 'NOT_MEMBER', 'NOT_A_MEMBER', 'CONVERSATION_NOT_FOUND', 'ACTOR_NOT_FOUND', 'ACCOUNT_UNAVAILABLE'].includes(errorCode(error))) {
-            assertCurrent(); await input.store.write(room, null);
+            assertCurrent();
+            try { await input.store.write(room, null); }
+            catch (cleanupError) {
+              // Another mount may have committed a newer projection. Leave it alone,
+              // but preserve this caller's revocation error so its UI clears stale data.
+              if (errorCode(cleanupError) !== 'CHAT_CACHE_CONFLICT') throw cleanupError;
+            }
           }
           throw error;
         }

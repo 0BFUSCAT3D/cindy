@@ -200,6 +200,22 @@ describe('durable chat history', () => {
     expect((await cache.page('room', f.page))[0]).toEqual(f.message('1', 3, true));
   });
 
+  // PR #7242, unit: a stale deletion conflict must not hide the permission error
+  // that makes the caller clear its UI; the next read still has to reauthorize.
+  it('preserves a revocation error when another mount wins the cleanup CAS', async () => {
+    const f = fixture(); const cache = f.open(); await cache.page('room', f.page);
+    vi.mocked(f.store.write).mockImplementationOnce(async () => {
+      f.disk.get('room')!.generation = 'newer';
+      throw new Error('CHAT_CACHE_CONFLICT');
+    });
+    f.api.mockRejectedValueOnce(new Error('FORBIDDEN')); cache.reconnect();
+    await expect(cache.snapshot('room')).rejects.toThrow('FORBIDDEN');
+    expect(f.disk.get('room')?.generation).toBe('newer');
+    f.api.mockRejectedValueOnce(new Error('FORBIDDEN'));
+    await expect(cache.snapshot('room')).rejects.toThrow('FORBIDDEN');
+    expect(f.disk.has('room')).toBe(false);
+  });
+
   it('clears revoked history and never persists a response after an owner switch', async () => {
     const f = fixture(); const cache = f.open(); await cache.page('room', f.page);
     f.api.mockRejectedValueOnce(new Error('CONVERSATION_NOT_FOUND')); cache.reconnect();

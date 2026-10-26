@@ -320,7 +320,7 @@ family。客户端收到当前 family 失效时，只清理当前 Profile。
 | `chat_cache_rooms` | namespace + room_id | snapshot 元数据、cursor、reset generation、确切页覆盖、metadataDirty、CAS version |
 | `chat_cache_messages` | namespace + room_id + message_id | 当前服务器消息 JSON，保留 revision、十进制 seq、tombstone 和未知内容块 |
 
-两表由 `chatCache.execute` worker 事务原子读写；只更新发生变化的消息行。查询范围由本地 coverage 决定，seq 用 BigInt 排序，不以 JSON 文本字符串顺序替代消息顺序。每房间最多 500 个已下载页；缺页从服务器补齐。缓存与 canonical messages、未确认发送、附件实际文件分离，reset 只清 Chat 投影。
+两表由 `chatCache.execute` worker 事务原子读写；只更新发生变化的消息行。Desktop 与 Mobile 的单房间删除同写入一样校验 version + generation，旧实例不得删除另一实例刚提交或重建的投影；撤权清理碰到并发冲突时仍向当前调用者返回撤权错误，下次读取重新校验权限。账号退出的全量清理仍先失效实例并等待在途写入。查询范围由本地 coverage 决定，seq 用 BigInt 排序，不以 JSON 文本字符串顺序替代消息顺序。每房间最多 500 个已下载页；缺页从服务器补齐。缓存与 canonical messages、未确认发送、附件实际文件分离，reset 只清 Chat 投影。
 
 Mobile 使用现有文件缓存后端的 `cache/chat-history-v1/` 目录，以稳定 ownerId、realm、endpoint、human actor 和 roomId 的 SHA-256 作为文件名；不使用登录 generation 作为永久主键。一个房间的消息、页覆盖与游标放入同一原子替换文件，进程内按文件串行加 version + generation CAS，避免多个挂载回写旧版。正文不占用 AsyncStorage 的共享容量，不新增原生依赖。切账号和退出清理先同步撤销旧实例写权，等待在途文件操作结束后尝试删除全部文件；失败会保留待重试内容，下一次登录在激活身份前重新清理。系统回收可重建缓存后重新 bootstrap，服务器仍保存权威历史。
 

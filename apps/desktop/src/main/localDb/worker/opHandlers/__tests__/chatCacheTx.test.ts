@@ -46,11 +46,14 @@ it('refuses to overwrite another instance’s newer cursor and evicts revoked da
   const first = store(), second = store();
   await first.read('room'); await second.read('room');
   await first.write('room', state('20', true));
+  // Deletes must honor the same CAS boundary as writes, including version reuse after reset.
+  await expect(second.write('room', null)).rejects.toThrow('CHAT_CACHE_CONFLICT');
   await expect(second.write('room', state())).rejects.toThrow('CHAT_CACHE_CONFLICT');
   expect(await second.read('room')).toEqual(state('20', true));
   await second.write('room', null);
   // The numeric version restarts at 1 after reset; the old generation must still lose CAS.
   await second.write('room', { ...state('30', true), generation: 'rebuilt' });
+  await expect(first.write('room', null)).rejects.toThrow('CHAT_CACHE_CONFLICT');
   await expect(first.write('room', state('21'))).rejects.toThrow('CHAT_CACHE_CONFLICT');
   expect(await second.read('room')).toMatchObject({ cursor: '30', generation: 'rebuilt' });
   await second.write('room', null);

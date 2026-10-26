@@ -50,13 +50,13 @@ export function createMobileChatHistoryStore(owner: string, realm: string, endpo
       return value?.state;
     }),
     write: (room, state) => serial(room, async (files, key) => {
-      if (!state) { await persist(() => files.remove(key)); versions.set(room, null); generations.set(room, null); return; }
       const old = decode(await files.read(key));
       if ((old?.version ?? null) !== (versions.get(room) ?? null)
         || (old?.state.generation ?? null) !== (generations.get(room) ?? null)) throw new Error('CHAT_CACHE_CONFLICT');
+      assertCurrent();
+      if (!state) { await persist(() => files.remove(key)); versions.set(room, null); generations.set(room, null); return; }
       const version = (old?.version ?? 0) + 1;
       const payload = JSON.stringify({ version, state });
-      assertCurrent();
       await persist(() => files.write(key, payload));
       versions.set(room, version); generations.set(room, state.generation);
     }),

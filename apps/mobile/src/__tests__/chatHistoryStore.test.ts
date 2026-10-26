@@ -39,10 +39,13 @@ it('restores data and cursor together and partitions owner, region, server and v
 it('prevents concurrent mounts from overwriting a newer durable cursor', async () => {
   const a = store(), b = store(); await a.read('room'); await b.read('room');
   await a.write('room', state);
+  // A stale revocation/cleanup cannot erase another mount's newer commit.
+  await expect(b.write('room', null)).rejects.toThrow('CHAT_CACHE_CONFLICT');
   await expect(b.write('room', { ...state, cursor: '3' })).rejects.toThrow('CHAT_CACHE_CONFLICT');
   expect(await store().read('room')).toEqual(state);
   await b.read('room'); await a.write('room', null);
   await a.write('room', { ...state, generation: 'rebuilt' });
+  await expect(b.write('room', null)).rejects.toThrow('CHAT_CACHE_CONFLICT');
   await expect(b.write('room', state)).rejects.toThrow('CHAT_CACHE_CONFLICT');
   expect(await store().read('room')).toMatchObject({ generation: 'rebuilt', cursor: '12' });
   await a.write('room', null); expect(await b.read('room')).toBeUndefined();
