@@ -61,6 +61,18 @@ export class ProviderGroupRemoteUnsupportedError extends Error {
   }
 }
 
+/** Start recovery before catalog probes without delaying the owner's group snapshot. */
+export function recoverProviderGroupViewShares(
+  view: ProviderGroupView,
+  recoverShares?: (agentDeviceIds: readonly string[]) => Promise<void>,
+): void {
+  const usable = new Set(view.members.filter((member) => member.state === 'available' || member.state === 'full').map((member) => member.key));
+  const shares = view.config?.members.filter((member) => member.kind === 'share' && usable.has(member.key))
+    .flatMap((member) => member.agentDeviceId ? [member.agentDeviceId] : []) ?? [];
+  // Catalog resolution waits within the settings page's existing per-member deadline.
+  void recoverShares?.(shares).catch(() => undefined);
+}
+
 export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvoke, options: {
   /** Capture the account before the request; only verified same-account group responses can restore shares. */
   captureShareRecovery?(): (agentDeviceIds: readonly string[]) => Promise<void>;
@@ -140,12 +152,7 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
         ...(agentKind ? { agentKind } : {}),
         ...(includeGuestSupport ? { includeGuestSupport: true } : {}),
       }), providerId);
-      const usable = new Set(view.members.filter((member) => member.state === 'available' || member.state === 'full').map((member) => member.key));
-      const shares = view.config?.members.filter((member) => member.kind === 'share' && usable.has(member.key))
-        .flatMap((member) => member.agentDeviceId ? [member.agentDeviceId] : []) ?? [];
-      // Keep the owner snapshot responsive. Catalog resolution waits for this recovery,
-      // within the existing per-member reachability deadline used by the settings page.
-      void recoverShares?.(shares).catch(() => undefined);
+      recoverProviderGroupViewShares(view, recoverShares);
       return view;
     },
 

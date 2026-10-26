@@ -20,6 +20,8 @@ const state = vi.hoisted(() => ({
   clients: [] as Array<{ opts: Record<string, unknown>; started: boolean; stopped: boolean }>,
   localReceivedError: false,
   localHasGroupShare: false,
+  localReceivedReads: 0,
+  localReceivedGate: null as Promise<void> | null,
   userId: 'user-1',
   identityCards: [] as string[],
   invokes: [] as Array<{ target: string; channel: string }>,
@@ -57,6 +59,8 @@ vi.mock('../providerShareApi.js', () => ({
   providerShareOwnerKey: () => state.userId,
   providerShareApi: {
     listReceived: async () => {
+      state.localReceivedReads += 1;
+      await state.localReceivedGate;
       if (state.localReceivedError) throw new Error('local unavailable');
       return [
         { ...share, shareId: 'share-local', memberId: 'member-local', owner: { ...share.owner, region: 'cn' } },
@@ -129,6 +133,8 @@ beforeEach(() => {
   state.clients = [];
   state.localReceivedError = false;
   state.localHasGroupShare = false;
+  state.localReceivedReads = 0;
+  state.localReceivedGate = null;
   state.userId = 'user-1';
   state.identityCards = [];
   state.invokes = [];
@@ -210,10 +216,33 @@ describe('cross-region provider share', () => {
     const { client } = remoteGroup();
     await client.view('group-owner', 'openai');
     await expect(resolveRemoteAgentTargetWhenReady('share:share-x')).rejects.toThrow('DEVICE_LINK_NOT_CONNECTED');
+    const localReads = state.localReceivedReads;
     await client.view('group-owner', 'openai');
+    await expect(resolveRemoteAgentTargetWhenReady('share:share-x')).rejects.toThrow('DEVICE_LINK_NOT_CONNECTED');
+    expect(state.localReceivedReads).toBe(localReads);
     expect(state.calls).toHaveLength(1);
     await expect(resolveRemoteAgentTargetWhenReady('share:share-local')).resolves.toBe(providerShareHostPeer('share-local', 'owner-pc'));
     expect(state.clients).toEqual([]);
+  });
+
+  it('resolves a newly loaded local share while an unrelated cross-region recovery is pending', async () => {
+    const local = deferred();
+    const peer = deferred<unknown>();
+    state.localReceivedGate = local.promise;
+    state.responses.set('/session', peer.promise);
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    await remoteGroup().client.view('group-owner', 'openai');
+    let target: string | undefined;
+    const route = resolveRemoteAgentTargetWhenReady('share:share-local').then((value) => { target = value; });
+    const peerRoute = resolveRemoteAgentTargetWhenReady('share:share-x').catch(() => undefined);
+    local.resolve();
+    try {
+      await vi.waitFor(() => expect(target).toBe(providerShareHostPeer('share-local', 'owner-pc')));
+      expect(getCrossRegionReceived()).toEqual([]);
+    } finally {
+      peer.resolve({ credential: null, expiresAt: null, shares: [] });
+      await Promise.all([route, peerRoute]);
+    }
   });
 
   it.each(['group', 'session'] as const)('does not restore another account from a late %s response', async (phase) => {

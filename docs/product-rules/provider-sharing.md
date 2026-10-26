@@ -182,8 +182,8 @@ Desktop 与 Mobile 使用同一写法。
 该分享为前提。Desktop 复用控制端的已收到列表与分享读取通道，并通过既有
 `maker:provider-share:received-catalogs` 核对任务所在电脑也已加载且未暂停该分享；跨区域连接的启用
 标记保存在各电脑本地，不能仅凭控制端名单认定被控端可用，也不自动替被控端开启跨区连接。
-同账号供应商组是已加入分享的另一条有效来源：任务所在电脑从组所在电脑的 `view` / `pick` 回包确认
-分享引用后，可自行向另一区域的官方分享服务核验已有授权并恢复连接，无需再次申请；不从 Renderer
+同账号供应商组是已加入分享的另一条有效来源：任务所在电脑从组所在电脑的 `view` / `pick` 回包或
+`manage-group` 组视图确认分享引用后，可自行向另一区域的官方分享服务核验已有授权并恢复连接，无需再次申请；不从 Renderer
 自报的分享 ID 或收藏恢复联网资格。名单仍由服务端裁决，暂停、撤销与账号切换照常生效。
 本区和跨区名单独立可用：返回名单里已加载且有效的分享立即参与候选筛选；仍有区域尚未就绪时，
 控制端继续有上限地退避查询，补上稍后加载的分享，不让单一区域故障阻塞另一区域。
@@ -390,8 +390,9 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
 - **同账号换电脑**：另一台电脑使用已建供应商组时，组中获准使用的跨区分享必须可正常连接。
   本机没有区域标记时，以同账号组的有效回包触发核验，复用既有身份名片与分享连接凭证，不重新申请。
   标记仍只保存区域；加载期间或查询失败不得误报「分享已移除」，已加载区域的分享仍可独立使用。
-  实现与回归见 `providerShareGuest.ts`、`providerShareCrossRegion.ts`、`provider-group/remoteClient.ts`
-  与 `device-link/__tests__/providerShareCrossRegion.test.ts`（2026-10-26）。
+  实现与回归见 `providerShareGuest.ts`、`providerShareCrossRegion.ts`、`provider-group/remoteClient.ts`、
+  `provider-group/ipc.ts`、`device-link/__tests__/providerShareCrossRegion.test.ts`
+  与 `provider-group/__tests__/ipc.test.ts`（2026-10-26）。
 - **合规开关**：跨区会让用户内容跨境流动，并让一方用户通过分享使用另一区域的模型。跨区分享须经
   公司合规确认后，由服务端开关开启；开关关闭时跨区链接提示暂不支持，同区域分享不受影响。
 - **网络**：跨区连接质量不能保证时，需要服务端评估区域间转发；客户端对跨区连接的断线与重试沿用

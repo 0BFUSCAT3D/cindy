@@ -52,6 +52,7 @@ const RECEIVED_POLL_MS = 60_000;
 const RECEIVED_IDLE_POLL_MS = 5 * 60_000;
 const REQUEST_POLL_MS = 4_000;
 const ACCESS_FAILURE_REFRESH_MS = 10_000;
+const GROUP_LOCAL_REFRESH_INTERVAL_MS = 30_000;
 const SHARE_DEVICE_PREFIX = 'share:';
 // 任务记录里的电脑 id 最长 128 个字符(含 `share:` 前缀)。
 const SHARE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/;
@@ -82,6 +83,7 @@ interface Runtime {
   refreshing: Promise<void> | null;
   pending: Map<string, PendingRequest>;
   groupRecoveries: Set<Promise<void>>;
+  nextGroupLocalRefreshAt: number;
   stopped: boolean;
 }
 
@@ -206,6 +208,8 @@ export async function resolveRemoteAgentTargetWhenReady(agentDeviceId: string): 
   // An already loaded share remains usable even while the other region is unavailable.
   if (findReceivedShare(shareId)) return resolveRemoteAgentTarget(agentDeviceId);
   if (rt.fetchedAt === 0) await refreshReceivedShares('resolve');
+  if (!current(rt)) throw new Error('[DEVICE_LINK_NOT_CONNECTED] provider sharing account changed');
+  if (findReceivedShare(shareId)) return resolveRemoteAgentTarget(agentDeviceId);
   await Promise.all(rt.groupRecoveries);
   if (!current(rt)) throw new Error('[DEVICE_LINK_NOT_CONNECTED] provider sharing account changed');
   if (findReceivedShare(shareId)) return resolveRemoteAgentTarget(agentDeviceId);
@@ -226,7 +230,13 @@ export function captureProviderShareGroupRecovery(): (agentDeviceIds: readonly s
     if (missing.length === 0) return Promise.resolve();
     const recovery = (async () => {
       // Check the local service first: a recently accepted same-region share needs no peer lookup.
-      await refreshReceivedShares('remote-group');
+      // Bound this check too, so repeated group views cannot bypass either region's retry policy.
+      if (Date.now() >= rt.nextGroupLocalRefreshAt) {
+        rt.nextGroupLocalRefreshAt = Date.now() + GROUP_LOCAL_REFRESH_INTERVAL_MS;
+        await refreshReceivedShares('remote-group');
+      } else {
+        await rt.refreshing;
+      }
       if (!current(rt)) return;
       await restoreCrossRegionReceivedForRemoteGroup(missing.filter((id) => !findReceivedShare(id)));
     })();
@@ -259,6 +269,7 @@ export function startProviderShareGuest(events: ProviderShareGuestEvents, option
     refreshing: null,
     pending: new Map(),
     groupRecoveries: new Set(),
+    nextGroupLocalRefreshAt: 0,
     stopped: false,
   };
   runtime = rt;
