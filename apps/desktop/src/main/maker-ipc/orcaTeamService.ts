@@ -557,6 +557,8 @@ export interface OrcaTeamService {
   restoreWorkerPendingReport(sessionId: string, input: { workerId: string; leadSessionId: string }): void;
   handleWorkerTurnStarted(sessionId: string): Promise<void>;
   captureWorkerTerminalTurn(sessionId: string): WorkerTerminalTurnCapture;
+  /** Synchronous product boundary; never call for a suppressed vendor terminal. */
+  noteWorkerProductTerminal(capture: WorkerTerminalTurnCapture | undefined): void;
   handleWorkerTerminalTurn(params: WorkerTerminalTurnParams): Promise<void>;
 }
 
@@ -565,6 +567,7 @@ interface AutoBridgeState {
   pending: boolean;
   reportsInFlight: Set<Promise<void>>;
   terminalObserved: boolean;
+  productTerminal?: Pick<WorkerTerminalTurnCapture, 'runtime' | 'turnGeneration'>;
   ready: boolean;
   inFlight: boolean;
   workerId: string;
@@ -845,6 +848,18 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       autoBridgeIdentity: autoBridge.get(sessionId) ?? null,
       ...(runtime?.getTurnGeneration ? { runtime, turnGeneration: runtime.getTurnGeneration() } : {}),
     };
+  }
+
+  function noteWorkerProductTerminal(capture: WorkerTerminalTurnCapture | undefined): void {
+    if (!capture?.runtime) return;
+    const current = autoBridge.get(capture.sessionId);
+    const previous = provisionalDispatches.get(capture.sessionId)?.previousPendingIdentity;
+    const state = current === capture.autoBridgeIdentity ? current
+      : previous === capture.autoBridgeIdentity ? previous : undefined;
+    if (!state) return;
+    // Auto-resume can advance the vendor generation within one product turn. Only
+    // its unsuppressed terminal closes report ownership, before queued user B starts.
+    state.productTerminal ??= { runtime: capture.runtime, turnGeneration: capture.turnGeneration };
   }
 
   function uniqueWorkers(workers: OrcaWorkerRecordSnapshot[]): OrcaWorkerRecordSnapshot[] {
@@ -2077,6 +2092,14 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       // Direct user turns have no Lead obligation. In particular, a late callback must
       // not look up and settle a new assignment that did not exist at capture time.
       if (!state) return async () => {};
+      const runtime = deps.getLiveSession(sessionId);
+      const generation = runtime?.getTurnGeneration?.();
+      if (state.productTerminal && (
+        state.productTerminal.runtime !== runtime
+        || state.productTerminal.turnGeneration !== generation
+      )) return async () => {};
+      // Capture before delivery: an already-started final report may be accepted
+      // after terminal capture or B's start and still belongs to A.
       let release!: () => void;
       const settled = new Promise<void>(resolve => { release = resolve; });
       state.reportsInFlight.add(settled);
@@ -2123,6 +2146,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
       state.retryAfterRejectedDelivery = true;
     },
     captureWorkerTerminalTurn,
+    noteWorkerProductTerminal,
     async handleWorkerTurnStarted(sessionId) {
       const link = await deps.getWorkerLinkBySessionId(sessionId);
       if (!link) return;
@@ -2151,6 +2175,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
         params.capture?.sessionId === params.sessionId
           ? params.capture
           : captureWorkerTerminalTurn(params.sessionId);
+      noteWorkerProductTerminal(capture);
       let manualInterruptOwnership = capture.manualInterrupt;
       const autoBridgeAtEntry = capture.autoBridgeIdentity;
       const ownsRuntime = () => !capture.runtime || (
@@ -2210,7 +2235,7 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
             // Direct-user B can reuse A's report identity. Settle only A's obligation:
             // its old terminal must not write B's status or clear B's Stop/provisional state.
             const state = autoBridge.get(params.sessionId);
-            if (state?.pending) completionState = state;
+            if (state?.pending && !manualInterruptOwnership) completionState = state;
             else if (state) deletePendingReport(params.sessionId);
             return;
           }

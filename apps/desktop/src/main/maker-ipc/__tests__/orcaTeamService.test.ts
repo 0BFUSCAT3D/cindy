@@ -1921,8 +1921,14 @@ describe('OrcaTeamService', () => {
   });
 
   it.each([true, false])('waits outside the transition lock for an in-flight manual report: accepted=%s', async accepted => {
-    const h = createDeps();
+    let generation = 1;
+    const runtime = { isTurnRunning: () => true, getTurnGeneration: () => generation };
+    const h = createDeps({ getLiveSession: () => runtime });
     await h.service.sendToWorker({ callerLeadSessionId: 'lead-1', targetSessionId: 'worker-session-1', message: 'A' });
+    // A vendor failure is captured but suppressed; auto-resume is still A's product turn.
+    h.service.captureWorkerTerminalTurn('worker-session-1');
+    generation++;
+    await h.service.handleWorkerTurnStarted('worker-session-1');
     const finish = h.service.captureLocalWorkerReport('worker-session-1');
     const terminal = h.service.handleWorkerTerminalTurn({ sessionId: 'worker-session-1', status: 'done', finalText: 'finished' });
     // Observe the durable product terminal, not a timing delay or an implementation promise.
@@ -1989,17 +1995,19 @@ describe('OrcaTeamService', () => {
   // PR #7309: a direct-user B does not replace A's auto-bridge identity. Its generation
   // must protect the visible status and Stop mark without losing A's outstanding report.
   it.each([
-    { reported: true, stopB: false },
-    { reported: false, stopB: false },
-    { reported: true, stopB: true },
-    { reported: false, stopB: true },
-  ])('settles old A without ending direct-user B: %j', async ({ reported, stopB }) => {
+    { reported: true, stopB: false, stopA: false },
+    { reported: false, stopB: false, stopA: false },
+    { reported: true, stopB: true, stopA: false },
+    { reported: false, stopB: true, stopA: false },
+    { reported: false, stopB: true, stopA: true },
+  ])('settles old A without ending direct-user B: %j', async ({ reported, stopB, stopA }) => {
     let generation = 1;
     const runtime = { isTurnRunning: () => true, getTurnGeneration: () => generation };
     const h = createDeps({ getLiveSession: () => runtime });
     const sessionId = 'worker-session-1';
     await h.service.sendToWorker({ callerLeadSessionId: 'lead-1', targetSessionId: sessionId, message: 'A' });
     if (reported) await h.service.captureLocalWorkerReport(sessionId)(true);
+    if (stopA) h.setManualInterrupt('input_stop');
     const capture = h.service.captureWorkerTerminalTurn(sessionId);
     generation++;
     await h.service.handleWorkerTurnStarted(sessionId);
@@ -2016,12 +2024,45 @@ describe('OrcaTeamService', () => {
     expect(h.deps.broadcastOrcaWorkerChanged).not.toHaveBeenCalled();
     expect(h.deps.clearManualInterrupt).not.toHaveBeenCalled();
     expect(h.deps.getManualInterrupt(sessionId)).toBe(stopMark);
-    expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(reported ? 0 : 1);
-    if (!reported) expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledWith('lead-1', expect.stringContaining('A result'), 'worker-1');
+    expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(reported || stopA ? 0 : 1);
+    if (!reported && !stopA) expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledWith('lead-1', expect.stringContaining('A result'), 'worker-1');
     expect(h.service.captureWorkerTerminalTurn(sessionId).autoBridgeIdentity).toBeNull();
     await h.service.handleWorkerTerminalTurn({ sessionId, status: 'done', finalText: 'B result' });
     expect(h.getWorker().status).toBe(stopB ? 'idle' : 'done');
-    expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(reported ? 0 : 1);
+    expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(reported || stopA ? 0 : 1);
+  });
+
+  // PR #7309 second review: an unchanged report object must not let direct-user B
+  // pay A's debt. The old generation tests never sent a manual report from B.
+  // Unit: pause the real terminal handler at its first async read, then report from B.
+  it('keeps A outstanding when direct-user B reports before A terminal handling resumes', async () => {
+    let generation = 1;
+    const runtime = { isTurnRunning: () => true, getTurnGeneration: () => generation };
+    const h = createDeps({ getLiveSession: () => runtime });
+    const sessionId = 'worker-session-1';
+    await h.service.sendToWorker({ callerLeadSessionId: 'lead-1', targetSessionId: sessionId, message: 'A' });
+    const capture = h.service.captureWorkerTerminalTurn(sessionId);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const getLink = h.deps.getWorkerLinkBySessionId;
+    vi.mocked(getLink).mockImplementationOnce(async () => {
+      await gate;
+      return { workerId: 'worker-1', leadSessionId: 'lead-1', teamId: 'team-1', workerSessionId: sessionId };
+    });
+    const terminal = { sessionId, status: 'done' as const, finalText: 'A real result', capture };
+    const handling = h.service.handleWorkerTerminalTurn(terminal);
+    generation++;
+    await h.service.handleWorkerTurnStarted(sessionId);
+    await h.service.captureLocalWorkerReport(sessionId)(true);
+    const stillPendingAfterBReport = h.service.hasPendingWorkerReports('lead-1');
+    release();
+    await handling;
+    await h.service.handleWorkerTerminalTurn(terminal);
+    expect(stillPendingAfterBReport).toBe(true);
+    expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledExactlyOnceWith(
+      'lead-1', expect.stringContaining('A real result'), 'worker-1',
+    );
+    expect(h.getWorker().status).toBe('running');
   });
 
   it('keeps an in-flight auto-report pending across duplicate terminal delivery', async () => {

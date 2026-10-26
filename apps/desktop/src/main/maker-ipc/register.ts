@@ -1991,6 +1991,7 @@ export function cancelSchedulerAutoResume(sessionId: string, runId: string): boo
  * Worker 状态与 auto-bridge(把异常终止回报给 Lead)。
  */
 function settleDeferredOrcaWorkerTerminal(sessionId: string, payload: OrcaSuppressedTerminal): void {
+  orcaTeamServiceForEvents?.noteWorkerProductTerminal(payload.capture as WorkerTerminalTurnCapture | undefined);
   void (async () => {
     try {
       await workerTurnStartSequencer.waitForStart(sessionId);
