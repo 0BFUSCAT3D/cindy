@@ -24,7 +24,12 @@ describe('snapshot helper failure isolation', () => {
   let helper: SnapshotHelper;
   beforeEach(async () => {
     vi.useFakeTimers();
-    vi.stubGlobal('process', Object.assign(Object.create(process), { resourcesPath: 'resources' }));
+    // This suite models a packaged Windows helper, independent of the CI host.
+    // Linux intentionally returns no helper; test that separate branch below.
+    vi.stubGlobal('process', Object.defineProperties(Object.create(process), {
+      resourcesPath: { value: 'resources' },
+      platform: { value: 'win32' },
+    }));
     child = Object.assign(new EventEmitter(), {
       stdin: new PassThrough(),
       stdout: new PassThrough(),
@@ -81,6 +86,18 @@ describe('snapshot helper failure isolation', () => {
       }) + '\n',
     );
     await expect(result).resolves.toEqual([{ handle: 5, pid: 9, rect: [0, 0, 20, 30] }]);
+  });
+
+  // Unit: the production start entry on unsupported platforms must keep screen
+  // capture optional, without attempting to spawn the Windows helper binary.
+  it('does not start a native helper on an unsupported platform', async () => {
+    vi.stubGlobal('process', Object.defineProperty(Object.create(process), 'platform', { value: 'linux' }));
+    mocks.spawn.mockClear();
+    const unsupported = await SnapshotHelper.start();
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    await expect(unsupported.windows()).resolves.toEqual([]);
+    await expect(unsupported.capture({ x: 0, y: 0, width: 2, height: 2 }, 960)).resolves.toBeNull();
+    unsupported.dispose();
   });
 
   // Native video now supplies bytes instead of geometry. A truncated or oversized
