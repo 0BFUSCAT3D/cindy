@@ -641,7 +641,7 @@ import { createBotGroupChatService, settleBotGroupLaneTerminal, type BotGroupCha
 import { settleUndispatchedBotGroupTurn } from './botGroupRuntimeFailure.js';
 import { withChatServer } from './chatServer.js';
 import { createSqliteChatHistoryStore } from './chatHistoryStore.js';
-import { showDesktopChatMessage } from '../notificationService.js';
+import { showDesktopChatMessage, getDesktopNotificationsEnabled } from '../notificationService.js';
 import { companionHomes, isCompanionShadowed } from '../companion-cloud/homes.js';
 import { createCompanionCloudHost } from '../companion-cloud/host.js';
 import { activeCompanionCloud } from '../companion-cloud/runtime.js';
@@ -13173,7 +13173,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return result.ok ? { ok: true as const } : { ok: false as const, errorCode: result.errorCode };
       },
     }),
-    onChatMessageNotification: (event, current) => { void showDesktopChatMessage(event, current).catch(() => log.warn('Chat notification unavailable')); },
+    onChatGroupAttention: (groupId, input, current) => {
+      if (current()) getAgentIslandService()?.setGroupChat(groupId, input);
+    },
+    onChatMessageNotification: (event, current) => {
+      if (!current() || !getDesktopNotificationsEnabled()) return;
+      if (event.conversationKind !== 'direct' && getAgentIslandService()?.notifyGroupChat(event.groupId)) return;
+      void showDesktopChatMessage(event, current).catch(() => log.warn('Chat notification unavailable'));
+    },
     onStepSettled: (event, scope) => {
       const ownerScope = scope as ReturnType<typeof captureDataOwnerBroadcastScope> | undefined;
       if (ownerScope && !isDataOwnerBroadcastScopeCurrent(ownerScope)) return;
