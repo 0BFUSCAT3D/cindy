@@ -1206,9 +1206,9 @@ existing actions. Other composers keep their existing behavior.
 
 #### Motion tokens (the only tier source)
 
-**Message arrival and delivery continuity (2026-10-25).** Keep the existing bubble
+**Mobile message arrival and delivery continuity (2026-10-25).** Keep the existing bubble
 colors, shape and typography. New timeline rows enter once with a subtle opacity /
-6px/pt translation while their occupied space grows continuously on mobile. Arrival
+6pt translation while their occupied space grows continuously. Arrival
 comes from visible message identities, not the age of the first token. Initial
 history, older pages, replacement windows and recycled cells do not replay; streaming
 updates and delivery acknowledgement retain their row identity. Reduced motion shows
