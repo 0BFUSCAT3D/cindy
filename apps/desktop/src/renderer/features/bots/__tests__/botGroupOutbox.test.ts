@@ -952,7 +952,7 @@ describe('botGroupOutbox', () => {
 
 // Unit regression: a restart between local enqueue and the HTTP response used to lose
 // ownership. The production outbox must save first, then restore the same clientId FIFO.
-it('durably restores a failed send and the next queued message, settling only actual receipts', async () => {
+it.each(['group', 'direct'] as const)('durably restores %s sends and reconciles both receipt pages without deleting pending entries', async kind => {
   vi.useFakeTimers();
   const saved = new Map<string, unknown>();
   mocks.storage = async request => {
@@ -961,14 +961,16 @@ it('durably restores a failed send and the next queued message, settling only ac
     return request.action === 'list' ? [...saved.values()] : [];
   };
   mocks.send.mockRejectedValueOnce(new Error('offline'));
-  await enqueueBotGroupSend(draft({ clientId: 'first' }));
-  await enqueueBotGroupSend(draft({ clientId: 'second' }));
+  const conversation = kind === 'direct' ? { conversationKind: 'direct' as const } : {};
+  await enqueueBotGroupSend(draft({ clientId: 'first', ...conversation }));
+  await enqueueBotGroupSend(draft({ clientId: 'second', ...conversation }));
   await vi.advanceTimersByTimeAsync(0);
   expect(mocks.send).toHaveBeenCalledTimes(1);
   expect(saved.size).toBe(2);
   resetBotGroupOutboxForTests();
   mocks.send.mockImplementation(async input => ({ ok: true, messageId: `server-${input.clientId}` }));
-  mocks.getBotGroup.mockResolvedValue({ ok: true, group: { messages: [] } });
+  mocks.getBotGroup.mockImplementation(async (_id, options) => kind === 'direct' && options?.conversationKind !== 'direct'
+    ? { ok: false, errorCode: 'NOT_FOUND' } : { ok: true, group: { messages: [] } });
   const events = new EventTarget();
   vi.stubGlobal('window', events);
   const stop = startBotGroupOutbox();
@@ -976,13 +978,19 @@ it('durably restores a failed send and the next queued message, settling only ac
     await vi.advanceTimersByTimeAsync(10_000);
     expect(mocks.send.mock.calls.map(([input]) => input.clientId)).toEqual(['first', 'first', 'second']);
     expect(getBotGroupOutbox('g1').map(row => row.status)).toEqual(['sent', 'sent']);
+    // Direct chats need not appear in the group list. Its absence must use the
+    // same direct read contract rather than erase valid receipts as NOT_FOUND.
+    listGroups([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getBotGroupOutbox('g1')).toHaveLength(2);
     noteBotGroupTimeline('g1', [msg({ id: 'unrelated', sequence: 20 })], beginBotGroupTimelineRead());
     expect(saved.size).toBe(2);
-    mocks.getBotGroup.mockImplementation(async (_id, options) => ({ ok: true, group: options?.beforeSequence
+    mocks.getBotGroup.mockImplementation(async (_id, options) => kind === 'direct' && options?.conversationKind !== 'direct'
+      ? { ok: false, errorCode: 'NOT_FOUND' } : ({ ok: true, group: options?.beforeSequence
       ? { messages: [msg({ id: 'server-first', sequence: 1 }), msg({ id: 'server-second', sequence: 2 })], hasMoreBefore: false }
       : { messages: [msg({ id: 'newer', sequence: 20 })], hasMoreBefore: true } }));
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(mocks.getBotGroup).toHaveBeenCalledWith('g1', { beforeSequence: 20 });
+    expect(mocks.getBotGroup).toHaveBeenCalledWith('g1', { beforeSequence: 20, ...conversation });
     expect(saved.size).toBe(0);
   } finally { stop(); vi.unstubAllGlobals(); vi.useRealTimers(); }
 });

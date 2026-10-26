@@ -52,6 +52,8 @@ export function createChatOutboxDelivery(deps: {
       if (!deps.canRun() || !deps.current()) return;
       if (!row.chat || !current(row)) continue;
       const room = row.chat.roomId;
+      // A later rejection cannot disprove a previous POST whose outcome was lost.
+      const previouslyStarted = row.enqueueStarted === true;
       if (blocked.has(room)) continue;
       if (row.suspended || row.state === 'failed') { blocked.add(room); continue; }
       const guard = () => {
@@ -83,7 +85,8 @@ export function createChatOutboxDelivery(deps: {
           const recipients = input.mentions.all ? joined.map(member => member.id) : input.mentions.botIds;
           input = { ...input, mentions: { all: false, botIds: [...new Set(recipients.filter(id => id !== self))] } };
         }
-        row = await store.update(row, { state: 'sending', error: undefined }); guard();
+        row = await store.update(row, { state: 'sending', error: undefined,
+          ...(row.chat!.body ? { enqueueStarted: true } : {}) }); guard();
         const receipt = await client.send(room, input, { body: row.chat!.body, save: async body => {
           guard(); row = await store.update(row, { chat: { ...row.chat!, body }, enqueueStarted: true }); guard();
         } });
@@ -101,6 +104,10 @@ export function createChatOutboxDelivery(deps: {
         blocked.add(room);
         try {
           await store.update(row, { state: refused ? 'failed' : 'queued', error: message,
+            // Only a definitive refusal with no earlier uncertain attempt releases the
+            // intent for cancellation/recomposition. Never release a known receipt.
+            ...(refused && !previouslyStarted && !row.chat!.messageId
+              ? { enqueueStarted: false, chat: { ...row.chat!, body: undefined } } : {}),
             ...(chatAccessLost(error) ? { suspended: true } : {}) });
           if (chatAccessLost(error)) {
             await suspendChatOutbox(store, room);

@@ -645,3 +645,52 @@ it('persists the exact uncertain send across restart and never rebuilds its reci
   expect(store.getSnapshot()[0]).toMatchObject({ state: 'confirming', chat: { messageId: self } });
   await store.activate('other-account'); expect(store.getSnapshot()).toEqual([]);
 });
+
+// Review regression (integration): a definitive first-POST rejection is safe to cancel,
+// but a rejection after an unknown earlier outcome cannot revoke its dedup identity.
+it.each([400, 403])('can cancel a definitely refused %s send after reload and unblock the next message', async status => {
+  showChat = true; await render();
+  const original = h.auth.apiFetch.getMockImplementation()!;
+  h.auth.apiFetch.mockImplementation(async (path, options) => {
+    if (path.endsWith('/messages') && options?.method === 'POST') throw Object.assign(new Error('Rejected'), { status });
+    return original(path, options);
+  });
+  await act(async () => { await send({ text: 'rejected', clientId: 'rejected-first', mentions: { all: false, botIds: [] } }); });
+  expect(mobileDurableOutbox.getSnapshot()[0]).toMatchObject({ state: 'failed', enqueueStarted: false });
+  // Reauthorize/reopen the same group; do not silently send the suspended draft.
+  h.auth.apiFetch.mockImplementation(original);
+  await act(async () => { chat.reload(); });
+  const account = getMobileAuthOwner().accountKey;
+  await act(async () => { await mobileDurableOutbox.activate(''); await mobileDurableOutbox.activate(account); });
+  await act(async () => { await chat.pendingAction!('rejected-first', 'cancel'); });
+  expect(mobileDurableOutbox.getSnapshot()).toEqual([]);
+  await act(async () => { await send({ text: 'next', clientId: 'after-cancel', mentions: { all: false, botIds: [] } }); });
+  expect(h.auth.apiFetch.mock.calls.filter(([path, options]) => path.endsWith('/messages') && options?.method === 'POST'
+    && options.body.operationId === 'after-cancel')).toHaveLength(1);
+  expect(mobileDurableOutbox.getSnapshot().some(row => row.item.clientId === 'rejected-first')).toBe(false);
+});
+
+it('keeps an uncertain send frozen and uncancellable when a later attempt is rejected', async () => {
+  showChat = true; await render();
+  const original = h.auth.apiFetch.getMockImplementation()!;
+  let attempt = 0;
+  const posted: unknown[] = [];
+  h.auth.apiFetch.mockImplementation(async (path, options) => {
+    if (path.endsWith('/messages') && options?.method === 'POST') {
+      posted.push(options.body); attempt++;
+      if (attempt === 1) throw new Error('response lost');
+      throw Object.assign(new Error('Rejected later'), { status: 400 });
+    }
+    return original(path, options);
+  });
+  await act(async () => { await send({ text: 'uncertain', clientId: 'uncertain-first', mentions: { all: false, botIds: [] } }); });
+  await act(async () => {
+    await expect(chat.pendingAction!('uncertain-first', 'cancel')).rejects.toThrow('MESSAGE_ALREADY_SENDING');
+    // The background runner retries the already frozen POST using its original ID.
+    const client = createChatServerClient((path, method = 'GET', body) => h.auth.apiFetch(`/v1${path}`, { method, body, assertCurrent() {} }));
+    await createChatOutboxDelivery({ store: mobileDurableOutbox, client, current: () => true, canRun: () => true, accessLost: forgetChatMessages }).run();
+  });
+  expect(posted).toHaveLength(2); expect(posted[1]).toEqual(posted[0]);
+  expect(mobileDurableOutbox.getSnapshot()[0]).toMatchObject({ state: 'failed', enqueueStarted: true });
+  await expect(chat.pendingAction!('uncertain-first', 'cancel')).rejects.toThrow('MESSAGE_ALREADY_SENDING');
+});

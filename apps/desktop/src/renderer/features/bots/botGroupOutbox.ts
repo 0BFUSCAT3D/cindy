@@ -196,7 +196,9 @@ export function startBotGroupOutbox(): () => void {
       }
       if (group.entries.some(entry => entry.status === 'sent')) {
         const token = beginBotGroupTimelineRead();
-        let result = await botGroupApi()!.getBotGroup(groupId);
+        const options = group.entries.some(entry => entry.input.conversationKind === 'direct')
+          ? { conversationKind: 'direct' as const } : undefined;
+        let result = options ? await botGroupApi()!.getBotGroup(groupId, options) : await botGroupApi()!.getBotGroup(groupId);
         if (!current()) return;
         if (result.ok) {
           noteBotGroupTimeline(groupId, result.group.messages, token);
@@ -205,7 +207,7 @@ export function startBotGroupOutbox(): () => void {
           while (result.ok && result.group.hasMoreBefore && group.entries.some(entry => entry.status === 'sent')) {
             const before = Math.min(...result.group.messages.map(message => message.sequence));
             if (!Number.isFinite(before)) break;
-            result = await botGroupApi()!.getBotGroup(groupId, { beforeSequence: before });
+            result = await botGroupApi()!.getBotGroup(groupId, { ...options, beforeSequence: before });
             if (!current()) return;
             if (!result.ok) break;
             noteBotGroupTimeline(groupId, result.group.messages, token);
@@ -610,8 +612,9 @@ function verifyGroupGone(groupId: string, attempt: number): void {
   const requestOwner = getDataOwnerGeneration();
   let definite = false;
   verifying.add(groupId);
-  void api
-    .getBotGroup(groupId)
+  const options = group.entries.some(entry => entry.input.conversationKind === 'direct')
+    ? { conversationKind: 'direct' as const } : undefined;
+  void (options ? api.getBotGroup(groupId, options) : api.getBotGroup(groupId))
     .then((result) => {
       if (!isDataOwnerGenerationCurrent(requestOwner)) return;
       definite = result.ok || result.errorCode === 'NOT_FOUND';
