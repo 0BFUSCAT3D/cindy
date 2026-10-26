@@ -2,7 +2,8 @@ import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts
 import { Button } from '@/components/ui/button';
 import { REMOTE_RESOURCE_GET_CHANNEL, type RemoteResourceGetRequest } from '@cindy/device-link';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Navigate, useLocation, useParams } from 'react-router-dom';
+import { standardSessionRoute } from '@/lib/orcaSessionIdentity';
 import { useTranslation } from 'react-i18next';
 import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
@@ -11,7 +12,6 @@ import { Spinner } from '@/components/ui/spinner';
 import { BotAvatar } from './BotAvatar';
 import { parseRemoteBots, type RemoteBot } from './remoteBotRoster';
 import { markRemoteBotRead, useRemoteBots } from './useRemoteBots';
-import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
 import { useCompanionCloud } from './companionCloudStore';
 import { cloudCompanionAt, homeControlOff } from './companionCloudPresentation';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
@@ -23,15 +23,17 @@ const CloudCompanionOfflineView = lazy(() => import('./CloudCompanionOfflineView
 /** How long an open chat stays in place while its main computer cannot be reached. */
 export const CLOUD_HOME_GRACE_MS = 15_000;
 
-/** The session id comes from the host's collection, never from an arbitrary URL. */
+/** Verify companion identity with its host; pinned task links never adopt a replacement chat. */
 export function RemoteBotSessionView() {
-  const { deviceId, botId } = useParams();
+  const { deviceId, botId, sessionId: requestedSessionId } = useParams();
   const owner = getDataOwnerGeneration();
-  return <RemoteBotSessionGate key={JSON.stringify([owner.dataOwnerId, owner.generation, deviceId, botId])} />;
+  return <RemoteBotSessionGate key={JSON.stringify([owner.dataOwnerId, owner.generation, deviceId, botId, requestedSessionId])} />;
 }
 
 function RemoteBotSessionGate() {
-  const { deviceId, botId } = useParams();
+  const { deviceId, botId, sessionId: requestedSessionId } = useParams();
+  const location = useLocation();
+  const [originalTask, setOriginalTask] = useState(false);
   const { t } = useTranslation();
   const bots = useRemoteBots();
   const bot = bots.find((row) => row.id === botId && row.deviceId === deviceId);
@@ -39,7 +41,8 @@ function RemoteBotSessionGate() {
   const deviceList = useDeviceLinkDeviceList();
   const cloudActor = cloudCompanionAt(cloud, deviceId, botId);
   const [ready, setReady] = useState<(RemoteBot & { sessionId: string; canonicalChat: true }) | null>(() => {
-    if (!bot?.sessionId || !deviceId || remoteProjectsStore.getSessionDeviceId(bot.sessionId) !== deviceId) return null;
+    if (!bot?.sessionId || !deviceId || (requestedSessionId && requestedSessionId !== bot.sessionId)
+      || remoteProjectsStore.getSessionDeviceId(bot.sessionId) !== deviceId) return null;
     const session = remoteProjectsStore.getDeviceSessions(deviceId).find(row => row.id === bot.sessionId);
     return session?.source === 'bot' && session.status === 'active' ? { ...bot, sessionId: bot.sessionId, canonicalChat: true } : null;
   });
@@ -52,6 +55,7 @@ function RemoteBotSessionGate() {
     let disposed = false;
     const owner = getDataOwnerGeneration();
     setFailed(false);
+    setOriginalTask(false);
     if (!deviceId || !bot?.online) return;
     setValidatedSessionId(null);
     const request: RemoteResourceGetRequest = {
@@ -73,6 +77,10 @@ function RemoteBotSessionGate() {
       );
       if (!resolved || resolved.id !== bot.id || !resolved.sessionId) { setReady(null); throw new Error('Companion is not ready'); }
       const canonicalId = resolved.sessionId;
+      if (requestedSessionId && canonicalId !== requestedSessionId) {
+        setOriginalTask(true);
+        return;
+      }
       const existingOrigin = remoteProjectsStore.getSessionDeviceId(canonicalId);
       if (existingOrigin && existingOrigin !== deviceId)
         throw new Error('Conflicting remote session owner');
@@ -109,7 +117,7 @@ function RemoteBotSessionGate() {
     return () => {
       disposed = true;
     };
-  }, [deviceId, botId, sessionId, bot?.online, bot?.deviceName, retry]);
+  }, [deviceId, botId, sessionId, bot?.online, bot?.deviceName, retry, requestedSessionId]);
 
   useEffect(() => {
     if (!failed || !bot?.online || !ready) return;
@@ -120,19 +128,23 @@ function RemoteBotSessionGate() {
     [ready, failed, validatedSessionId, bot?.sessionId]);
 
   const acknowledge = useCallback((at: number) => {
-    if (isDataOwnerGenerationCurrent(readOwner.current) && bot?.online && !failed && ready?.id === bot.id && ready.deviceId === bot.deviceId
+    if ((!requestedSessionId || ready?.sessionId === requestedSessionId) && !originalTask && isDataOwnerGenerationCurrent(readOwner.current) && bot?.online && !failed && ready?.id === bot.id && ready.deviceId === bot.deviceId
       && validatedSessionId === bot.sessionId) {
       markRemoteBotRead(bot.deviceId, bot.id, Math.min(at, bot.lastReplyAt ?? 0));
     }
-  }, [bot, failed, ready, validatedSessionId]);
+  }, [bot, failed, ready, validatedSessionId, requestedSessionId, originalTask]);
 
-  const liveChat = !!bot && !!ready?.sessionId && ready.id === botId && ready.deviceId === deviceId;
-  // Like a local companion chat: once the chat is shown, the island card for this Session is read.
-  useBotIslandVisibleSession(liveChat ? ready!.sessionId : null);
+  const liveChat = !originalTask && (!requestedSessionId || requestedSessionId === ready?.sessionId)
+    && !!bot && !!ready?.sessionId && ready.id === botId && ready.deviceId === deviceId;
   const homeAway = !!cloudActor && !!deviceId && !!botId && cloudActor.homeDeviceId !== cloud.selfDeviceId
     && (!bot || (!bot.online && bot.connectionKnown !== false));
   // Like IM, a brief drop keeps the open chat in place (cloud-companions.md §3.1).
   const homeAwayLong = useDelayedFlag(homeAway && liveChat, CLOUD_HOME_GRACE_MS);
+  if (requestedSessionId && deviceId && (originalTask || failed || !bot?.online || bot.sessionId !== requestedSessionId)) {
+    const query = new URLSearchParams(location.search);
+    query.set('device', deviceId);
+    return <Navigate to={`${standardSessionRoute(requestedSessionId)}?${query}`} state={location.state} replace />;
+  }
   // Its main computer is offline (or never reachable here): read the cloud conversation
   // and offer to continue on this computer instead of a stale read-only mirror.
   if (cloudActor && deviceId && botId && homeAway && (!liveChat || homeAwayLong)) {
@@ -151,7 +163,7 @@ function RemoteBotSessionGate() {
       </Suspense>
     );
   }
-  if (bot && ready?.sessionId && ready.id === botId && ready.deviceId === deviceId) {
+  if (liveChat && bot && ready) {
     return (
       <CCAgentSessionView
         key={`${deviceId}:${ready.sessionId}`}
