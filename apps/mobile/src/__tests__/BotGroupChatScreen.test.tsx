@@ -1524,15 +1524,19 @@ describe('group settings', () => {
 
 describe('offline computer', () => {
   it('says the computer is offline instead of spinning, and disables actions on a loaded group', async () => {
+    vi.useFakeTimers();
     h.chat = { ...h.chat, online: false };
     await render(null, 'loading');
     expect(byId('botGroup.offline')?.textContent).toContain('devices.resources.hostOffline');
     expect(byId('spinner')).toBeNull();
     await render();
+    expect(byId('botGroup.offlineNote')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(byId('botGroup.offlineNote')).not.toBeNull();
     expect(byId('botGroup.plan.start')?.disabled).toBe(true);
     expect(byId('botGroup.continue')?.disabled).toBe(true);
     expect(h.row.editable).toBe(false);
+    vi.useRealTimers();
   });
 });
 

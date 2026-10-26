@@ -15646,13 +15646,14 @@ function steerMessage(
     remoteScopeAtStart?.clearGeneration ?? rendererClearGenerationBySession.get(sessionId) ?? 0;
   const current = getOrCreateState(sessionId);
   if (!canStartComposerSteer(current)) {
-    // 镜像里有在飞 steer 事务 → 静默拒绝对用户就是"没反应", 留痕 + 主动向
-    // main 拉一次 projection 自愈: 若镜像 stale (漏收 emit), 下一次点击就能恢复。
+    // 明确未受理：立即反馈，返回 false 让输入框恢复草稿；projection 刷新只修镜像，
+    // 不替用户重发。此时尚未创建消息或处理附件，不涉及已派发后的 ACK 边界。
     log.warn('steerMessage rejected: steering marker present in mirror', {
       sessionId,
       steeringQueueClientIds: current.steeringQueueClientIds,
       queueAbortPending: current.queueAbortPending,
     });
+    toast.warning(i18n.t('newChat.chatInput.steerNotSent'));
     requestInputProjection(sessionId);
     return Promise.resolve(false);
   }

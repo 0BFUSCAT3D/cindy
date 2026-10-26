@@ -1005,6 +1005,55 @@ describe('Bot canonical Session lifecycle', () => {
     });
   });
 
+  // cloud-companions.md §3.1 (2026-10-26): a companion taken over from another computer may share its
+  // name with a different companion already here; the two stay independent.
+  describe('cloud take-over next to a same-named local companion', () => {
+    const names = () => h.sqlite!.prepare("SELECT id FROM bot_profiles WHERE display_name = 'Release Bot' ORDER BY id").pluck().all();
+
+    it('creates the copy without the name check', async () => {
+      const { createBotProfile } = await import('../bots');
+      const created = await createBotProfile({ id: 'import_other', name: 'release bot' }, { allowSameName: true });
+      expect(created.id).toBe('import_other');
+      await createBotProfile({ id: 'import_third', name: 'Release Bot' }, { allowSameName: true });
+      expect(names()).toEqual(['bot-1', 'import_third']);
+    });
+
+    it('still refuses a same-named ordinary creation', async () => {
+      const { createBotProfile } = await import('../bots');
+      await expect(createBotProfile({ id: 'import_other', name: 'Release Bot' })).rejects.toMatchObject({ code: 'ALREADY_EXISTS' });
+      await expect(createBotProfile({ id: 'import_other', name: 'Release Bot' }, { templateId: undefined })).rejects.toMatchObject({ code: 'ALREADY_EXISTS' });
+      expect(names()).toEqual(['bot-1']);
+    });
+
+    it('does not let a renderer or model body switch the name check off', async () => {
+      const { createBotProfile } = await import('../bots');
+      for (const flag of ['allowSameName', 'allowDuplicateName']) {
+        await expect(invoke('local-db:bots:create', { id: 'import_other', name: 'Release Bot', [flag]: true }))
+          .rejects.toMatchObject({ code: 'ALREADY_EXISTS' });
+        await expect(createBotProfile({ id: 'import_other', name: 'Release Bot', [flag]: true })).rejects.toMatchObject({ code: 'ALREADY_EXISTS' });
+      }
+      expect(names()).toEqual(['bot-1']);
+    });
+
+    it('keeps the default Cindy unique for a take-over', async () => {
+      const { createBotProfile } = await import('../bots');
+      await invoke('local-db:bots:create', { id: 'local-cindy', name: 'Cindy', templateId: 'cindy' });
+      await expect(createBotProfile({ id: 'import_cindy', name: 'Cindy 2' }, { templateId: 'cindy', allowSameName: true }))
+        .rejects.toMatchObject({ code: 'ALREADY_EXISTS' });
+      expect(h.sqlite!.prepare("SELECT COUNT(*) FROM bot_profiles WHERE id = 'import_cindy'").pluck().get()).toBe(0);
+    });
+
+    it('takes over an existing copy whose cloud name now matches another local companion', async () => {
+      await invoke('local-db:bots:create', { id: 'import_copy', name: 'Copy' });
+      await expect(updateStoredBotProfile({ id: 'import_copy', name: 'Release Bot' })).rejects.toMatchObject({ code: 'ALREADY_EXISTS' });
+      await expect(invoke('local-db:bots:update', { id: 'import_copy', name: 'Release Bot', allowSameName: true }))
+        .rejects.toMatchObject({ code: 'ALREADY_EXISTS' });
+      const updated = await updateStoredBotProfile({ id: 'import_copy', name: 'Release Bot' }, undefined, undefined, { allowSameName: true });
+      expect(updated.name).toBe('Release Bot');
+      expect(names()).toEqual(['bot-1', 'import_copy']);
+    });
+  });
+
   it('allows profile edits while an existing companion retries only its portrait', async () => {
     await invoke('local-db:bots:create-canonical-session', {
       botId: 'bot-1', expectedCanonicalSessionId: null, expectedProfileVersion: 1,
