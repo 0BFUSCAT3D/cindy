@@ -132,8 +132,10 @@ describe('BotSettingsDrawer', () => {
     fireEvent.pointerDown(screen.getByTestId('simple-bot-settings'), { pointerType: 'mouse', button: 0 });
     fireEvent.click(screen.getByRole('button', { name: 'Choose model' }));
     const option = await screen.findByRole('button', { name: 'Model row' });
-    fireEvent.pointerDown(option, { pointerType: 'mouse', button: 0 });
-    fireEvent.click(option);
+    await act(async () => {
+      fireEvent.pointerDown(option, { pointerType: 'mouse', button: 0 });
+      fireEvent.click(option);
+    });
     expect(screen.getByTestId('simple-bot-settings')).toBeTruthy();
     expect(guard).not.toHaveBeenCalled();
   });
