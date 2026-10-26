@@ -14,9 +14,10 @@ const capabilityMockState = vi.hoisted(() => ({
   } | null,
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
-}));
+vi.mock('react-i18next', () => {
+  const t = (key: string) => key;
+  return { useTranslation: () => ({ t }) };
+});
 
 vi.mock('@/hooks/useAgentCapabilities', () => {
   // Pi 未声明 turnPermissionPolicy(警告);Claude Code / Codex 声明且受支持(不警告)。
@@ -102,6 +103,19 @@ function defaults(agentKind: ImDefaultSettingsState['agentKind']): ImDefaultSett
 }
 
 describe('ImDefaultSettingsSection Pi channel warning', () => {
+  it('restores automatic selection without saving the displayed model or resetting permissions', async () => {
+    const automatic = { ...defaults('codex'), automaticModel: true };
+    const save = vi.fn(async (_patch: unknown) => automatic);
+    window.electronAPI.maker.imDefaultSettingsSet = save;
+    render(<ImDefaultSettingsSection channel="feishu" />);
+    fireEvent.click(await screen.findByText('settings.imBot.defaults.useAutomatic'));
+    await screen.findByText('settings.imBot.defaults.automatic');
+    expect(save).toHaveBeenCalledWith({ agentKind: IM_DEFAULT_SETTINGS.agentKind, agents: IM_DEFAULT_SETTINGS.agents }, 'feishu');
+    expect(screen.queryByText('settings.imBot.defaults.useAutomatic')).toBeNull();
+    fireEvent.click(screen.getByTestId('select-codex'));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    expect(save.mock.calls[1]?.[0]).toMatchObject({ agentKind: 'codex', agents: { codex: { model: 'gpt-5.5' } } });
+  });
   it('saves a shared model and its location together without local catalog membership', async () => {
     const save = vi.fn(async () => defaults('codex'));
     window.electronAPI.maker.imDefaultSettingsSet = save;

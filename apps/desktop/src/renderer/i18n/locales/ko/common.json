@@ -1451,6 +1451,11 @@
     }
   },
   "settings": {
+    "imConnection": {
+      "reconnect": "다시 연결",
+      "savedNote": "연결 정보가 저장되어 있습니다. 바로 다시 연결할 수 있습니다.",
+      "failed": "봇 연결 실패"
+    },
     "title": "설정",
     "search": {
       "ariaLabel": "설정 검색",
@@ -4070,7 +4075,12 @@
         "connectingNote": "봇 자격 증명이 저장되어 있습니다. 연결하는 중입니다.",
         "reconnectingNote": "봇 자격 증명이 저장되어 있습니다. 연결을 복구하는 중입니다.",
         "conflictNote": "봇 자격 증명이 저장되어 있지만 이 App ID는 다른 기기에서 사용 중입니다.",
-        "errorNote": "봇 자격 증명이 저장되어 있지만 연결에 실패했습니다. 다시 연결해 보세요.",
+        "errorNote": "봇 연동은 유지되지만 연결하지 못했습니다.",
+        "errorHeading": "{{service}} 봇 연결 실패",
+        "reconnect": "봇 다시 연결",
+        "networkErrorNote": "IM 서비스에 접근할 수 없습니다. 네트워크 연결을 확인하세요.",
+        "timeoutErrorNote": "연결 시간이 초과되었습니다. 봇 연동을 해제하지 않고 다시 연결할 수 있습니다.",
+        "credentialsErrorNote": "App ID 또는 App Secret이 올바르지 않습니다. 설정을 확인하세요.",
         "idleNote": "봇 자격 증명이 저장되어 있지만 현재 연결되지 않았습니다. 다시 연결해 보세요."
       },
       "appIdLabel": "App ID",
@@ -5725,6 +5735,10 @@
         "agentUnsupportedOnChannelModeHint": "Agent 전환 후 /new를 보내세요. 권한 문제가 계속되면 /permission을 보내세요.",
         "permissionModeUnsupportedOnChannelHint": "현재 Agent는 이 권한 모드로 이 채널에서 실행할 수 없어 메시지를 처리할 수 없습니다. /permission을 보내 지원되는 권한 모드로 변경하세요.",
         "modelLabel": "모델 설정",
+        "automatic": "자동 선택 · 사용 가능한 추천 모델 사용",
+        "fixed": "모델 고정됨",
+        "useAutomatic": "자동 선택으로 복원",
+        "automaticUnavailable": "사용 가능한 모델이 없습니다. 모델 설정에서 연결하거나 활성화하세요.",
         "loading": "새 대화 설정을 불러오는 중…",
         "loadFailed": "새 대화 설정을 불러오지 못했습니다",
         "saveFailed": "새 대화 설정 저장에 실패했습니다",

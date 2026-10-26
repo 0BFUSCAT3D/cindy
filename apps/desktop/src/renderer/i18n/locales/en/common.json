@@ -1480,6 +1480,11 @@
     }
   },
   "settings": {
+    "imConnection": {
+      "reconnect": "Reconnect",
+      "savedNote": "Your saved binding is retained. You can retry the connection.",
+      "failed": "Bot connection failed"
+    },
     "title": "Settings",
     "search": {
       "ariaLabel": "Search settings",
@@ -4101,7 +4106,12 @@
         "connectingNote": "Bot credentials are saved. Establishing the connection now.",
         "reconnectingNote": "Bot credentials are saved. Restoring the connection now.",
         "conflictNote": "Bot credentials are saved, but this App ID is currently in use on another device.",
-        "errorNote": "Bot credentials are saved, but the connection failed. Select reconnect to try again.",
+        "errorNote": "The bot is still bound, but could not connect.",
+        "errorHeading": "{{service}} bot connection failed",
+        "reconnect": "Reconnect Bot",
+        "networkErrorNote": "The IM service is unreachable. Check your network connection.",
+        "timeoutErrorNote": "The connection timed out. Reconnect without unbinding the bot.",
+        "credentialsErrorNote": "The App ID or App Secret is incorrect. Check the configuration.",
         "idleNote": "Bot credentials are saved, but the bot is not connected. Select reconnect to try again."
       },
       "appIdLabel": "App ID",
@@ -5756,6 +5766,10 @@
         "agentUnsupportedOnChannelModeHint": "After switching Agent, send /new; if permission issues persist, send /permission.",
         "permissionModeUnsupportedOnChannelHint": "The current Agent cannot run on this channel in this permission mode, so messages cannot be processed. Send /permission to choose a supported mode.",
         "modelLabel": "Model Configuration",
+        "automatic": "Automatic · Uses an available recommended model",
+        "fixed": "Model pinned",
+        "useAutomatic": "Use automatic selection",
+        "automaticUnavailable": "No model is available. Connect or enable a model in model settings.",
         "loading": "Loading new conversation configuration…",
         "loadFailed": "Failed to load new conversation configuration",
         "saveFailed": "Failed to save new conversation configuration",

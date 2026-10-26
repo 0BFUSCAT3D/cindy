@@ -143,6 +143,7 @@ import {
   type HookSessionRunner,
 } from './dispatcher.js';
 import { resolveHookSessionConfig, type ResolvedHookSessionConfig } from './defaults.js';
+import { resolveAutomaticImSettings, resolvedImDefaultFingerprint, usesAutomaticImModel } from '../../shared/imAutomaticModel.js';
 import { decodeAttachments, sanitizeAttachmentName } from './attachments.js';
 import {
   cancelHookInteraction,
@@ -257,7 +258,18 @@ async function resolveNewSessionConfig(
   }
 
   const { channel, mergedOverrides, workdirProviderId, workdirRoute, imDefaults } = inputs;
-  const defaults = imDefaults;
+  let defaults = imDefaults;
+  const selectedAgent = mergedOverrides.agentKind;
+  const selectedDefaultAgent = selectedAgent === 'claude-code' || selectedAgent === 'codex' || selectedAgent === 'pi' ? selectedAgent : imDefaults.agentKind;
+  const automatic = usesAutomaticImModel({ ...imDefaults, agentKind: selectedDefaultAgent }) && mergedOverrides.model === null && !workdirRoute?.agentDeviceId;
+  if (automatic) {
+    const resolved = providers && resolveAutomaticImSettings(imDefaults, providers, {
+      agentKind: selectedAgent === 'claude-code' || selectedAgent === 'codex' || selectedAgent === 'pi' ? selectedAgent : undefined,
+      providerId: workdirProviderId,
+    });
+    if (!resolved) throw new Error(`${HOOK_ROUTE_UNAVAILABLE_PREFIX} no available default model${ROUTE_RESELECT_HINT}`);
+    defaults = resolved;
+  }
   const requestedAgent = mergedOverrides.agentKind === 'claude-code' || mergedOverrides.agentKind === 'codex' || mergedOverrides.agentKind === 'pi'
     ? mergedOverrides.agentKind : defaults.agentKind;
   const defaultRoute = defaults.agents[requestedAgent];
@@ -288,7 +300,7 @@ async function resolveNewSessionConfig(
 
   const resolved = resolveHookSessionConfig(
     {
-      readDefaults: () => imDefaults,
+      readDefaults: () => defaults,
       // 可执行清单按**启用**口径,不叠加「显示 / 隐藏」偏好:隐藏只是陈列过滤
       // (选择器不列),被 IM 显式点名或兜底选中仍然合法;停用的模型与供应商已由
       // visibleModelUnion 内建的准入过滤(model.disabled / suspended)剔除,点名
@@ -362,7 +374,8 @@ async function resolveNewSessionConfig(
       `hook saved route degraded (disabled in settings): model=${resolved.model} providerId=${providerId ?? 'null'} catalog=${providers ? 'ok' : 'outage'}`,
     );
   }
-  return { ...resolved, model: lenient.model, providerId: lenient.providerId, fingerprint };
+  return { ...resolved, model: lenient.model, providerId: lenient.providerId,
+    fingerprint: automatic ? resolvedImDefaultFingerprint(fingerprint, defaults) : fingerprint };
 }
 
 /**

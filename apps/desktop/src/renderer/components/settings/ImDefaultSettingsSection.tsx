@@ -38,10 +38,8 @@ import {
   isImDefaultEffort,
 } from '../../../shared/imDefaultSettings';
 import { DefaultOverrideControls } from './DefaultOverrideControls';
-import {
-  buildAgentSettingsPatch,
-  mergeSettingsPatch,
-} from './imDefaultSettingsLogic';
+import { Button } from '@/components/ui/button';
+import { buildAgentSettingsPatch, mergeSettingsPatch } from './imDefaultSettingsLogic';
 
 function vendorKeyFor(agentKind: ImDefaultAgentKind): 'cc' | 'codex' | 'pi' {
   return agentKind === 'claude-code' ? 'cc' : agentKind;
@@ -135,9 +133,7 @@ export function ImDefaultSettingsSection({
       codex: fromProviders.codex.length
         ? fromProviders.codex
         : (codex.capabilities?.availableModels ?? []),
-      pi: fromProviders.pi.length
-        ? fromProviders.pi
-        : (pi.capabilities?.availableModels ?? []),
+      pi: fromProviders.pi.length ? fromProviders.pi : (pi.capabilities?.availableModels ?? []),
     };
   }, [providers, cc.capabilities, codex.capabilities, pi.capabilities]);
 
@@ -180,6 +176,8 @@ export function ImDefaultSettingsSection({
   const persist = useCallback(
     async (patch: ImDefaultSettingsPatch) => {
       if (!settings || pending) return false;
+      // A displayed automatic route may use a different engine than the stored empty default.
+      if (patch.agents && !patch.agentKind) patch = { ...patch, agentKind: settings.agentKind };
       const previous = settings;
       setPending(true);
       setSettings(mergeSettingsPatch(settings, patch));
@@ -227,17 +225,14 @@ export function ImDefaultSettingsSection({
   }
 
   const activeSettings = settings.agents[settings.agentKind];
+  const automaticModel = settings.automaticModel ?? !activeSettings.model;
   // 按选中 Agent 的 capabilities 判断:未声明 / 声明了但 supported.supported !== true
   // 的 Agent(如 Pi)无法在「无条件挂逐条权限确认」的渠道(个人微信)使用。不写死 Pi——
   // 未来 Pi 补上该 capability、或新增其它不支持的 Agent 时,此处自动跟随 main 侧
   // 的 capability 真相,不会误警告 / 漏警告。(Telegram / 钉钉仅在群聊挂 policy,
   // 主人私聊 Pi 可用,设置 UI 不区分群聊/私聊,故不整体警告。)
   const selectedAgentCaps =
-    settings.agentKind === 'claude-code'
-      ? cc
-      : settings.agentKind === 'codex'
-        ? codex
-        : pi;
+    settings.agentKind === 'claude-code' ? cc : settings.agentKind === 'codex' ? codex : pi;
   const selectedAgentCapabilitiesReady =
     !selectedAgentCaps.loading &&
     selectedAgentCaps.error === null &&
@@ -268,7 +263,9 @@ export function ImDefaultSettingsSection({
     providerId: string | null = activeSettings.providerId,
     reconciledEffort?: Effort,
   ) => {
-    const nextProviderId = agentDeviceId ? providerId : resolveProviderId(settings.agentKind, model, providerId);
+    const nextProviderId = agentDeviceId
+      ? providerId
+      : resolveProviderId(settings.agentKind, model, providerId);
     const effort = isImDefaultEffort(reconciledEffort)
       ? reconciledEffort
       : resolveEffort(settings.agentKind, model, activeSettings.effort);
@@ -332,6 +329,35 @@ export function ImDefaultSettingsSection({
           <span className="text-12 font-medium text-[var(--text-secondary)]">
             {t('settings.imBot.defaults.modelLabel')}
           </span>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-12 text-[var(--text-secondary)]">
+            <span>
+              {t(
+                automaticModel
+                  ? 'settings.imBot.defaults.automatic'
+                  : 'settings.imBot.defaults.fixed',
+              )}
+            </span>
+            {!automaticModel && (
+              <Button
+                size="sm"
+                tone="quiet"
+                disabled={pending}
+                onClick={() =>
+                  void persist({
+                    agentKind: IM_DEFAULT_SETTINGS.agentKind,
+                    agents: IM_DEFAULT_SETTINGS.agents,
+                  })
+                }
+              >
+                {t('settings.imBot.defaults.useAutomatic')}
+              </Button>
+            )}
+          </div>
+          {automaticModel && !activeSettings.model && (
+            <p className="text-12 text-[var(--text-secondary)]">
+              {t('settings.imBot.defaults.automaticUnavailable')}
+            </p>
+          )}
           <ModelSelector
             remoteAgent={{ devices: sharedDevices.devices, selectedDeviceId: agentDeviceId }}
             fastModeConfigurable={false}
