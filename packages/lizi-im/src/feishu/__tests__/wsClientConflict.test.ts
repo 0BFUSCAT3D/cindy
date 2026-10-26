@@ -152,11 +152,14 @@ describe('Feishu WebSocket conflict handling', () => {
     }
   });
 
-  it('retries a rejected SDK start without an unhandled rejection', async () => {
+  // PR #7291: SDK can report a generic error after rejecting start or exhausting retries.
+  // Unit: the accepted retry must survive that later error, while stop/ready still cancel it.
+  it('retries a rejected SDK start even after a later ordinary error', async () => {
     vi.useFakeTimers();
     mocks.start.mockRejectedValueOnce(new Error('network down'));
     try {
       await expect(wsClient.start(credentials, { announceLifecycle: false })).resolves.toBe('error');
+      latestClient().options.onError?.(new Error('socket closed'));
       await vi.advanceTimersByTimeAsync(1_000);
       expect(mocks.start).toHaveBeenCalledTimes(2);
       latestClient().options.onReady?.();
@@ -175,6 +178,7 @@ describe('Feishu WebSocket conflict handling', () => {
       client.options.onError?.(new Error(outcome === 'auth'
         ? 'pullConnectConfig failed: code=514, msg=invalid credentials'
         : 'WebSocket reconnect exhausted after 3 attempts'));
+      if (outcome !== 'auth') client.options.onError?.(new Error('socket closed'));
       await connecting;
       if (outcome === 'stop') await wsClient.stop({ announceOffline: false });
       await vi.advanceTimersByTimeAsync(2_000);

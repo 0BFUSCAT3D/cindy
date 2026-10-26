@@ -14,6 +14,7 @@ import {
   effectiveSourceIdForModel,
   getModel,
   isModelSelectableForNewRoute,
+  isModelVisible,
   movedCindyAutoSourceId,
   type ProviderView,
 } from '@cindy/model-providers';
@@ -38,6 +39,7 @@ import { getMaker } from '../maker-host';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService';
 import { readImDefaultSettings } from './defaultSettingsStore';
 import { readImRemoteProviderRoute } from './remoteProviderRoute';
+import { getModelVisibilityOverride, waitForModelVisibilityMirror } from '../maker-host/model-visibility-mirror';
 import { fingerprintImDefaultSettings, type ImDefaultRoute } from './shared/channelDefaultRoute';
 import type { ImOrchestratorConfig } from './shared/types';
 
@@ -52,8 +54,11 @@ export async function resolveImAutomaticDefaults<T extends ImDefaultSettings>(
 ): Promise<T | null> {
   const providers = providerSnapshot === undefined ? await listProvidersForDefaults() : providerSnapshot;
   if (!providers) return null;
+  await waitForModelVisibilityMirror();
   return resolveAutomaticImSettings(raw, providers, {
     agentKind,
+    isModelEnabled: (agent, providerId, model) => isModelVisible(
+      getModelVisibilityOverride(agent, providerId, model.id), model.defaultEnabled),
     allowAgent: channel && isUnconditionalTurnPolicyChannel(channel)
       ? (agent) => getMaker().getCapabilities(agent).turnPermissionPolicy?.supported.supported === true
       : undefined,

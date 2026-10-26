@@ -24,20 +24,40 @@ export function resolveAutomaticImSettings<T extends ImDefaultSettings>(
     agentKind?: ImDefaultAgentKind;
     providerId?: string | null;
     allowAgent?: (agent: ImDefaultAgentKind) => boolean;
+    isModelEnabled?: Parameters<typeof resolveNewMakerDefaultTuple>[0]['isModelEnabled'];
   } = {},
 ): T | null {
   const agents = (['claude-code', 'codex', 'pi'] as const).filter(
     (agent) =>
       (!options.agentKind || options.agentKind === agent) && (options.allowAgent?.(agent) ?? true),
   );
-  const scoped = options.providerId
+  const selectedProviders = options.providerId
     ? providers.filter((p) => p.id === options.providerId)
     : providers;
+  // Filter both recommendation and fallback; the latter permits catalog-hidden models
+  // when an entire provider is hidden, which must not override explicit visibility here.
+  const scoped = options.isModelEnabled
+    ? selectedProviders.map((provider) => ({
+        ...provider,
+        models: {
+          ...provider.models,
+          ...Object.fromEntries(
+            agents.map((agent) => [
+              agent,
+              (provider.models[agent] ?? [])
+                .filter((model) => options.isModelEnabled!(agent, provider.id, model))
+                .map((model) => ({ ...model, defaultEnabled: true })),
+            ]),
+          ),
+        },
+      }))
+    : selectedProviders;
   const tuple = resolveNewMakerDefaultTuple({
     providers: scoped,
     providersLoading: false,
     availableAgentsLoaded: true,
     availableAgents: new Set(agents.map((agent) => (agent === 'claude-code' ? 'cc' : agent))),
+    isModelEnabled: options.isModelEnabled,
   });
   let route = tuple
     ? {

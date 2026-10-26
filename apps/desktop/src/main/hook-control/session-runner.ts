@@ -107,7 +107,8 @@ import { ingestMedia, supportedMime as isCindyMediaMime } from '../cindy-media/i
 import { worktreeStore, WorktreeManager } from '../worktree/index.js';
 import { readImDefaultSettings } from '../im/defaultSettingsStore.js';
 import { isImDefaultPermissionMode } from '../../shared/imDefaultSettings.js';
-import { readImRemotePermissionModes, readImRemoteProviderRoute } from '../im/remoteProviderRoute.js';
+import { readImRemoteAutomaticDefaults, readImRemotePermissionModes, readImRemoteProviderRoute } from '../im/remoteProviderRoute.js';
+import { resolveImAutomaticDefaults } from '../im/defaultSessionSettings.js';
 import { getWorkspaceProviderRoute } from './workspaceProviderSourceStore.js';
 import {
   getWorkspacePref,
@@ -143,7 +144,7 @@ import {
   type HookSessionRunner,
 } from './dispatcher.js';
 import { resolveHookSessionConfig, type ResolvedHookSessionConfig } from './defaults.js';
-import { resolveAutomaticImSettings, resolvedImDefaultFingerprint, usesAutomaticImModel } from '../../shared/imAutomaticModel.js';
+import { resolvedImDefaultFingerprint, usesAutomaticImModel } from '../../shared/imAutomaticModel.js';
 import { decodeAttachments, sanitizeAttachmentName } from './attachments.js';
 import {
   cancelHookInteraction,
@@ -261,12 +262,18 @@ async function resolveNewSessionConfig(
   let defaults = imDefaults;
   const selectedAgent = mergedOverrides.agentKind;
   const selectedDefaultAgent = selectedAgent === 'claude-code' || selectedAgent === 'codex' || selectedAgent === 'pi' ? selectedAgent : imDefaults.agentKind;
-  const automatic = usesAutomaticImModel({ ...imDefaults, agentKind: selectedDefaultAgent }) && mergedOverrides.model === null && !workdirRoute?.agentDeviceId;
+  const automatic = usesAutomaticImModel({ ...imDefaults, agentKind: selectedDefaultAgent }) && mergedOverrides.model === null;
   if (automatic) {
-    const resolved = providers && resolveAutomaticImSettings(imDefaults, providers, {
-      agentKind: selectedAgent === 'claude-code' || selectedAgent === 'codex' || selectedAgent === 'pi' ? selectedAgent : undefined,
-      providerId: workdirProviderId,
-    });
+    const automaticAgent = selectedAgent === 'claude-code' || selectedAgent === 'codex' || selectedAgent === 'pi' ? selectedAgent : undefined;
+    const remoteDeviceId = workdirRoute?.agentDeviceId ?? imDefaults.agents[selectedDefaultAgent].agentDeviceId;
+    const resolved = remoteDeviceId
+      ? await readImRemoteAutomaticDefaults(imDefaults, {
+          agentDeviceId: remoteDeviceId, agentKind: automaticAgent,
+          providerId: workdirRoute?.providerId ?? imDefaults.agents[selectedDefaultAgent].providerId,
+        })
+      // Workspace sources are paired with their former model. Resolve the inherited
+      // model first, then apply the existing stale-source checks below.
+      : await resolveImAutomaticDefaults(imDefaults, undefined, providers, automaticAgent);
     if (!resolved) throw new Error(`${HOOK_ROUTE_UNAVAILABLE_PREFIX} no available default model${ROUTE_RESELECT_HINT}`);
     defaults = resolved;
   }
@@ -295,7 +302,8 @@ async function resolveNewSessionConfig(
       getPermissionModes: () => requestedPermissionMode === null ? [] : [requestedPermissionMode],
       log,
     }, { ...mergedOverrides, agentKind: requestedAgent, model: requestedModel });
-    return { ...remote, agentDeviceId, providerId, fingerprint };
+    return { ...remote, agentDeviceId, providerId,
+      fingerprint: automatic ? resolvedImDefaultFingerprint(fingerprint, defaults) : fingerprint };
   }
 
   const resolved = resolveHookSessionConfig(

@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { ProviderView } from '@cindy/model-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IM_DEFAULT_SETTINGS, type ImDefaultSettingsState } from '../../../../shared/imDefaultSettings';
 import { ImDefaultSettingsSection } from '../ImDefaultSettingsSection';
 
 const capabilityMockState = vi.hoisted(() => ({
+  providers: [] as ProviderView[],
+  providersLoading: false,
   loadingAgent: null as string | null,
   errorAgent: null as string | null,
   piTurnPermissionPolicy: null as {
@@ -57,7 +60,7 @@ vi.mock('@/hooks/useAgentCapabilities', () => {
 });
 
 vi.mock('@/hooks/useProviders', () => ({
-  useProviders: () => ({ providers: [] }),
+  useProviders: () => ({ providers: capabilityMockState.providers, loading: capabilityMockState.providersLoading }),
 }));
 
 vi.mock('@/hooks/useAvailableAgents', () => ({
@@ -103,9 +106,47 @@ function defaults(agentKind: ImDefaultSettingsState['agentKind']): ImDefaultSett
 }
 
 describe('ImDefaultSettingsSection Pi channel warning', () => {
+  // PR #7291 unit: real settings component gets a catalog after its initial empty
+  // read, then a late refresh races a manual save. Previously the display never refreshed.
+  it('refreshes automatic models after catalog loading and protects a newer manual selection', async () => {
+    const summary = vi.fn();
+    const automatic = { ...defaults('codex'), automaticModel: true };
+    automatic.agents.codex.model = '';
+    capabilityMockState.providersLoading = true;
+    let displayed = automatic;
+    let pendingRead: Promise<ImDefaultSettingsState> | null = null;
+    const get = vi.fn(() => pendingRead ?? Promise.resolve(displayed));
+    window.electronAPI.maker.imDefaultSettingsGet = get;
+    const saved = { ...defaults('codex'), automaticModel: false };
+    saved.agents.codex.model = 'gpt-5.5';
+    window.electronAPI.maker.imDefaultSettingsSet = vi.fn(async () => saved);
+    const view = render(<ImDefaultSettingsSection channel="feishu" onSummaryChange={summary} />);
+    await screen.findByText('settings.imBot.defaults.automaticUnavailable');
+    displayed = { ...automatic, agents: { ...automatic.agents,
+      codex: { ...automatic.agents.codex, model: 'new-recommendation' },
+    } };
+    capabilityMockState.providersLoading = false;
+    capabilityMockState.providers = [];
+    view.rerender(<ImDefaultSettingsSection channel="feishu" onSummaryChange={summary} />);
+    await waitFor(() => expect(summary).toHaveBeenLastCalledWith({ agentKind: 'codex', model: 'new-recommendation' }));
+    let finishRead!: (state: ImDefaultSettingsState) => void;
+    pendingRead = new Promise((resolve) => { finishRead = resolve; });
+    const priorReads = get.mock.calls.length;
+    capabilityMockState.providers = [];
+    view.rerender(<ImDefaultSettingsSection channel="feishu" onSummaryChange={summary} />);
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(priorReads));
+    fireEvent.click(screen.getByTestId('select-codex'));
+    await waitFor(() => expect(summary).toHaveBeenLastCalledWith({ agentKind: 'codex', model: 'gpt-5.5' }));
+    await act(async () => { finishRead(displayed); });
+    expect(summary).toHaveBeenLastCalledWith({ agentKind: 'codex', model: 'gpt-5.5' });
+    expect(screen.queryByText('settings.imBot.defaults.automatic')).toBeNull();
+  });
   it('restores automatic selection without saving the displayed model or resetting permissions', async () => {
     const automatic = { ...defaults('codex'), automaticModel: true };
-    const save = vi.fn(async (_patch: unknown) => automatic);
+    const save = vi.fn(async (_patch: unknown) => {
+      window.electronAPI.maker.imDefaultSettingsGet = vi.fn(async () => automatic);
+      return automatic;
+    });
     window.electronAPI.maker.imDefaultSettingsSet = save;
     render(<ImDefaultSettingsSection channel="feishu" />);
     fireEvent.click(await screen.findByText('settings.imBot.defaults.useAutomatic'));
@@ -139,6 +180,8 @@ describe('ImDefaultSettingsSection Pi channel warning', () => {
   });
 
   beforeEach(() => {
+    capabilityMockState.providers = [];
+    capabilityMockState.providersLoading = false;
     capabilityMockState.loadingAgent = null;
     capabilityMockState.errorAgent = null;
     capabilityMockState.piTurnPermissionPolicy = null;

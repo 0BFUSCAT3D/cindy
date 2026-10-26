@@ -12,7 +12,7 @@ import {
   isModelSelectableForNewRoute,
 } from '@cindy/model-providers';
 import { MessageSquare, AlertTriangle } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ModelSelector } from '@/components/new-chat/ModelSelector';
@@ -78,6 +78,7 @@ export function ImDefaultSettingsSection({
   const { t } = useTranslation();
   const [settings, setSettings] = useState<ImDefaultSettingsState | null>(null);
   const [pending, setPending] = useState(false);
+  const settingsRequestVersion = useRef(0);
   const agentDeviceId = settings?.agents[settings.agentKind].agentDeviceId ?? null;
   const local = useProviders();
   const remote = useDeviceProviders(agentDeviceId ?? undefined);
@@ -91,12 +92,13 @@ export function ImDefaultSettingsSection({
 
   useEffect(() => {
     let cancelled = false;
+    const version = ++settingsRequestVersion.current;
     setSettings(null);
     setPending(false);
     void window.electronAPI.maker
       .imDefaultSettingsGet(channel)
       .then((state) => {
-        if (!cancelled) setSettings(state);
+        if (!cancelled && version === settingsRequestVersion.current) setSettings(state);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -105,6 +107,7 @@ export function ImDefaultSettingsSection({
       });
     return () => {
       cancelled = true;
+      if (version === settingsRequestVersion.current) settingsRequestVersion.current++;
     };
   }, [channel, t]);
 
@@ -179,18 +182,20 @@ export function ImDefaultSettingsSection({
       // A displayed automatic route may use a different engine than the stored empty default.
       if (patch.agents && !patch.agentKind) patch = { ...patch, agentKind: settings.agentKind };
       const previous = settings;
+      const version = ++settingsRequestVersion.current;
       setPending(true);
       setSettings(mergeSettingsPatch(settings, patch));
       try {
         const next = await window.electronAPI.maker.imDefaultSettingsSet(patch, channel);
-        setSettings(next);
+        if (version === settingsRequestVersion.current) setSettings(next);
         return true;
       } catch (err) {
+        if (version !== settingsRequestVersion.current) return false;
         setSettings(previous);
         toast.error(err instanceof Error ? err.message : t('settings.imBot.defaults.saveFailed'));
         return false;
       } finally {
-        setPending(false);
+        if (version === settingsRequestVersion.current) setPending(false);
       }
     },
     [channel, pending, settings, t],
@@ -198,16 +203,38 @@ export function ImDefaultSettingsSection({
 
   const reset = useCallback(async () => {
     if (pending) return;
+    const version = ++settingsRequestVersion.current;
     setPending(true);
     try {
-      setSettings(await window.electronAPI.maker.imDefaultSettingsReset(channel));
+      const next = await window.electronAPI.maker.imDefaultSettingsReset(channel);
+      if (version !== settingsRequestVersion.current) return;
+      setSettings(next);
       toast.success(t('settings.defaults.restored'));
     } catch (err) {
+      if (version !== settingsRequestVersion.current) return;
       toast.error(err instanceof Error ? err.message : t('settings.defaults.restoreFailed'));
     } finally {
-      setPending(false);
+      if (version === settingsRequestVersion.current) setPending(false);
     }
   }, [channel, pending, t]);
+
+  const automaticMode =
+    settings?.automaticModel ?? (settings ? !settings.agents[settings.agentKind].model : false);
+  useEffect(() => {
+    if (!automaticMode || pending || local.loading) return;
+    const version = ++settingsRequestVersion.current;
+    void window.electronAPI.maker
+      .imDefaultSettingsGet(channel)
+      .then((next) => {
+        if (version === settingsRequestVersion.current) setSettings(next);
+      })
+      .catch(() => {
+        // Retain the last display snapshot; normal settings writes report their own errors.
+      });
+    return () => {
+      if (version === settingsRequestVersion.current) settingsRequestVersion.current++;
+    };
+  }, [automaticMode, channel, local.loading, local.providers, pending]);
 
   if (!settings) {
     return (

@@ -28,6 +28,7 @@ vi.mock('../remoteProviderRoute', () => ({ readImRemoteProviderRoute: mocks.read
 import { projectImDefaultSettings, resolveImSessionDefaults } from '../defaultSessionSettings';
 import { IM_DEFAULT_SETTINGS } from '../../../shared/imDefaultSettings';
 import type { ImOrchestratorConfig } from '../shared/types';
+import { setModelVisibilityMirror } from '../../maker-host/model-visibility-mirror';
 
 const config: ImOrchestratorConfig = {
   agentKind: 'claude-code',
@@ -116,6 +117,24 @@ const customCodexModel = {
 };
 
 describe('resolveImSessionDefaults', () => {
+  // PR #7291 unit: automatic selection must honor per-source visibility in both
+  // factory recommendations and custom-provider fallback; previous tests had no overrides.
+  it.each([false, true])('excludes hidden automatic models, including fallback (custom=%s)', async (custom) => {
+    mocks.readImDefaultSettings.mockReturnValue(IM_DEFAULT_SETTINGS);
+    const provider = { ...providers[1], id: custom ? 'custom' : 'openai',
+      source: custom ? 'user' : 'builtin', access: { kind: 'subscription' },
+      models: { codex: [
+        { ...openAiCodexModels[0], id: 'gpt-6.1-sol', sortOrder: 1 },
+        { ...openAiCodexModels[0], id: 'shown-model', sortOrder: 2 },
+      ] },
+    };
+    setModelVisibilityMirror({ [`codex:${provider.id}:gpt-6.1-sol`]: false }, { fallback: true });
+    mocks.listProviders.mockResolvedValue([provider]);
+    await expect(resolveImSessionDefaults(config)).resolves.toMatchObject({ model: 'shown-model' });
+    setModelVisibilityMirror({ [`codex:${provider.id}:gpt-6.1-sol`]: false,
+      [`codex:${provider.id}:shown-model`]: false }, { fallback: true });
+    await expect(resolveImSessionDefaults(config)).rejects.toThrow('no available chat model');
+  });
   // Unit: old fixed IM defaults ignored catalog updates; exercise the real creation resolver.
   it('resolves automatic defaults from the live catalog without persisting a model snapshot', async () => {
     mocks.readImDefaultSettings.mockReturnValue(IM_DEFAULT_SETTINGS);
@@ -178,6 +197,7 @@ describe('resolveImSessionDefaults', () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    setModelVisibilityMirror({}, { fallback: true });
     mocks.getCapabilities.mockImplementation((agentKind: string) => ({
       availableModels: agentKind === 'codex' ? codexModels : claudeModels,
     }));

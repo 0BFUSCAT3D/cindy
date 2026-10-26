@@ -337,8 +337,6 @@ function handleErrorSignal(
   // The SDK owns ordinary reconnects. Only restart when that loop has stopped.
   if (/WebSocket reconnect exhausted/i.test(error.message) && S().retryStart) {
     S().connectionRetry.schedule(S().retryStart!);
-  } else {
-    S().connectionRetry.reset();
   }
 }
 
