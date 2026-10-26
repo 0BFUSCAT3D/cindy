@@ -27,15 +27,21 @@ export default {
         await page.mouse.down(); await page.mouse.move(x, y, { steps: 10 }); await page.mouse.up();
       };
       const grip = await handle.boundingBox();
-      await move(grip.x + grip.width / 2 + 100, grip.y + 150);
+      // Longer translations have less free space. Exercise an unconstrained
+      // move first; the following drags independently verify both screen edges.
+      const distance = Math.min(100, (page.viewportSize().width - initial.width) / 4);
+      assert.ok(distance > 0);
+      await move(grip.x + grip.width / 2 + distance, grip.y + 150);
       let bounds = await bar.boundingBox();
-      assert.ok(Math.abs(bounds.x - initial.x - 100) < 1);
+      assert.ok(Math.abs(bounds.x - initial.x - distance) < 1);
       assert.equal(bounds.y, initial.y);
       await move(899, 400);
       bounds = await bar.boundingBox();
       assert.ok(bounds.x + bounds.width <= 893);
       await move(1, 400);
-      assert.ok((await bar.boundingBox()).x >= 8);
+      const leftBounds = await bar.boundingBox();
+      // CSS centering can round a fractional width by half a layout subpixel.
+      assert.ok(Math.abs(leftBounds.x - 8) < 0.02, JSON.stringify(leftBounds));
       await (await button('regionScreenshot.live.scroll')).click();
       assert.equal(await (await button('regionScreenshot.live.startScroll')).count(), 0, 'dragging the toolbar does not create a capture selection');
       assert.equal(await page.evaluate(() => window.captureQa.frames), 0);

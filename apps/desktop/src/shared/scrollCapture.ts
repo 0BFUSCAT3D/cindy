@@ -5,12 +5,34 @@ export type ScrollMatch =
   | { kind: 'append' | 'prepend'; offset: number; header: number; footer: number };
 
 const COLUMNS = 24;
+// Copy the exact columns used by matching into contiguous rows once. Searching
+// every offset in a full-resolution bitmap otherwise repeatedly touches distant
+// cache lines (and does the same work again for reverse scrolling).
+function sampleColumns(frame: RegionScreenshotBitmap): RegionScreenshotBitmap {
+  const columns = Array.from({ length: COLUMNS }, (_, column) => Math.floor(frame.width * (0.05 + (column / (COLUMNS - 1)) * 0.9)));
+  const data = new Uint8Array(frame.height * COLUMNS * 4);
+  for (let y = 0; y < frame.height; y++) {
+    for (let column = 0; column < COLUMNS; column++) {
+      const from = (y * frame.width + columns[column]) * 4;
+      const to = (y * COLUMNS + column) * 4;
+      data[to] = frame.data[from];
+      data[to + 1] = frame.data[from + 1];
+      data[to + 2] = frame.data[from + 2];
+    }
+  }
+  return { width: COLUMNS, height: frame.height, data };
+}
+
 const errorAt = (a: RegionScreenshotBitmap, b: RegionScreenshotBitmap, ay: number, by: number, columns: readonly number[]) => {
   let error = 0;
+  const aRow = ay * a.width * 4;
+  const bRow = by * b.width * 4;
   for (const x of columns) {
-    const ai = (ay * a.width + x) * 4;
-    const bi = (by * b.width + x) * 4;
-    for (let channel = 0; channel < 3; channel++) error += Math.abs(a.data[ai + channel] - b.data[bi + channel]);
+    const ai = aRow + x * 4;
+    const bi = bRow + x * 4;
+    error += Math.abs(a.data[ai] - b.data[bi]);
+    error += Math.abs(a.data[ai + 1] - b.data[bi + 1]);
+    error += Math.abs(a.data[ai + 2] - b.data[bi + 2]);
   }
   return error / (columns.length * 3);
 };
@@ -18,10 +40,14 @@ const errorAt = (a: RegionScreenshotBitmap, b: RegionScreenshotBitmap, ay: numbe
 /** Find downward scrolling with overlap; ambiguous/repeated content is never appended. */
 export function matchScrollFrames(previous: RegionScreenshotBitmap, next: RegionScreenshotBitmap, allowReverse = true): ScrollMatch {
   if (previous.width !== next.width || previous.height !== next.height || previous.height < 32) return { kind: 'unmatched' };
+  return matchSampledFrames(sampleColumns(previous), sampleColumns(next), allowReverse);
+}
+
+function matchSampledFrames(previous: RegionScreenshotBitmap, next: RegionScreenshotBitmap, allowReverse: boolean): ScrollMatch {
   const height = previous.height;
   // Stationary side panes and margins do not vote against content that moved.
   // Require several independent columns so a blinking caret cannot become a scroll.
-  const allColumns = Array.from({ length: COLUMNS }, (_, column) => Math.floor(previous.width * (0.05 + (column / (COLUMNS - 1)) * 0.9)));
+  const allColumns = Array.from({ length: COLUMNS }, (_, column) => column);
   const columns = allColumns.filter((x) => {
     let error = 0;
     for (let y = 0; y < height; y++) error += errorAt(previous, next, y, y, [x]);
@@ -44,6 +70,7 @@ export function matchScrollFrames(previous: RegionScreenshotBitmap, next: Region
   const end = height - footer;
   const minimumOverlap = Math.max(24, Math.floor((end - header) * 0.2));
   const candidates: Array<{ offset: number; score: number }> = [];
+  let bestScore = Infinity;
   const maximumOffset = end - header - minimumOverlap;
   // Compare both directions and zero motion. Otherwise a reverse scroll through
   // similar paragraphs can masquerade as a weaker forward match and duplicate text.
@@ -55,13 +82,19 @@ export function matchScrollFrames(previous: RegionScreenshotBitmap, next: Region
     for (let sample = 0; sample < rows; sample++) {
       const y = start + Math.floor((sample / rows) * overlap);
       sum += errorAt(previous, next, y + offset, y, columns);
+      // Errors are nonnegative. Once a reliable candidate exists, an offset
+      // already outside its ambiguity margin can neither win nor invalidate it.
+      // Keep searching all offsets, but stop reading rows for this loser.
+      if (bestScore <= 3 && sum / rows > bestScore + Math.max(0.15, bestScore * 0.5)) break;
     }
-    candidates.push({ offset, score: sum / rows });
+    const score = sum / rows;
+    candidates.push({ offset, score });
+    bestScore = Math.min(bestScore, score);
   }
   candidates.sort((a, b) => a.score - b.score);
   const best = candidates[0];
   if (best?.offset < 0 && allowReverse) {
-    const reverse = matchScrollFrames(next, previous, false);
+    const reverse = matchSampledFrames(next, previous, false);
     return reverse.kind === 'append' ? { ...reverse, kind: 'prepend', offset: -reverse.offset } : { kind: 'unmatched' };
   }
   if (best?.offset === 0 && (best.score <= 3 || rowErrors.filter((error) => error < 2).length / height >= 0.9)) return { kind: 'same' };

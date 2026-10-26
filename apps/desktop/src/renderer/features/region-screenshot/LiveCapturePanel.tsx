@@ -18,6 +18,7 @@ export function LiveCapturePanel({ begin, token, bridge, autoStart = false }: { 
     phase: (autoStart ? 'capturing' : 'ready') as Phase,
     active: true, inFlight: null as Promise<void> | null, recorder: null as CaptureRecorder | null,
     canvas: null as HTMLCanvasElement | null,
+    imageData: undefined as ImageData | undefined,
     bitmap: begin.first, marks: [] as Mark[], draft: null as Mark | null,
     showCursor: true, showKeys: false, elapsed: 0, startedAt: 0, lastKeys: '', keysUntil: 0,
   });
@@ -39,7 +40,8 @@ export function LiveCapturePanel({ begin, token, bridge, autoStart = false }: { 
     const canvas = state.canvas;
     if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) { canvas.width = bitmap.width; canvas.height = bitmap.height; }
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-    ctx.putImageData(bitmapToImageData(bitmap), 0, 0);
+    state.imageData = bitmapToImageData(bitmap, state.imageData);
+    ctx.putImageData(state.imageData, 0, 0);
     {
       ctx.strokeStyle = SCREENSHOT_INK.red;
       ctx.lineWidth = Math.max(2, bitmap.width / 350);
@@ -74,7 +76,9 @@ export function LiveCapturePanel({ begin, token, bridge, autoStart = false }: { 
     }
     const target = preview.current;
     if (target) {
-      target.width = bitmap.width; target.height = bitmap.height;
+      if (target.width !== bitmap.width || target.height !== bitmap.height) {
+        target.width = bitmap.width; target.height = bitmap.height;
+      }
       target.getContext('2d')!.drawImage(canvas, 0, 0);
     }
   }
@@ -93,7 +97,7 @@ export function LiveCapturePanel({ begin, token, bridge, autoStart = false }: { 
         state.recorder = new CaptureRecorder(state.canvas!, begin.mode === 'gif' ? 'gif' : 'webm', () => { setStatus('limit'); void finish(); });
       }
       state.recorder.add(currentTime());
-      setElapsed(currentTime());
+      setElapsed(Math.floor(currentTime() / 1000) * 1000);
       if (currentTime() >= MAX_RECORDING_MS) { setStatus('limit'); queueMicrotask(() => void finish()); }
     }
   }

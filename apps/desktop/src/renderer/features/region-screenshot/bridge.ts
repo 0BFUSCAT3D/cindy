@@ -53,17 +53,20 @@ declare global {
   }
 }
 
-/** BGRA (Electron 位图) → 画布可用的 ImageData; 返回新数组, 不改动输入。 */
-export function bitmapToImageData(bitmap: RegionScreenshotBitmap): ImageData {
+/** BGRA → RGBA. A caller-owned destination may be reused; source stays immutable. */
+export function bitmapToImageData(bitmap: RegionScreenshotBitmap, reuse?: ImageData): ImageData {
   const source = bitmap.data;
-  const rgba = new Uint8ClampedArray(source.length);
+  const image = reuse?.width === bitmap.width && reuse.height === bitmap.height
+    ? reuse
+    : new ImageData(bitmap.width, bitmap.height);
+  const rgba = image.data;
   for (let i = 0; i < source.length; i += 4) {
     rgba[i] = source[i + 2];
     rgba[i + 1] = source[i + 1];
     rgba[i + 2] = source[i];
     rgba[i + 3] = source[i + 3];
   }
-  return new ImageData(rgba, bitmap.width, bitmap.height);
+  return image;
 }
 
 /** 画布像素 (RGBA) → Electron 位图 (BGRA), 原地交换后复用同一块内存。 */
