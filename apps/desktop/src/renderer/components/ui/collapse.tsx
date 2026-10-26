@@ -1,5 +1,5 @@
 /**
- * Collapse —— 聊天流卡片通用的展开 / 收起高度动画容器。
+ * Collapse —— 通用展开 / 收起容器；聊天区使用 animate={false} 即时布局。
  * ---------------------------------------------------------------------------
  * DESIGN.md §14.4「展开/折叠」原型的挂载编排版:与侧栏 `SectionCollapse` 同一
  * 套 grid-template-rows 0fr ↔ 1fr 技巧(无需测量内容高度)、同 200ms /
@@ -33,6 +33,8 @@ const COLLAPSE_UNMOUNT_FALLBACK_MS = 280;
 
 interface CollapseProps extends React.HTMLAttributes<HTMLDivElement> {
   open: boolean;
+  /** Chat layout changes render immediately; other surfaces retain disclosure motion. */
+  animate?: boolean;
   /** Streaming chat bodies also resize while open, not only when toggled. */
   animateResize?: boolean;
   /** 追加在内层内容容器上的 class(外层 grid 容器用 className)。 */
@@ -40,7 +42,18 @@ interface CollapseProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode;
 }
 
-export function Collapse({ open, animateResize = false, className, innerClassName, children, style, ...rest }: CollapseProps) {
+export function Collapse({ animate = true, ...props }: CollapseProps) {
+  if (animate) return <AnimatedCollapse {...props} />;
+  const { open, animateResize: _animateResize, className, innerClassName, children, style, ...rest } = props;
+  if (!open) return null;
+  return (
+    <div {...rest} className={className} style={style}>
+      <div className={cn('min-h-0 overflow-hidden', innerClassName)}>{children}</div>
+    </div>
+  );
+}
+
+function AnimatedCollapse({ open, animateResize = false, className, innerClassName, children, style, ...rest }: CollapseProps) {
   const reducedMotion = useReducedMotion();
   const [mounted, setMounted] = useState(open);
   const [expanded, setExpanded] = useState(open);

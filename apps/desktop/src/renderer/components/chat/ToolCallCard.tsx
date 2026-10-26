@@ -169,7 +169,7 @@ export function ToolCallCard({ toolName, toolInput, summary, toolResult }: ToolC
         </button>
 
         {/* Expanded content */}
-        <Collapse open={expanded}>
+        <Collapse animate={false} open={expanded}>
           <div className="border-t border-[var(--msg-tool-card-border)] px-3.5 py-2.5">
             {/* text-lightbox F1/F2: Chip-Row preview entry — only for the 4
                 supported tools. Click → open TextLightbox. */}

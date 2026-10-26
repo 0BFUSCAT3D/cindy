@@ -374,8 +374,8 @@ export function GhostSummonCard({
           <span className="min-w-0 truncate">{t('chat.ghostSummon.mention', { names })}</span>
         </button>
         {/* 父容器 gap-1.5 与 -mt-1.5 恒等相消,间距改由内层 pt-1.5 承担
-            (在 overflow-hidden 里随高度动画),挂载/卸载瞬间零跳变。 */}
-        <Collapse open={expanded} className="-mt-1.5" innerClassName="pt-1.5">
+            ，随展开内容即时挂载/卸载。 */}
+        <Collapse animate={false} open={expanded} className="-mt-1.5" innerClassName="pt-1.5">
           <div
             className="max-w-full rounded-[12px] border px-3 py-2"
             style={{ borderColor: 'var(--border-default)' }}
@@ -498,7 +498,7 @@ export function GhostSummonCard({
           className={cn('shrink-0 opacity-60 transition-transform', expanded && 'rotate-180')}
         />
       </button>
-      <Collapse open={expanded}>
+      <Collapse animate={false} open={expanded}>
         <div
           className="mt-2 rounded-[12px] border px-3 py-2.5"
           style={{ borderColor: 'var(--border-default)' }}

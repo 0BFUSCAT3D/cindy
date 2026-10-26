@@ -600,7 +600,7 @@ export function AgentTaskCard({
         {/* live workflow 卡不渲染展开区(详情在后台任务面板);历史 workflow 卡
             (无 live taskId,面板无数据)保留展开区兜底展示 description/summary。 */}
         {!(isWorkflow && canOpenInPanel) && (
-          <Collapse open={expanded}>
+          <Collapse animate={false} open={expanded}>
             <div className="mt-2 border-l-2 border-[var(--agent-actions-rail)] pl-3 text-13 leading-5 text-[var(--text-secondary)]">
               {isBash && (
                 <BackgroundCommandDetails

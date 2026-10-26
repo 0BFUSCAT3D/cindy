@@ -415,7 +415,7 @@ function ContextCard({ data }: { data?: Record<string, unknown> }) {
           ))}
       </div>
 
-      <Collapse open={expanded}>
+      <Collapse animate={false} open={expanded}>
         <div className="mt-2">
           {usage.model && (
             <div className="mb-2 truncate text-12 leading-[1.3] text-[var(--msg-tool-text)]">
@@ -1212,7 +1212,7 @@ function AgentSwitchCard({ data, sessionId }: { data?: Record<string, unknown>; 
         </button>
         <div className="h-px flex-1 bg-[var(--msg-tool-card-border)]" />
       </div>
-      <Collapse open={expanded && !!handoff}>
+      <Collapse animate={false} open={expanded && !!handoff}>
         {handoff ? (
           <div
             className={cn(
@@ -1285,7 +1285,7 @@ function ContextRebuildCard({ data }: { data?: Record<string, unknown> }) {
         </button>
         <div className="h-px flex-1 bg-[var(--msg-tool-card-border)]" />
       </div>
-      <Collapse open={expanded && !!handoff}>
+      <Collapse animate={false} open={expanded && !!handoff}>
         {handoff ? (
           <div
             className={cn(

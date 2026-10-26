@@ -149,7 +149,7 @@ export function AgentActionsBlock({
           />
         </button>
 
-        <Collapse open={expanded}>
+        <Collapse animate={false} open={expanded}>
           <div
             className={cn(
               'mt-1 pl-3 py-[2px]',

@@ -506,7 +506,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       {/* Reserve the completed toolbar's space while streaming, without showing premature actions.
           Companion hover tools are outside flow and need no footer reservation. */}
       {!botBubble ? <div className="-mt-1.5">
-        <Collapse open={isStreaming || showActionBar}>
+        <Collapse animate={false} open={isStreaming || showActionBar}>
           <div className="pt-1.5"><div className="min-h-6">{actionBar}</div></div>
         </Collapse>
       </div> : null}

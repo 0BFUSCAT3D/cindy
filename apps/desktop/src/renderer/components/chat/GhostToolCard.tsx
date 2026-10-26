@@ -18,7 +18,7 @@ import sliderCss from '@/components/ui/slider.css?inline';
  *   (第三道:图片只放行 cindy-media:)。头部还注一段主机主题变量块
  *   (`:root{--token:value}`,白名单同面板),意识用 var(--xxx) 即可跟主题、
  *   不用则不受影响;主题切换重建 srcDoc 原地重载。高度由供片声明(主机已
- *   clamp),换海报 = React 更新 srcDoc 原地替换,容器高度过渡缓动,不跳版。
+ *   clamp),换海报 = React 更新 srcDoc 原地替换,容器测量后直接更新高度,不播放布局过渡。
  * - 点击桥:iframe 与宿主同源(allow-same-origin 的目的),onLoad 后进
  *   contentDocument 给 cindy-media 图片挂 click → 弹标准 ImageLightbox;
  *   data-ghost-action 元素挂 click → card-action 回传意识(交互卡 v2);
@@ -292,13 +292,6 @@ function GhostCardCanvas({
   // 实测覆盖(clamp 同一对常量),并写回卡片库——历史回放直接用准确高度
   // 挂载,零动画(规则 7)。图未到齐期间绝不下调(避免"缩一下再涨"两跳)。
   const [measuredHeight, setMeasuredHeight] = useState<number | null>(null);
-  // 过渡只给"活卡换海报"用:首帧/历史回放的高度收敛必须瞬时贴合,不做
-  // 可见动画;权威实测发生过一次之后的更新(换版)才允许缓动。
-  // 两段式置位:权威实测那次 commit 里 settledOnce 必须还是 false(否则
-  // transition 与新高度同帧生效,首次收敛就成了 200ms 缓动),所以实测时
-  // 只立 pending 标记,等 commit 落地后的 effect 再放开缓动开关。
-  const settledOnceRef = useRef(false);
-  const pendingSettleRef = useRef(false);
   const renderedCardHtml = running && animatedHtml ? animatedHtml : html;
   const gallerySrcs = useMemo(
     () => extractGhostCardGallerySrcs(renderedCardHtml),
@@ -321,7 +314,6 @@ function GhostCardCanvas({
       return;
     }
     setMeasuredHeight(clamped);
-    pendingSettleRef.current = true;
     // 权威实测双写回(fire-and-forget):内存卡片库(本次运行内重挂载即
     // 准确首帧)+ 磁盘(重启后的历史回放)。下次渲染不再经历
     // "声明值 → 实测值"的可见收敛。
@@ -620,17 +612,6 @@ function GhostCardCanvas({
     attachClickBridge();
   }, [html, animatedHtml, running, themeVars, attachClickBridge]);
 
-  // 权威实测的高度提交落地后才放开缓动开关:依赖 measuredHeight = 只在
-  // 新高度**已渲染提交**的那次 commit 之后翻闸——若挂在"每次渲染后跑",
-  // attachClickBridge effect 内同步实测的路径(文档同步就绪时)会让立标
-  // 与翻闸落在同一批 effect 里,首次收敛那帧就带上缓动了。
-  useEffect(() => {
-    if (pendingSettleRef.current) {
-      pendingSettleRef.current = false;
-      settledOnceRef.current = true;
-    }
-  }, [measuredHeight]);
-
   // 卡片换稿(意识 card-update 新文档)后旧面板的锚点/按钮都失效,直接收起。
   useEffect(() => {
     setPromptAsk(null);
@@ -732,8 +713,8 @@ function GhostCardCanvas({
             border: 'none',
             outline: 'none',
             boxShadow: 'none',
-            // 首帧/历史回放收敛瞬时贴合;只有活卡换海报(已有过权威实测)才缓动。
-            transition: settledOnceRef.current ? 'height 200ms ease' : 'none',
+            // Height measurements are layout corrections, including for already-loaded cards.
+            transition: 'none',
           }}
         />
         {running && !animatedHtml ? (

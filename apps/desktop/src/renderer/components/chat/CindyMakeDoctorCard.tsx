@@ -775,7 +775,7 @@ function MakeUpstreamResults({
           {t(expanded ? 'cindyMake.upstream.collapse' : 'cindyMake.upstream.expand')}
         </Button>
       </div>
-      <Collapse open={expanded} id={detailsId} inert={!expanded}>
+      <Collapse animate={false} open={expanded} id={detailsId} inert={!expanded}>
         <div className="space-y-2">
           {runtime && (
             <p className="text-12 text-[var(--text-secondary)]">
@@ -900,7 +900,7 @@ function MakeUpstreamResult({ item }: { item: MakeUpstreamItem }) {
           )}
         </span>
       </button>
-      <Collapse open={expanded} id={detailId} inert={!expanded}>
+      <Collapse animate={false} open={expanded} id={detailId} inert={!expanded}>
         <div className="space-y-2 px-2 pb-2 pl-8 text-[var(--text-secondary)]">
           <p>
             {t(`cindyMake.upstream.state.${item.state}`)}

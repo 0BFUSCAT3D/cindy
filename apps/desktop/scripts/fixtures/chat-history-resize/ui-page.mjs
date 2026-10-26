@@ -4,7 +4,7 @@ export default {
   name: 'chat-history-resize',
   entry: './fixture.tsx',
   viewport: { width: 800, height: 650 },
-  real: 'ThinkingCard, WorkGroupBlock, Collapse, expanded-block memory and native CSS transitions',
+  real: 'ThinkingCard, WorkGroupBlock, Collapse, expanded-block memory and immediate disclosure lifecycle',
   notCovered: 'Full MessageStream scrolling, remote transport and actual model execution',
   cases: {
     default: { about: 'Completed thinking: delayed details do not animate height' },
@@ -73,7 +73,7 @@ export default {
       }
       return false;
     });
-    assert.equal(didTransition, true, 'explicit disclosure still has a bounded transition');
+    assert.equal(didTransition, false, 'chat disclosure renders immediately without moving the following content through intermediate heights');
     await page.waitForFunction(
       () =>
         !document

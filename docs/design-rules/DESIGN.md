@@ -1206,6 +1206,16 @@ existing actions. Other composers keep their existing behavior.
 
 #### Motion tokens (the only tier source)
 
+**Desktop chat stability override (owner decision, 2026-10-26).** Desktop chat
+messages, including already-loaded and very long conversations, render layout changes
+immediately. Do not animate row arrival, whole-column position, disclosure height,
+assistant action-row space, running-status height or measured plugin-card height.
+History restore, delayed details and virtualization remounts must not replay motion.
+Opening/closing details still works, without an intermediate layout trajectory.
+Explicit navigation and non-layout activity indicators remain independent. This
+supersedes the following occupied-space/arrival guidance for Desktop chat only;
+other surfaces and native mobile are unchanged.
+
 **Message arrival and delivery continuity (2026-10-25).** Keep the existing bubble
 colors, shape and typography. New timeline rows enter once with a subtle opacity /
 6px/pt translation while their occupied space grows continuously on mobile. Arrival

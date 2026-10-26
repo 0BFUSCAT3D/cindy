@@ -6822,7 +6822,7 @@ function RunningStatusBar({
   return (
     <Collapse
       open={rowVisible}
-      animateResize
+      animate={false}
       className={cn('mx-auto', className)}
       style={{ width: inputWidth }}
     >

@@ -228,8 +228,8 @@ export default function HookTaskCard({
               </span>
             </button>
             {/* 父容器 gap-2 与 -mt-2 恒等相消,间距改由内层 pt-2 承担
-                (在 overflow-hidden 里随高度动画),挂载/卸载瞬间零跳变。 */}
-            <Collapse open={expanded} id={contextId} className="-mt-2" innerClassName="pt-2">
+                ，随展开内容即时挂载/卸载。 */}
+            <Collapse animate={false} open={expanded} id={contextId} className="-mt-2" innerClassName="pt-2">
               <div className="flex flex-col gap-3 pl-[18px] text-12 leading-[1.5] text-[var(--text-secondary)] break-words">
                 {(entries.length > 0 || hasReplyContext) && (
                   <section aria-labelledby={`${contextId}-replies`} className="flex flex-col gap-1">

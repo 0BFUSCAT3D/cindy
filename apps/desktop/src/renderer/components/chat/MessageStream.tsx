@@ -3,7 +3,6 @@ import { historyAfter } from './historyAfter';
 import { readMailCard } from '@cindy/maker-shared/ghost-card-form';
 import { animateFocusScroll } from './animateFocusScroll';
 import { simplifyBotRenderItems } from '@/features/bots/botConversationPresentation';
-import { useMessageEntrance } from './useMessageEntrance';
 import { useSmoothMessageFollow } from './useSmoothMessageFollow';
 import { isVisibleVoiceCallMessage } from '@/features/bots/voice/voiceCallPresentation';
 import { MessageViewport, type MessageViewportApi } from './MessageViewport';
@@ -3399,12 +3398,6 @@ export function MessageStream({
     workGroupProjection,
   ]);
   const renderMetadataItems = renderMetadataProjection(allRenderItems);
-  const entranceSignature = allRenderItems.flatMap(item => item.type === 'message'
-    && (item.message.role === 'user' || item.message.role === 'assistant') && !item.message.systemCardType
-    && (item.message.content.trim().length > 0 || item.message.images?.length || item.message.files?.length)
-    ? [item.key] : []).join('\0');
-  const entranceKeys = useMemo(() => entranceSignature ? entranceSignature.split('\0') : [], [entranceSignature]);
-  const enterMessage = useMessageEntrance(entranceKeys, !isLoadingMore && (!historySnapshot || historySnapshot.ready));
   const botMessageTimeGroups = useMemo(() => {
     if (!simplifiedBotConversation) return new Map<string, number>();
     return collectBotMessageTimeGroups(
@@ -6518,7 +6511,6 @@ export function MessageStream({
                     // 容器上(不是逐条消息),工具卡等不可选的 item 也跟着移,
                     // 左边缘保持对齐。
                     shareSelectionActive && 'pl-10',
-                    'transition-[padding] duration-[var(--motion-base)] ease-[var(--motion-ease-move)] motion-reduce:transition-none',
                   )}
                 >
                   {visibleRenderItems.map((item, itemIndex) => {
@@ -6771,7 +6763,6 @@ export function MessageStream({
                           key={item.key}
                           data-render-item-key={item.key}
                           data-message-client-id={msg.clientId}
-                          ref={node => enterMessage(node, item.key)}
                           className={cn('scroll-mt-20 transition-colors', highlightClass)}
                         >
                           {startsUnread ? (
@@ -6813,7 +6804,6 @@ export function MessageStream({
                         key={item.key}
                         data-render-item-key={item.key}
                         data-message-client-id={msg.clientId}
-                        ref={node => enterMessage(node, item.key)}
                         {...shareAttributes}
                         className={cn(
                           'scroll-mt-20 transition-colors',
