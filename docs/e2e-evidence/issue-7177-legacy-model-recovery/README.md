@@ -69,3 +69,27 @@ NODE_OPTIONS=--max-old-space-size=12288 node node_modules/typescript/bin/tsc --n
 原正式库 schema=129，开发构建 migration 到 131；依照数据库规则，未用开发构建升级正式 profile。
 未更新、替换或重启正式 Cindy。未声称整仓测试、远端 CI、跨账号全套验收或正式包已通过。
 本记录已脱敏，不公开原始任务、伙伴、执行设备、来源标识或账号数据。
+
+## 推送后完整恢复链复跑
+
+源码提交：`d6517ea6bd4c6a31ae2e287bdff78cbfb90642f3`。
+2026-10-26 16:36:10–16:36:57（Asia/Shanghai），同一 worktree 的独立实例重新构建后复跑。
+启动器仍先返回 `STARTUP_TIMEOUT`（exit 1），后续 `desktop-whoami --json` 明确读回该 SHA、
+`commitVerified=true`、`isolated=true`、`state=ready` 后才开始。没有把启动器超时当作通过。
+
+[脱敏阶段记录](checks.json)由本次运行结果提取，私有标识已移除。
+
+| 顺序 | 真实入口与观察结果 |
+| --- | --- |
+| 1 | 在空闲 QA 副本注入旧正式无标记 baseline；真实输入框发送被 `[INVALID_PARAMS]` 拒绝，队首 1 条、无回复 |
+| 2 | 配置 API 接受已保存永久选择，版本 2 → 3，capabilities 完全未变 |
+| 3 | 点击现有重试，原输入实际回复 `QA7177_D6517EA6_RETAINED_OK`；原 clientId 仅落库 1 条 |
+| 4 | 仅手动触发停用的 QA 例行，history 为 success，实际结果 `QA7177_D6517EA6_ROUTINE_OK` |
+| 5 | 真实输入框再发送普通输入，实际回复 `QA7177_D6517EA6_AFTER_ROUTINE_OK` |
+| 6 | 当前共享 Codex 模型副本注入同份旧状态；接受已保存选择后实际回复 `QA7177_D6517EA6_SHARED_OK` |
+| 7 | 两条持久路由保持各自永久选择，baseline 均为 null；队列、错误、恢复态清空，执行结束 |
+| 8 | 原正式模型、provider、共享执行位置、baseline 四项再次只读核对，均与提取时一致 |
+
+回归驱动 exit 0。记录提交仅增加证据，生产代码仍对应上述源码提交。
+推送目的地为已配置个人 fork 的 `cindy/serene-euclid`；上游 origin 写入返回 403，未修改 main。
+查询该源码 SHA 的 fork check runs 为 0；未将本地验收写成远端 CI 或正式包验收通过。
