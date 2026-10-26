@@ -123,6 +123,8 @@ export async function settleBotGroupLaneTerminal(
 }
 
 export interface BotGroupChatServiceDeps {
+  /** A durable, owner-captured UI projection; tests and hosts without persistence can omit it. */
+  chatHistoryStore?: (endpoint: string, humanActorId: string, readerActorId: string, current: () => boolean) => import('@cindy/maker-shared/chat-history').ChatHistoryStore;
   /**
    * With `plan`, the Bot's 分工 Session for that plan (bot-group-chat.md §7.4); with
    * `threadRootId`, the Bot's own lane for that Thread (§3); with `talkPlanId`, its own
@@ -471,7 +473,10 @@ export function resolveGroupMentions(
     });
     if (!match) continue;
     if (!match.botId) all = true;
-    else if (!ordered.includes(match.botId)) ordered.push(match.botId);
+    // Same-named members are indistinguishable in text: address them all, as the composer's parser does.
+    else for (const twin of labels) {
+      if (twin.botId && twin.label.toLocaleLowerCase() === match.label.toLocaleLowerCase() && !ordered.includes(twin.botId)) ordered.push(twin.botId);
+    }
   }
   return { all, botIds: structured.length > 0 ? structured : ordered };
 }

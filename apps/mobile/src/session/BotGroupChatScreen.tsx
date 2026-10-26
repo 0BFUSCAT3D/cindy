@@ -1,3 +1,6 @@
+import { pendingChatMessage } from '@/chat/chatOutbox';
+import { useDelayedConnectionNotice } from '@/components/ConnectionNoticeOverlay';
+import type { DurableOutboxRecord } from './durableOutbox';
 import Reanimated from 'react-native-reanimated';
 import { useSmoothMessageFollow } from './useSmoothMessageFollow';
 import { AnimatedContentHeight } from './AnimatedContentHeight';
@@ -440,8 +443,9 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
     onOpenSettings={direct ? undefined : () => setSettings(true)}
     settingsLabel={t('groupChat.settings.open')} />;
 
-  const offlineNote = <AnimatedContentHeight open={!!group && !chat.online}>
-    <Text accessibilityRole="alert" style={styles.offline} testID="botGroup.offlineNote">{t(offlineKey)}</Text>
+  const showOffline = useDelayedConnectionNotice(!!group && !chat.online);
+  const offlineNote = <AnimatedContentHeight open={showOffline}>
+    <Text accessibilityRole="alert" style={styles.offline} testID="botGroup.offlineNote">{t(chat.canQueue ? 'message.queue.waitingForNetwork' : offlineKey)}</Text>
   </AnimatedContentHeight>;
   let body;
   if (chat.state.kind === 'loading' && !chat.online) {
@@ -534,6 +538,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
         testID="botGroup.timeline">
         <BotGroupTimeline group={group} deviceId={deviceId} online={chat.online} identityFor={identityFor}
           highlightId={highlightId} onLocateMessage={locateMessage}
+          pending={chat.pending} onPendingAction={(id, action) => { void chat.pendingAction?.(id, action).catch(error => report(error, 'groupChat.composer.sendFailed')); }}
           onReply={(chat.server || group.serverBacked) && !group.archived && !group.dissolvedAt ? message => setReplyTo(botGroupQuoteFromMessage(message)) : undefined}
           onMessageLayout={(id, y, height) => {
             previewVisibility.setLayout(id, { y, height });
@@ -573,7 +578,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId, messageId, n
         <View style={styles.flex}><BotGroupQuote display={resolveBotGroupQuote(replyTo, group.messages)} onPress={() => locateMessage(replyTo.messageId)} /></View>
         <MainWindowActionButton density="compact" action={{ label: t('message.quote.remove'), onPress: () => setReplyTo(null), testID: 'botGroup.cancelReply' }} />
       </View> : null}
-      <BotGroupComposer members={group.members} identityFor={identityFor} deviceId={deviceId} online={chat.online && !group.archived && !group.dissolvedAt}
+      <BotGroupComposer members={group.members} identityFor={identityFor} deviceId={deviceId} online={(chat.online || !!chat.canQueue) && !group.archived && !group.dissolvedAt}
         focusKey={replyTo?.messageId}
         running={group.round.status === 'running'} planState={botGroupComposerPlanState(openBotGroupPlan(group), group.replyMode)}
         divisionSupported={!chat.server && (!group.singleSpeaker || group.supportsDivision === true)} attachmentsSupported={group.supportsAttachments === true} onSend={send} onStop={stop} />
@@ -616,9 +621,11 @@ function followUpPending(action: PlanPending['action'] | null): BotGroupFollowUp
 
 export function BotGroupTimeline({
   group, deviceId, online, identityFor, resolveMedia, resolveServerMedia, loadOlder, loadingOlder, continuing, planPending, onContinue, onPlanAction, onEditStep, onInteractionError,
-  onMessageLayout, onLocateMessage, highlightId, onReply,
+  onMessageLayout, onLocateMessage, highlightId, onReply, pending = [], onPendingAction,
 }: {
   group: BotGroupRemoteChatData;
+  pending?: readonly DurableOutboxRecord[];
+  onPendingAction?: (id: string, action: 'retry' | 'cancel') => void;
   deviceId: string;
   online: boolean;
   identityFor: BotGroupIdentityLookup;
@@ -640,8 +647,15 @@ export function BotGroupTimeline({
 }) {
   const { t, i18n } = useTranslation();
   const styles = useThemedStyles(makeStyles);
-  const messages = group.messages;
-  const entranceSignature = messages.map(message => message.id).join('\0');
+  const canonicalIds = new Set(group.messages.map(message => message.id));
+  const rowIdentity = useRef({ groupId: group.id, ids: new Map<string, string>() });
+  if (rowIdentity.current.groupId !== group.id) rowIdentity.current = { groupId: group.id, ids: new Map() };
+  for (const row of pending) if (row.chat?.messageId) rowIdentity.current.ids.set(row.chat.messageId, `local:${row.item.clientId}`);
+  const rowKey = (id: string) => rowIdentity.current.ids.get(id) ?? id;
+  const local = pending.filter(row => !row.chat?.messageId || !canonicalIds.has(row.chat.messageId));
+  const pendingById = new Map(local.map(row => [`local:${row.item.clientId}`, row]));
+  const messages = [...group.messages, ...local.map(pendingChatMessage)];
+  const entranceSignature = messages.map(message => rowKey(message.id)).join('\0');
   const entranceKeys = useMemo(() => entranceSignature ? entranceSignature.split('\0') : [], [entranceSignature]);
   const enteringMessageKeys = useMessageEntrances(entranceKeys, group.id);
   const planById = new Map(group.plans.map((plan) => [plan.id, plan]));
@@ -662,14 +676,16 @@ export function BotGroupTimeline({
     {messages.length === 0 && !running ? <MainWindowEmptyState centered testID="botGroup.empty"
       title={t('groupChat.timeline.emptyTitle')} copy={t('groupChat.timeline.emptyDescription')} /> : null}
     {messages.map((message, index) => {
+      const queued = pendingById.get(message.id);
       const groupTime = timeGroups.get(message.id);
       const previous = index > 0 ? messages[index - 1] : undefined;
       // G2: the same teammate speaking again inside one time group keeps its avatar and name once.
       const continued = groupTime === undefined && message.kind === 'message' && message.authorKind === 'bot'
         && previous?.kind === 'message' && previous.authorKind === 'bot' && previous.authorBotId === message.authorBotId;
-      return <View key={message.id} style={highlightId === message.id && styles.locatedMessage}
+      const key = rowKey(message.id);
+      return <View key={key} style={highlightId === message.id && styles.locatedMessage}
         onLayout={event => onMessageLayout?.(message.id, event.nativeEvent.layout.y, event.nativeEvent.layout.height)}>
-        <CompanionEntering id={message.id} arrivedAt={enteringMessageKeys.get(message.id)}>
+        <CompanionEntering id={key} arrivedAt={enteringMessageKeys.get(key)}>
         <View style={[styles.item, (index > 0 || group.hasMoreBefore) && { paddingTop: spacing.lg }]}>
         {groupTime !== undefined ? <Text style={styles.time}>{formatBotMessageGroupTime(groupTime, i18n.language)}</Text> : null}
         <BotGroupTimelineItem message={message} continued={continued} member={message.authorBotId ? memberById.get(message.authorBotId) : undefined}
@@ -684,7 +700,12 @@ export function BotGroupTimeline({
           planPending={planCardPending(pendingFor(message.planId))}
           onPlanAction={(action) => { if (message.planId) onPlanAction(action, message.planId); }}
           onEditStep={(step, action, botId) => { if (message.planId) onEditStep(message.planId, step, action, botId); }} />
-        {onReply && isBotGroupMessageQuotable(message) ? <Pressable
+        {queued ? <View style={styles.pendingRow} testID={`botGroup.pending.${queued.item.clientId}`}>
+          <Text style={styles.pendingText}>{t(queued.state === 'failed' ? 'message.queue.notSent' : !online ? 'message.queue.waitingForNetwork' : 'message.queue.queued')}</Text>
+          {queued.state === 'failed' && !queued.suspended ? <MainWindowActionButton density="compact" action={{ label: t('message.queue.retry'), onPress: () => onPendingAction?.(queued.item.clientId, 'retry') }} /> : null}
+          {!queued.enqueueStarted && queued.state !== 'sending' ? <MainWindowActionButton density="compact" action={{ label: t('message.queue.cancelSend'), onPress: () => onPendingAction?.(queued.item.clientId, 'cancel') }} /> : null}
+        </View> : null}
+        {!queued && onReply && isBotGroupMessageQuotable(message) ? <Pressable
           accessibilityRole="button" accessibilityLabel={t('message.renderer.reply')}
           testID={`botGroup.reply.${message.id}`} onPress={() => onReply(message)}
           style={[styles.replyAction, message.isSelf === true && styles.ownReplyAction]}>
@@ -835,6 +856,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   locatedMessage: { backgroundColor: colors.surfaceElevated, borderRadius: radius.container },
   replyDraft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   replyAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginLeft: BOT_GROUP_MESSAGE_AVATAR_SIZE + REPLY_AVATAR_GAP },
+  pendingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: spacing.sm },
+  pendingText: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
   ownReplyAction: { alignSelf: 'flex-end', marginLeft: 0 },
   replyIcon: { color: colors.textSecondary },
   floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
