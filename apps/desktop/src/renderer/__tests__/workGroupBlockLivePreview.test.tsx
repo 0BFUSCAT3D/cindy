@@ -142,7 +142,7 @@ function clickGroup(label: string) {
   for (const preview of document.querySelectorAll('[data-live-work-preview]')) {
     const body = preview.parentElement;
     if (body?.getAttribute('aria-hidden') === 'true') {
-      fireEvent.transitionEnd(body.parentElement!, { propertyName: 'height' });
+      fireEvent.transitionEnd(body.parentElement!, { propertyName: 'grid-template-rows' });
     }
   }
 }
@@ -503,7 +503,7 @@ describe('WorkGroupBlock — running latest-five preview', () => {
     expect(doneButton?.hasAttribute('disabled')).toBe(false);
     expect(doneButton?.querySelector('svg.lucide-chevron-right')).toBeTruthy();
     const outgoing = containerPreview();
-    if (outgoing) fireEvent.transitionEnd(outgoing, { propertyName: 'height' });
+    if (outgoing) fireEvent.transitionEnd(outgoing, { propertyName: 'grid-template-rows' });
     expect(screen.queryByTestId('direct-tool')).toBeNull();
     clickGroup('chat.workGroup.worked:12s');
     expect(screen.getByTestId('direct-tool').textContent).toBe('git status');
@@ -823,7 +823,7 @@ describe('WorkGroupBlock — Host-projected running lines', () => {
       ...props, deferred: { ...deferred(lines), awaitingDetails: false },
     }));
     const exiting = containerPreview();
-    if (exiting) fireEvent.transitionEnd(exiting, { propertyName: 'height' });
+    if (exiting) fireEvent.transitionEnd(exiting, { propertyName: 'grid-template-rows' });
     expect(container.querySelector('[data-live-work-preview]')).toBeNull();
     expect(body?.isConnected).toBe(true);
     expect(body?.contains(screen.getByTestId('assistant-progress'))).toBe(true);
