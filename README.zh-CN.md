@@ -22,6 +22,10 @@
 </p>
 
 
+<p align="center">
+  <a href=".github/assets/star-history/trending-2026-10-26.png">★ GitHub Trending #1 · 2026.10.26</a>
+</p>
+
 Cindy 是一个开源、开箱即用的 AI Agent。她把多套 Harness、模型和工具收进同一个
 持续成长的伙伴，在真实工程和软件里把任务做完。一开始就好用，任你打扮，任你培养。
 
@@ -53,6 +57,21 @@ monorepo 组织。
 
 开箱即用，不是开箱即定型——欢迎从 [`CONTRIBUTING.md`](CONTRIBUTING.md) 开始，
 一起打造 Cindy。
+
+<h3 align="center">好吧，是有一点受欢迎。</h3>
+
+<p align="center">
+  <a href="https://github.com/makecindy/cindy/stargazers">
+    <picture>
+      <source media="(prefers-color-scheme: dark) and (max-width: 600px)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-dark-mobile.svg">
+      <source media="(max-width: 600px)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-light-mobile.svg">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-light.svg">
+      <img src=".github/assets/star-history/stars-light.svg" width="100%" alt="Cindy 的 GitHub Star 趋势">
+    </picture>
+  </a>
+</p>
+<p align="center"><sub>每一颗星，都有好好记着。</sub></p>
 
 ## 本仓包含什么
 

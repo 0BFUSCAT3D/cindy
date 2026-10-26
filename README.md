@@ -18,6 +18,10 @@
 </p>
 
 
+<p align="center">
+  <a href=".github/assets/star-history/trending-2026-10-26.png">★ GitHub Trending #1 · 2026.10.26</a>
+</p>
+
 Cindy is an open-source AI agent that works out of the box. She brings multiple
 harnesses, models and tools into one agent that finishes real work in your
 projects and apps. Ready from day one, yours to shape over time.
@@ -57,6 +61,21 @@ Open source means more than visible — it means changeable:
 
 Ready out of the box, never boxed in — start with
 [`CONTRIBUTING.en.md`](CONTRIBUTING.en.md) and build Cindy with us.
+
+<h3 align="center">Okay, maybe a little popular.</h3>
+
+<p align="center">
+  <a href="https://github.com/makecindy/cindy/stargazers">
+    <picture>
+      <source media="(prefers-color-scheme: dark) and (max-width: 600px)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-dark-mobile.svg">
+      <source media="(max-width: 600px)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-light-mobile.svg">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/makecindy/cindy/readme-star-history/stars-light.svg">
+      <img src=".github/assets/star-history/stars-light.svg" width="100%" alt="Cindy GitHub star history">
+    </picture>
+  </a>
+</p>
+<p align="center"><sub>Every star means something.</sub></p>
 
 ## What's in this repo
 
