@@ -238,6 +238,8 @@ it('locks editor and attachments for the whole voice run, but keeps permissions 
 // User request 2026-10-24: empty composer hints must follow hover/hold/click,
 // and native selection must not take over a recording. Existing voice tests
 // only cover editability; minimal inputs below drive real DOM handlers (unit/jsdom).
+// 2026-10-26 Bluetooth regression: preparation must also wait for the hold
+// threshold; even a microphone opened without recording changes headset audio.
 it('shows voice guidance only in an empty composer and distinguishes holding from clicking', async () => {
   const view = renderComposer();
   await waitFor(() => expect(h.editor).not.toBeNull());
@@ -261,9 +263,13 @@ it('shows voice guidance only in an empty composer and distinguishes holding fro
     // mousedown path inert while the real composer handler still receives it.
     Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => null });
     fireEvent.mouseDown(h.editor!.view.dom, { button: 0, detail: 1, clientX: 10, clientY: 10 });
-    expect(h.prepare).toHaveBeenCalledOnce();
+    expect(h.prepare).not.toHaveBeenCalled();
     expect(h.listening).toBe(false);
-    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(599); });
+    expect(h.prepare).not.toHaveBeenCalled();
+    expect(h.listening).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(h.prepare).toHaveBeenCalledOnce();
     view.rerender(<ChatInput {...view.props} />);
     expect(screen.getByTestId('composer-voice-hint').textContent).toBe('newChat.chatInput.voiceInput.speakRelease');
     for (const type of ['selectstart', 'dragstart', 'mousemove']) {
