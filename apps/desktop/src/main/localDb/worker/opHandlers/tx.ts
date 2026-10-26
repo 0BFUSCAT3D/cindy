@@ -112,8 +112,6 @@ function dispatchTransaction(db: Database.Database, args: unknown): unknown {
       return orcaReconcileInactiveTeamWorkersForLead(db, txArgs);
     case 'sessions.renameTitles':
       return sessionsRenameTitles(db, txArgs);
-    case 'sessions.createScheduledModelBaseline':
-      return sessionsCreateScheduledModelBaseline(db, txArgs);
     case 'sessions.setStatus':
       return sessionsSetStatus(db, txArgs);
     case 'sessions.setTerminalStatus':
@@ -362,17 +360,6 @@ function botsCreateProfile(db: Database.Database, args: unknown): void {
   })();
 }
 
-/** Atomic with Profile saves: a delayed begin cannot overwrite their pending marker. */
-function sessionsCreateScheduledModelBaseline(db: Database.Database, args: unknown): boolean {
-  const p = asRecord(args, 'sessions.createScheduledModelBaseline args');
-  const sessionId = expectString(p.sessionId, 'sessionId');
-  const baseline = expectString(p.baseline, 'baseline');
-  const expected = p.expectedBaseline === null ? null : expectString(p.expectedBaseline, 'expectedBaseline');
-  return db.prepare(`UPDATE sessions SET scheduled_model_baseline = ?
-    WHERE id = ? AND status = 'active' AND scheduled_model_baseline IS ?`)
-    .run(baseline, sessionId, expected).changes > 0;
-}
-
 function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersion: number } {
   const p = asRecord(args, 'bots.updateProfile args');
   const id = expectString(p.id, 'id');
@@ -389,6 +376,9 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
   }
   if (avatarRef && p.avatar === undefined) {
     throw new Error('botAvatarRef requires an avatar address');
+  }
+  if (p.clearScheduledModelBaseline !== undefined && typeof p.clearScheduledModelBaseline !== 'boolean') {
+    throw new Error('clearScheduledModelBaseline must be a boolean');
   }
   return db.transaction(() => {
     const current = db.prepare('SELECT current_version AS currentVersion, display_name AS displayName, avatar FROM bot_profiles WHERE id = ?')
@@ -480,7 +470,7 @@ function botsUpdateProfile(db: Database.Database, args: unknown): { currentVersi
         VALUES (?, ?, ?, ?, ?, ?)`)
         .run(`${id}:v${nextVersion}`, id, nextVersion, p.identitySource === undefined ? latest!.identity : expectString(p.identitySource, 'identitySource'),
           JSON.stringify(nextConfig), now);
-      if (botProfileModelSelectionChanged(latestConfig ?? {}, nextConfig ?? {})) {
+      if (p.clearScheduledModelBaseline === true || botProfileModelSelectionChanged(latestConfig ?? {}, nextConfig ?? {})) {
         // Save the pending choice in the same transaction as the profile. A
         // paused runtime may not receive its refresh before restart/account exit.
         const targets = db.prepare(`SELECT id, scheduled_model_baseline AS baseline,

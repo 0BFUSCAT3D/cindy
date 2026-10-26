@@ -25,12 +25,14 @@ export function createScheduledModelScope(deps: {
       effort: ScheduledModelSelection['effort'] | '';
     };
     baseline: string | null;
+    profileRevision?: string | null;
   } | null>;
-  write: (sessionId: string, baseline: ScheduledModelBaseline | null, expectedBaseline: string | null) => Promise<void | boolean>;
+  write: (sessionId: string, baseline: ScheduledModelBaseline | null, profileRevision?: string | null, expectedBaseline?: string | null) => Promise<void | boolean>;
   isBusy: (sessionId: string) => boolean;
   apply: (sessionId: string, profile: ScheduledModelSelection) => Promise<void>;
   createId: () => string;
   ownerEpoch?: () => string;
+  prepareBaseline?: (sessionId: string) => Promise<void>;
 }) {
   const assertOwner = (owner: string | undefined) => {
     if (owner !== deps.ownerEpoch?.()) throw new Error('Account changed during scheduled model selection');
@@ -38,13 +40,31 @@ export function createScheduledModelScope(deps: {
   return {
     async begin(sessionId: string): Promise<string | undefined> {
       const owner = deps.ownerEpoch?.();
-      const row = await deps.read(sessionId);
+      let row = await deps.read(sessionId);
       assertOwner(owner);
       if (!row) return undefined;
       const existing = parseScheduledModelBaseline(row.baseline);
-      if (existing) return existing.scopeId;
+      if (existing && !existing.pendingBotProfileVersion) return existing.scopeId;
+      const profileRevision = row.profileRevision;
+      // Settings may have committed while their asynchronous runtime refresh is
+      // still queued. Align the owner under this same send lease before capture.
+      if (deps.prepareBaseline) {
+        await deps.prepareBaseline(sessionId);
+        assertOwner(owner);
+        row = await deps.read(sessionId);
+        assertOwner(owner);
+        if (!row) return undefined;
+      }
+      if (row.profileRevision !== profileRevision) {
+        throw new ScheduledModelSelectionBusyError('Companion profile changed during baseline preparation');
+      }
+      const prepared = parseScheduledModelBaseline(row.baseline);
+      if (prepared?.pendingBotProfileVersion) {
+        throw new ScheduledModelSelectionBusyError('Permanent model selection is still pending');
+      }
+      if (prepared) return prepared.scopeId;
       const scopeId = deps.createId();
-      const written = await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId }, row.baseline);
+      const written = await deps.write(sessionId, { ...row.profile, effort: row.profile.effort || null, scopeId }, profileRevision, row.baseline);
       assertOwner(owner);
       if (written === false) throw new ScheduledModelSelectionBusyError('Scheduled model selection changed before scope creation');
       return scopeId;
@@ -62,11 +82,32 @@ export function createScheduledModelScope(deps: {
       // Keep the saved choice on failure so the next input retries before dispatch.
       await deps.apply(sessionId, baseline);
       assertOwner(owner);
-      const written = await deps.write(sessionId, null, row!.baseline);
+      const written = await deps.write(sessionId, null, row!.profileRevision, row!.baseline);
       assertOwner(owner);
       if (written === false) throw new ScheduledModelSelectionBusyError('Scheduled model selection changed before scope cleanup');
     },
   };
+}
+
+/** Fence even lanes linked after the settings save took its send-lock snapshot.
+ * The revision is read with the route; checking and writing are one DB statement.
+ * Ordinary sessions use null, so acquiring a companion link also invalidates capture.
+ */
+export async function writeScheduledModelBaselineIfProfileCurrent(
+  db: { exec: (sql: string, params: unknown[]) => Promise<{ changes: number }> },
+  sessionId: string,
+  baseline: ScheduledModelBaseline,
+  profileRevision: string | null,
+  expectedBaseline: string | null = null,
+): Promise<boolean> {
+  const result = await db.exec(`UPDATE sessions SET scheduled_model_baseline = ?
+    WHERE id = ? AND status = 'active' AND scheduled_model_baseline IS ?
+      AND (SELECT json_array(p.id, p.current_version)
+           FROM bot_session_links l JOIN bot_profiles p ON p.id = l.bot_id
+           WHERE l.session_id = sessions.id AND l.archived_at IS NULL
+             AND l.role IN ('canonical', 'group', 'channel', 'thread') LIMIT 1) IS ?`,
+  [JSON.stringify(baseline), sessionId, expectedBaseline, profileRevision]);
+  return result.changes === 1;
 }
 
 export class ScheduledModelSelectionBusyError extends Error {}

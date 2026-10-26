@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { tx } from '../tx.js';
 import { normalizeBotProfileModelChain } from '../../../ipc/botProfileVersioning';
 import { createBotModelRouteReconciler } from '../../../../maker-ipc/botModelRouteReconciler';
-import { createScheduledModelScope } from '../../../../maker-ipc/scheduledModelSelection';
+import { createScheduledModelScope, writeScheduledModelBaselineIfProfileCurrent } from '../../../../maker-ipc/scheduledModelSelection';
 import { normalizeBotModelChain } from '../../../../../shared/botModelChain';
 import type { ScheduledModelSelection } from '../../../../maker-ipc/scheduledModelSelection';
 
@@ -110,11 +110,13 @@ describe('Bot named worker transactions', () => {
       onSelectionAccepted: async () => { writeBaseline(null); },
     });
     const scopeDeps: Parameters<typeof createScheduledModelScope>[0] = {
-      read: async () => ({ profile: current, baseline: readBaseline() }),
-      write: async (sessionId, baseline, expectedBaseline) => {
-        if (baseline) return tx(db, { name: 'sessions.createScheduledModelBaseline', args: {
-          sessionId, baseline: JSON.stringify(baseline), expectedBaseline,
-        } }) as boolean;
+      read: async () => ({ profile: current, baseline: readBaseline(),
+        profileRevision: db.prepare("SELECT json_array(id, current_version) FROM bot_profiles WHERE id = 'saved-bot'").pluck().get() as string,
+      }),
+      write: async (sessionId, baseline, revision, expectedBaseline) => {
+        if (baseline) return writeScheduledModelBaselineIfProfileCurrent({
+          exec: async (sql, params) => db.prepare(sql).run(...params),
+        }, sessionId, baseline, revision ?? null, expectedBaseline);
         writeBaseline(null);
       },
       apply: async (_id, route) => { current = route; }, isBusy: () => false, createId: () => 'unused',
@@ -284,7 +286,8 @@ describe('Bot named worker transactions', () => {
       },
     });
     if (order === 'save-before-begin') h.save('permanent');
-    if (order === 'save-during-begin') await expect(scope.begin('saved-session')).rejects.toThrow('changed');
+    if (order === 'save-before-begin') await expect(scope.begin('saved-session')).rejects.toThrow('pending');
+    else if (order === 'save-during-begin') await expect(scope.begin('saved-session')).rejects.toThrow('changed');
     else await scope.begin('saved-session');
     if (order === 'save-after-begin') h.save('permanent');
     expect(JSON.parse(h.readBaseline()!)).toMatchObject({ pendingBotProfileVersion: 2 });
@@ -294,7 +297,7 @@ describe('Bot named worker transactions', () => {
     expect(h.readBaseline()).toBeNull();
   });
 
-  it('keeps begin valid across an unrelated profile edit and across a rolled-back save', async () => {
+  it('retries capture across an unrelated profile revision and preserves a rolled-back save', async () => {
     const h = savedModelFixture();
     h.writeBaseline(null);
     const scope = createScheduledModelScope({ ...h.scopeDeps, write: async (...args) => {
@@ -302,7 +305,9 @@ describe('Bot named worker transactions', () => {
       h.save('old', 1, { identitySource: 'new identity' });
       return h.scopeDeps.write(...args);
     } });
-    await expect(scope.begin('saved-session')).resolves.toBe('unused');
+    await expect(scope.begin('saved-session')).rejects.toThrow('changed');
+    expect(h.readBaseline()).toBeNull();
+    await expect(h.scope.begin('saved-session')).resolves.toBe('unused');
     expect(JSON.parse(h.readBaseline()!).pendingBotProfileVersion).toBeUndefined();
   });
 
@@ -400,6 +405,44 @@ describe('Bot named worker transactions', () => {
     ).toEqual({ hiddenAt: null, pinnedAt: null });
   });
 
+  // #6895: model saves must retire only live profile-following restores, and
+  // a later write failure must roll back both the profile and the restore clear.
+  it('retires only active profile-following restores atomically with the model save', () => {
+    tx(db, { name: 'bots.createProfile', args: {
+      id: 'bot-1', displayName: 'Hermes', description: '', avatar: '🤖', avatarColor: 'violet',
+      identitySource: 'identity', capabilitiesJson: '{}', now: 1,
+    } });
+    for (const role of ['canonical', 'group', 'channel', 'thread', 'worker', 'archived']) {
+      db.prepare(`INSERT INTO sessions
+        (id, title, workspace_kind, model, effort, permission_mode, status, total_token_usage,
+         total_cost_usd, context_tokens, context_window, fast_mode, plan_mode_enabled, agent_kind,
+         extra_dirs, source, created_at, updated_at, scheduled_model_baseline)
+        VALUES (?, 'Hermes', 'dialogue', 'temporary', 'high', 'ask', 'active',
+         0, 0, 0, 0, 0, 0, 'codex', '[]', 'bot', 2, 2, 'old-route')`).run(role);
+      db.prepare(`INSERT INTO bot_session_links
+        (id, bot_id, session_id, profile_version, role, created_at, archived_at)
+        VALUES (?, 'bot-1', ?, 1, ?, 2, ?)`).run(`link-${role}`, role, role === 'archived' ? 'channel' : role, role === 'archived' ? 3 : null);
+    }
+    const args = { id: 'bot-1', identitySource: 'identity', capabilitiesJson: '{"model":"new"}',
+      profileContentChanged: true, expectedCurrentVersion: 1, clearScheduledModelBaseline: true, now: 4 };
+    // Fail the permission write after restore retirement, not its early input
+    // validation, so this still verifies rollback of the combined transaction.
+    db.exec(`CREATE TRIGGER reject_permission_write BEFORE UPDATE OF permission_mode ON sessions
+      BEGIN SELECT RAISE(ABORT, 'permission write failed'); END`);
+    expect(() => tx(db, { name: 'bots.updateProfile', args: { ...args, canonicalPermissionMode: 'auto' } }))
+      .toThrow('permission write failed');
+    expect(db.prepare('SELECT current_version FROM bot_profiles').pluck().get()).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) FROM sessions WHERE scheduled_model_baseline IS NOT NULL').pluck().get()).toBe(6);
+    db.exec('DROP TRIGGER reject_permission_write');
+    tx(db, { name: 'bots.updateProfile', args });
+    const restores = db.prepare('SELECT id, scheduled_model_baseline AS baseline FROM sessions ORDER BY id')
+      .all() as Array<{ id: string; baseline: string }>;
+    for (const row of restores) {
+      if (row.id === 'archived' || row.id === 'worker') expect(row.baseline).toBe('old-route');
+      else expect(JSON.parse(row.baseline)).toMatchObject({ pendingBotProfileVersion: 2, model: 'temporary' });
+    }
+    expect(db.prepare('SELECT current_version FROM bot_profiles').pluck().get()).toBe(2);
+  });
   // #6782: production worker transactions; unit tier. Existing tests do not
   // interleave a composer permission commit with a settings save captured earlier.
   it.each([['ask', 'bypassPermissions', 'trusted'], ['trusted', 'ask', 'ask']])(
