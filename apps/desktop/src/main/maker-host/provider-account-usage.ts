@@ -21,6 +21,7 @@ import type { AgentKind, Provider } from '@cindy/model-providers';
 
 import {
   PROVIDER_ACCOUNT_USAGE_AGENTS,
+  getProviderAccountUsageDashboardUrl,
   type DeepSeekAccountUsageSnapshot,
   type ProviderAccountUsageError,
   type ProviderAccountUsageRequest,
@@ -413,6 +414,15 @@ export async function readProviderAccountUsage(
     }
     return { status: 'unsupported' };
   }
+  const result = await readResolvedAccountUsage(request, resolution, ownerStamp);
+  return { ...result, dashboardUrl: getProviderAccountUsageDashboardUrl(resolution.endpoint) };
+}
+
+async function readResolvedAccountUsage(
+  request: ProviderAccountUsageRequest,
+  resolution: ProviderAccountUsageResolution,
+  ownerStamp: ReturnType<OwnerStampReader>,
+): Promise<ProviderAccountUsageResult> {
   // 缓存键含凭证指纹：同一供应商下换 key（不同账户）后旧账户快照绝不复用。
   const keyFingerprint = createHash('sha256').update(resolution.key).digest('hex').slice(0, 12);
   const cacheKey = `${ownerStamp.dataOwnerId ?? 'local'}:${ownerStamp.generation}:${request.providerId}:${resolution.integrationId}:${resolution.endpoint}:${resolution.agent}:${keyFingerprint}`;
@@ -465,6 +475,21 @@ export async function readProviderAccountUsage(
       'provider account usage fetch failed',
       { providerId: request.providerId, integrationId: resolution.integrationId, code },
     );
+    // 等待上游期间其它查询可能已更新同一账户；迟到失败不能覆盖该记录，
+    // 也不能把新余额/TTL/限流状态回退到本次请求开始前的值。
+    const latest = cache.get(cacheKey);
+    if (latest && latest !== record) {
+      if (latest.snapshot) {
+        return {
+          status: 'ready', snapshot: latest.snapshot,
+          stale: latest.expiresAt <= accountUsageNow() || latest.lastError !== undefined,
+          ...(latest.lastError ? { error: latest.lastError } : {}),
+          ...(latest.retryAt ? { retryAt: latest.retryAt } : {}),
+          agent: resolution.agent,
+        };
+      }
+      return { status: 'unavailable', error: latest.lastError ?? code, ...(latest.retryAt ? { retryAt: latest.retryAt } : {}) };
+    }
     if (err instanceof AccountUsageRequestError && err.retryAt) {
       cache.set(cacheKey, {
         snapshot: record?.snapshot,

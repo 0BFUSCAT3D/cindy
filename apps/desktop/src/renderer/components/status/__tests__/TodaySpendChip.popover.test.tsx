@@ -301,6 +301,7 @@ it.each<{
   { vendorKey: 'pi', providerId: 'xai', label: '打开 Grok 用量页面', url: 'https://grok.com' },
   { vendorKey: 'pi', providerId: 'deepseek', upstream: 'https://api.deepseek.com', label: 'providerAccountUsage.openDashboard', url: 'https://platform.deepseek.com/usage' },
   { vendorKey: 'pi', providerId: 'glm', upstream: 'https://open.bigmodel.cn/api/coding/paas/v4', label: 'providerAccountUsage.zhipuCodingPlan.usage', url: 'https://www.bigmodel.cn/coding-plan/personal/usage' },
+  { vendorKey: 'pi', providerId: 'zai', upstream: 'https://api.z.ai/api/coding/paas/v4', label: 'providerAccountUsage.zhipuCodingPlan.usage', url: 'https://z.ai/manage-apikey/coding-plan/personal/my-plan' },
   { vendorKey: 'cc', providerId: 'xd', label: '用量明细', url: null },
 ])('opens the selected $providerId account dashboard', async ({ vendorKey, providerId, upstream, label, url }) => {
   if (upstream) {
@@ -308,7 +309,7 @@ it.each<{
       id: providerId, auth: { method: 'apiKey' },
       routing: { pi: { upstream, authStrategy: 'api-key-header' } },
     } as ProviderView];
-    mocks.fetchProviderAccountUsage.mockResolvedValue({ status: 'unsupported' });
+    mocks.fetchProviderAccountUsage.mockResolvedValue({ status: 'unavailable', error: 'auth', dashboardUrl: url });
   }
   render(<TodaySpendChip vendorKey={vendorKey} providerId={providerId} sessionId="session-1" />);
   await act(async () => {});

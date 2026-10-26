@@ -6,7 +6,20 @@
  * baseUrl 识别；走代理 / 自定义域名的连接不算（key 属于代理，main 侧也不会认领）。
  */
 
-import type { ProviderView } from '@cindy/model-providers';
+import type { AgentKind, ProviderView } from '@cindy/model-providers';
+import { getProviderAccountUsageDashboardUrl, PROVIDER_ACCOUNT_USAGE_AGENTS } from '../../shared/providerAccountUsage';
+
+/** 查询完成前的看板入口；完成后优先消费 main 回带的实际查询端点。 */
+export function getProviderAccountUsageDashboardUrlView(
+  provider: ProviderView | undefined,
+  agent?: AgentKind,
+): string | undefined {
+  for (const runtime of agent ? [agent] : PROVIDER_ACCOUNT_USAGE_AGENTS) {
+    const url = getProviderAccountUsageDashboardUrl(provider?.routing[runtime]?.upstream ?? '');
+    if (url) return url;
+  }
+  return undefined;
+}
 
 const DEEPSEEK_ORIGIN = 'https://api.deepseek.com';
 const ZHIPU_ANTHROPIC_BASES = [

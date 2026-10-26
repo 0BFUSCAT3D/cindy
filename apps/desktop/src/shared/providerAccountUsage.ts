@@ -77,7 +77,7 @@ export type ProviderAccountUsageError =
   | 'throttled'
   | 'unknown';
 
-export type ProviderAccountUsageResult =
+export type ProviderAccountUsageResult = (
   /** 该供应商没有可读的账户余额 / 用量接口（renderer 不渲染模块）。 */
   | { status: 'unsupported' }
   | { status: 'unavailable'; error: ProviderAccountUsageError; retryAt?: number }
@@ -89,13 +89,34 @@ export type ProviderAccountUsageResult =
       retryAt?: number;
       /** 本次查询实际使用的 runtime；设置页用它标注余额来自哪个引擎的密钥。 */
       agent?: AgentKind;
-    };
+    }
+) & {
+  /** 本次实际查询端点对应的官方看板；同样随鉴权等失败结果返回。 */
+  dashboardUrl?: string;
+};
 
 /**
  * 智谱 GLM Coding Plan 的官方用量页。无套餐（noPlan）/ 想看积分细则时的一键入口；
  * 额度数值由 /api/monitor/usage/quota/limit 拉取（2026-10 实测可用）。
  */
 export const ZHIPU_CODING_PLAN_USAGE_URL = 'https://www.bigmodel.cn/coding-plan/personal/usage';
+
+/** 按官方端点选择看板，不从界面语言或 Cindy 区域推断账号所属网站。 */
+export function getProviderAccountUsageDashboardUrl(upstream: string): string | undefined {
+  try {
+    switch (new URL(upstream).origin) {
+      case 'https://api.deepseek.com':
+        return 'https://platform.deepseek.com/usage';
+      case 'https://open.bigmodel.cn':
+        return ZHIPU_CODING_PLAN_USAGE_URL;
+      case 'https://api.z.ai':
+        return 'https://z.ai/manage-apikey/coding-plan/personal/my-plan';
+    }
+  } catch {
+    // 未配置或非法地址没有对应的官方看板。
+  }
+  return undefined;
+}
 
 /** 余额查询优先用的 runtime 顺序（与用户实际配置密度对齐，命中即止）。 */
 export const PROVIDER_ACCOUNT_USAGE_AGENTS: readonly AgentKind[] = [

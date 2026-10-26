@@ -11,8 +11,8 @@ import { useTranslation } from 'react-i18next';
 
 import type { ProviderView } from '@cindy/model-providers';
 
-import { ZHIPU_CODING_PLAN_USAGE_URL } from '../../../shared/providerAccountUsage';
 import {
+  getProviderAccountUsageDashboardUrlView,
   hasDeepSeekOfficialRouteView,
   isZhipuCodingPlanProviderView,
 } from '../../lib/providerAccountUsageView';
@@ -20,14 +20,13 @@ import { useProviderAccountUsage } from '../../hooks/useProviderAccountUsage';
 import { QuotaHoverCard } from '../status/QuotaHoverCard';
 import { buildDeepSeekUsageCard, buildZhipuUsageCard } from '../status/usageCardModel';
 
-const DEEPSEEK_USAGE_DASHBOARD_URL = 'https://platform.deepseek.com/usage';
-
 export function ProviderAccountUsageModule({ provider }: { provider?: ProviderView }) {
   const { t, i18n } = useTranslation();
   const locale = i18n.resolvedLanguage ?? i18n.language;
   const deepSeek = hasDeepSeekOfficialRouteView(provider);
   const zhipu = isZhipuCodingPlanProviderView(provider);
   const usage = useProviderAccountUsage(deepSeek || zhipu ? provider : undefined);
+  const dashboardUrl = usage.result?.dashboardUrl ?? getProviderAccountUsageDashboardUrlView(provider);
   if (!deepSeek && !zhipu) return null;
   const snapshot = usage.result?.status === 'ready' ? usage.result.snapshot : null;
   const errorText =
@@ -58,11 +57,7 @@ export function ProviderAccountUsageModule({ provider }: { provider?: ProviderVi
         variant="embedded"
         account={account}
         dashboardLabel={deepSeek ? t('providerAccountUsage.openDashboard') : t('providerAccountUsage.zhipuCodingPlan.usage')}
-        onOpenDashboard={
-          deepSeek
-            ? () => void window.electronAPI.openExternal(DEEPSEEK_USAGE_DASHBOARD_URL)
-            : () => void window.electronAPI.openExternal(ZHIPU_CODING_PLAN_USAGE_URL)
-        }
+        onOpenDashboard={dashboardUrl ? () => void window.electronAPI.openExternal(dashboardUrl) : undefined}
       />
     </div>
   );

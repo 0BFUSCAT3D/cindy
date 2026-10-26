@@ -134,10 +134,11 @@ import {
 } from './usageCardModel';
 import { useProviderAccountUsage } from '@/hooks/useProviderAccountUsage';
 import {
+  getProviderAccountUsageDashboardUrlView,
   hasDeepSeekOfficialRouteView,
   isZhipuCodingPlanProviderView,
 } from '@/lib/providerAccountUsageView';
-import { ZHIPU_CODING_PLAN_USAGE_URL, type ProviderAccountUsageSnapshot, type ZhipuCodingPlanQuotaSnapshot } from '../../../shared/providerAccountUsage';
+import { type ProviderAccountUsageSnapshot, type ZhipuCodingPlanQuotaSnapshot } from '../../../shared/providerAccountUsage';
 
 // XD 网关 / 托管账号之前会跳到内部用量看板(内部域名)—— 开源前移除该硬编码。
 // 登录随凭据只下发 { endpoint, apiKey }(见 main/model-access/credentialsSync.ts),不含
@@ -147,7 +148,6 @@ import { ZHIPU_CODING_PLAN_USAGE_URL, type ProviderAccountUsageSnapshot, type Zh
 // usageDashboardUrl / consoleUrl),据此恢复网关账号的跳转 + tooltip 链接行
 // (i18n 文案 todaySpend.openProxyUsage 已保留待复用,勿当死 key 删)。
 const CODEX_USAGE_DASHBOARD_URL = 'https://chatgpt.com/codex/settings/usage';
-const DEEPSEEK_USAGE_DASHBOARD_URL = 'https://platform.deepseek.com/usage';
 const XAI_USAGE_DASHBOARD_URL = 'https://grok.com';
 const CLAUDE_USAGE_DASHBOARD_URL = 'https://claude.ai/settings/usage';
 
@@ -1383,11 +1383,11 @@ export function TodaySpendChip({
         ? CODEX_USAGE_DASHBOARD_URL
         : isClaudeSubscription
           ? CLAUDE_USAGE_DASHBOARD_URL
-          : usesDeepSeekAccountForm
-            ? DEEPSEEK_USAGE_DASHBOARD_URL
-            : usesZhipuCodingPlanForm
-              ? ZHIPU_CODING_PLAN_USAGE_URL
-              : null;
+          : usesProviderAccountUsageForm
+            ? providerAccountUsage.result?.dashboardUrl
+              ?? getProviderAccountUsageDashboardUrlView(selectedQuotaProvider, providerAccountAgent)
+              ?? null
+            : null;
   // 看板链接行文案:与 usageDashboardUrl 一一对应;网关账号无看板 → null
   // (tooltip 不显示"打开看板"行,chip 也不可点)。
   const usageDashboardLabel: string | null = isDeviceLinkRemote

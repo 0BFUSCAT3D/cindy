@@ -331,6 +331,7 @@ describe('readProviderAccountUsage', () => {
       status: 'ready',
       stale: false,
       agent: 'claude-code',
+      dashboardUrl: 'https://platform.deepseek.com/usage',
       snapshot: {
         kind: 'deepseek-balance',
         isAvailable: true,
@@ -375,10 +376,46 @@ describe('readProviderAccountUsage', () => {
     upstream = 'https://api.z.ai/api/anthropic';
     await expect(readProviderAccountUsage({ providerId: 'deepseek' })).resolves.toEqual({
       status: 'unavailable', error: 'auth',
+      dashboardUrl: 'https://z.ai/manage-apikey/coding-plan/personal/my-plan',
     });
     expect(fetchMock).toHaveBeenLastCalledWith(
       'https://api.z.ai/api/monitor/usage/quota/limit', expect.anything(),
     );
+  });
+
+  // PR #7031 review: a delayed failure must neither replace a concurrent success
+  // nor discard its TTL/Retry-After state. Unit, promises control ordering without waits.
+  it.each([false, true])('retains a concurrent fresh balance after a late failure (prior cache: %s)', async (seedCache) => {
+    if (seedCache) {
+      setAccountUsageFetch((async () => jsonRes(DEEPSEEK_BALANCE)) as typeof fetch);
+      await readProviderAccountUsage({ providerId: 'deepseek' });
+      nowMs += 6 * 60_000;
+    }
+    let finishLate!: (response: Response) => void;
+    const updated = { ...DEEPSEEK_BALANCE, balance_infos: [{ ...DEEPSEEK_BALANCE.balance_infos[0], total_balance: '99.00' }] };
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { finishLate = resolve; }))
+      .mockResolvedValueOnce(jsonRes(updated));
+    setAccountUsageFetch(fetchMock as typeof fetch);
+    const late = readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
+    const fresh = await readProviderAccountUsage({ providerId: 'deepseek', forceRefresh: true });
+    finishLate(jsonRes({}, 429, { 'retry-after': '60' }));
+    await expect(late).resolves.toEqual(fresh);
+    await expect(readProviderAccountUsage({ providerId: 'deepseek' })).resolves.toEqual(fresh);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // The settings page may use a later engine's key; metadata follows the endpoint
+  // actually queried, including unavailable results, rather than the first route.
+  it.each([200, 401])('returns the Global dashboard for the resolved engine (HTTP %s)', async (status) => {
+    setAccountUsageProviderReader(() => mkProvider({ routing: {
+      'claude-code': { upstream: 'https://open.bigmodel.cn/api/anthropic', authStrategy: 'api-key-header' },
+      pi: { upstream: 'https://api.z.ai/api/coding/paas/v4', authStrategy: 'api-key-header' },
+    } }));
+    setAccountUsageKeyReader((_id, agent) => agent === 'pi' ? 'test-key' : null);
+    setAccountUsageFetch((async () => jsonRes(ZHIPU_QUOTA, status)) as typeof fetch);
+    const result = await readProviderAccountUsage({ providerId: 'deepseek' });
+    expect(result).toMatchObject({ dashboardUrl: 'https://z.ai/manage-apikey/coding-plan/personal/my-plan' });
   });
 
   it('treats a swapped key as a different account (cache key includes key fingerprint)', async () => {

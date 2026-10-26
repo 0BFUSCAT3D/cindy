@@ -1098,8 +1098,8 @@
     "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy 無法讀取來源附件，訊息未傳送。請將檔案另存到「下載」或其他可存取的資料夾，移除原附件，再用附件按鈕加入副本後傳送。"
   },
   "providerError": {
-    "AUTH_INVALID": "API 金鑰無效或已過期（401），請檢查金鑰後重試",
-    "AUTH_FORBIDDEN": "金鑰有效但無權訪問（403），請檢查套餐或模型權限",
+    "AUTH_INVALID": "目前介面驗證失敗，請檢查位址、金鑰和驗證方式",
+    "AUTH_FORBIDDEN": "目前介面拒絕存取，請檢查方案、模型或地區權限",
     "RATE_LIMITED": "請求被限流（429），請稍後重試",
     "QUOTA_EXCEEDED": "配額或餘額不足，請檢查供應商帳戶",
     "MODEL_NOT_FOUND": "模型不存在或無權使用，請檢查模型 ID",

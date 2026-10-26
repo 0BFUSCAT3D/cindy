@@ -1110,8 +1110,8 @@
     "DEVICE_LINK_MEDIA_ACCESS_DENIED": "Cindy cannot read the source attachment; the message was not sent. Save a copy to Downloads or another accessible folder, remove the original attachment, and add the copy using the attachment button before sending again."
   },
   "providerError": {
-    "AUTH_INVALID": "Invalid or expired API key (401). Check the key and try again",
-    "AUTH_FORBIDDEN": "Key is valid but access is denied (403). Check plan or model permissions",
+    "AUTH_INVALID": "Authentication failed for this interface. Check the address, key, and authentication method.",
+    "AUTH_FORBIDDEN": "This interface denied access. Check your plan, model, or regional permissions.",
     "RATE_LIMITED": "Rate limited (429). Try again later",
     "QUOTA_EXCEEDED": "Quota or balance exhausted. Check your provider account",
     "MODEL_NOT_FOUND": "Model not found or not accessible. Check the model ID",
