@@ -353,6 +353,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let actors: Actor[] = [];
   let selfId = '';
   const histories = new Map<string, ChatHistory>();
+  const transcriptViews = new Map<string, { generation: string; cursor: string; messages: Awaited<ReturnType<typeof readAllRoomMessages>> }>();
   function history(reader = selfId): ChatHistory | undefined {
     if (!selfId || !deps.chatHistoryStore) return undefined;
     let value = histories.get(reader);
@@ -892,17 +893,25 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (companion && companionSelf !== self) { companion.dispose(); companion = undefined; }
     companionSelf = self;
     companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, selfDeviceId: self, current, log: deps.log,
-      transcript: deps.chatHistoryStore ? async (roomId, actorId) => {
+      transcript: deps.chatHistoryStore ? async (roomId, actorId, refresh) => {
         // Keep message-time ordering for imported history, but reuse covered pages after delta sync.
         const cache = history()!;
+        const key = `${actorId}:${roomId}`;
+        if (refresh) cache.invalidate(roomId);
         for (let attempt = 0; attempt < 3; attempt++) {
-          cache.invalidate(roomId);
           const snapshot = await cache.snapshot(roomId);
+          const previous = transcriptViews.get(key);
+          // Even older pages pass ensure() for expiry, reconnect and authorization.
+          // Unchanged room revisions can reuse the sorted transcript without rescanning 500 pages.
+          if (previous?.generation === snapshot.cacheGeneration && previous.cursor === snapshot.cursor) return previous.messages;
           const messages = await readAllRoomMessages(async <T>(route: string): Promise<T> => {
             const query = new URL(`https://chat.invalid${route}`).searchParams;
             return await cache.page(roomId, query) as T;
           }, roomId, actorId);
-          if (cache.generation(roomId) === snapshot.cacheGeneration) return messages;
+          if (cache.generation(roomId) === snapshot.cacheGeneration) {
+            transcriptViews.set(key, { generation: snapshot.cacheGeneration, cursor: snapshot.cursor, messages });
+            return messages;
+          }
         }
         throw new Error('CHAT_HISTORY_CHANGED');
       } : undefined,
