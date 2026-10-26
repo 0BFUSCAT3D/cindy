@@ -69,14 +69,27 @@ export function ChatVideoView({ src, filename, variant, sessionId }: ChatVideoVi
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting && document.fullscreenElement !== video) video.pause();
     });
+    let wasFullscreen = document.fullscreenElement === video;
+    const onFullscreenChange = () => {
+      const isFullscreen = document.fullscreenElement === video;
+      if (wasFullscreen && !isFullscreen) {
+        // A hidden notification ignored during fullscreen may not repeat on
+        // exit. Resubscribe for a fresh sample of the restored inline bounds.
+        observer.unobserve(video);
+        observer.observe(video);
+      }
+      wasFullscreen = isFullscreen;
+    };
     const onVisibility = () => {
       if (document.hidden) video.pause();
     };
     observer.observe(video);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
       unregister();
       observer.disconnect();
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
       document.removeEventListener('visibilitychange', onVisibility);
       video.pause();
     };

@@ -12,19 +12,22 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock('@/hooks/useRemoteMediaUrl', () => ({ useRemoteMediaUrl: (url: string) => url }));
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 let visibility: IntersectionObserverCallback;
+let observe: ReturnType<typeof vi.fn>;
 let pause: ReturnType<typeof vi.spyOn>;
 const showModalDescriptor = Object.getOwnPropertyDescriptor(
   HTMLDialogElement.prototype,
   'showModal',
 );
 beforeEach(() => {
+  observe = vi.fn();
   vi.stubGlobal(
     'IntersectionObserver',
     class {
       constructor(callback: IntersectionObserverCallback) {
         visibility = callback;
       }
-      observe() {}
+      observe = observe;
+      unobserve() {}
       disconnect() {}
     },
   );
@@ -171,6 +174,36 @@ it('pauses video when its message leaves view', () => {
     {} as IntersectionObserver,
   );
   expect(pause).toHaveBeenCalledOnce();
+});
+// Tier 1 regression (PR #7264): exiting fullscreen must pause an offscreen
+// message even if its only hidden notification arrived during fullscreen.
+// The previous test sent a second transition manually, hiding this gap. Model
+// observe's fresh initial notification, including a now-visible inline player
+// so stale fullscreen bounds cannot spuriously pause playback.
+it.each([false, true])('rechecks visibility after fullscreen exits (visible: %s)', (visible) => {
+  const view = render(<ChatVideoView {...props} />, { wrapper: Tooltip.Provider });
+  const video = view.container.querySelector('video')!;
+  Object.defineProperty(document, 'fullscreenElement', {
+    configurable: true,
+    get: () => video,
+  });
+  fireEvent(document, new Event('fullscreenchange'));
+  visibility(
+    [{ isIntersecting: false }] as IntersectionObserverEntry[],
+    {} as IntersectionObserver,
+  );
+  expect(pause).not.toHaveBeenCalled();
+  // No new intersection transition occurs on exit. Only a fresh subscription
+  // delivers the browser's initial visibility sample again.
+  observe.mockImplementation(() => {
+    visibility(
+      [{ isIntersecting: visible }] as IntersectionObserverEntry[],
+      {} as IntersectionObserver,
+    );
+  });
+  vi.spyOn(document, 'fullscreenElement', 'get').mockReturnValue(null);
+  fireEvent(document, new Event('fullscreenchange'));
+  expect(pause).toHaveBeenCalledTimes(visible ? 0 : 1);
 });
 // Tier 1: the old lightbox joined the real audio/video bus; inline playback must
 // preserve that behavior, including the fresh element mounted after retry.
