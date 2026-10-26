@@ -190,6 +190,21 @@ describe('Chat Server result delivery and refresh', () => {
     if (name !== null) expect(result.group.messages[1]).toMatchObject({ authorName: name, authorBotId: ownerId, authorKind: 'user' });
     expect(bot).toMatchObject({ name: 'Companion X', ownerName: 'Account B', ownerActorId: ownerId });
   });
+  // #6907: direct rooms share the adapter but must keep account owner labels, including empty legacy values.
+  it.each(['Account B', ''])('keeps direct owner labels from account %s', async ownerName => {
+    const bot = { id: botId, kind: 'bot', name: 'Companion X', state: 'joined', role: 'member', ownerActorId: selfId, ownerName };
+    const members = [bot, { id: selfId, kind: 'human', name: 'Nickname A', state: 'joined', role: 'member', ownerActorId: selfId }];
+    const messages = [{ id: execution.source_message_id, seq: '1', authorId: botId, author: { kind: 'bot', name: 'Companion X' },
+      content: [{ type: 'text', text: 'Example reply' }], createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId: null }];
+    fixture.handle.mockImplementation(route => route.endsWith('/snapshot') ? { body: { room: { ...room(roomId), kind: 'direct' }, members, messages, cursor: '1' } }
+      : route.includes('/messages?') ? { body: messages } : response(route));
+    const result = await service.getGroup(roomId, { conversationKind: 'direct' });
+    if (!result.ok) throw new Error(result.errorCode);
+    const label = ownerName ? 'Companion X (Account B)' : 'Companion X';
+    expect(result.group).toMatchObject({ name: label, messages: [{ authorName: label }], lastMessage: { authorName: label } });
+    expect(result.group.members.find(m => m.actorId === botId)).toMatchObject({ name: label, ownerName });
+    expect(bot.ownerName).toBe(ownerName);
+  });
   describe('分工 auto-continue on this computer (bot-group-chat.md §7.4)', () => {
     const planId = '80000000-0000-4000-8000-000000000009';
     const otherHuman = '30000000-0000-4000-8000-000000000002';

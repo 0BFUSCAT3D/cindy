@@ -505,7 +505,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     present: async (groupId, message) => {
       const snapshot = await recentSnapshot(groupId);
       const member = snapshot.members.find(member => member.id === message.authorId);
-      const view = messageView(message, snapshot.members);
+      const view = messageView(message, snapshot.members, snapshot.room.kind === 'direct' ? [] : snapshot.members);
       const words = (key: string) => t(`settings.notifications.chat.${key}`);
       const name = notificationPreview(view.authorName) || words('sender');
       const senderName = message.author.kind === 'bot' ? `${name} (${words('teammate')})` : name;
@@ -1077,7 +1077,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const actor = actors.find(a => a.id === actorId && a.kind === 'bot');
     return profiles.find(p => p.id === actor?.externalId);
   }
-  function messageView(m: Message, members: Member[]): BotGroupMessageView {
+  function messageView(m: Message, members: Member[], ownerMembers: readonly Member[] = members): BotGroupMessageView {
     // Only the server-owned origin establishes a system event. A user-supplied
     // card with the same namespace must remain an ordinary chat message.
     if (m.origin === 'system') {
@@ -1110,7 +1110,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const task = m.deleted || planCard ? null : taskCardOf(m);
     return { id: m.id, sequence: Number(m.seq), serverSequence: m.seq, deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
       isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}), ...(task ? { task } : {}),
-      authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member, members) : m.author.name, content: displayText(m),
+      authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member, ownerMembers) : m.author.name, content: displayText(m),
       mentions: { all: false, botIds: (m.mentions ?? []).map(actorId => localBot(actorId)?.id ?? actorId) }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }
   /**
@@ -1179,7 +1179,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
    * message can be quoted; the snapshot never comes from the controller's input. A thread
    * share's own text is only its card's fallback, so a share is not quotable either.
    */
-  async function quoteSnapshot(roomId: string, messageId: string, members: Promise<Member[]>): Promise<BotGroupQuoteView & { recipientActorId?: string }> {
+  async function quoteSnapshot(roomId: string, messageId: string, members: Promise<Member[]>, direct: boolean): Promise<BotGroupQuoteView & { recipientActorId?: string }> {
     let quoted: Message;
     try {
       quoted = await api<Message>(`/conversations/${roomId}/messages/${messageId}`);
@@ -1187,7 +1187,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (error instanceof ChatResponseError && [403, 404].includes(error.status)) throw new Error('QUOTE_UNAVAILABLE');
       throw error;
     }
-    const view = messageView(quoted, await members);
+    const resolvedMembers = await members;
+    const view = messageView(quoted, resolvedMembers, direct ? [] : resolvedMembers);
     if (quoted.id !== messageId || quoted.deleted || quoted.threadRootId !== null || quoted.origin === 'system'
       || view.kind !== 'message' || view.authorKind === 'system' || readBotGroupThreadShareCard(quoted)) throw new Error('QUOTE_UNAVAILABLE');
     return { ...botGroupQuoteFromMessage({ ...view, content: quotedText(quoted),
@@ -1209,9 +1210,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       changed(roomId);
     }, ATTACHMENT_REFRESH_COALESCE_MS));
   }
-  async function messageViews(roomId: string, messages: Message[], members: Member[]) {
+  async function messageViews(roomId: string, messages: Message[], members: Member[], ownerMembers: readonly Member[] = members) {
     return messages.map(message => {
-      const view = messageView(message, members);
+      const view = messageView(message, members, ownerMembers);
       for (const block of message.content) if (!message.deleted && block.type === 'media' && block.mediaId) {
         const placeholder = (state: 'loading' | 'unavailable'): BotGroupAttachment => ({ id: block.mediaId!, name: attachmentName(block),
           category: 'file', mimeType: '', size: 0, url: null, path: null, state });
@@ -1338,6 +1339,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     for (const read of [messagesRead, executionsRead]) read?.catch(() => undefined);
     const s = await snapshotRead;
     const page = (await messagesRead) ?? s.messages;
+    const ownerMembers = direct ? [] : s.members;
     const executions = await executionsRead;
     const ids = page.flatMap(m => m.content.flatMap(b => b.namespace === 'cindy.plan' && typeof b.data?.planId === 'string' ? [id.parse(b.data.planId)] : []));
     const plansRead = direct ? Promise.resolve([] as ServerPlan[]) : api<ServerPlan[]>(`/conversations/${roomId}/plans${ids.length ? `?ids=${ids.join(',')}` : ''}`);
@@ -1361,7 +1363,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const deciding = planning.get(roomId);
     if (deciding) speakers.push({ botId: deciding.botId, sessionId: null, activity: 'planning' });
     // Sidebar refresh must not download every attachment in every group's history.
-    const messages = summaryOnly ? [] : await messageViews(roomId, page, s.members);
+    const messages = summaryOnly ? [] : await messageViews(roomId, page, s.members, ownerMembers);
     const shares = summaryOnly || direct ? undefined : await decorateThreads(roomId, messages, page, s.messages, s.members, true, o.shownShares);
     const threadShareUpdates = shares?.updates;
     const reads = threadReads(s);
@@ -1372,20 +1374,20 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const threadList = reads && !direct ? threadSummaries(roomId, s, page, reads) : undefined;
     messages.sort((a, b) => a.sequence - b.sequence);
     const last = s.messages[0];
-    const lastView = last ? messageView(last, s.members) : null;
+    const lastView = last ? messageView(last, s.members, ownerMembers) : null;
     // The sidebar never resolves shares: it names the sharer and never quotes the card's text.
     const lastIsShare = !!last && !!readBotGroupThreadShareCard(last);
     return { conversationKind: direct ? 'direct' : 'group', serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: !direct, supportsDissolve: !direct && supportsDissolve, supportsListRemoval, supportsMemberAvatar: !direct && supportsMemberAvatar, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !direct && !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), canStopAll: !direct && singleSpeaker && !!managementActor(s), ...(!direct && singleSpeaker ? { singleSpeaker: true, supportsDivision: true } : {}), id: s.room.id, name: direct ? s.members.filter(m => m.state === 'joined' && m.id !== selfId).map(member => memberName(member, [])).join(', ') || s.room.name : s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
-          role: m.role, nickname: m.nickname, groupAvatar: m.groupAvatar ?? null, defaultAvatarUrl: m.defaultAvatarUrl ?? null, displayName: m.displayName, ownerActorId: m.ownerActorId, ownerName: m.kind === 'bot' ? chatGroupOwnerName(m, s.members) : m.ownerName,
+          role: m.role, nickname: m.nickname, groupAvatar: m.groupAvatar ?? null, defaultAvatarUrl: m.defaultAvatarUrl ?? null, displayName: m.displayName, ownerActorId: m.ownerActorId, ownerName: m.kind === 'bot' && !direct ? chatGroupOwnerName(m, ownerMembers) : m.ownerName,
           isOwned: m.ownerActorId === selfId, guestAccess: m.guestAccess, accessRevision: m.accessRevision,
           // Which computer runs my companion: a phone reaching this group through this computer
           // reads the companion's tasks there, not here (bot-group-chat.md §10).
           ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
-          name: memberName(m, s.members), avatar: m.groupAvatar ? '' : p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
+          name: memberName(m, ownerMembers), avatar: m.groupAvatar ? '' : p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
       }), organizerBotId: direct ? null : ((id?: string) => id ? localBot(id)?.id ?? id : null)(s.room.organizer_id ?? s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id), projectDir: workspace?.projectDir ?? null,
       // Only servers that tell a 分工 from a queue (kind) can hand one on by itself.
       ...(singleSpeaker ? { autoContinue: workspace?.autoContinue === true } : {}), lastMessage: last && lastView ? {
@@ -2635,7 +2637,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const quoteKey = i.quote ? JSON.stringify([i.groupId, i.clientId, i.quote.messageId, i.text, i.mentions, i.division]) : '';
     const knownQuote = i.quote ? postedQuotes.get(quoteKey) : undefined;
     const snapshotMembers = snapshotRead.then(value => value.members);
-    const quoteRead = i.quote && !knownQuote ? quoteSnapshot(i.groupId, i.quote.messageId, snapshotMembers) : undefined;
+    const quoteRead = i.quote && !knownQuote ? quoteSnapshot(i.groupId, i.quote.messageId, snapshotMembers, direct) : undefined;
     const plansRead = direct ? Promise.resolve([] as ServerPlan[]) : api<ServerPlan[]>(`/conversations/${i.groupId}/plans`);
     const membersRead = namesNobody(i.mentions) && !i.quote ? undefined : api<Member[]>(`/conversations/${i.groupId}/members`);
     for (const read of [snapshotMembers, quoteRead, plansRead, membersRead]) read?.catch(() => undefined);

@@ -34,6 +34,17 @@ describe('direct Chat Server client', () => {
     expect(project(first).members.find(m => m.actorId === bot.id)).toMatchObject({ botId: bot.id, isOwned: false });
     expect(bot).toMatchObject({ name: 'Companion X', ownerName: 'Account B', ownerActorId: human.id });
   });
+  it.each(['Account B', ''])('keeps direct owner labels from account %s', ownerName => {
+    const human = { ...snapshot().members[0], name: 'Nickname A' };
+    const bot = { ...human, id: id(12), kind: 'bot' as const, name: 'Companion X', ownerName };
+    const source = { ...snapshot(), room: { ...room(), kind: 'direct' }, members: [human, bot] };
+    const messages = [{ ...message(20), authorId: bot.id, author: { kind: 'bot', name: bot.name } }];
+    const label = ownerName ? 'Companion X (Account B)' : 'Companion X';
+    const view = chatGroupView({ snapshot: source, messages, before: null }, human.id);
+    expect(view).toMatchObject({ name: label, messages: [{ authorName: label }] });
+    expect(view.members.find(m => m.actorId === bot.id)?.name).toBe(label);
+    expect(chatRoomRow(source.room, source).groupMembers?.find(m => m.botId === bot.id)?.name).toBe(label);
+  });
   it('preserves thread identity through projection into the history new-message counter', () => {
     const view = chatGroupView({ snapshot: snapshot(), before: null, messages: [message(20),
       { ...message(21), threadRootId: id(20) }, { ...message(22), threadRootId: id(99) }] }, id(11));
