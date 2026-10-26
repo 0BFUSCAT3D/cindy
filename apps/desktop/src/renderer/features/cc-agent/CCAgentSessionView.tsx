@@ -507,6 +507,8 @@ function parseOrcaWorkersRevealState(state: unknown): OrcaWorkersRevealState | n
 }
 
 interface CCAgentSessionViewProps {
+  /** Topic root and reply divider, inside the existing message scroller. */
+  messageStreamHeader?: ReactNode;
   sessionIdProp?: string;
   /** Host-read metadata for an embedded remote task intentionally absent from task lists. */
   sessionSnapshotProp?: Session | null;
@@ -823,6 +825,7 @@ export function CCAgentSessionView(props: CCAgentSessionViewProps) {
 }
 
 function CCAgentSessionContent({
+  messageStreamHeader,
   sessionIdProp,
   sessionSnapshotProp,
   routeOwner,
@@ -5243,6 +5246,7 @@ function CCAgentSessionContent({
     <BotChatQuoteProvider value={botChatQuote}>
     <MessageReadAloudContext.Provider value={messageReadAloud.value}>
     <MessageStream
+      header={messageStreamHeader}
       key={sessionId}
       sessionId={sessionId}
       sessionTitle={session?.title ?? null}
