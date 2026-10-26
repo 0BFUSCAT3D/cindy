@@ -53,29 +53,41 @@ declare global {
   }
 }
 
+const littleEndian = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/** Swap whole pixels when aligned; keep byte views and in-place export supported. */
+function swapRedBlue(source: Uint8Array | Uint8ClampedArray, target: Uint8Array | Uint8ClampedArray): void {
+  if (littleEndian && source.byteOffset % 4 === 0 && target.byteOffset % 4 === 0) {
+    const input = new Uint32Array(source.buffer, source.byteOffset, source.length / 4);
+    const output = new Uint32Array(target.buffer, target.byteOffset, target.length / 4);
+    for (let i = 0; i < input.length; i++) {
+      const pixel = input[i];
+      output[i] = (pixel & 0xff00ff00) | ((pixel & 0xff) << 16) | ((pixel >>> 16) & 0xff);
+    }
+    return;
+  }
+  for (let i = 0; i < source.length; i += 4) {
+    const blue = source[i];
+    target[i] = source[i + 2];
+    target[i + 1] = source[i + 1];
+    target[i + 2] = blue;
+    target[i + 3] = source[i + 3];
+  }
+}
+
 /** BGRA → RGBA. A caller-owned destination may be reused; source stays immutable. */
 export function bitmapToImageData(bitmap: RegionScreenshotBitmap, reuse?: ImageData): ImageData {
   const source = bitmap.data;
   const image = reuse?.width === bitmap.width && reuse.height === bitmap.height
     ? reuse
     : new ImageData(bitmap.width, bitmap.height);
-  const rgba = image.data;
-  for (let i = 0; i < source.length; i += 4) {
-    rgba[i] = source[i + 2];
-    rgba[i + 1] = source[i + 1];
-    rgba[i + 2] = source[i];
-    rgba[i + 3] = source[i + 3];
-  }
+  swapRedBlue(source, image.data);
   return image;
 }
 
 /** 画布像素 (RGBA) → Electron 位图 (BGRA), 原地交换后复用同一块内存。 */
 export function imageDataToBitmap(image: ImageData): RegionScreenshotBitmap {
   const data = new Uint8Array(image.data.buffer, image.data.byteOffset, image.data.byteLength);
-  for (let i = 0; i < data.length; i += 4) {
-    const red = data[i];
-    data[i] = data[i + 2];
-    data[i + 2] = red;
-  }
+  swapRedBlue(data, data);
   return { width: image.width, height: image.height, data: data as Uint8Array<ArrayBuffer> };
 }

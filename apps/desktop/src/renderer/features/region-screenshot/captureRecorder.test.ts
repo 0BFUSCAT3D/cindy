@@ -22,3 +22,49 @@ it('rejects a recording when the browser stops without encoded frames', async ()
   await expect(recorder.finish(1)).rejects.toThrow('No video frames were encoded');
   expect(track.stop).toHaveBeenCalled();
 });
+
+// Unit: consecutive identical GIF frames may coalesce, but their display time
+// and a one-pixel change must survive pause/resume. WebM tests miss this path.
+// Read standard GIF block metadata independently of the encoder's state.
+function frameDelays(bytes: Uint8Array): number[] {
+  let at = 13 + (bytes[10] & 128 ? 3 * 2 ** ((bytes[10] & 7) + 1) : 0);
+  const delays: number[] = [];
+  let delay = 0;
+  const skipBlocks = () => { while (bytes[at]) { at += bytes[at] + 1; } at++; };
+  while (bytes[at] !== 0x3b && at < bytes.length) {
+    const block = bytes[at++];
+    if (block === 0x21) {
+      const label = bytes[at++];
+      if (label === 0xf9) delay = (bytes[at + 2] | (bytes[at + 3] << 8)) * 10;
+      skipBlocks();
+    } else if (block === 0x2c) {
+      const packed = bytes[at + 8];
+      at += 9 + (packed & 128 ? 3 * 2 ** ((packed & 7) + 1) : 0);
+      at++; // LZW code size
+      skipBlocks();
+      delays.push(delay);
+    } else throw new Error(`Unexpected GIF block ${block}`);
+  }
+  expect(bytes[at]).toBe(0x3b);
+  return delays;
+}
+
+it('coalesces identical GIF frames without losing elapsed time or changes after resume', async () => {
+  const pixels = new Uint8ClampedArray([255, 0, 0, 255, 255, 0, 0, 255]);
+  const canvas = { width: 2, height: 1, getContext: () => ({
+    getImageData: () => ({ data: pixels.slice() }),
+  }) } as unknown as HTMLCanvasElement;
+  const recorder = new CaptureRecorder(canvas, 'gif', () => {});
+  recorder.add(0);
+  recorder.add(100);
+  recorder.add(200);
+  pixels.set([0, 0, 255, 255], 4);
+  recorder.add(300);
+  recorder.pause(400);
+  recorder.resume();
+  recorder.add(400);
+  recorder.add(500);
+  const bytes = await recorder.finish(600);
+  expect(frameDelays(bytes)).toEqual([300, 100, 200]);
+  recorder.dispose();
+});

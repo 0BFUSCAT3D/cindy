@@ -8,7 +8,7 @@ export class CaptureRecorder {
   private readonly stream: MediaStream | null;
   private readonly chunks: Blob[] = [];
   private bytes = 0;
-  private previous: { index: Uint8Array; palette: number[][]; at: number } | null = null;
+  private previous: { pixels: Uint8ClampedArray; index: Uint8Array; palette: number[][]; at: number } | null = null;
   private stopped = false;
   private failure: Error | null = null;
 
@@ -41,9 +41,12 @@ export class CaptureRecorder {
       (this.stream!.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack).requestFrame();
     } else if (this.gif) {
       const pixels = this.canvas.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, this.canvas.width, this.canvas.height);
+      // Hold identical frames until the next change, pause or finish. Exact RGBA
+      // comparison preserves small cursor/text changes and the full hold duration.
+      if (this.previous && samePixels(this.previous.pixels, pixels.data)) return;
       this.flushGif(at);
       const palette = quantize(pixels.data, 256, { format: 'rgb444' });
-      this.previous = { palette, index: applyPalette(pixels.data, palette, 'rgb444'), at };
+      this.previous = { pixels: pixels.data, palette, index: applyPalette(pixels.data, palette, 'rgb444'), at };
       if (this.gif.bytesView().length > MAX_RECORDING_BYTES - 4 * 1024 * 1024) this.onLimit();
     }
   }
@@ -90,4 +93,12 @@ export class CaptureRecorder {
     this.chunks.length = 0;
     this.previous = null;
   }
+}
+
+function samePixels(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
+  if (a.length !== b.length) return false;
+  const left = new Uint32Array(a.buffer, a.byteOffset, a.length / 4);
+  const right = new Uint32Array(b.buffer, b.byteOffset, b.length / 4);
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
 }
