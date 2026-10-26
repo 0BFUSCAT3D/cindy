@@ -54,7 +54,7 @@ export function useCloudCompanionRoom(actorId: string, name: string, enabled: bo
       const fresh = new Set(page.messages.map(message => message.id));
       const updates = new Map(page.messageUpdates?.map(message => [message.id, message]));
       const sameHistory = !page.historyRevision || page.historyRevision === previous?.historyRevision;
-      const kept = sameHistory && previous?.roomId === roomId && previous.messages.length > page.messages.length
+      const kept = sameHistory && previous?.roomId === roomId
         ? previous.messages.filter(message => !fresh.has(message.id)).map(message => updates.get(message.id) ?? message) : [];
       const next = { identity, roomId, messages: [...page.messages, ...kept], before: kept.length ? previous!.before : page.before,
         historyRevision: page.historyRevision, status: 'ready' as const, loadingOlder: false };

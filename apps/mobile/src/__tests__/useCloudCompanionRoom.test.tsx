@@ -85,6 +85,22 @@ it('updates old messages outside the latest private-chat page and drops them on 
   expect(result.messages.map(value => value.id)).toEqual(['3']);
 });
 
+// PR #7242, unit: the existing refresh test had already loaded an older page.
+// A full first page shifts without changing length when one new message arrives.
+it('keeps the displaced oldest message when a full private-chat page refreshes', async () => {
+  const message = (seq: number) => ({ id: String(seq), seq: String(seq), content: [{ type: 'text', text: String(seq) }] });
+  h.history.mockResolvedValueOnce({ messages: Array.from({ length: 100 }, (_, i) => message(100 - i)), before: '1', historyRevision: 'A' });
+  await render();
+  h.history.mockResolvedValueOnce({ messages: Array.from({ length: 100 }, (_, i) => message(101 - i)), before: '2', historyRevision: 'A',
+    messageUpdates: [{ ...message(1), content: [{ type: 'text', text: 'edited' }] }] });
+  await act(async () => { await result.reload(); });
+  expect(result.messages.map(value => value.id)).toEqual(Array.from({ length: 101 }, (_, i) => String(101 - i)));
+  expect(result.messages.at(-1)?.content[0]?.text).toBe('edited');
+  expect(result.before).toBe('1');
+  expect(peekCloudConversation('actor')?.messages).toEqual(result.messages);
+  expect(h.history).toHaveBeenCalledTimes(2);
+});
+
 it('ignores a delayed older private-chat page after the displayed history was reset', async () => {
   h.history.mockResolvedValueOnce({ messages: [{ id: 'new' }], before: '2', historyRevision: 'A' });
   await render();

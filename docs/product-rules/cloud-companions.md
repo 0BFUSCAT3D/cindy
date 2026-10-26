@@ -169,7 +169,7 @@
 
 > 状态：云端消息的持久读取投影与历史增量修正已在优化分支实现，尚未发布；主干已补展示缓存与持久发送，反向镜像修订与时间分页仍待实现。现行发送路径、权限及主力电脑行为保留。本地表与账号边界见 [多账号数据库架构](../dev-rules/multi-account-database-architecture.md) 第 11 节；完整交付范围见 [伙伴群聊](bot-group-chat.md) 11.0。
 
-Desktop `runtime.transcript()` 经注入的 Chat History 读取，首次按现有时间排序合同读有界历史，后续复用持久页覆盖并补 changes；新消息导致分页边界移动时拼接已知范围，不重新下载所有旧页。翻页先走共享同步的有效性检查，generation 与 cursor 未变时复用已排序的整段结果，不逐页重扫；主动刷新、过期或重连仍校准 changes，历史修订、重置及撤权不能被五分钟展示缓存遮住。Mobile 的 `history()` 同样落盘，刷新时以 message ID 修正已展示的编辑／删除；reset generation 变化时清掉旧页。接管、merge 和主任务重建仍走完整、权威读取，不能把有界 UI 缓存当作全部历史导入。
+Desktop `runtime.transcript()` 经注入的 Chat History 读取，首次按现有时间排序合同读有界历史，后续复用持久页覆盖并补 changes；新消息导致分页边界移动时拼接已知范围，不重新下载所有旧页。翻页先走共享同步的有效性检查，generation 与 cursor 未变时复用已排序的整段结果，不逐页重扫；主动刷新、过期或重连仍校准 changes，历史修订、重置及撤权不能被五分钟展示缓存遮住。Mobile 的 `history()` 同样落盘，刷新时以 message ID 修正已展示的编辑／删除；房间与历史代次未变时保留被新消息挤出首屏的已加载消息，不按新旧数组长度决定保留；reset generation 变化时清掉旧页。接管、merge 和主任务重建仍走完整、权威读取，不能把有界 UI 缓存当作全部历史导入。
 
 先统一**记录与同步**，保留 canonical 主 Session 的现有执行能力：本机发送仍可交本机，在线远端按现有 device-link 路径执行，最终可见消息按 source mapping 镜像到同一个 direct 房间。流式输出作为有权限的临时运行状态，最终回复到达后按映射合并，不持久化每个 token 为聊天变更。
 
