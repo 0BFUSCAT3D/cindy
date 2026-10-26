@@ -167,9 +167,17 @@ content, file content, or working-directory data.
 
 **You can disable usage analytics without editing code**: on Desktop, use
 Settings → About → Usage statistics; on Mobile, use Usage statistics in Settings.
-For a new installation, the SDK can initialize only after you accept the Privacy
-Policy. The statistics preference defaults to on but does not bypass consent.
-Users already signed in on older versions have a one-time consent-state migration.
+The SDK checks the stored privacy-consent state and the statistics preference,
+which defaults to on. Accepting the Privacy Policy records consent; a one-time
+migration also records consent for eligible existing signed-in users.
+
+**Known Mobile exception:** enterprise SSO skips the policy-acceptance step. If no
+analytics consent record exists and that sign-in is restored after restarting the
+app, the current migration can mark even a new installation as consented. With
+TapDB configured and statistics enabled, reporting can then start without explicit
+policy acceptance. See [Mobile sign-in restoration](apps/mobile/src/auth/AuthContext.tsx)
+and the [consent migration](apps/mobile/src/analytics/analyticsConsentStore.ts).
+Turning off Usage statistics prevents reporting from being enabled by this migration.
 
 - Desktop stops subsequent analytics reporting immediately when disabled. Local
   mode (Skip sign-in) does not report to TapDB.
