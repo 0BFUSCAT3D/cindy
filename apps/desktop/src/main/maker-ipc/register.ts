@@ -517,6 +517,7 @@ import {
   applyAgentSwitchResumeFallbackAtomically,
   broadcastSessionPatched,
   setSessionStatusPatchedListener,
+  touchSessionActivityInDb,
   captureSessionRecycleScope,
   clearSessionContextInDb,
   createSessionRemoteHostIdReader,
@@ -1365,6 +1366,7 @@ import {
   isSessionTurnDispatchBoundaryBusy,
   isTerminalTurnErrorEvent,
   SessionTurnActivityTracker,
+  SessionListActivityTracker,
 } from './sessionTurnActivityTracker.js';
 import { SilentStopTurnLeaseGate, SessionTurnLeaseTracker } from './sessionTurnLease.js';
 import { ProductTurnUsageTargetTracker, ProductTurnWallClockTracker } from './turnWallClock.js';
@@ -1516,6 +1518,7 @@ import { openMainWindowSession } from '../deepLink.js';
 import { handleSessionEvent, type SessionEventDependencies } from './sessionEventPipeline.js';
 import {
   createDeferredProductTurnFailureGate,
+  createProductTurnFailureFinalizer,
   type ProductTurnFailureOwner,
 } from './productTurnFailureOwner.js';
 import { installSessionTurnObserver } from './sessionTurnObserver.js';
@@ -4607,6 +4610,9 @@ function resolveSwitchedSessionVendorOptions(sessionId: string): Record<string, 
 }
 let gitSnapshotCoordinator: GitSnapshotCoordinator | null = null;
 const sessionTurnActivityTracker = new SessionTurnActivityTracker();
+const sessionListActivityTracker = new SessionListActivityTracker((sessionId, atMs) => {
+  void touchSessionActivityInDb(sessionId, atMs, true);
+});
 let providerGroupLeaseReporter: ProviderGroupLeaseReporter | null = null;
 const reviewRunOwner: ReviewRunOwner = { instanceId: randomUUID(), processId: process.pid };
 const sessionTurnLeaseTracker = new SessionTurnLeaseTracker({
@@ -5688,6 +5694,7 @@ async function settleSilentStopDone(
     return;
   }
   void finalizeTurnChangeSet(sessionId, null, 'complete');
+  sessionListActivityTracker.commit(sessionId);
   productTurnWallClockTracker.clear(sessionId);
   productTurnUsageTargetTracker.clear(sessionId);
   sessionTurnActivityTracker.scheduleIdleAfterTerminalBroadcast(sessionId);
@@ -5764,6 +5771,7 @@ async function handleSilentStopTurnEnd(
   }
   const decision = silentStopAutoResumeGuard.onSilentStop(session.id, doneAt);
   if (decision.action === 'resume') {
+    const discardEndedActivity = sessionListActivityTracker.captureContinuation(session.id);
     // 续跑绕过 send 事务:generation 的绑定/失败回滚接线集中在 binding 对象
     // (bindSilentStopContinuationGeneration,见该文件头)。漏掉任一半边会让
     // 协调器残留的 activeTurn 与续跑的真实 done 永久失配，输入边界卡在忙
@@ -5836,6 +5844,8 @@ async function handleSilentStopTurnEnd(
         await surfaceSilentStopExhaustedBanner(session.id);
         await settleSilentStopDone(session.id, 'exhausted', turnLeaseId, session, generation);
       } else {
+        // 只在供应商确认派发后丢弃原结束时间；未派发或抛出时由失败收口按原时间提交。
+        discardEndedActivity();
         log.info('silent-stop auto-resume dispatched', { sessionId: session.id });
       }
     } catch (err) {
@@ -5972,6 +5982,7 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
     finalizeSessionClose(context.closedDirectAbortBoundary !== null, {
       clearTurnState: () => {
         sessionTurnActivityTracker.deleteSession(session.id);
+        sessionListActivityTracker.deleteSession(session.id);
         sessionTurnBoundaryGenerationById.delete(session.id);
         markSessionTurnEnded(session.id);
       },
@@ -6022,17 +6033,15 @@ async function finishProductTurn(
   await finishUpstreamMergeTurn(sessionId);
 }
 
-async function interruptProductTurn(
-  sessionId: string,
-  owner?: ProductTurnFailureOwner,
-): Promise<void> {
-  if (owner) {
-    deferredProductTurnFailureGate.clear(owner);
-    if (!isCurrentProductTurnFailureOwner(owner)) return;
-  }
-  if (owner) notePluginTaskLifecycle(service => service.settle(sessionId, owner.originalExecution ?? owner, 'failed'));
-  await interruptUpstreamMergeTurn(sessionId);
-}
+const interruptProductTurn = createProductTurnFailureFinalizer({
+  gate: deferredProductTurnFailureGate,
+  isCurrentOwner: isCurrentProductTurnFailureOwner,
+  commitActivity: (sessionId) => sessionListActivityTracker.commit(sessionId),
+  interrupt: async (sessionId, owner) => {
+    if (owner) notePluginTaskLifecycle(service => service.settle(sessionId, owner.originalExecution ?? owner, 'failed'));
+    await interruptUpstreamMergeTurn(sessionId);
+  },
+});
 
 /** Remaining domain cleanup stays in its original order, after input coordination. */
 function cleanupClosedSessionRuntime(session: WiredSession): void {
@@ -6211,6 +6220,7 @@ const sessionEventDependencies: SessionEventDependencies = {
   get markTurnEndedAfterPersistDrain() {
     return markTurnEndedAfterPersistDrain;
   },
+  sessionListActivityTracker,
   get contextOverflowRolloverHolder() {
     return contextOverflowRolloverHolder;
   },
@@ -11723,6 +11733,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         if (pendingHandoff && sendResult.accepted) {
           agentHandoffPending.consume(session.id);
         }
+        if (sendResult.accepted) void touchSessionActivityInDb(session.id);
         return sendResult;
       } catch (err) {
         if (turnChangeSetStarted) {
@@ -14810,6 +14821,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   const orcaInterAgentDispatcher: OrcaInterAgentDispatcher = createOrcaInterAgentDispatcher({
+    onDirectInputDispatched: sessionId => touchSessionActivityInDb(sessionId),
     readAutoReviewHistory: sessionId => readAutoReviewHistory(sessionId),
     createId,
     getSessionMeta: (sessionId) => maker.getSessionMeta(sessionId).catch(() => null),
@@ -19209,6 +19221,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         });
       }
       sessionTurnActivityTracker.deleteSession(sessionId);
+      sessionListActivityTracker.deleteSession(sessionId);
       void sessionTurnLeaseTracker.markTurnEnded(sessionId);
       notifyGoalIdleAfterTurnSettled(sessionId);
       try {
@@ -19932,6 +19945,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 插话并入正在运行的 turn,不开启新 turn:排队时登记的「新 turn 接管」回调不再适用,
     // 只释放登记(不运行),否则会给已在跑的 worker 另建一份 running/auto-bridge 身份。
     onSteerAccepted: async (sessionId, item) => {
+      if (!item.autoResume) void touchSessionActivityInDb(sessionId);
       void settleTaskActionInput(item).catch(() => undefined);
       await settleTodoDispatch(sessionId, item.clientId, true);
       orcaInterAgentDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(item.clientId);
@@ -19974,6 +19988,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       settleQueuedAttachmentPersistenceFailure(sessionId, item.clientId, opts.retainForRetry);
     },
     onDispatchedUserTurn: async (sessionId, item, preVendorDispatchAt): Promise<void> => {
+      if (!item.autoResume) {
+        void touchSessionActivityInDb(sessionId, preVendorDispatchAt);
+      }
       void settleTaskActionInput(item).catch(() => undefined);
       // 供应商组换电脑后的续跑派发出去了：协同 Worker 暂存的那次终态不再回报(续跑那一轮结束时照常回报结果)。
       if (item.autoResume === true && item.autoResumeInfo?.reason === USAGE_LIMIT_RESET_AUTO_RESUME_REASON) {

@@ -171,6 +171,40 @@ describe('Chat Server result delivery and refresh', () => {
     service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
   });
   afterEach(() => { service.dispose(); vi.useRealTimers(); vi.unstubAllEnvs(); fixture.config = ''; vi.clearAllMocks(); });
+  // #6907: getGroup feeds Desktop and remote phones. Existing fixtures never pair group name A
+  // with the bot's account ownerName B; exercise the production projection (unit tier).
+  it.each(['Nickname A', 'Account B', '   ', null] as const)('uses the current room owner name %s with safe account fallback', async name => {
+    const ownerId = '30000000-0000-4000-8000-000000000002';
+    const bot = { id: botId, kind: 'bot', name: 'Companion X', state: 'joined', role: 'member', ownerActorId: ownerId, ownerName: 'Account B' };
+    const members = [bot, ...(name === null ? [] : [{ id: ownerId, kind: 'human', name, state: 'joined', role: 'member', ownerActorId: ownerId }])];
+    const messages = [{ id: execution.source_message_id, seq: '1', authorId: botId, author: { kind: 'bot', name: 'Companion X' },
+      content: [{ type: 'text', text: 'Example reply' }], createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId: null }];
+    if (name !== null) messages.push({ ...messages[0], id: '50000000-0000-4000-8000-000000000002', seq: '2', authorId: ownerId,
+      author: { kind: 'human', name: 'Account B' }, content: [{ type: 'text', text: 'Example owner message' }], createdAt: '2026-10-03T00:06:00Z' });
+    fixture.handle.mockImplementation(route => route.endsWith('/snapshot') ? { body: { room: room(roomId), members, messages, cursor: '1' } } : route.includes('/messages?') ? { body: messages } : response(route));
+    const result = await service.getGroup(roomId);
+    if (!result.ok) throw new Error(result.errorCode);
+    const owner = name?.trim() || 'Account B';
+    expect(result.group.members.find(m => m.actorId === botId)).toMatchObject({ name: `Companion X (${owner})`, ownerName: owner, ownerActorId: ownerId, isOwned: false });
+    expect(result.group.messages[0]).toMatchObject({ authorName: `Companion X (${owner})`, authorBotId: botId });
+    if (name !== null) expect(result.group.messages[1]).toMatchObject({ authorName: name, authorBotId: ownerId, authorKind: 'user' });
+    expect(bot).toMatchObject({ name: 'Companion X', ownerName: 'Account B', ownerActorId: ownerId });
+  });
+  // #6907: direct rooms share the adapter but must keep account owner labels, including empty legacy values.
+  it.each(['Account B', ''])('keeps direct owner labels from account %s', async ownerName => {
+    const bot = { id: botId, kind: 'bot', name: 'Companion X', state: 'joined', role: 'member', ownerActorId: selfId, ownerName };
+    const members = [bot, { id: selfId, kind: 'human', name: 'Nickname A', state: 'joined', role: 'member', ownerActorId: selfId }];
+    const messages = [{ id: execution.source_message_id, seq: '1', authorId: botId, author: { kind: 'bot', name: 'Companion X' },
+      content: [{ type: 'text', text: 'Example reply' }], createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId: null }];
+    fixture.handle.mockImplementation(route => route.endsWith('/snapshot') ? { body: { room: { ...room(roomId), kind: 'direct' }, members, messages, cursor: '1' } }
+      : route.includes('/messages?') ? { body: messages } : response(route));
+    const result = await service.getGroup(roomId, { conversationKind: 'direct' });
+    if (!result.ok) throw new Error(result.errorCode);
+    const label = ownerName ? 'Companion X (Account B)' : 'Companion X';
+    expect(result.group).toMatchObject({ name: label, messages: [{ authorName: label }], lastMessage: { authorName: label } });
+    expect(result.group.members.find(m => m.actorId === botId)).toMatchObject({ name: label, ownerName });
+    expect(bot.ownerName).toBe(ownerName);
+  });
   describe('分工 auto-continue on this computer (bot-group-chat.md §7.4)', () => {
     const planId = '80000000-0000-4000-8000-000000000009';
     const otherHuman = '30000000-0000-4000-8000-000000000002';
@@ -1989,7 +2023,8 @@ describe('Chat Server result delivery and refresh', () => {
       it('starts the card a request writes out, without the organizer', async () => {
         divisionServer();
         deps.decidePlan = vi.fn() as typeof deps.decidePlan;
-        await send('登录页：@Bot (Owner) 出方案，然后 @Nova (Owner) 按方案实现');
+        // #6907: full labels use the human's group name Peer, not account name Owner.
+        await send('登录页：@Bot (Peer) 出方案，然后 @Nova (Peer) 按方案实现');
         expect(posts().find(([route]) => route === `/conversations/${roomId}/messages`)![2]).toMatchObject({ deferExecution: true });
         expect(posts().find(([route]) => route === `/conversations/${roomId}/plans`)![2]).toMatchObject({ sourceMessageId: sourceId,
           steps: [{ botId, task: '出方案' }, { botId: otherBot, task: '按方案实现' }] });

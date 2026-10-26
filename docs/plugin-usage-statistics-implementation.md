@@ -52,7 +52,7 @@
   关联绑定账号、数据库实例、安装批准、运行代次及清除代次，最长 10 分钟。
   SDK 类型及插件作者手册同步该字段，preload 继续透传既有请求，不新增计数接口。
   旧插件不传关联仍可调用，但工具与独立输入分别计数，不能宣称已自动识别所有用户操作。
-- 新增 `entry_kind` 区分 `tool` / `execution`；Drizzle 0131 仅追加默认 `tool` 的列，保留旧调用事实。
+- 新增 `entry_kind` 区分 `tool` / `execution`；Drizzle 0132 仅追加默认 `tool` 的列，保留旧调用事实。
   同次输入沿用既有回执的 Host 身份及 requestKey，重放不重新派发或增量；统计错误不改变业务接受结果。
 - `entry_kind` 只保留在本机账本，工具及执行事实复用既有 `usage-events` 接口，仍只发送
   `eventId`、`releaseId`、`occurredAt`。服务端沿用按事件身份去重累加的规则，不新增接口、分类聚合或服务端改动。
