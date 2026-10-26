@@ -11,6 +11,7 @@ import { botGroupQuoteFromMessage, buildBotGroupQuoteCard } from '@cindy/maker-s
 
 export interface ChatRoom {
   id: string; name: string; state?: string; kind: string; archived: boolean; dissolved_at?: string | null;
+  topic?: string; description?: string;
   created_at: string; updated_at: string; revision: number; head?: string;
   response_mode: 'all' | 'mentioned'; speaking_mode: 'auto' | 'sequential'; organizer_id?: string | null;
 }
@@ -39,6 +40,16 @@ export interface ChatCapabilities { companionHome: boolean }
 /** Compare-and-set result: a conflict carries the main computer another device already chose. */
 export type ChatSetHomeResult = { ok: true; homeDeviceId: string } | { ok: false; homeDeviceId: string | null };
 export interface ChatHistoryPage { messages: ChatMessage[]; before: string | null; historyRevision?: string; messageUpdates?: ChatMessage[] }
+export type ChatGroupSettingsAction =
+  | { type: 'update'; expectedRevision: number; name?: string; description?: string; responseMode?: 'all' | 'mentioned'; speakingMode?: 'auto' | 'sequential'; organizerId?: string | null; archived?: boolean }
+  | { type: 'member'; actorId: string; action: 'invite' | 'remove' | 'role'; role?: 'admin' | 'member' };
+
+/** Prefer an owned owner, then the human's admin role, as on Desktop. */
+export function chatGroupManager(snapshot: ChatSnapshot, self: string) {
+  const managers = snapshot.members.filter(member => member.state === 'joined'
+    && (member.id === self || member.ownerActorId === self) && ['owner', 'admin'].includes(member.role));
+  return managers.find(member => member.role === 'owner') ?? managers.find(member => member.id === self) ?? managers[0];
+}
 
 export function chatId(value: string): string {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new Error('INVALID_CHAT_ID');
@@ -145,7 +156,7 @@ export function chatReadAt(snapshot: ChatSnapshot, selfId: string): number {
 }
 
 /** Public profile images never enter the computer's local media resolver. */
-function chatMemberAvatar(value: string | null): Pick<BotGroupMemberView, 'avatar' | 'avatarUrl'> {
+export function chatMemberAvatar(value: string | null): Pick<BotGroupMemberView, 'avatar' | 'avatarUrl'> {
   const raw = value ?? '';
   try { return { avatar: '', avatarUrl: chatHttpsUrl(raw) }; } catch { /* Not a public HTTPS image. */ }
   // The server also accepts the existing bundled presets and short emoji identities.
@@ -208,6 +219,8 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
   return { id: room.id, conversationKind: room.kind === 'direct' ? 'direct' : 'group',
     name: room.kind === 'direct' ? active.filter(member => member.id !== selfId).map(member => memberName(member, [])).join(', ') || room.name : room.name,
     serverBacked: true, supportsGroupLeave: room.kind !== 'direct', dissolvedAt: room.dissolved_at ?? null, archived: room.archived, selfActorId: selfId,
+    topic: room.topic, description: room.description,
+    supportsSettingsManagement: room.kind === 'group', supportsMemberRemoval: room.kind === 'group',
     revision: room.revision, members: memberViews, replyMode: room.response_mode, speakingMode: room.speaking_mode,
     organizerBotId: room.organizer_id ?? null, projectDir: null, projectDirName: null,
     createdAt: Date.parse(room.created_at), updatedAt: Date.parse(room.updated_at),
@@ -261,15 +274,17 @@ export function createChatServerClient(request: ChatRequest, personalList = crea
   }
   let supportsDissolve = false;
   let supportsListRemoval = false;
+  let singleSpeaker = false;
   let lastIdentity: { id: string; at: number } | undefined;
   let readingIdentity: Promise<string> | undefined;
   async function identity() {
     if (openHistory && lastIdentity && Date.now() - lastIdentity.at < 60_000) return lastIdentity.id;
     return readingIdentity ??= (async () => {
-      const me = await request<{ actor: { id: string; kind: string }; capabilities?: { groupLifecycleVersion?: number; conversationListStateVersion?: number } }>('/me');
+      const me = await request<{ actor: { id: string; kind: string }; capabilities?: { groupLifecycleVersion?: number; conversationListStateVersion?: number; groupSingleSpeaker?: number } }>('/me');
       if (me.actor.kind !== 'human') throw new Error('INVALID_CHAT_IDENTITY');
       supportsDissolve = me.capabilities?.groupLifecycleVersion === 1;
       supportsListRemoval = me.capabilities?.conversationListStateVersion === 1;
+      singleSpeaker = me.capabilities?.groupSingleSpeaker === 1;
       const id = chatId(me.actor.id); lastIdentity = { id, at: Date.now() };
       return id;
     })().finally(() => { readingIdentity = undefined; });
@@ -278,7 +293,21 @@ export function createChatServerClient(request: ChatRequest, personalList = crea
     invalidateHistory(room: string, metadata = false) { void historyCache?.then(value => value.invalidate(room, metadata)).catch(() => undefined); },
     async refreshHistory(room: string, metadata = false) { const value = await cache(); value?.invalidate(room, metadata); await value?.snapshot(room); },
     personalList,
-    lifecycleCapabilities: () => ({ supportsDissolve, supportsListRemoval }),
+    lifecycleCapabilities: () => ({ supportsDissolve, supportsListRemoval, singleSpeaker }),
+    async groupSettings(roomId: string) {
+      const [snapshot, self] = await Promise.all([
+        request<ChatSnapshot>(`/conversations/${chatId(roomId)}/snapshot`), identity(),
+      ]);
+      if (snapshot.room.id !== roomId || snapshot.room.kind !== 'group' || !Array.isArray(snapshot.members)) throw new Error('INVALID_CHAT_SNAPSHOT');
+      return { snapshot, self, manager: chatGroupManager(snapshot, self) };
+    },
+    /** The server rechecks the selected owned actor's live role for every write. */
+    async manageGroup(roomId: string, managerId: string, action: ChatGroupSettingsAction, operationId: string) {
+      const path = `/conversations/${chatId(roomId)}`;
+      const { type, ...body } = action;
+      return request(type === 'member' ? `${path}/members` : path, type === 'member' ? 'POST' : 'PATCH',
+        { operationId, ...body }, chatId(managerId));
+    },
     async syncListState(force = false) {
       await identity();
       if (supportsListRemoval) await (force ? personalList.sync(request) : personalList.ensureSynced(request));
