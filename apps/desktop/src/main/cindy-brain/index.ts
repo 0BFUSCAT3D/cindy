@@ -10,6 +10,7 @@ import { takePeerAttachment } from '../device-link/peerAttachmentStore.js';
 import { parsePeerAttachmentRef } from '@cindy/device-link';
 import type { Session as MakerSession } from '@cindy/maker-core';
 import { GhostHarnessSlot } from './harnessSlot.js';
+import { redactToolInputForUntrustedBoundary } from '../messagePersistBroadcaster.js';
 import { capturePluginOauthPeer } from '../plugin-oauth/runtime.js';
 import { readMobilePreview } from './mobilePreview.js';
 import { createMailReader, mailReaderRemoteProvider } from './mailReader.js';
@@ -2467,6 +2468,7 @@ function getGhostHarnessSlot(): GhostHarnessSlot {
     captureSource: captureGhostLogicSource,
     allowed: (id, session) => !isGhostDisabledForWorkdir(id, session.workDir),
     gateway: getGhostSubscriptionGateway,
+    redactToolInput: redactToolInputForUntrustedBoundary,
     readHistory: async (...args) => (await import('./harnessHistory.js')).readHarnessHistory(...args),
   });
 }

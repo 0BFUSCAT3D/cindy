@@ -69,6 +69,7 @@ export interface GhostHarnessSlotDeps {
   allowed(ghostId: string, session: Session): boolean;
   send(ghostId: string, payload: GhostPipeEventPush): boolean;
   gateway(): Pick<GhostSubscriptionGateway, 'publishHarness'>;
+  redactToolInput(toolName: string, input: unknown): unknown;
   readHistory?(
     sessionId: string,
     name: 'messages' | 'tool-content',
@@ -446,7 +447,12 @@ export class GhostHarnessSlot {
         data.role = event.type === 'tool_use' ? 'tool_use' : 'tool_result';
         Object.assign(
           data,
-          projectHarnessContent(data.role, event.type === 'tool_use' ? raw : raw.fullText),
+          projectHarnessContent(data.role, event.type === 'tool_use' ? {
+            toolName: raw.toolName,
+            input: this.deps.redactToolInput(
+              typeof raw.toolName === 'string' ? raw.toolName : '', raw.input,
+            ),
+          } : raw.fullText),
         );
         break;
       case 'text':
@@ -603,7 +609,7 @@ export class GhostHarnessSlot {
                       ...data,
                       ...projectHarnessContent('tool_use', {
                         toolName: request.toolName,
-                        input: request.input,
+                        input: this.deps.redactToolInput(request.toolName ?? '', request.input),
                       }),
                     }
                   : data,

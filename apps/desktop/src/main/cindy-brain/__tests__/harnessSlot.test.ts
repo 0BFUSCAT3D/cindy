@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentEvent, HarnessHookHandler, Session } from '@cindy/maker-core';
+import type { AgentEvent, HarnessHookHandler, HarnessHookRequest, Session } from '@cindy/maker-core';
 import type { GhostPipeHarnessEvent } from '@cindy/plugin-protocol';
 import { GhostHarnessSlot } from '../harnessSlot.js';
 import { GhostSubscriptionGateway } from '../subscriptionGateway.js';
@@ -83,10 +83,12 @@ function fixture(remote: { remoteHostId?: string; agentDeviceId?: string } = {})
     items: [],
     nextCursor: null,
   }));
+  const redactToolInput = vi.fn((_toolName: string, input: unknown) => input);
   const slot = new GhostHarnessSlot({
     listGhosts: () => ghosts,
     eligible,
     readHistory,
+    redactToolInput,
     ownerScope: { capture: () => 1, isCurrent: () => owner, isStable: () => owner },
     isRunning: () => true,
     captureSource: () => () => true,
@@ -111,10 +113,12 @@ function fixture(remote: { remoteHostId?: string; agentDeviceId?: string } = {})
     guards,
     eligible,
     readHistory,
+    redactToolInput,
     session,
     dispose,
     emit: (event: AgentEvent) => observe!(event),
-    screen: () => hook!({ name: 'permission.request', toolName: 'write' }),
+    screen: (request: HarnessHookRequest = { name: 'permission.request', toolName: 'write' }) =>
+      hook!(request),
     changeOwner: () => {
       owner = false;
     },
@@ -421,6 +425,55 @@ describe('Harness host bridge', () => {
     f.changeNative();
     expect(f.guards.every((current) => current())).toBe(false);
     f.dispose();
+  });
+
+  // Session events and native hooks carry raw arguments, unlike saved history.
+  // Both new plugin exits must apply the injected, canonical boundary redactor.
+  it.each(['event', 'tool.before'] as const)('redacts raw tool input before delivering %s', async (path) => {
+    const f = fixture();
+    f.ghosts[1].enabled = false;
+    f.ghosts[0].manifest.harness!.read!.push('tool-content');
+    f.ghosts[0].manifest.harness!.hooks!.push('tool.before');
+    f.ghosts[0].harnessCapabilityApproved!.push(
+      'harness:read:tool-content', 'harness:hooks:tool.before',
+    );
+    const toolName = 'mcp__cindy_browser__call_tool';
+    const input = { name: 'browser', args: { proxyServer: 'http://qa-user:qa-password@proxy.invalid:8080' } };
+    const safeInput = { name: 'browser', args: { proxyServer: '[REDACTED]' } };
+    f.redactToolInput.mockReturnValue(safeInput);
+    await f.slot.handleRequest('a', { kind: 'read', name: 'runtime', sessionId: 's' }, () => true);
+    let decision: ReturnType<HarnessHookHandler> | undefined;
+    try {
+      let delivered: GhostPipeEventPush;
+      if (path === 'event') {
+        const send = vi.fn();
+        const gateway = new GhostSubscriptionGateway({
+          listGhosts: () => f.ghosts,
+          isRunning: () => true,
+          wake: async () => {},
+          sendToGhost: send,
+          now: () => 1,
+        });
+        f.emit({ type: 'tool_use', data: { toolUseId: 'browser-proxy', toolName, input } });
+        f.events.forEach((event, index) => gateway.publishHarness(event, f.guards[index]));
+        expect(send).toHaveBeenCalledOnce();
+        delivered = send.mock.calls[0][1];
+      } else {
+        decision = f.screen({ name: 'tool.before', toolName, input });
+        await vi.waitFor(() => expect(f.messages).toHaveLength(1));
+        delivered = f.messages[0].payload;
+        if (delivered.type !== 'harness-hook') throw new Error('expected hook');
+        f.slot.handleVerdict('a', { hookId: delivered.hookId, action: 'continue' });
+        expect(await decision).toEqual({ action: 'continue' });
+      }
+      expect(delivered).toMatchObject({ data: { content: { toolName, input: safeInput } } });
+      expect(f.redactToolInput).toHaveBeenCalledExactlyOnceWith(toolName, input);
+      expect(JSON.stringify(delivered)).not.toContain('qa-password');
+      expect(input.args.proxyServer).toContain('qa-password');
+    } finally {
+      f.dispose();
+      await decision;
+    }
   });
 
   // Unit contract from docs/plugin-harness-bridge.md: task signals must reach
