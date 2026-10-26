@@ -961,14 +961,79 @@ describe('BotGroupChatView', () => {
     const pending = new Promise<{ ok: true; group: BotGroupDetail }>(resolve => { finish = resolve; });
     mocks.getBotGroup.mockResolvedValueOnce({ ok: true, group: detail({ messages: [latest], hasMoreBefore: true, executionFailures: [failure] }) })
       .mockReturnValueOnce(pending)
-      .mockResolvedValue({ ok: true, group: detail({ name: 'Fresh group', messages: [latest], executionFailures: [] }) });
+      .mockResolvedValue({ ok: true, group: detail({ name: 'Fresh group', messages: [{ ...latest, content: 'Fresh question' }], executionFailures: [] }) });
     renderView();
     fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
     await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'round' })));
     await screen.findByText('Fresh group');
-    await act(async () => finish?.({ ok: true, group: detail({ messages: [source], executionFailures: [failure] }) }));
+    await act(async () => finish?.({ ok: true, group: detail({ messages: [source], messageUpdates: [latest], executionFailures: [failure] }) }));
     expect(screen.getByText('Earlier question')).toBeTruthy();
+    expect(screen.getByText('Fresh question')).toBeTruthy();
+    expect(screen.queryByText('Latest question')).toBeNull();
     expect(screen.queryByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Bot')).toBeNull();
+  });
+
+  // PR #7242: latest-page tests did not cover a reset first discovered by pagination,
+  // or an in-flight page from the previous generation. Unit: exercise the real view.
+  it('discards the entire visible history when an older page reports a new history revision', async () => {
+    const latest = msg({ id: 'latest', sequence: 100, content: 'Old latest' });
+    const older = msg({ id: 'older', sequence: 50, content: 'Old earlier' });
+    let finish: ((result: { ok: true; group: BotGroupDetail }) => void) | undefined;
+    let finishStaleRefresh: ((result: { ok: true; group: BotGroupDetail }) => void) | undefined;
+    const pending = new Promise<{ ok: true; group: BotGroupDetail }>(resolve => { finish = resolve; });
+    const staleRefresh = new Promise<{ ok: true; group: BotGroupDetail }>(resolve => { finishStaleRefresh = resolve; });
+    mocks.getBotGroup.mockResolvedValueOnce({ ok: true, group: detail({ historyRevision: 'a', messages: [latest], hasMoreBefore: true }) })
+      .mockResolvedValueOnce({ ok: true, group: detail({ historyRevision: 'a', messages: [older], hasMoreBefore: true }) })
+      .mockReturnValueOnce(staleRefresh)
+      .mockResolvedValueOnce({ ok: true, group: detail({ historyRevision: 'b', messages: [], hasMoreBefore: false }) })
+      .mockReturnValueOnce(pending);
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await screen.findByText('Old earlier');
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })));
+    expect(screen.queryByText('Old earlier')).toBeNull();
+    expect(screen.queryByText('Old latest')).toBeNull();
+    expect(mocks.getBotGroup.mock.calls.at(-1)).toEqual(['g1', undefined]);
+    await act(async () => finishStaleRefresh?.({ ok: true, group: detail({ historyRevision: 'a', messages: [latest], hasMoreBefore: true }) }));
+    expect(screen.queryByText('Old latest')).toBeNull();
+    await act(async () => finish?.({ ok: true, group: detail({ historyRevision: 'b', messages: [msg({ id: 'new', content: 'New history' })] }) }));
+    expect(screen.getByText('New history')).toBeTruthy();
+    expect(screen.queryByText('Old latest')).toBeNull();
+  });
+
+  it('ignores a late older page from a previous history revision even when the anchor survives', async () => {
+    const latest = msg({ id: 'latest', sequence: 100, content: 'Old latest' });
+    let finish: ((result: { ok: true; group: BotGroupDetail }) => void) | undefined;
+    const pending = new Promise<{ ok: true; group: BotGroupDetail }>(resolve => { finish = resolve; });
+    mocks.getBotGroup.mockResolvedValueOnce({ ok: true, group: detail({ historyRevision: 'a', messages: [latest], hasMoreBefore: true }) })
+      .mockReturnValueOnce(pending)
+      .mockResolvedValue({ ok: true, group: detail({ historyRevision: 'b', messages: [{ ...latest, content: 'New latest' }], hasMoreBefore: true }) });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await screen.findByText('New latest');
+    await act(async () => finish?.({ ok: true, group: detail({ historyRevision: 'a', messages: [msg({ id: 'old', content: 'Revoked history' })] }) }));
+    expect(screen.queryByText('Revoked history')).toBeNull();
+    expect(screen.getByText('New latest')).toBeTruthy();
+    expect(mocks.getBotGroup).toHaveBeenCalledTimes(3);
+  });
+
+  it('applies pagination message updates to both the latest page and previously loaded history', async () => {
+    const latest = msg({ id: 'latest', sequence: 100, content: 'Unedited latest' });
+    const older = msg({ id: 'older', sequence: 50, content: 'Undeleted earlier' });
+    mocks.getBotGroup.mockResolvedValueOnce({ ok: true, group: detail({ historyRevision: 'a', messages: [latest], hasMoreBefore: true }) })
+      .mockResolvedValueOnce({ ok: true, group: detail({ historyRevision: 'a', messages: [older], hasMoreBefore: true }) })
+      .mockResolvedValueOnce({ ok: true, group: detail({ historyRevision: 'a', messages: [], messageUpdates: [
+        { ...latest, content: 'Edited latest' }, { ...older, content: '', deleted: true },
+      ] }) });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await screen.findByText('Undeleted earlier');
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })));
+    expect(screen.queryByText('Undeleted earlier')).toBeNull();
+    expect(screen.queryByText('Unedited latest')).toBeNull();
+    expect(screen.getByText('Edited latest')).toBeTruthy();
   });
 
   it('drops an older page that answers after the latest page started over', async () => {

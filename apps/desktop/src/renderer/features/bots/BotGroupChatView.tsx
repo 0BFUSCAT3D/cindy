@@ -231,6 +231,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
   const loadRef = useRef<(additionalSources?: string[], changedIds?: string[]) => void>(() => {});
+  const resetHistoryRef = useRef<() => void>(() => {});
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followMessageBottom = useSmoothMessageFollow(scrollRef, contentRef, state.kind === 'ready');
@@ -250,6 +251,18 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
   const [unverifiedOriginals, setUnverifiedOriginals] = useState<ReadonlySet<string>>(NO_IDS);
   const loadingOlderRef = useRef(false);
   const locatingRef = useRef(false);
+
+  // Every older-page read belongs to the generation visible when it started. A
+  // reset discovered here must also cancel in-flight latest-page/auxiliary reads.
+  const acceptHistoryPage = useCallback((page: BotGroupDetail, revision: string | undefined) => {
+    const current = stateRef.current;
+    if (current.kind !== 'ready' || current.group.historyRevision !== revision) return false;
+    if (page.historyRevision && page.historyRevision !== revision) {
+      resetHistoryRef.current();
+      return false;
+    }
+    return true;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -324,13 +337,13 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
             const changed = shown.older.filter((message) => changedIds.includes(message.id)
               && !latestIds.has(message.id) && !quoted.some((target) => target.id === message.id));
             const targets = [...quoted, ...changed].sort((a, b) => b.sequence - a.sequence);
-            if (targets.length > 0) void recheckOlderCopies(api, targets, isCurrent);
+            if (targets.length > 0) void recheckOlderCopies(api, targets, result.group.historyRevision, isCurrent);
           }
           if (displayed.kind === 'ready' && displayed.group.id === groupId && result.group.messages.length > 0) {
             const latestFrom = Math.min(...result.group.messages.map((message) => message.sequence));
             const refreshed = await refreshPendingBotGroupAttachments(displayed.older, latestFrom, async (before) => {
               const page = await api.getBotGroup(groupId, { ...(direct ? { conversationKind: 'direct' as const } : {}), beforeSequence: before });
-              return page.ok && isCurrent() ? page.group.messages : null;
+              return page.ok && isCurrent() && acceptHistoryPage(page.group, result.group.historyRevision) ? page.group.messages : null;
             });
             if (refreshed && isCurrent()) {
               const fresh = new Map(refreshed.map((message) => [message.sequence, message]));
@@ -386,6 +399,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
     const recheckOlderCopies = async (
       api: NonNullable<ReturnType<typeof botGroupApi>>,
       targets: BotGroupMessageView[],
+      historyRevision: string | undefined,
       isCurrent: () => boolean,
     ) => {
       setUnverifiedOriginals((previous) => new Set([...previous, ...targets.map((target) => target.id)]));
@@ -394,7 +408,7 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
         let messages: BotGroupMessageView[] | null = null;
         try {
           const read = await api.getBotGroup(groupId, { ...(direct ? { conversationKind: 'direct' as const } : {}), beforeSequence: remaining[0]!.sequence + 1 });
-          messages = read.ok ? read.group.messages : null;
+          messages = read.ok && isCurrent() && acceptHistoryPage(read.group, historyRevision) ? read.group.messages : null;
         } catch {
           messages = null;
         }
@@ -416,6 +430,15 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
       }
     };
     loadRef.current = (additionalSources, changedIds) => load(additionalSources, changedIds);
+    resetHistoryRef.current = () => {
+      cancelled = true;
+      queued = null;
+      clearRetry();
+      prependAnchorRef.current = null;
+      stateRef.current = { kind: 'loading' };
+      setState(stateRef.current);
+      setReloadVersion(value => value + 1);
+    };
     load();
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
@@ -441,9 +464,10 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
       clearRetry();
       version += 1;
       loadRef.current = () => {};
+      resetHistoryRef.current = () => {};
       unsubscribe();
     };
-  }, [groupId, reloadVersion, navigate]);
+  }, [groupId, reloadVersion, navigate, acceptHistoryPage]);
 
   // An older page may land across a refresh. Recheck that set once per version; source
   // and attachment completion pushes then refresh every displayed share together.
@@ -793,10 +817,12 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
         toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
         return null;
       }
+      if (!acceptHistoryPage(result.group, base.group.historyRevision)) return null;
       // The latest page started over meanwhile (more than a page arrived): this page was read
       // below a timeline that is gone and would sit under the new one with the gap still in it.
-      const stillLoaded = (timeline: GroupViewState) => !anchorId || (timeline.kind === 'ready'
-        && (timeline.group.messages.some(message => message.id === anchorId) || timeline.older.some(message => message.id === anchorId)));
+      const stillLoaded = (timeline: GroupViewState) => timeline.kind === 'ready'
+        && timeline.group.historyRevision === base.group.historyRevision
+        && (!anchorId || timeline.group.messages.some(message => message.id === anchorId) || timeline.older.some(message => message.id === anchorId));
       if (!stillLoaded(stateRef.current)) return null;
       const element = scrollRef.current;
       const current = stateRef.current;
@@ -811,10 +837,16 @@ function BotGroupChatContent({ groupId, direct }: { groupId: string; direct: boo
         const executionFailures = previous.group === base.group
           ? result.group.executionFailures ?? previous.group.executionFailures
           : previous.group.executionFailures;
+        const updates = new Map(previous.group === base.group ? result.group.messageUpdates?.map(message => [message.id, message]) : []);
+        const applyUpdates = (messages: BotGroupMessageView[]) => updates.size
+          ? messages.map(message => updates.get(message.id) ?? message) : messages;
+        const older = previous.group === base.group
+          ? mergeBotGroupMessages(previous.older, result.group.messages)
+          : mergeBotGroupMessages(result.group.messages, previous.older);
         return {
           ...previous,
-          group: { ...previous.group, executionFailures },
-          older: mergeBotGroupMessages(previous.older, result.group.messages),
+          group: { ...previous.group, messages: applyUpdates(previous.group.messages), executionFailures },
+          older: applyUpdates(older),
           olderPlans: mergeBotGroupPlans(result.group.plans, previous.olderPlans),
           olderHasMore: result.group.hasMoreBefore,
         };

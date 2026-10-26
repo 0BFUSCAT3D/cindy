@@ -132,9 +132,13 @@ describe('Chat Server cloud companions', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(calls(`/actors/${botActor}`, 'PATCH').length).toBeGreaterThan(0);
     expect(calls('/executions/claim')).toHaveLength(0);
-    // Registration succeeds on a later cycle: this computer is the home and starts claiming.
+    // Registration is retried by the 60s actor refresh, not the former 5s cadence.
+    // A failed home registration must still fence claims throughout that interval.
     patch = () => { home = 'desk-1'; return { body: { id: botActor, homeDeviceId: 'desk-1' } }; };
     await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls('/executions/claim')).toHaveLength(0);
+    expect(calls(`/actors/${botActor}`, 'PATCH')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(32_000);
     expect(calls('/executions/claim').length).toBeGreaterThan(0);
   });
 
