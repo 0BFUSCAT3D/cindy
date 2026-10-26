@@ -61,7 +61,10 @@ export class ProviderGroupRemoteUnsupportedError extends Error {
   }
 }
 
-export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvoke): ProviderGroupRemoteClient {
+export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvoke, options: {
+  /** Capture the account before the request; only verified same-account group responses can restore shares. */
+  captureShareRecovery?(): (agentDeviceIds: readonly string[]) => Promise<void>;
+} = {}): ProviderGroupRemoteClient {
   async function call(ownerDeviceId: string, request: Record<string, unknown>, preSend?: () => void): Promise<unknown> {
     const result = preSend
       ? await invoke(ownerDeviceId, PROVIDER_GROUP_REMOTE_CHANNEL, [request], { preSend })
@@ -76,6 +79,7 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
 
   return {
     async pick(ownerDeviceId, input) {
+      const recoverShares = options.captureShareRecovery?.();
       try {
         const raw = await call(ownerDeviceId, {
           action: 'pick',
@@ -89,7 +93,11 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
         // 旧组所在电脑可能忽略这个可选约束：只有明确执行并回显的结果才用于主动换号。
         if (input.quotaRebalance && (!raw || typeof raw !== 'object'
           || (raw as { quotaRebalance?: unknown }).quotaRebalance !== true)) return { kind: 'none' };
-        return parseProviderGroupRemotePick(raw, input.providerId);
+        const pick = parseProviderGroupRemotePick(raw, input.providerId);
+        if (pick.kind === 'member' && pick.member.kind === 'share' && pick.member.agentDeviceId) {
+          await recoverShares?.([pick.member.agentDeviceId]);
+        }
+        return pick;
       } catch (error) {
         if (error instanceof ProviderGroupRemoteUnsupportedError) return { kind: 'none' };
         throw error;
@@ -121,16 +129,24 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
     },
 
     async view(ownerDeviceId, providerId, modelOrOptions) {
+      const recoverShares = options.captureShareRecovery?.();
       const model = typeof modelOrOptions === 'string' ? modelOrOptions : modelOrOptions?.model;
       const agentKind = typeof modelOrOptions === 'object' ? modelOrOptions?.agentKind : undefined;
       const includeGuestSupport = typeof modelOrOptions === 'object' && modelOrOptions?.includeGuestSupport === true;
-      return parseProviderGroupRemoteView(await call(ownerDeviceId, {
+      const view = parseProviderGroupRemoteView(await call(ownerDeviceId, {
         action: 'view',
         providerId,
         ...(model ? { model } : {}),
         ...(agentKind ? { agentKind } : {}),
         ...(includeGuestSupport ? { includeGuestSupport: true } : {}),
       }), providerId);
+      const usable = new Set(view.members.filter((member) => member.state === 'available' || member.state === 'full').map((member) => member.key));
+      const shares = view.config?.members.filter((member) => member.kind === 'share' && usable.has(member.key))
+        .flatMap((member) => member.agentDeviceId ? [member.agentDeviceId] : []) ?? [];
+      // Keep the owner snapshot responsive. Catalog resolution waits for this recovery,
+      // within the existing per-member reachability deadline used by the settings page.
+      void recoverShares?.(shares).catch(() => undefined);
+      return view;
     },
 
     async usage(ownerDeviceId, report, beforeSend) {

@@ -1892,6 +1892,13 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 
 ## 供应商组：同账号直连(P2a)
 
+跨区组员恢复（2026-10-26）：控制端 Main 仅在同账号 `provider-group:remote` 的有效 `view` / `pick`
+回包引用分享时，恢复本机缺失的区域标记并通过既有 `/provider-shares/x/session` 核验成员关系。
+不新增 wire 字段、channel 或权限，兼容旧组所在电脑；手机仍由任务所在电脑执行。旧控制端保留原行为。
+本机已加载的分享直接使用；尚在恢复或请求失败时不按已移除处理。Renderer 收藏和任意分享 ID 不能触发
+跨区激活。凭证只留内存、区域标记格式不变，降级后已恢复的分享沿原连接路径继续使用。
+回归：`device-link/__tests__/providerShareCrossRegion.test.ts`。
+
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §4、§5、§6.1、§10。组所在电脑 O 把某个供应商建成组后，
 同账号另一台电脑 C 上选了 O 的这个供应商的新任务：C 问 O 该用哪台，再自己直接连到选中的组内电脑运行。
 

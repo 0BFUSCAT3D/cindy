@@ -39,6 +39,8 @@ import {
   isCrossRegionReceivedReady,
   ensureCrossRegionReceivedForFavorites,
   refreshProviderShareCrossRegion,
+  restoreCrossRegionReceivedForRemoteGroup,
+  waitForCrossRegionReceived,
   startProviderShareCrossRegion,
   stopProviderShareCrossRegion,
 } from './providerShareCrossRegion.js';
@@ -79,6 +81,7 @@ interface Runtime {
   timer: ReturnType<typeof setTimeout> | null;
   refreshing: Promise<void> | null;
   pending: Map<string, PendingRequest>;
+  groupRecoveries: Set<Promise<void>>;
   stopped: boolean;
 }
 
@@ -196,12 +199,40 @@ export function resolveRemoteAgentTarget(agentDeviceId: string): string {
  * 未登录或设备互联未就绪时按连不上处理。
  */
 export async function resolveRemoteAgentTargetWhenReady(agentDeviceId: string): Promise<string> {
-  if (!parseProviderShareAgentDeviceId(agentDeviceId)) return agentDeviceId;
+  const shareId = parseProviderShareAgentDeviceId(agentDeviceId);
+  if (!shareId) return agentDeviceId;
   const rt = runtime;
   if (!rt || !current(rt)) throw new Error('[DEVICE_LINK_NOT_CONNECTED] provider sharing is not ready');
+  // An already loaded share remains usable even while the other region is unavailable.
+  if (findReceivedShare(shareId)) return resolveRemoteAgentTarget(agentDeviceId);
   if (rt.fetchedAt === 0) await refreshReceivedShares('resolve');
-  if (rt.fetchedAt === 0) throw new Error('[DEVICE_LINK_NOT_CONNECTED] shared providers are not loaded yet');
+  await Promise.all(rt.groupRecoveries);
+  if (!current(rt)) throw new Error('[DEVICE_LINK_NOT_CONNECTED] provider sharing account changed');
+  if (findReceivedShare(shareId)) return resolveRemoteAgentTarget(agentDeviceId);
+  const crossReady = await waitForCrossRegionReceived();
+  if (!current(rt)) throw new Error('[DEVICE_LINK_NOT_CONNECTED] provider sharing account changed');
+  if (findReceivedShare(shareId)) return resolveRemoteAgentTarget(agentDeviceId);
+  if (rt.fetchedAt === 0 || !crossReady) throw new Error('[DEVICE_LINK_NOT_CONNECTED] shared providers are not loaded yet');
   return resolveRemoteAgentTarget(agentDeviceId);
+}
+
+/** Capture before reading a same-account group, so a late reply cannot activate another account. */
+export function captureProviderShareGroupRecovery(): (agentDeviceIds: readonly string[]) => Promise<void> {
+  const rt = runtime;
+  return (agentDeviceIds) => {
+    if (!rt || !current(rt)) return Promise.resolve();
+    const missing = agentDeviceIds.map(parseProviderShareAgentDeviceId)
+      .filter((id): id is string => !!id && !findReceivedShare(id));
+    if (missing.length === 0) return Promise.resolve();
+    const recovery = (async () => {
+      // Check the local service first: a recently accepted same-region share needs no peer lookup.
+      await refreshReceivedShares('remote-group');
+      if (!current(rt)) return;
+      await restoreCrossRegionReceivedForRemoteGroup(missing.filter((id) => !findReceivedShare(id)));
+    })();
+    rt.groupRecoveries.add(recovery);
+    return recovery.finally(() => { rt.groupRecoveries.delete(recovery); });
+  };
 }
 
 // ─── 已收到的分享 ────────────────────────────────────────────────
@@ -227,6 +258,7 @@ export function startProviderShareGuest(events: ProviderShareGuestEvents, option
     timer: null,
     refreshing: null,
     pending: new Map(),
+    groupRecoveries: new Set(),
     stopped: false,
   };
   runtime = rt;

@@ -92,6 +92,16 @@ Mobile `useSessionListActions`、`SessionMenuSheet`、`orphanSessionActions.test
 
 ## 恢复动作先回答故障半径（device-link 共享链路）
 
+### 供应商组的跨区分享恢复
+
+2026-10-26：① 故障是任务所在电脑没有加载同账号组已能用的跨区分享；② 仅恢复当前账号在另一
+官方区域的分享列表与专用连接，不重启本区 relay、不重放任务、不扩大分享权限。首次请求合并，失败
+沿用现有退避，重复的组查询不绕过退避；组视图先返回，成员目录仍受原有 3 秒读取上限约束；③ 回归
+通过真实组 `view` / `pick` 与分享路由入口验证恢复，同时核对本区分享仍可用、暂停与撤销仍拒绝、
+换账号后的迟到组回包和服务端回包不能激活新账号。手机及桌面远控共用任务所在电脑的这条路径，
+SSH 与跨账号组中转不变。实现见 `provider-group/remoteClient.ts`、`device-link/providerShareGuest.ts`
+与 `providerShareCrossRegion.ts`。
+
 ### 文件通道慢速回退
 
 Desktop 与 Mobile 的整文件 peer 下载共用 `fileTransferPolicy.ts`。数字按职责分开：
