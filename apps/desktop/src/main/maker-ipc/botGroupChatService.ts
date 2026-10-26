@@ -183,6 +183,7 @@ export interface BotGroupChatServiceDeps {
   captureOwnerScope?: () => DataOwnerBroadcastScope;
   isOwnerScopeCurrent?: (scope: DataOwnerBroadcastScope) => boolean;
   onChanged?: (payload: BotGroupChangedPayload, ownerScope?: DataOwnerBroadcastScope) => void;
+  onChatMessageNotification?: (payload: import('./chatMessageNotifications.js').ChatMessageNotification, current: () => boolean) => void;
   /** Cloud companions (cloud-companions.md); absent keeps the Chat Server per-computer only. */
   companionCloud?: import('../companion-cloud/runtime.js').CompanionCloudHost;
   now?: () => number;
@@ -470,7 +471,10 @@ export function resolveGroupMentions(
     });
     if (!match) continue;
     if (!match.botId) all = true;
-    else if (!ordered.includes(match.botId)) ordered.push(match.botId);
+    // Same-named members are indistinguishable in text: address them all, as the composer's parser does.
+    else for (const twin of labels) {
+      if (twin.botId && twin.label.toLocaleLowerCase() === match.label.toLocaleLowerCase() && !ordered.includes(twin.botId)) ordered.push(twin.botId);
+    }
   }
   return { all, botIds: structured.length > 0 ? structured : ordered };
 }

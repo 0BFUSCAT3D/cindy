@@ -8,6 +8,7 @@ import { BotFollowUpInvitation } from '@/features/bots/BotFollowUpInvitation';
 import { formatSessionDuration } from '@/lib/sessionDurationFormat';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { shouldShowFailedScheduleNotice } from '@cindy/maker-shared/schedule-model';
+import { canContinueFailedTurn } from '@cindy/maker-shared/synthetic-trigger';
 /**
  * CCAgentSessionView
  * ---------------------------------------------------------------------------
@@ -43,7 +44,7 @@ import {
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { CindyMakeSessionGate } from './CindyMakeSessionGate';
 import { SessionRouteOriginGate } from './SessionRouteOriginGate';
-import { sideChatTaskRoute } from '@/features/right-sidebar/plugins/side-chat/state';
+import { useBotIslandVisibleSession } from '@/features/bots/useBotIslandVisibleSession';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { useTranslation } from 'react-i18next';
 import { buildSessionDeepLink } from '@/lib/deepLink';
@@ -81,6 +82,7 @@ import {
 
 import { cn, basename } from '@/lib/utils';
 import { Spinner } from '@/components/ui/spinner';
+import { Collapse } from '@/components/ui/collapse';
 import { setRemoteReceiptDisplayReady } from '@/lib/sessionAttentionStore';
 import { shortSessionId } from '@/lib/sessionId';
 import { ChatInput } from '@/components/new-chat/ChatInput';
@@ -165,6 +167,7 @@ import { useAnimatedNumber } from '@/hooks/useAnimatedNumber';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { useSilentEncryptedRetry } from '@/hooks/useSilentEncryptedRetry';
 import { TodaySpendChip } from '@/components/status/TodaySpendChip';
+import { ContextWindowBudgetChip } from '@/components/status/ContextWindowBudgetChip';
 import { TopRightChipStack, TopRightChipStackProvider } from '@/components/chat/TopRightChipStack';
 import { ChatDisplaySnapshotProvider } from '@/components/chat/ChatDisplaySnapshotContext';
 import { useCCAgentChat } from '@/hooks/useCCAgentChat';
@@ -279,6 +282,7 @@ import {
   getSessionRouteOwnerId,
   isOrcaLeadSession,
   isOrcaWorkerSession,
+  orcaWorkerSessionRoute,
   resolveSessionRoute,
 } from '@/lib/orcaSessionIdentity';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
@@ -505,6 +509,8 @@ function parseOrcaWorkersRevealState(state: unknown): OrcaWorkersRevealState | n
 }
 
 interface CCAgentSessionViewProps {
+  /** Topic root and reply divider, inside the existing message scroller. */
+  messageStreamHeader?: ReactNode;
   sessionIdProp?: string;
   /** Host-read metadata for an embedded remote task intentionally absent from task lists. */
   sessionSnapshotProp?: Session | null;
@@ -821,6 +827,7 @@ export function CCAgentSessionView(props: CCAgentSessionViewProps) {
 }
 
 function CCAgentSessionContent({
+  messageStreamHeader,
   sessionIdProp,
   sessionSnapshotProp,
   routeOwner,
@@ -1417,9 +1424,15 @@ function CCAgentSessionContent({
   }, [session?.status, sessionId, navigate, ownsWindowRoute]);
   const vendorAuthGate = useVendorAuthGate();
   const { confirmWithCheckbox } = useConfirmDialog();
+  const [workerRouteChecked, setWorkerRouteChecked] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sessionId || !searchJump) return;
+    if (ownsWindowRoute && !session) return;
+    // The route owner hands Worker jumps to the Lead sidebar. Do not consume
+    // the anchor in this temporary view while its workflow read is in flight.
+    if (ownsWindowRoute && !isOrcaMode && !isCompactRail && session
+      && isOrcaWorkerSession(session) && workerRouteChecked !== location.key) return;
     if (searchJump.sessionId !== sessionId) {
       if (!session) return;
       // 仅路由主权实例回收「跳转目标 ≠ 当前会话」的陈旧状态：分屏的嵌入 pane
@@ -1488,12 +1501,15 @@ function CCAgentSessionContent({
     clearSearchJumpState,
     isOrcaLeadSessionView,
     isOrcaMode,
+    isCompactRail,
+    location.key,
     ownsWindowRoute,
     requestFocusMessage,
     searchJump,
     session,
     sessionId,
     t,
+    workerRouteChecked,
   ]);
 
   // 后台任务面板行点击 → 聊天流定位对应任务卡:sessionId 匹配当前会话才消费;
@@ -1539,15 +1555,21 @@ function CCAgentSessionContent({
     void orcaWorkflowsFor(session.id)
       .getByWorkerSession(session.id)
       .then((workflow) => {
-        if (!cancelled && workflow) {
-          navigate(`/cc-agent/${workflow.leadSessionId}?worker=${sessionId}`, { replace: true });
+        if (cancelled) return;
+        if (workflow) {
+          navigate(orcaWorkerSessionRoute(workflow.leadSessionId, sessionId, location.search), {
+            replace: true,
+            state: location.state,
+          });
+        } else {
+          setWorkerRouteChecked(location.key);
         }
       })
-      .catch(() => undefined);
+      .catch(() => { if (!cancelled) setWorkerRouteChecked(location.key); });
     return () => {
       cancelled = true;
     };
-  }, [isOrcaMode, isCompactRail, navigate, ownsWindowRoute, session, sessionId]);
+  }, [isOrcaMode, isCompactRail, location.key, location.search, location.state, navigate, ownsWindowRoute, session, sessionId]);
 
   // F2: controlled folder picker open state
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
@@ -1803,7 +1825,15 @@ function CCAgentSessionContent({
     slashCommandRanges?: SlashCommandRange[];
     onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
     onDeferredAccepted?: () => void;
+    literalText?: boolean;
+    resolveSubmission?: (accepted: boolean) => void;
   } | null>(null);
+
+  useEffect(() => () => {
+    // A picker abandoned by navigation must release the originating rich button.
+    pendingSendRef.current?.resolveSubmission?.(false);
+    pendingSendRef.current = null;
+  }, [sessionId]);
 
   const handleTitleUpdate = useCallback(() => {
     refreshSessions();
@@ -1835,6 +1865,7 @@ function CCAgentSessionContent({
     cancelUsageLimitWait,
     errorIsRecoverable,
     errorRetryText,
+    errorCanContinue,
     disposedErrorPersistId,
     credentialSwitchWait,
     continuationInFlightClientId,
@@ -1893,6 +1924,10 @@ function CCAgentSessionContent({
     updateQueueItemContent,
     chatDisplaySnapshot,
   } = useCCAgentChat(sessionId, handleTitleUpdate, { chatRealtime });
+  useBotIslandVisibleSession(
+    viewVisible && session?.id === sessionId && historyLoaded ? sessionId ?? null : null,
+    ownsWindowRoute && !isCompactRail && !isOrcaMode,
+  );
   const clearQueueComposerEditDraft = useCallback(
     (edit: NonNullable<typeof queueComposerEdit>, files: readonly AttachedFile[]) => {
       const originalIds = new Set(edit.originalAttachmentIds);
@@ -2865,7 +2900,7 @@ function CCAgentSessionContent({
           toast.info(t('chat.sideChat.mainTaskOnly'));
           return;
         }
-        void openSideChatTab(sessionId, { prompt: payload.args, onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)) });
+        void openSideChatTab(sessionId, { prompt: payload.args });
         return;
       }
       if (payload.command === 'cmd') {
@@ -3300,6 +3335,7 @@ function CCAgentSessionContent({
     setFolderPickerOpen(open);
     // If user closed the popover without selecting, clear pending send
     if (!open) {
+      pendingSendRef.current?.resolveSubmission?.(false);
       pendingSendRef.current = null;
     }
   }, []);
@@ -3557,7 +3593,6 @@ function CCAgentSessionContent({
         const accepted = await openSideChatTab(sessionId, {
           prompt: args,
           attachments: files,
-          onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)),
         });
         return { handled: true, accepted, message };
       }
@@ -3711,43 +3746,46 @@ function CCAgentSessionContent({
       pendingSendRef.current = null;
       void (async () => {
         try {
-          const slashDispatch = await maybeDispatchDesktopSlashCommand(
-            pending.message,
-            pending.files,
-            {
-              allowDesktopDispatch: pending.deliveryMode !== 'steer',
-              piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
-              workingDirOverride: newDir,
-              builtInSkillIntent: pending.builtInSkillIntent,
-              preparePiRuntime: async () => {
-                if (!sessionId || dbToMakerAgentKind(session?.agentKind) !== 'pi') return;
-                const createOpts = {
-                  id: sessionId,
-                  ...buildCreateOptsForCurrentSession(
-                    sessionId,
-                    pending.model,
-                    pending.effort,
-                    pending.permissionMode,
-                    newDir,
-                    pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : undefined,
-                  ),
-                  agentKind: 'pi' as const,
-                  workingDir: newDir,
-                  orcaRole: session?.orcaRole ?? null,
-                };
-                if (remoteDeviceId) {
-                  await window.electronAPI.deviceLink.invoke(
-                    remoteDeviceId,
-                    'maker:create-session',
-                    [createOpts],
-                  );
-                } else {
-                  await window.electronAPI.maker.createSession(createOpts);
-                }
-              },
-            },
-          );
+          const slashDispatch = pending.literalText
+            ? { handled: false, accepted: false, message: pending.message }
+            : await maybeDispatchDesktopSlashCommand(
+                pending.message,
+                pending.files,
+                {
+                  allowDesktopDispatch: pending.deliveryMode !== 'steer',
+                  piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
+                  workingDirOverride: newDir,
+                  builtInSkillIntent: pending.builtInSkillIntent,
+                  preparePiRuntime: async () => {
+                    if (!sessionId || dbToMakerAgentKind(session?.agentKind) !== 'pi') return;
+                    const createOpts = {
+                      id: sessionId,
+                      ...buildCreateOptsForCurrentSession(
+                        sessionId,
+                        pending.model,
+                        pending.effort,
+                        pending.permissionMode,
+                        newDir,
+                        pending.vendorOptions ? { vendorOptions: pending.vendorOptions } : undefined,
+                      ),
+                      agentKind: 'pi' as const,
+                      workingDir: newDir,
+                      orcaRole: session?.orcaRole ?? null,
+                    };
+                    if (remoteDeviceId) {
+                      await window.electronAPI.deviceLink.invoke(
+                        remoteDeviceId,
+                        'maker:create-session',
+                        [createOpts],
+                      );
+                    } else {
+                      await window.electronAPI.maker.createSession(createOpts);
+                    }
+                  },
+                },
+              );
           if (slashDispatch.handled) {
+            pending.resolveSubmission?.(slashDispatch.accepted);
             if (slashDispatch.accepted) {
               pending.onDeferredAccepted?.();
               const resumedSessionId = sessionId;
@@ -3828,6 +3866,7 @@ function CCAgentSessionContent({
                 }
               : undefined,
           );
+          pending.resolveSubmission?.(accepted);
           if (accepted) {
             pending.onDeferredAccepted?.();
             const resumedSessionId = sessionId;
@@ -3839,6 +3878,7 @@ function CCAgentSessionContent({
             }
           }
         } catch (error) {
+          pending.resolveSubmission?.(false);
           log.warn(
             'pending send after working directory selection failed:',
             error instanceof Error ? error.message : String(error),
@@ -3937,6 +3977,7 @@ function CCAgentSessionContent({
       opts?: {
         deliveryMode?: MessageDeliveryMode;
         literalText?: boolean;
+        independent?: boolean;
         beforeEnqueue?: () => Promise<boolean>;
         onInputCreated?: (clientId: string) => void;
         builtInSkillIntent?: BuiltInSkillDraftIntent;
@@ -4115,9 +4156,17 @@ function CCAgentSessionContent({
 
       // ② Working directory check
       if (!session?.workingDir) {
+        // Composer sends keep their existing deferred callback contract. A rich
+        // submission awaits acceptance so its receipt cannot disagree with dispatch.
+        let resolveSubmission: ((accepted: boolean) => void) | undefined;
+        const submission = opts?.independent
+          ? new Promise<boolean>((resolve) => { resolveSubmission = resolve; })
+          : false;
         pendingSendRef.current = {
           deliveryMode,
           builtInSkillIntent: opts?.builtInSkillIntent,
+          literalText: opts?.literalText,
+          resolveSubmission,
           message,
           model,
           effort,
@@ -4137,7 +4186,7 @@ function CCAgentSessionContent({
           ...(opts?.onDeferredAccepted ? { onDeferredAccepted: opts.onDeferredAccepted } : {}),
         };
         setFolderPickerOpen(true);
-        return false;
+        return submission;
       }
 
       // ③ Auto-unarchive: 在 archived session 中发消息视为"激活"——状态先落库到
@@ -4196,7 +4245,7 @@ function CCAgentSessionContent({
       // ④ Execute send — effort + permissionMode came straight from ChatInput (fresh value)
       let rebalanceClientId: string | undefined;
       // 伙伴私聊引用回复:点发送时的待发引用随这条消息一起落库,送出后从输入框上方撤下。
-      const replyQuote = botChatIdentity ? getPendingBotReplyQuote(sessionId) : null;
+      const replyQuote = botChatIdentity && !opts?.independent ? getPendingBotReplyQuote(sessionId) : null;
       const sendOptions = {
         ...(replyQuote ? { replyQuote } : {}),
         beforeEnqueue: recordRebalance ? async () => {
@@ -4610,6 +4659,20 @@ function CCAgentSessionContent({
   const handleSilentStopContinue = useCallback(() => {
     continueAfterSilentStop();
   }, [continueAfterSilentStop]);
+
+  const canContinueError = canContinueFailedTurn({
+    error,
+    retryText: errorRetryText,
+    running: isAgentBusy || errorIsRecoverable || !!credentialSwitchWait || syntheticContinuationPending,
+    hostCanContinue: errorCanContinue === true,
+  });
+  const handleContinueAfterError = useCallback(async () => {
+    if (!sessionId || !canContinueError || isHistoryRecoveryPending()) return;
+    invalidateHistoryRecoveryNavigation();
+    await rebuildClaudeSubscriptionSessionBeforeRetry(errorReason);
+    await makerChatStore.sendUiTrigger(sessionId, CONTINUE_AFTER_ERROR_PROMPT);
+  }, [canContinueError, errorReason, invalidateHistoryRecoveryNavigation, isHistoryRecoveryPending,
+    rebuildClaudeSubscriptionSessionBeforeRetry, sessionId]);
 
   // 点击 Cancel 关闭报错 banner 同样是处置(用户选择不管它了)。
   const handleDismissError = useCallback(() => {
@@ -5204,6 +5267,7 @@ function CCAgentSessionContent({
     <BotChatQuoteProvider value={botChatQuote}>
     <MessageReadAloudContext.Provider value={messageReadAloud.value}>
     <MessageStream
+      header={messageStreamHeader}
       key={sessionId}
       sessionId={sessionId}
       sessionTitle={session?.title ?? null}
@@ -5226,7 +5290,7 @@ function CCAgentSessionContent({
       activeVoiceCallId={activeVoiceCallId}
       historyVisibleAfter={session?.source === 'side-chat' ? new Date(session.createdAt).getTime() : undefined}
       onAskInSideChat={!readOnly && canNavigateSession && sessionId && session?.source !== 'side-chat' && session?.source !== 'bot'
-        ? (quote) => openSideChatTab(sessionId, { quote, onOpen: (id, deviceId) => navigate(sideChatTaskRoute(id, deviceId)) }) : undefined}
+        ? (quote) => openSideChatTab(sessionId, { quote }) : undefined}
       cindyMakeSessionId={session?.source === 'cindy-make' ? sessionId : undefined}
       cindyMakeCompletionInComposer={session?.source === 'cindy-make' && (remoteMakeCards.supported || (!remoteDeviceId && !readOnly && typeof window.electronAPI.cindyMakeTest === 'function'))}
       historyLoaded={historyLoaded}
@@ -5258,13 +5322,13 @@ function CCAgentSessionContent({
 
   // Message-level controls (e.g. a Market teammate's starter buttons) send through this session's own path.
   const quickSend = useMemo<SessionQuickSend>(() => ({
-    send: async (text: string) => {
+    send: async (text, options) => {
       if (!session) return false;
-      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode)) !== false;
+      return (await handleSend(text, session.model, session.effort as Effort, session.permissionMode as PermissionMode, undefined, undefined, { ...options, ...(options?.literalText ? { slashCommandRanges: [] } : {}) })) !== false;
     },
   }), [handleSend, session]);
   const messageStreamWithQuickSend = (
-    <SessionQuickSendProvider value={quickSend}>{messageStreamEl}</SessionQuickSendProvider>
+    <SessionQuickSendProvider value={readOnly || cindyMakeInputLocked ? null : quickSend}>{messageStreamEl}</SessionQuickSendProvider>
   );
 
   const composerRuntimeVisible =
@@ -5531,7 +5595,6 @@ function CCAgentSessionContent({
               className="mx-auto grid grid-cols-1 grid-rows-1 items-center"
               style={{ width: inputWidth }}
             >
-              {!pendingPlanReview || (hasControlledBanner && controlledBannerCollapsed) ? (
                 <RunningStatusBar
                   key={sessionId}
                   sessionKey={sessionId ?? null}
@@ -5576,7 +5639,6 @@ function CCAgentSessionContent({
                   }
                   className="col-start-1 row-start-1"
                 />
-              ) : null}
               <div
                 data-composer-center-group="true"
                 className="pointer-events-none relative z-10 col-start-1 row-start-1 flex max-w-full -translate-y-1 items-center justify-center gap-2"
@@ -5742,6 +5804,7 @@ function CCAgentSessionContent({
                 isRecoverable={errorIsRecoverable}
                 retryText={errorRetryText}
                 onRetry={handleRetry}
+                onContinueAfterError={canContinueError ? handleContinueAfterError : undefined}
                 onSilentStopContinue={handleSilentStopContinue}
                 usageLimitWait={usageLimitWait}
                 onCancelUsageLimitWait={cancelUsageLimitWait}
@@ -5879,6 +5942,8 @@ function CCAgentSessionContent({
                 ) : pendingAskUser ? (
                   <AskUserQuestionPrompt
                     voiceBridge={voiceModeOpen && voiceModeAvailable && !voiceModeBlocked ? voiceQuestionBridge : undefined}
+                    voiceShortcutPreferred={isOrcaLeadSessionView}
+                    hostVisible={viewVisible}
                     sessionId={sessionId}
                     workingDir={session?.workingDir ?? ''}
                     remoteHostId={session?.remoteHostId}
@@ -6020,6 +6085,7 @@ function CCAgentSessionContent({
                   // 让 ChatInput 暂不显示 Agent 身份，不能跟随 displayAgentKind 的 cc 回退。
                   runtimeAgentKind={session ? dbToMakerAgentKind(session.agentKind) : null}
                   runtimeEffective={session?.runtimeEffective}
+                  baselineEffort={session?.runtimeBaseline?.effort ?? null}
                   runtimePending={session?.runtimePending}
                   // session 未加载时保留 undefined 未知态；Orca 原地切换与换电脑分别门控。
                   sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}
@@ -6076,7 +6142,7 @@ function CCAgentSessionContent({
                   }
                   folderPickerOpen={folderPickerOpen}
                   onFolderPickerOpenChange={handleFolderPickerOpenChange}
-                  showFolderPicker={false}
+                  showFolderPicker={folderPickerOpen}
                   onModelDidChange={handleModelDidChange}
                   onEffortDidChange={handleEffortDidChange}
                   onPermissionModeDidChange={handlePermissionModeDidChange}
@@ -6188,7 +6254,7 @@ function CCAgentSessionContent({
                       <Spinner size={12} className="text-[var(--workingdir-icon)]" />
                       <span className="block min-w-0 truncate text-12 font-medium leading-none text-[var(--workingdir-text)]">
                         {t('ccAgent.layout.worktreeCreating', '正在创建 worktree')}{' '}
-                        <code className="font-mono text-11 opacity-80">
+                        <code className="font-mono text-11 text-[var(--text-tertiary)]">
                           {worktreeCreation.name}
                         </code>
                         …
@@ -6280,6 +6346,25 @@ function CCAgentSessionContent({
                       deviceLinkDeviceId={remoteDeviceId ?? null}
                       usageAccount={usageAccount}
                     />
+                    {/* device-link 远程任务的档位走 maker:set-context-window-budget 隧道命令，
+                        在偏好文件落盘并应用到活实例；老被控端不支持时由 chip 提示版本不支持。
+                        当前档位与可选档位一起来自权威边界查询（本地 main / 远程被控端）。 */}
+                    {sessionId && (
+                      <ContextWindowBudgetChip
+                        sessionId={sessionId}
+                        contextTokens={agentStatus.contextTokens}
+                        model={agentSwitchIntent?.model ?? session?.model ?? ''}
+                        providerId={
+                          agentSwitchIntent
+                            ? agentSwitchIntent.providerId
+                            : (session?.providerId ?? null)
+                        }
+                        agentKind={normalizeDbAgentKind(displayAgentKind)}
+                        providers={{ providers }}
+                        deviceId={remoteDeviceId}
+                        disabled={readOnly || !session}
+                      />
+                    )}
                     <ContextCapacityRing
                       isRunning={agentStatus.isRunning}
                       sessionId={sessionId}
@@ -6382,9 +6467,9 @@ function CCAgentSessionContent({
         // openai-chat 桥接 Codex 只挂在本地 proxy),与 main 侧 remote-worker
         // guard 同规则(codex review R28)。
         sshRemote={!!session?.remoteHostId}
-        // 首个 Worker 也可放到另一台电脑：仅本机 Lead(非 SSH、Agent 也在本机)。
+        // Lead 的 Agent 位置独立于 Worker 的工作电脑；SSH Lead 仍沿用原限制。
         executionDevicesEnabled={
-          !remoteDeviceId && !session?.remoteHostId && !session?.agentDeviceId
+          !remoteDeviceId && !session?.remoteHostId
         }
         // Worker 的 Agent 默认跟 Lead 的 Agent 所在电脑(远程供应商)，模型目录也先按那台读；
         // 面板里列出与输入框同一份其他电脑 / 分享的供应商，可以换到本机或别处。
@@ -6726,22 +6811,22 @@ function RunningStatusBar({
         !backgroundTasksRunning &&
         usageMeta.kind === 'rate'));
   // A pinned panel keeps its anchor mounted through idle and subsequent turns.
-  // 空闲后真正收起,不再给输入框上方留下固定空行。overlay 的 ResizeObserver 会在
-  // DOM 尺寸变化后补齐 MessageStream 的 bottomPadding,因此不靠硬编码高度制造跳变。
-  if (!rightLeadingSlot && (suppressContent || (isHidden && !ratePanelPinned))) return null;
+  // Retain the outgoing row while its occupied height closes. Returning null
+  // after the opacity fade removed the whole row in one frame.
+  const rowVisible = Boolean(rightLeadingSlot) || (!suppressContent && (!isHidden || ratePanelPinned));
 
   // 两段式布局:左(运行状态) / 右(elapsed·tokens)。
   // - 左段 min-w-0(可收缩):status 并非短枚举 —— turn-start 文案带用户名(可含中文长句)、
   //   claude tool 进度会拼成 `mcp__x__y running...` 长串,窄宽时左段靠 span truncate;
   // - 右段 justify-self-end + min-w-0:elapsed / token 是低优先级信息,必要时可溢出。
   return (
-    <div
-      className={cn(
-        'mx-auto grid select-none grid-cols-[minmax(0,1fr)_auto] items-center px-2 py-[6px]',
-        className,
-      )}
+    <Collapse
+      open={rowVisible}
+      animateResize
+      className={cn('mx-auto', className)}
       style={{ width: inputWidth }}
     >
+    <div className="grid select-none grid-cols-[minmax(0,1fr)_auto] items-center px-2 py-[6px]">
       <div
         // cadenced shimmer:key 重挂载 = 重播一次呼吸(见上方 shimmerCycle 说明)。
         // 左段只有 icon + 一行文字,1.5s 一次的重挂载成本可忽略。
@@ -6793,7 +6878,7 @@ function RunningStatusBar({
         {(!suppressContent && (!isHidden || ratePanelPinned)) && (
           <div
             data-running-status-meta="true"
-            className="flex min-w-0 items-center gap-[6px]"
+            className="flex min-w-0 items-center gap-[6px] whitespace-nowrap tabular-nums"
             style={ratePanelPinned ? undefined : fadeStyle}
             aria-hidden={isHidden && !ratePanelPinned}
           >
@@ -6860,6 +6945,7 @@ function RunningStatusBar({
         )}
       </div>
     </div>
+    </Collapse>
   );
 }
 

@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
   confirm: vi.fn(),
   leave: vi.fn(),
   focused: true,
+  appState: 'active',
+  appStateListeners: new Set<(state: string) => void>(),
   closeSettings: null as null | (() => void),
   row: null as any,
   inputs: {} as Record<string, any>,
@@ -20,25 +22,57 @@ const h = vi.hoisted(() => ({
   teammateQuery: '',
   uuid: 0,
   scroll: null as any,
-  scrollToEnd: vi.fn(),
+  scrollTo: vi.fn(),
+  moveTail: vi.fn(),
+  cancelTail: vi.fn(),
+  nativeViewportAvailable: false,
+  nativeViewport: null as any,
+  nativeChatViewportAvailable: false,
+  nativeChatViewport: null as any,
+  keyboardLift: null as any,
   markRead: vi.fn(),
   // Fake of the shared upload pipeline (useMobileLocalAttachments).
   local: null as any,
   discarded: [] as any[],
   deleted: [] as string[],
   keyboardAvoidingView: null as any,
+  flowHeaderLayout: null as any,
   platform: { OS: 'ios' }, headerBlur: [] as number[], headerFade: [] as (number | undefined)[],
 }));
 
 vi.mock('expo-web-browser', () => ({ openBrowserAsync: vi.fn(async () => ({})) }));
+vi.mock('@/components/ChatReplyIcon', () => ({ ChatReplyIcon: () => null }));
+// Native animation is covered by useSmoothMessageFollow/AnimatedContentHeight.
+// This screen test exercises ownership, visible range, and read receipts.
+vi.mock('react-native-reanimated', async () => ({ default: { ScrollView: (await import('react-native')).ScrollView } }));
+vi.mock('@/session/NativeChatViewport', () => ({
+  get nativeChatViewportAvailable() { return h.nativeChatViewportAvailable; },
+  get nativeAndroidKeyboardViewportAvailable() { return h.nativeChatViewportAvailable && h.platform.OS === 'android'; },
+  NativeChatViewport: ({ children, ...props }: any) => { h.nativeChatViewport = props; return children; },
+  NativeAndroidComposerAnchor: ({ children, followKeyboard }: any) => el('div', { 'data-native-keyboard-follow': String(!!followKeyboard) }, children),
+}));
+vi.mock('@/session/useSmoothMessageFollow', () => ({ useSmoothMessageFollow: () => ({
+  scrollRef: useRef(null), nativeScrollRef: useRef({ scrollTo: h.scrollTo }), move: h.moveTail, cancel: h.cancelTail,
+}) }));
+vi.mock('@/session/AnimatedContentHeight', () => ({ AnimatedContentHeight: ({ open = true, children }: any) => open ? children : null }));
+vi.mock('@/session/ComposerDockKeyboardFollow', () => ({ DockKeyboardLift: ({ children, ...props }: any) => {
+  h.keyboardLift = props; return el('div', { 'data-keyboard-lift': String(props.active) }, children);
+} }));
+vi.mock('@/session/NativeKeyboardViewport', () => ({
+  get nativeKeyboardViewportAvailable() { return h.nativeViewportAvailable && h.platform.OS === 'ios'; },
+  NativeKeyboardViewport: ({ children, ...props }: any) => { h.nativeViewport = props; return children; },
+}));
 vi.mock('react-native', () => {
-  const box = (tag: string) => ({ children, testID, accessibilityLabel, style }: any) =>
-    el(tag, { 'data-testid': testID, 'aria-label': accessibilityLabel,
+  const box = (tag: string) => ({ children, testID, accessibilityLabel, style, onLayout }: any) => {
+    if (testID === 'botGroup.flowHeader') h.flowHeaderLayout = onLayout;
+    return el(tag, { 'data-testid': testID, 'aria-label': accessibilityLabel,
+      ref: (node: any) => { if (node) node.nativeLayout = onLayout; },
       style: { opacity: [style].flat().filter(Boolean).findLast((item: any) => item.opacity !== undefined)?.opacity } }, children);
+  };
   return {
     View: box('div'), ScrollView: ({ ref, children, ...props }: any) => {
       h.scroll = props;
-      useImperativeHandle(ref, () => ({ scrollToEnd: h.scrollToEnd }));
+      useImperativeHandle(ref, () => ({}));
       return el('div', { 'data-testid': props.testID }, children);
     }, KeyboardAvoidingView: ({ children, ...props }: any) => {
       h.keyboardAvoidingView = props;
@@ -52,7 +86,9 @@ vi.mock('react-native', () => {
     Platform: { get OS() { return h.platform.OS; }, select: (value: any) => value[h.platform.OS] },
     Alert: { alert: h.alert },
     useWindowDimensions: () => ({ width: 390, height: 844 }),
-    AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
+    AppState: { get currentState() { return h.appState; }, addEventListener: (_event: string, listener: (state: string) => void) => {
+      h.appStateListeners.add(listener); return { remove: () => h.appStateListeners.delete(listener) };
+    } },
     Keyboard: { dismiss: () => {} },
     Animated: { View: box('div'), Value: class { setValue() {} interpolate() { return this; } }, timing: () => ({ start() {}, stop() {} }),
       loop: () => ({ start() {}, stop() {} }), sequence: () => ({}) },
@@ -61,10 +97,14 @@ vi.mock('react-native', () => {
 });
 vi.mock('expo-router', () => ({
   useIsFocused: () => h.focused,
-  Stack: { Screen: () => null },
+  Stack: {
+    Screen: ({ options }: any) => typeof options.headerTitle === 'function' ? options.headerTitle() : null,
+    Toolbar: Object.assign(({ children }: any) => children, { View: ({ children }: any) => children }),
+  },
   useRouter: () => ({ back: vi.fn(), replace: vi.fn() }),
   useFocusEffect: (effect: () => void) => useEffect(effect, [effect]),
 }));
+vi.mock('expo-router/react-navigation', () => ({ useHeaderHeight: () => 72 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: ({ children }: any) => el('main', null, children), useSafeAreaInsets: () => ({ top: 59, bottom: 34, left: 0, right: 0 }) }));
 vi.mock('@/session/SessionHeaderNativeControls', () => ({ SessionHeaderNativeBlur: ({ height, fadeInside }: any) => { h.headerBlur.push(height); h.headerFade.push(fadeInside); return null; } }));
 vi.mock('react-i18next', async (importOriginal) => ({
@@ -122,11 +162,11 @@ vi.mock('@/session/HomeHeaderGlassButton', () => ({
   HomeHeaderGlassButton: ({ onPress, testID, disabled, children }: any) => el('button', { 'data-testid': testID, disabled, onClick: onPress }, children),
 }));
 vi.mock('@/session/CompanionSheet', () => ({
-  CompanionSheet: ({ visible, children, onClose, onClosed, testID }: any) => {
+  CompanionSheet: ({ visible, children, footer, preventDismiss, onClose, onClosed, testID }: any) => {
     if (testID === 'botGroup.settings') h.closeSettings = onClose;
     const was = useRef(visible);
     useEffect(() => { if (was.current && !visible) onClosed?.(); was.current = visible; }, [visible]);
-    return visible ? el('div', { 'data-testid': testID }, children) : null;
+    return visible ? el('div', { 'data-testid': testID, 'data-prevent-dismiss': String(!!preventDismiss) }, children, footer) : null;
   },
 }));
 vi.mock('@/session/BotGroupAvatars', () => ({
@@ -203,8 +243,8 @@ vi.mock('@/session/useBotGroupRemoteMedia', () => ({ useBotGroupRemoteMedia: () 
 vi.mock('@/session/useHostTeammates', () => ({ useHostTeammates: (_host: unknown, _enabled: boolean, query = '') => { h.teammateQuery = query; return h.teammates; } }));
 vi.mock('@/session/useBotGroupChat', () => ({ useBotGroupChat: () => h.chat }));
 vi.mock('@/session/useBotGroupSettingsManagement', () => ({ useBotGroupSettingsManagement: () => h.management ?? ({
-  selected: undefined, managers: [], loading: false, reason: 'noHost', act: vi.fn(), select: vi.fn(), refresh: vi.fn(),
-}) }));
+  group: undefined, editable: false, loading: false, reason: 'unavailable', act: vi.fn(), refresh: vi.fn(),
+}), useCloudGroupCandidates: () => ({ ...h.teammates, rows: h.teammates.rows.map(row => ({ id: row.item.ref.id, name: row.item.display.title, avatar: null })) }) }));
 
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
@@ -267,19 +307,22 @@ async function click(id: string) {
   if (!target) throw new Error(`missing ${id}`);
   await act(async () => { target.click(); });
 }
-async function render(data: BotGroupRemoteChatData | null = group(), kind: 'ready' | 'loading' | 'missing' | 'error' = 'ready') {
+async function render(data: BotGroupRemoteChatData | null = group(), kind: 'ready' | 'loading' | 'missing' | 'error' = 'ready', threadRootId?: string) {
   h.chat = {
     ...h.chat,
     state: kind === 'ready' ? { kind, group: data } : kind === 'error' ? { kind, message: 'x' } : { kind },
   };
-  await act(async () => root.render(el(BotGroupChatScreen, { deviceId: 'mac', deviceName: 'Mac', groupId: 'g1' })));
+  await act(async () => root.render(el(BotGroupChatScreen, { deviceId: 'mac', deviceName: 'Mac', groupId: 'g1', threadRootId })));
 }
 
 beforeEach(() => {
   h.management = null;
   vi.clearAllMocks();
   h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
+  h.appState = 'active'; h.appStateListeners.clear();
   h.platform.OS = 'ios'; h.focused = true; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
+  h.nativeViewportAvailable = false; h.nativeViewport = null; h.keyboardLift = null;
+  h.nativeChatViewportAvailable = false; h.nativeChatViewport = null;
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
   h.discarded = []; h.deleted = []; h.leaveGuard = []; h.leaveDecision = async () => false;
   h.local = {
@@ -380,17 +423,24 @@ describe('group timeline', () => {
     expect(byId('botGroup.task.live')).toBeNull();
   });
 
-  it('uses the shared Android keyboard avoidance behavior for the group composer', async () => {
+  // Actual Android failure: the input ends 104pt below the keyboard because
+  // the nested KAV loses its header/safe-area origin. Unit: measure a wrapping
+  // header through the production screen, then update its size on relayout.
+  it('includes the measured Android header origin in keyboard avoidance', async () => {
     h.platform.OS = 'android';
     await render();
     expect(h.keyboardAvoidingView).toMatchObject({ enabled: true, behavior: 'height' });
+    await act(async () => h.flowHeaderLayout({ nativeEvent: { layout: { height: 52 } } }));
+    expect(h.keyboardAvoidingView.keyboardVerticalOffset).toBe(111);
+    await act(async () => h.flowHeaderLayout({ nativeEvent: { layout: { height: 78 } } }));
+    expect(h.keyboardAvoidingView.keyboardVerticalOffset).toBe(137);
     expect(h.headerBlur).toEqual([]);
   });
 
   it('floats the iOS header on the task header blur instead of an opaque band', async () => {
     await render();
-    // Before the header is measured the blur still covers the status bar plus one bar row.
-    expect(h.headerBlur.at(-1)).toBe(59 + 44);
+    // Duo's native measurement already includes its shared status row; do not add another 44pt.
+    expect(h.headerBlur.at(-1)).toBe(72);
     // The two-line identity stays over solid blur; the feather starts at the header's lower edge.
     expect(h.headerFade.at(-1)).toBe(0);
   });
@@ -404,7 +454,7 @@ describe('group timeline', () => {
       h.scroll.onLayout({ nativeEvent: { layout: { height: 500 } } });
       h.scroll.onContentSizeChange(400, 2000);
     });
-    expect(h.scrollToEnd).toHaveBeenCalled();
+    expect(h.moveTail).toHaveBeenLastCalledWith(1500, false);
     expect(h.markRead).not.toHaveBeenCalled();
     const scroll = (offsetY: number, contentHeight = 2000) => h.scroll.onScroll({ nativeEvent: {
       contentOffset: { y: offsetY }, contentSize: { height: contentHeight }, layoutMeasurement: { height: 500 },
@@ -429,6 +479,117 @@ describe('group timeline', () => {
     await render(newer);
     await act(async () => h.scroll.onContentSizeChange(400, 3000));
     expect(h.markRead).not.toHaveBeenCalled();
+    // The reader stays in history, sees the arrival, and can explicitly return to it.
+    const jump = byId('botGroup.newMessages') as HTMLButtonElement;
+    expect(jump.textContent).toContain('count=1');
+    h.moveTail.mockClear();
+    await act(async () => jump.click());
+    expect(h.moveTail).toHaveBeenCalledWith(2500, true);
+    expect(h.markRead).not.toHaveBeenCalled();
+    await act(async () => scroll(2500, 3000));
+    expect(byId('botGroup.newMessages')).toBeNull();
+  });
+
+  it('notices arrivals after a notification opens history without acknowledging the tail', async () => {
+    const data = group();
+    h.chat = { ...h.chat, state: { kind: 'ready', group: data } };
+    const props = { deviceId: 'mac', deviceName: 'Mac', groupId: 'g1', messageId: data.messages[0].id };
+    await act(async () => root.render(el(BotGroupChatScreen, props)));
+    await act(async () => {
+      h.scroll.onLayout({ nativeEvent: { layout: { height: 500 } } });
+      h.scroll.onContentSizeChange(400, 2000);
+    });
+    h.moveTail.mockClear();
+    h.chat = { ...h.chat, state: { kind: 'ready', group: { ...data, messages: [...data.messages, message('arrival', 20, {})] } } };
+    await act(async () => root.render(el(BotGroupChatScreen, props)));
+    await act(async () => h.scroll.onContentSizeChange(400, 2500));
+    expect(byId('botGroup.newMessages')?.textContent).toContain('count=1');
+    expect(h.markRead).not.toHaveBeenCalled();
+    expect(h.moveTail).not.toHaveBeenCalled();
+  });
+
+  // Unit: the actual unread action must use the same native keyboard movement
+  // as the composer. A history reader must still be able to tap it with IME open.
+  it.each(['ios', 'android'])('keeps the unread action under %s keyboard ownership', async (platform) => {
+    h.platform.OS = platform;
+    h.nativeViewportAvailable = platform === 'ios';
+    h.nativeChatViewportAvailable = platform === 'android';
+    const data = group();
+    const props = { deviceId: 'mac', deviceName: 'Mac', groupId: 'g1', messageId: data.messages[0].id };
+    h.chat = { ...h.chat, state: { kind: 'ready', group: data } };
+    await act(async () => root.render(el(BotGroupChatScreen, props)));
+    h.chat = { ...h.chat, state: { kind: 'ready', group: { ...data, messages: [...data.messages, message('keyboard-arrival', 20, {})] } } };
+    await act(async () => root.render(el(BotGroupChatScreen, props)));
+    const jump = byId('botGroup.newMessages') as HTMLButtonElement;
+    expect(jump).toBeTruthy();
+    expect(jump.closest(platform === 'ios' ? '[data-keyboard-lift="true"]' : '[data-native-keyboard-follow="true"]')).toBeTruthy();
+    expect(h.markRead).not.toHaveBeenCalled();
+    await act(async () => jump.click());
+    if (platform === 'android') expect(h.nativeChatViewport.followLatest).toBe(true);
+  });
+
+  // Unit: Android native layout compensation must be the only scroll writer.
+  // The observed failure is a 22pt dip/reversal when JS corrects the next frame.
+  it('hands Android layout and content following to native, while a reader drag relinquishes the tail', async () => {
+    h.platform.OS = 'android'; h.nativeChatViewportAvailable = true;
+    await render();
+    await act(async () => {
+      h.scroll.onLayout({ nativeEvent: { layout: { height: 500 } } });
+      h.scroll.onContentSizeChange(400, 2000);
+      h.scroll.onLayout({ nativeEvent: { layout: { height: 480 } } });
+    });
+    expect(h.moveTail).not.toHaveBeenCalled();
+    expect(h.nativeChatViewport).toMatchObject({ active: true, followLatest: true });
+    expect(h.keyboardAvoidingView.enabled).toBe(false);
+    // Android scroll events report zero inset even while the native keyboard
+    // covers the last 300pt. Those hidden replies must not be marked as read.
+    await act(async () => {
+      h.nativeChatViewport.onViewportInsetChange({ nativeEvent: { bottom: 300, viewportHeight: 180, offsetY: 1500 } });
+      h.scroll.onScroll({ nativeEvent: {
+        contentOffset: { y: 1500 }, contentSize: { height: 2000 }, layoutMeasurement: { height: 480 },
+        contentInset: { top: 0, left: 0, right: 0, bottom: 0 },
+      } });
+    });
+    expect(h.markRead).not.toHaveBeenCalled();
+    await act(async () => h.scroll.onScrollBeginDrag());
+    expect(h.nativeChatViewport.followLatest).toBe(false);
+  });
+
+  // Unit: keyboard inset must not become a second JS scroll writer or acknowledge
+  // unread content. Existing layout/read-receipt cases have no native inset.
+  // Minimal failure: 500pt list, 300pt keyboard, then a history drag mid-transition.
+  it('hands keyboard motion to native and preserves the history reader on completion', async () => {
+    h.nativeViewportAvailable = true;
+    await render();
+    expect(h.keyboardAvoidingView.enabled).toBe(false);
+    expect(h.keyboardLift).toMatchObject({ active: true, restingBottom: 34, keyboardGap: 0 });
+    await act(async () => {
+      h.scroll.onLayout({ nativeEvent: { layout: { height: 500 } } });
+      h.scroll.onContentSizeChange(400, 2000);
+      h.nativeViewport.onKeyboardTransition({ nativeEvent: { active: true, bottom: 300 } });
+    });
+    h.moveTail.mockClear();
+    await act(async () => h.scroll.onContentSizeChange(400, 2100));
+    expect(h.moveTail).not.toHaveBeenCalled();
+    await act(async () => h.nativeViewport.onKeyboardTransition({ nativeEvent: { active: false, bottom: 300 } }));
+    expect(h.moveTail).toHaveBeenLastCalledWith(1900, true);
+    const sample = { nativeEvent: { contentOffset: { y: 1500 }, contentSize: { height: 2100 },
+      layoutMeasurement: { height: 500 }, contentInset: { bottom: 300 } } };
+    h.markRead.mockClear();
+    await act(async () => {
+      h.scroll.onScrollBeginDrag();
+      h.scroll.onScrollEndDrag(sample);
+    });
+    expect(h.nativeViewport.followLatest).toBe(false);
+    expect(h.markRead).not.toHaveBeenCalled();
+    h.moveTail.mockClear();
+    await act(async () => {
+      h.nativeViewport.onKeyboardTransition({ nativeEvent: { active: true, bottom: 0 } });
+      h.nativeViewport.onKeyboardTransition({ nativeEvent: { active: false, bottom: 0 } });
+      h.scroll.onContentSizeChange(400, 2200);
+    });
+    expect(h.moveTail).not.toHaveBeenCalled();
+    expect(h.nativeViewport.followLatest).toBe(false);
   });
 
   it('acknowledges a short conversation only after both native dimensions are measured', async () => {
@@ -498,6 +659,13 @@ describe('group timeline', () => {
     expect(h.chat.act).toHaveBeenLastCalledWith('plan-edit', { planId: 'p1', position: 1, action: 'reassign', botId: 'xiaoman' });
     await click('botGroup.plan.stepMenu.0.action.remove');
     expect(h.chat.act).toHaveBeenLastCalledWith('plan-edit', { planId: 'p1', position: 0, action: 'remove' });
+  });
+
+  // The computer's 自动交接 survives the phone's parse, so the card does not promise a 继续 that never comes.
+  it.each([[true, 'groupChat.plan.autoNote'], [undefined, 'groupChat.plan.pauseNote']] as const)('says how steps hand on (autoContinue=%s)', async (autoContinue, note) => {
+    const data = group();
+    await render(parseBotGroupChatData({ ...data, plans: data.plans.map(plan => ({ ...plan, ...(autoContinue ? { autoContinue } : {}) })) })!);
+    expect(byId('botGroup.message.plan')?.textContent).toContain(note);
   });
 
   it.each([undefined, true, false])('renders human-signed plans as organizer cards with working actions and read-only old plans (isSelf=%s)', async (isSelf) => {
@@ -612,6 +780,27 @@ describe('group composer', () => {
       h.row.onSelectionChange({ nativeEvent: { selection: { start: text.length, end: text.length } } });
     });
   }
+
+  // Both Chat Server entry paths must carry the selected original through the real composer.
+  it.each([true, false])('sends a quote and retains it after failure (direct server %s)', async server => {
+    h.chat.server = server;
+    const originalId = '11111111-1111-4111-8111-111111111111';
+    await render(group({ serverBacked: true, openPlan: null, messages: [
+      message(originalId, 1, { authorName: '咪咪', authorBotId: 'mimi', content: '请回复这条' }),
+    ] }));
+    await click(`botGroup.reply.${originalId}`);
+    await type('引用回复');
+    h.chat.act.mockRejectedValueOnce(new Error('QUOTE_UNAVAILABLE'));
+    await click('botGroup.composer.send');
+    expect(h.row.value).toBe('引用回复');
+    expect(byId('botGroup.cancelReply')).not.toBeNull();
+    await click('botGroup.composer.send');
+    expect(h.chat.act).toHaveBeenLastCalledWith('send', expect.objectContaining({
+      text: '引用回复', quote: { messageId: originalId }, clientId: 'uuid-1',
+    }));
+    expect(byId('botGroup.cancelReply')).toBeNull();
+    expect(h.row.value).toBe('');
+  });
 
   it.each([true, false])('locks an existing draft when dissolved without being archived (direct server %s)', async server => {
     h.chat.server = server;
@@ -740,17 +929,29 @@ describe('group composer', () => {
     expect(last).not.toHaveProperty('division');
   });
 
-  it('explains why 安排分工 is unavailable while a plan runs, and stops the round when empty', async () => {
+  // bot-group-chat.md §7.0 (2026-10-23): the computer arranges a 分工 in single-speaker rooms too,
+  // so a phone working through it keeps 安排分工; a phone talking to the server directly does not, nor one
+  // whose older computer would answer the request as a queue (no supportsDivision) (component tier).
+  it.each([[true, true, false, true], [true, false, false, false], [false, false, false, true], [true, true, true, false]])(
+    'offers 安排分工 (singleSpeaker=%s, supportsDivision=%s, direct=%s)', async (singleSpeaker, supportsDivision, direct, offered) => {
+    h.chat.server = direct;
+    await render(parseBotGroupChatData(group({ serverBacked: true, singleSpeaker, ...(supportsDivision ? { supportsDivision } : {}), replyMode: 'mentioned', openPlan: null }))!);
+    expect(!!byId('botGroup.composer.menu.action.division')).toBe(offered);
+  });
+
+  it.each(['all', 'mentioned'] as const)('keeps the running work-plan gate and uses truthful %s copy', async replyMode => {
     const data = group({
+      replyMode,
       openPlan: { id: 'p1', status: 'running', currentStep: 0, stepCount: 2, currentBotName: '咪咪', currentStepStatus: 'running' },
       round: { status: 'running', speakers: [{ botId: 'mimi', sessionId: 's1', activity: 'step' }], canContinue: false },
     });
-    data.plans[0] = { ...data.plans[0]!, status: 'running', currentStep: 0, steps: [{ ...data.plans[0]!.steps[0]!, status: 'running' }, data.plans[0]!.steps[1]!] };
+    data.plans[0] = { ...data.plans[0]!, kind: 'work', status: 'running', currentStep: 0, steps: [{ ...data.plans[0]!.steps[0]!, status: 'running' }, data.plans[0]!.steps[1]!] };
     await render(data);
     expect(byId('botGroup.composer.menu')).toBeNull();
     await click('botGroup.composer.more');
     expect(h.alert).toHaveBeenCalledWith('groupChat.composer.division', 'groupChat.composer.divisionBusy');
-    expect(byId('placeholder')?.textContent).toBe('groupChat.composer.placeholderPlanRunning(name=咪咪)');
+    expect(byId('placeholder')?.textContent).toBe(replyMode === 'mentioned'
+      ? 'groupChat.composer.placeholder' : 'groupChat.composer.placeholderPlanRunning(name=咪咪)');
     await click('botGroup.composer.stop');
     expect(h.chat.act).toHaveBeenLastCalledWith('stop');
   });
@@ -1073,20 +1274,20 @@ describe('group settings', () => {
     expect(h.chat.act).toHaveBeenLastCalledWith('update', { name: '保留草稿' });
   });
 
-  it('edits a direct server group through the management host while chat stays direct', async () => {
+  it('edits a direct server group without management computer UI while chat stays direct', async () => {
     const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsMemberRemoval: true, revision: 5 });
     data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
     h.chat.server = true;
     const manage = vi.fn(async () => ({ effects: [] }));
-    h.management = { displayHost: { deviceId: 'pc', deviceName: 'PC' }, selected: { host: { deviceId: 'pc', deviceName: 'PC' }, group: data }, managers: [], loading: false, reason: null,
+    h.management = { group: data, editable: true, loading: false, reason: null,
       act: manage, refresh: vi.fn(), select: vi.fn() };
     h.teammates = { rows: [{ key: 'new', host: { deviceId: 'pc', deviceName: 'PC' }, item: {
       ref: { collectionId: 'teammates', kind: 'bot', id: 'new-bot' }, revision: '1', display: { title: 'New bot' }, links: [],
     } }], loading: false, failed: false };
     await openSettings(data);
     expect(h.inputs['botGroup.settings.name'].editable).toBe(true);
-    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe('groupChat.settings.managementStatus.ready');
-    expect(byId('botGroup.settings.connectedDot')).not.toBeNull();
+    expect(byId('botGroup.settings.management')).toBeNull();
+    expect(byId('botGroup.settings.connectedDot')).toBeNull();
     expect(byId('botGroup.settings.retry')).toBeNull();
     expect(byId('botGroup.settings.body')?.style.opacity).toBe('');
     await act(async () => { h.inputs['botGroup.settings.name'].onChangeText('Managed'); });
@@ -1097,15 +1298,77 @@ describe('group settings', () => {
     expect(manage).toHaveBeenLastCalledWith('add-member', { botId: 'new-bot', expectedRevision: 5 });
   });
 
+  // Cloud description drafts must survive a concurrent edit; role changes use the selected member.
+  it('preserves a conflicted cloud description and changes a member role', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5, description: 'Original' });
+    data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
+    data.members[1] = { ...data.members[1], actorId: 'member-actor', role: 'member' };
+    const manage = vi.fn(async () => ({ effects: [] }));
+    h.chat.server = true;
+    h.management = { group: data, editable: true, loading: false, reason: null, act: manage, refresh: vi.fn() };
+    await openSettings(data);
+    await act(async () => { h.inputs['botGroup.settings.description'].onChangeText('My draft'); });
+    manage.mockRejectedValueOnce(new Error('REVISION_CONFLICT'));
+    await click('botGroup.settings.descriptionSave');
+    expect(manage).toHaveBeenLastCalledWith('update', { description: 'My draft', expectedRevision: 5 });
+    expect(h.inputs['botGroup.settings.description'].value).toBe('My draft');
+    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.conflict');
+    h.management.group = { ...data, description: 'Other edit', revision: 6 };
+    await render(h.management.group);
+    expect(h.inputs['botGroup.settings.description'].value).toBe('My draft');
+    await click('botGroup.settings.descriptionSave');
+    expect(manage).toHaveBeenLastCalledWith('update', { description: 'My draft', expectedRevision: 6 });
+    await click(`botGroup.settings.memberMenu.${data.members[1].botId}.action.role:${data.members[1].botId}`);
+    expect(manage).toHaveBeenLastCalledWith('set-member-role', { actorId: 'member-actor', role: 'admin' });
+  });
+
+  // Regression: native dismissal need not emit blur, so an edited description was lost.
+  // Unit tier uses the production settings component; no artificial onBlur is dispatched.
+  it('keeps an unblurred cloud draft open until saving succeeds or the user explicitly cancels', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5, description: 'Original' });
+    data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
+    let finish!: () => void;
+    const manage = vi.fn(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    h.chat.server = true;
+    h.management = { group: data, editable: true, loading: false, reason: null, act: manage, refresh: vi.fn() };
+    await openSettings(data);
+    await act(async () => { h.inputs['botGroup.settings.description'].onChangeText('Unblurred draft'); });
+    await act(async () => { h.closeSettings?.(); });
+    expect(byId('botGroup.settings')).not.toBeNull();
+    expect(byId('botGroup.settings')?.dataset.preventDismiss).toBe('true');
+    expect(manage).not.toHaveBeenCalled();
+    await click('botGroup.settings.descriptionSave');
+    expect(manage).toHaveBeenCalledWith('update', { description: 'Unblurred draft', expectedRevision: 5 });
+    await act(async () => { h.closeSettings?.(); });
+    expect(byId('botGroup.settings')).not.toBeNull();
+    await act(async () => { finish(); });
+    expect(byId('botGroup.settings')?.dataset.preventDismiss).toBe('false');
+    await act(async () => { h.closeSettings?.(); });
+    expect(byId('botGroup.settings')).toBeNull();
+
+    await click('botGroup.settingsButton');
+    manage.mockRejectedValueOnce(new Error('NETWORK_ERROR'));
+    await act(async () => { h.inputs['botGroup.settings.description'].onChangeText('Retained on failure'); });
+    await click('botGroup.settings.descriptionSave');
+    await act(async () => { h.closeSettings?.(); });
+    expect(h.inputs['botGroup.settings.description'].value).toBe('Retained on failure');
+    expect(byId('botGroup.settings')?.dataset.preventDismiss).toBe('true');
+    await click('botGroup.settings.descriptionCancel');
+    expect(byId('botGroup.settings')).toBeNull();
+    await click('botGroup.settingsButton');
+    expect(h.inputs['botGroup.settings.description'].value).toBe('Original');
+    expect(byId('botGroup.settings.descriptionSave')).toBeNull();
+  });
+
   it('explains unavailable management and offers retry without enabling edits', async () => {
     const refresh = vi.fn();
-    h.management = { displayHost: { deviceId: 'pc', deviceName: 'PC' }, selected: undefined, managers: [], loading: false, reason: 'noHost', act: vi.fn(), select: vi.fn(), refresh };
+    h.management = { editable: false, loading: false, reason: 'unavailable', act: vi.fn(), refresh };
     h.chat.server = true; await openSettings(group({ serverBacked: true }));
     expect(h.inputs['botGroup.settings.name'].editable).toBe(false);
     expect(byId('botGroup.settings.body')?.style.opacity).toBe('0.6');
-    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe('groupChat.settings.managementStatus.noHost');
-    expect(byId('botGroup.settings.computerName')?.textContent).toBe('PC');
-    expect(byId('botGroup.settings.retry')?.textContent).toBe('groupChat.settings.reconnect');
+    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe('groupChat.settings.cloudStatus.unavailable');
+    expect(byId('botGroup.settings.computerName')).toBeNull();
+    expect(byId('botGroup.settings.retry')?.textContent).toBe('groupChat.settings.retry');
     expect((byId('botGroup.settings.member.mimi') as HTMLButtonElement)?.disabled).toBe(true);
     await click('botGroup.settings.add');
     expect(byId('botGroup.settings.addable')).toBeNull();
@@ -1117,13 +1380,13 @@ describe('group settings', () => {
     expect(byId('botGroup.settings')?.textContent).not.toContain('groupChat.settings.deleteNote');
   });
 
-  it.each(['upgrade', 'permission', 'unavailable', 'loading'])('keeps the %s reason explicit in the compact status row', async reason => {
+  it.each(['permission', 'unavailable', 'loading'])('keeps the %s reason explicit in the compact status row', async reason => {
     const refresh = vi.fn();
     h.chat.server = true;
-    h.management = { selected: undefined, managers: [], loading: reason === 'loading', reason: reason === 'loading' ? null : reason,
+    h.management = { editable: false, loading: reason === 'loading', reason: reason === 'loading' ? null : reason,
       act: vi.fn(), select: vi.fn(), refresh };
     await openSettings(group({ serverBacked: true }));
-    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe(`groupChat.settings.managementStatus.${reason}`);
+    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe(`groupChat.settings.cloudStatus.${reason}`);
     expect(h.inputs['botGroup.settings.name'].editable).toBe(false);
     if (reason === 'loading') {
       expect(byId('botGroup.settings.connecting')).not.toBeNull();
@@ -1206,8 +1469,8 @@ describe('group settings', () => {
     const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
     data.members[0] = { ...data.members[0], isOwned: true, role: 'admin' };
     h.chat.server = true;
-    h.management = { selected: { host: { deviceId: 'pc', deviceName: 'PC' }, group: data }, managers: [], loading: false, reason: null,
-      act: vi.fn(), refresh: vi.fn(), select: vi.fn() };
+    h.management = { group: data, editable: true, loading: false, reason: null,
+      act: vi.fn(), refresh: vi.fn() };
     await openSettings(data);
     expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
     await click('botGroup.settings.delete');
@@ -1296,25 +1559,102 @@ describe('direct server group presentation', () => {
     await render(group({ messages: [message('other', 1, { authorKind: 'user', authorName: 'Other member', isSelf: false, content: 'hello' })], plans: [], openPlan: null, hasMoreBefore: true }));
     expect(all('botGroup.message.user')).toHaveLength(0);
     expect(node.textContent).toContain('Other member');
-    expect(h.scroll.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 1 });
+    // Native anchoring takes over for history, not while the tail follower owns scrolling.
+    expect(h.scroll.maintainVisibleContentPosition).toBeUndefined();
     await click('botGroup.loadOlder'); expect(h.chat.loadOlder).toHaveBeenCalledOnce();
+    expect(h.scroll.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 1 });
     await click('botGroup.settingsButton');
     expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
     expect(byId('botGroup.settings.replyMode.mentioned')?.disabled).toBe(true);
   });
-  it('reauthorizes a server attachment on tap and opens the existing image viewer', async () => {
+  // PR #7145 r4371434691: a pushed task leaves the group mounted. Unit,
+  // real page + native layout/focus/AppState events; old tests only scrolled rows.
+  it.each(['ios', 'android'])('suspends previews on blur/background and restores the viewport (%s)', async platform => {
+    h.platform.OS = platform;
+    const attachment = (id: string) => ({ id, name: `${id}.png`, category: 'file' as const, mimeType: '', size: 0, url: null, path: null });
+    const media = vi.fn(async (id: string) => ({ ...attachment(id), category: 'image' as const, url: `https://media.example.invalid/${id}` }));
+    h.chat = { ...h.chat, server: true, media };
+    const data = (count: number) => group({ messages: Array.from({ length: count }, (_, n) => message(`m${n}`, n + 1,
+      { authorKind: 'user', isSelf: false, attachments: [attachment(`image-${n}`)] })), plans: [], openPlan: null });
+    const show = async (count: number) => {
+      await render(data(count));
+      await act(async () => {
+        h.scroll.onLayout({ nativeEvent: { layout: { height: 500 } } });
+        for (const strip of node.querySelectorAll('[data-testid="attachmentStrip"]')) {
+          let row = strip as HTMLElement & { nativeLayout?: (event: unknown) => void };
+          while (!row.nativeLayout) row = row.parentElement as typeof row;
+          row.nativeLayout!({ nativeEvent: { layout: { y: 0, height: 100 } } });
+        }
+      });
+    };
+    await show(1); expect(media).toHaveBeenCalledTimes(1);
+    h.focused = false;
+    await show(2); expect(media).toHaveBeenCalledTimes(1);
+    h.focused = true;
+    await show(2); expect(media).toHaveBeenCalledTimes(2);
+    await act(async () => { h.appState = 'background'; h.appStateListeners.forEach(listener => listener(h.appState)); });
+    await show(3); expect(media).toHaveBeenCalledTimes(2);
+    await act(async () => { h.appState = 'active'; h.appStateListeners.forEach(listener => listener(h.appState)); });
+    expect(media).toHaveBeenCalledTimes(3);
+    expect(byId('attachment.image')?.getAttribute('data-uri')).toBe('https://media.example.invalid/image-0');
+  });
+
+  // Merge #7123/#7145: native IME changes occupancy without shrinking ScrollView.
+  // Unit, real screen + preview resolver: an obscured image must stay unloaded
+  // until keyboard dismissal exposes it, even if Android reports zero inset.
+  it.each(['ios', 'android'])('authorizes previews using the native keyboard viewport (%s)', async platform => {
+    h.platform.OS = platform;
+    h.nativeViewportAvailable = platform === 'ios';
+    h.nativeChatViewportAvailable = platform === 'android';
+    const attachment = { id: 'media', name: 'picture.png', mimeType: 'image/png', size: 10,
+      category: 'image' as const, url: 'https://media.example.invalid/one-use', path: null };
+    h.chat = { ...h.chat, server: true, media: vi.fn(async () => attachment) };
+    await render(group({ messages: [message('picture', 1, { authorKind: 'user', isSelf: false,
+      attachments: [{ ...attachment, url: null, category: 'file' }] })], plans: [], openPlan: null }));
+    const keyboard = (bottom: number) => {
+      if (platform === 'ios') h.nativeViewport.onKeyboardTransition({ nativeEvent: { active: false, bottom } });
+      else h.nativeChatViewport.onViewportInsetChange({ nativeEvent: { bottom, viewportHeight: 1000 - bottom, offsetY: 0 } });
+    };
+    let row = byId('attachmentStrip') as HTMLElement & { nativeLayout?: (event: unknown) => void };
+    while (!row.nativeLayout) row = row.parentElement as typeof row;
+    await act(async () => {
+      h.scroll.onLayout({ nativeEvent: { layout: { height: 1000 } } });
+      keyboard(300);
+      row.nativeLayout!({ nativeEvent: { layout: { y: 800, height: 100 } } });
+      h.scroll.onScroll({ nativeEvent: { contentOffset: { y: 0 }, contentSize: { height: 1200 },
+        layoutMeasurement: { height: 1000 }, contentInset: { bottom: platform === 'ios' ? 300 : 0 } } });
+    });
+    expect(h.chat.media).not.toHaveBeenCalled();
+    await act(async () => keyboard(0));
+    expect(h.chat.media).toHaveBeenCalledExactlyOnceWith('media', expect.any(AbortSignal));
+    expect(byId('attachment.image')?.getAttribute('data-uri')).toBe(attachment.url);
+  });
+
+  it.each([undefined, 'thread-root'])('gates server previews by the viewport and reauthorizes on tap (thread=%s)', async (threadRootId) => {
     const attachment = { id: 'media', name: 'picture.png', mimeType: 'image/png', size: 10, category: 'image' as const, url: 'https://media.example.invalid/one-use', path: null };
     h.chat = { ...h.chat, server: true, media: vi.fn(async () => attachment) };
-    await render(group({ messages: [message('picture', 1, { authorKind: 'user', isSelf: false, attachments: [{ ...attachment, url: null, category: 'file' }] })], plans: [], openPlan: null }));
+    await render(group({ messages: [message('picture', 1, { authorKind: 'user', isSelf: false, attachments: [{ ...attachment, url: null, category: 'file' }] })], plans: [], openPlan: null }), 'ready', threadRootId);
     expect(h.chat.media).not.toHaveBeenCalled();
-    await click('attachment.file'); expect(h.chat.media).toHaveBeenCalledExactlyOnceWith('media');
+    let row = byId('attachmentStrip') as HTMLElement & { nativeLayout?: (event: unknown) => void };
+    while (!row.nativeLayout) row = row.parentElement as typeof row;
+    await act(async () => {
+      row.nativeLayout!({ nativeEvent: { layout: { y: 800, height: 200 } } });
+      h.scroll.onLayout({ nativeEvent: { layout: { height: 500 } } });
+    });
+    expect(h.chat.media).not.toHaveBeenCalled();
+    await act(async () => h.scroll.onScroll({ nativeEvent: {
+      contentOffset: { y: 700 }, contentSize: { height: 1000 }, layoutMeasurement: { height: 500 },
+    } }));
+    expect(h.chat.media).toHaveBeenCalledExactlyOnceWith('media', expect.any(AbortSignal));
+    expect(byId('attachment.image')?.getAttribute('data-uri')).toBe(attachment.url);
+    await click('attachment.image'); expect(h.chat.media).toHaveBeenCalledTimes(2);
     expect(byId('lightbox')?.getAttribute('data-url')).toBe(attachment.url);
   });
 });
 
 
-it('acknowledges other humans only once their messages reach the measured visible tail', async () => {
-  h.chat.server = true;
+it.each([true, false])('acknowledges other humans at the measured visible tail (direct: %s)', async server => {
+  h.chat.server = server;
   h.chat.markRead = vi.fn(async () => {});
   await render(group({ messages: [message('incoming-human', 12, { authorKind: 'user', isSelf: false, content: 'hello' }),
     message('mine', 13, { authorKind: 'user', isSelf: true, content: 'reply' })], plans: [], openPlan: null }));
@@ -1325,7 +1665,8 @@ it('acknowledges other humans only once their messages reach the measured visibl
     h.scroll.onContentSizeChange(400, 400);
   });
   expect(h.chat.markRead).toHaveBeenLastCalledWith(['incoming-human']);
-  expect(h.markRead).not.toHaveBeenCalled();
+  if (server) expect(h.markRead).not.toHaveBeenCalled();
+  else expect(h.markRead).toHaveBeenCalled();
 });
 
 // #6550: screen + real mobile Markdown parser, with RN host primitives simulated in jsdom.
