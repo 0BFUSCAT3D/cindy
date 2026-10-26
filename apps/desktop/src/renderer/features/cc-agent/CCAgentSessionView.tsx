@@ -282,6 +282,7 @@ import {
   getSessionRouteOwnerId,
   isOrcaLeadSession,
   isOrcaWorkerSession,
+  orcaWorkerSessionRoute,
   resolveSessionRoute,
 } from '@/lib/orcaSessionIdentity';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
@@ -1420,9 +1421,15 @@ function CCAgentSessionContent({
   }, [session?.status, sessionId, navigate, ownsWindowRoute]);
   const vendorAuthGate = useVendorAuthGate();
   const { confirmWithCheckbox } = useConfirmDialog();
+  const [workerRouteChecked, setWorkerRouteChecked] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sessionId || !searchJump) return;
+    if (ownsWindowRoute && !session) return;
+    // The route owner hands Worker jumps to the Lead sidebar. Do not consume
+    // the anchor in this temporary view while its workflow read is in flight.
+    if (ownsWindowRoute && !isOrcaMode && !isCompactRail && session
+      && isOrcaWorkerSession(session) && workerRouteChecked !== location.key) return;
     if (searchJump.sessionId !== sessionId) {
       if (!session) return;
       // 仅路由主权实例回收「跳转目标 ≠ 当前会话」的陈旧状态：分屏的嵌入 pane
@@ -1491,12 +1498,15 @@ function CCAgentSessionContent({
     clearSearchJumpState,
     isOrcaLeadSessionView,
     isOrcaMode,
+    isCompactRail,
+    location.key,
     ownsWindowRoute,
     requestFocusMessage,
     searchJump,
     session,
     sessionId,
     t,
+    workerRouteChecked,
   ]);
 
   // 后台任务面板行点击 → 聊天流定位对应任务卡:sessionId 匹配当前会话才消费;
@@ -1542,15 +1552,21 @@ function CCAgentSessionContent({
     void orcaWorkflowsFor(session.id)
       .getByWorkerSession(session.id)
       .then((workflow) => {
-        if (!cancelled && workflow) {
-          navigate(`/cc-agent/${workflow.leadSessionId}?worker=${sessionId}`, { replace: true });
+        if (cancelled) return;
+        if (workflow) {
+          navigate(orcaWorkerSessionRoute(workflow.leadSessionId, sessionId, location.search), {
+            replace: true,
+            state: location.state,
+          });
+        } else {
+          setWorkerRouteChecked(location.key);
         }
       })
-      .catch(() => undefined);
+      .catch(() => { if (!cancelled) setWorkerRouteChecked(location.key); });
     return () => {
       cancelled = true;
     };
-  }, [isOrcaMode, isCompactRail, navigate, ownsWindowRoute, session, sessionId]);
+  }, [isOrcaMode, isCompactRail, location.key, location.search, location.state, navigate, ownsWindowRoute, session, sessionId]);
 
   // F2: controlled folder picker open state
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);

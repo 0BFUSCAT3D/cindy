@@ -6,6 +6,7 @@ import {
   getSessionRouteOwnerId,
   isOrcaLeadSession,
   isOrcaWorkerSession,
+  orcaWorkerSessionRoute,
   resolveSessionRoute,
 } from '@/lib/orcaSessionIdentity';
 import { registerLoadedBotProfilesReader } from '@/features/bots/botSessionOwners';
@@ -78,6 +79,16 @@ describe('orcaSessionIdentity', () => {
     expect(getSessionRouteOwnerId('/cc-agent/lead-1?worker=worker-1')).toBe('lead-1');
     expect(getSessionRouteOwnerId('/cc-agent/session%20one#message')).toBe('session one');
     expect(getSessionRouteOwnerId('/cc-agent')).toBeNull();
+  });
+
+  // A notification may reach the Worker before its Lead's device origin is
+  // cached. The redirect must carry the device into the Lead origin gate.
+  it('retains the original device and query when a Worker entry redirects to its Lead', () => {
+    const target = new URL(orcaWorkerSessionRoute('lead/1', 'worker/1', '?device=studio&worker=stale&source=notification'), 'https://cindy.invalid');
+    expect(target.pathname).toBe('/cc-agent/lead%2F1');
+    expect(target.searchParams.get('device')).toBe('studio');
+    expect(target.searchParams.get('worker')).toBe('worker/1');
+    expect(target.searchParams.get('source')).toBe('notification');
   });
 
   it('resolves canonical routes from a known session row', async () => {

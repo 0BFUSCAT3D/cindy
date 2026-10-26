@@ -168,6 +168,8 @@ vi.mock('../layoutPreferenceStore.js', () => ({
 }));
 
 vi.mock('../../device-link/broadcast-tap.js', () => ({
+  captureDataOwnerBroadcastScope: () => ({ ownerStamp: { dataOwnerId: 'test-owner', ownerGeneration: 1 } }),
+  isDataOwnerBroadcastScopeCurrent: () => true,
   getSafeDataOwnerPushStamp: vi.fn(() => undefined),
   tapWindowBroadcast: mocks.tapWindowBroadcast,
 }));

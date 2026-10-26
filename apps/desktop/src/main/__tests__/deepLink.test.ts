@@ -20,6 +20,11 @@ vi.mock('electron', () => ({
 // logger 依赖 electron-log + app path, 在测试里要么 mock 要么吞日志。给个 noop logger。
 const logs = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
 vi.mock('../logger', () => ({ createLogger: () => logs }));
+const owner = vi.hoisted(() => ({ generation: 1 }));
+vi.mock('../device-link/broadcast-tap', () => ({
+  captureDataOwnerBroadcastScope: () => ({ ownerScopeKey: String(owner.generation) }),
+  isDataOwnerBroadcastScopeCurrent: (scope: { ownerScopeKey?: string }) => scope.ownerScopeKey === String(owner.generation),
+}));
 
 import { vi } from 'vitest';
 import {
@@ -429,6 +434,18 @@ describe('dual scheme (cindy primary + legacy xdt-maker)', () => {
     openMainWindowSession('original', { deviceId: 'studio', messageClientId: 'reply', islandEntryId: 'entry' });
     expect(takePendingDeepLink()).toEqual({ type: 'session', id: 'original', deviceId: 'studio', messageClientId: 'reply', islandEntryId: 'entry' });
     expect(takePendingDeepLink()).toBeNull();
+  });
+
+  // Notification clicks can be buffered during reload, then pulled after another
+  // account logs in. The public main-window entry must reject that stale intent.
+  it('drops an old owner notification from the pending queue without dropping later external links', () => {
+    setDeepLinkMainWindow(null);
+    openMainWindowSession('account-a-task', { deviceId: 'studio', messageClientId: 'reply' });
+    owner.generation += 1;
+    expect(takePendingDeepLink()).toBeNull();
+    handleIncomingDeepLink('cindy://session/external-task', 'open-url');
+    owner.generation += 1;
+    expect(takePendingDeepLink()).toEqual({ type: 'session', id: 'external-task' });
   });
 
   it('buffers only the opaque provider import id during cold start', () => {

@@ -556,10 +556,8 @@ export function MainLayout() {
   currentPathRef.current = `${location.pathname}${location.search}`;
   const navigateToOrdinarySession = useCallback(
     (sessionId: string, messageClientId?: string, isLatest: () => boolean = () => true, deviceId?: string) => {
-      // device-link 远程会话本地无 row:resolveSessionRoute 内部的 sessionService.get
-      // 会 miss → 远程 Orca lead/worker 被当普通会话路由,CCAgentSessionView 再
-      // redirect 到 orca 路由时会丢 searchJump 锚点。传入远程镜像的 session 对象,
-      // 让 Orca 路由一步到位(Codex review P2,与 SessionLinkChip 同款处理)。
+      // 已知镜像可提前解析 Orca 角色；明确指定电脑时，先由任务入口恢复并校验
+      // 来源，避免读到本机同 ID。Worker 后续转到 Lead 时保留 device 和 searchJump。
       const remoteSession =
         remoteProjectsStore.getVisibleMergedRemoteSessions().find((s) =>
           s.id === sessionId && (!deviceId || s.deviceLinkDeviceId === deviceId)) ?? null;
