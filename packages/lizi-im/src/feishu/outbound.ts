@@ -1764,6 +1764,7 @@ export async function uploadImage(absPath: string): Promise<string | null> {
 
 export interface ResolvedReplyMessage {
   replyContext: NonNullable<IMMessageEvent['replyContext']>;
+  attachments?: AttachmentRef[];
 }
 
 function renderReplyMessageText(
@@ -1793,13 +1794,8 @@ function replaceFetchedMentions(
 }
 
 /**
- * 精确读取一条飞书普通回复所引用的原消息。全程 pin 到开始时的 client;
- * 账号换代后调用方会用 connection generation 丢弃结果, 不会串进新账号。
- *
- * 任何读取、解析失败都降级为 null, 当前 turn 继续走既有群历史上下文路径。
- * 跨群 parent_id fail closed, 防止异常事件带出别处内容。被引附件只渲染
- * [图片]/[文件] 占位, 不在 transport 层提前下载或并入当前消息附件:正文要先
- * 经 host 的注入扫描, 且引用附件不应按触发消息语义落库。
+ * Fetch a quote (including merge-forward descendants) from the originating chat.
+ * Keep resource ownership for the host to download after screening the text.
  */
 export async function resolveReplyMessage(
   messageId: string,
@@ -1807,6 +1803,14 @@ export async function resolveReplyMessage(
 ): Promise<ResolvedReplyMessage | null> {
   const c = S().client;
   if (!c) return null;
+  return resolveReplyWithClient(c, messageId, expectedChatId);
+}
+
+async function resolveReplyWithClient(
+  c: Lark.Client,
+  messageId: string,
+  expectedChatId: string,
+): Promise<ResolvedReplyMessage | null> {
   const log = getLog();
   try {
     const res = await c.im.v1.message.get({
@@ -1818,32 +1822,61 @@ export async function resolveReplyMessage(
       log.warn(`[feishu/outbound] reply context fetch rejected: ${rejected}`);
       return null;
     }
-    const item = res.data?.items?.[0];
-    if (!item || item.deleted) return null;
-    if (item.chat_id !== expectedChatId) {
-      log.warn('[feishu/outbound] reply context dropped: parent message belongs to another chat');
-      return null;
-    }
-
-    const parsed = parseIncoming(item.msg_type ?? '', item.body?.content ?? '');
-    const text = replaceFetchedMentions(
-      renderReplyMessageText(parsed),
-      item.mentions,
-    );
+    const items = res.data?.items ?? [];
+    const root = items.find((item) => item.message_id === messageId);
+    if (!root || root.deleted || root.chat_id !== expectedChatId) return null;
+    const authorOf = (item: typeof root): string =>
+      (item.sender?.sender_name || (item.sender?.sender_type === 'app' ? 'bot' : 'user'))
+        .replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim().slice(0, 64);
+    const attachments: AttachmentRef[] = [];
+    const visited = new Set<string>();
+    let nestedFetches = 0;
+    const render = async (item: typeof root): Promise<string> => {
+      if (!item.message_id || item.deleted || visited.has(item.message_id)) return '';
+      // The envelope is checked against the triggering chat above. Forwarded
+      // children belong through upper_message_id, even when their original chat differs.
+      visited.add(item.message_id);
+      if (item.msg_type === 'merge_forward') {
+        let children = items.filter((child) => child.upper_message_id === item.message_id);
+        // Some responses include only the immediate level. Fetch deeper envelopes
+        // with the same client; never follow arbitrary message IDs from body text.
+        if (!children.length && item !== root && nestedFetches++ < 20) {
+          try {
+            const nested = await c.im.v1.message.get({
+              params: { user_id_type: 'open_id', with_sender_name: true },
+              path: { message_id: item.message_id },
+            });
+            if (!feishuBusinessRejectReason(nested)) {
+              const extra = nested.data?.items ?? [];
+              for (const child of extra) {
+                if (!items.some((known) => known.message_id === child.message_id)) items.push(child);
+              }
+              children = items.filter((child) => child.upper_message_id === item.message_id);
+            }
+          } catch {
+            // Preserve a visible unreadable marker and all readable siblings.
+          }
+        }
+        const lines: string[] = [];
+        for (const child of children) {
+          const text = await render(child);
+          if (text) lines.push(`[${authorOf(child)}] ${text}`);
+        }
+        return lines.length ? `[合并转发消息]\n${lines.join('\n')}` : '[合并转发消息：未能读取子消息]';
+      }
+      const parsed = parseIncoming(item.msg_type ?? '', item.body?.content ?? '');
+      attachments.push(...parsed.attachments.map((ref) => ({ ...ref, messageId: item.message_id })));
+      return replaceFetchedMentions(renderReplyMessageText(parsed), item.mentions);
+    };
+    const text = await render(root);
     if (!text) return null;
-
-    const isBot = item.sender?.sender_type === 'app';
-    const author = item.sender?.sender_name?.trim() || (isBot ? 'bot' : 'user');
     return {
       replyContext: {
-        author,
+        author: authorOf(root),
         text,
-        ...(parsed.attachments.length ? {
-          unavailableAttachments: parsed.attachments.map((attachment) =>
-            `引用${attachment.kind === 'image' ? '图片' : attachment.fileName}：仅提供原消息记录，未下载文件内容`),
-        } : {}),
-        ...(isBot ? { isBot: true } : {}),
+        ...(root.sender?.sender_type === 'app' ? { isBot: true } : {}),
       },
+      ...(attachments.length ? { attachments } : {}),
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1911,7 +1944,11 @@ export async function fetchChatHistoryPage(args: {
     const rawContent = item.body?.content ?? '';
     let text = '';
     let attachments: AttachmentRef[] = [];
-    if (
+    if (msgType === 'merge_forward') {
+      const resolved = await resolveReplyWithClient(c, item.message_id, args.chatId);
+      text = resolved?.replyContext.text ?? '[合并转发消息：读取失败]';
+      attachments = resolved?.attachments ?? [];
+    } else if (
       msgType === 'text' ||
       msgType === 'post' ||
       msgType === 'image' ||
