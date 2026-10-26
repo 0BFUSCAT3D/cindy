@@ -9,13 +9,13 @@ import { setMainLocale } from '../../i18n.js';
 import { installSessionTurnObserver } from '../sessionTurnObserver.js';
 import { onChannelTurn } from '../channelTurnSignal.js';
 import { createSessionBindingLifecycle } from '../sessionBindingLifecycle.js';
-import { SessionTurnActivityTracker } from '../sessionTurnActivityTracker.js';
+import { SessionListActivityTracker, SessionTurnActivityTracker } from '../sessionTurnActivityTracker.js';
 import { ProductTurnWallClockTracker, ProductTurnUsageTargetTracker } from '../turnWallClock.js';
 import { ClaudeOutputLagTimingGuard } from '../../usage/modelUsageDelta.js';
 import { createWorkerTurnStartSequencer } from '../workerTurnStartSequencer.js';
 import type { BotGroupLaneTerminal } from '../botGroupChatService.js';
 import { AutoResumeBookkeeping, type OrcaSuppressedTerminal } from '../autoResumeBookkeeping.js';
-import { createDeferredProductTurnFailureGate } from '../productTurnFailureOwner.js';
+import { createDeferredProductTurnFailureGate, createProductTurnFailureFinalizer } from '../productTurnFailureOwner.js';
 import { createProviderGroupHeldTurnErrors } from '../../provider-group/heldTurnErrors.js';
 import { createProviderGroupHeldWorkerTerminals } from '../../provider-group/heldWorkerTerminals.js';
 import { isGatewayProxyTokenRecoveryErrorEventForProvider } from '../gatewayProxyTokenRecovery.js';
@@ -264,10 +264,21 @@ function harness() {
     turnStallMs: 0,
   });
   const activity = new SessionTurnActivityTracker();
+  const listActivity = new SessionListActivityTracker(effects.fn('list-activity'));
+  const failureGate = createDeferredProductTurnFailureGate();
+  const isCurrentOwner = (owner: Parameters<typeof failureGate.defer>[0]) =>
+    owner.session === session && owner.instanceId === session.instanceId &&
+    owner.generation === session.getTurnGeneration();
   const deps = {
     onPluginTaskTerminal: vi.fn(),
     onSuccessfulProductTurn: vi.fn(async () => {}),
-    onUnsuccessfulProductTurn: vi.fn(async () => {}),
+    onUnsuccessfulProductTurn: vi.fn(createProductTurnFailureFinalizer({
+      gate: failureGate,
+      isCurrentOwner,
+      commitActivity: (sessionId) => listActivity.commit(sessionId),
+      interrupt: async () => {},
+    })),
+    deferUnsuccessfulProductTurn: (owner: Parameters<typeof failureGate.defer>[0]) => failureGate.defer(owner),
     log,
     botCompactRuntimeRefreshCoordinator: { noteBoundary: vi.fn() },
     workingMemoryRefresh: { markCompacted: vi.fn() },
@@ -302,6 +313,7 @@ function harness() {
     pendingFailedTurnAssistantPersistId: new Map<string, string>(),
     silentStopAutoResumeGuard: { noteTurnStarted: vi.fn() },
     sessionTurnActivityTracker: activity,
+    sessionListActivityTracker: listActivity,
     productTurnWallClockTracker: new ProductTurnWallClockTracker(),
     productTurnUsageTargetTracker: new ProductTurnUsageTargetTracker(),
     advanceSessionTurnBoundaryGeneration: vi.fn(() => 1),
@@ -352,6 +364,7 @@ function harness() {
     deferredCodexRestartHolder: null,
     refreshRemoteCodexMcpOnTurnSettledHolder: null,
     markTurnEndedAfterPersistDrain: effects.fn('turn-drain'),
+    noteSessionListActivity: effects.fn('list-activity'),
     contextOverflowRolloverHolder: null,
     lastReportedModelUsageBySession: new Map(),
     claudeOutputLagTimingGuard: new ClaudeOutputLagTimingGuard(),
@@ -375,8 +388,11 @@ function harness() {
     session,
     handle,
     emit,
+    settleDeferredFailure: (data: unknown) => failureGate.settle('task', isCurrentOwner,
+      owner => { void deps.onUnsuccessfulProductTurn('task', owner); }, { data }),
     dispose: async () => {
       activity.deleteSession('task');
+      listActivity.deleteSession('task');
       await session.close();
     },
   };
@@ -425,31 +441,207 @@ function ordered(...names: string[]) {
 }
 
 describe('production Session event pipeline', () => {
-  it('delivers coordination actions without public prose, then preserves ordinary and completion replies', async () => {
+  it.each(['auth', 'gateway', 'overflow'] as const)(
+    'commits held %s activity once at its original end only when recovery finally fails', async recovery => {
+      const current = harness();
+      const result = deferred<boolean>();
+      const failure = { message: 'context length exceeded', reason: 'context_length_exceeded', isTerminal: true };
+      if (recovery === 'auth') current.deps.isRemoteAuthRetryErrorEvent.mockReturnValue(true);
+      if (recovery === 'gateway') current.deps.isGatewayProxyTokenRecoveryErrorEvent.mockReturnValue(true);
+      if (recovery === 'overflow') {
+        (current.deps as { contextOverflowRolloverHolder: unknown }).contextOverflowRolloverHolder = {
+          claim: () => 'claimed', tryRecover: () => result.promise,
+        };
+      }
+      try {
+        vi.setSystemTime(40_000);
+        current.emit(event('error', failure));
+        await microtasks();
+        expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+        vi.setSystemTime(45_000);
+        if (recovery === 'overflow') result.resolve(false);
+        else expect(current.settleDeferredFailure(failure)).toBe(true);
+        await microtasks();
+        expect(current.deps.noteSessionListActivity).toHaveBeenCalledExactlyOnceWith('task', 40_000);
+        expect(current.settleDeferredFailure(failure)).toBe(false);
+        expect(current.deps.noteSessionListActivity).toHaveBeenCalledTimes(1);
+      } finally { await current.dispose(); }
+    },
+  );
+
+  it.each([
+    { recovery: 'auth', recovered: true },
+    { recovery: 'overflow', recovered: true },
+    { recovery: 'overflow', recovered: false },
+  ])('does not commit held activity after a recovery dispatch ($recovery, recovered=$recovered)', async ({ recovery, recovered }) => {
+    const current = harness();
+    const result = deferred<boolean>();
+    const failure = { message: 'context length exceeded', reason: 'context_length_exceeded', isTerminal: true };
+    if (recovery === 'auth') current.deps.isRemoteAuthRetryErrorEvent.mockReturnValue(true);
+    else {
+      (current.deps as { contextOverflowRolloverHolder: unknown }).contextOverflowRolloverHolder = {
+        claim: () => 'claimed', tryRecover: () => result.promise,
+      };
+    }
+    try {
+      current.emit(event('error', failure));
+      await current.session.send('continue');
+      current.emit(event('status', { isRunning: true }, {
+        sessionInstanceId: current.session.instanceId,
+        sessionTurnGeneration: current.session.getTurnGeneration(),
+      }));
+      result.resolve(recovered);
+      await microtasks();
+      expect(current.settleDeferredFailure(failure)).toBe(false);
+      expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+      vi.setSystemTime(45_000);
+      current.emit(event('done', {}, {
+        sessionInstanceId: current.session.instanceId,
+        sessionTurnGeneration: current.session.getTurnGeneration(),
+      }));
+      expect(current.deps.noteSessionListActivity).toHaveBeenCalledExactlyOnceWith('task', 45_000);
+    } finally { await current.dispose(); }
+  });
+
+  it.each([false, true])('records a paired terminal once at the first signal (done first: %s)', async doneFirst => {
+    const current = harness();
+    try {
+      current.emit(event('status', { isRunning: true }));
+      vi.setSystemTime(10_000);
+      current.emit(doneFirst ? event('done') : event('status', { isRunning: false }));
+      await microtasks();
+      vi.setSystemTime(10_100);
+      current.emit(doneFirst ? event('status', { isRunning: false }) : event('done'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(current.deps.noteSessionListActivity).toHaveBeenCalledExactlyOnceWith('task', 10_000);
+    } finally { await current.dispose(); }
+  });
+
+  it.each([false, true])('settles silent-stop activity only after the continuation decision (resume: %s)', async continued => {
+    const current = harness();
+    current.deps.handleSilentStopTurnEnd.mockImplementation(async () => {
+      if (continued) current.deps.sessionListActivityTracker.captureContinuation('task')();
+      else current.deps.sessionListActivityTracker.commit('task');
+    });
+    try {
+      current.emit(event('status', { isRunning: true }));
+      vi.setSystemTime(20_000);
+      current.emit(event('status', { isRunning: false }));
+      await microtasks();
+      vi.setSystemTime(20_100);
+      current.emit(event('done', { silentStop: true }, { source: 'claude-code' }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_500);
+      if (continued) {
+        expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+        current.emit(event('status', { isRunning: true }));
+        current.emit(event('done'));
+        expect(current.deps.noteSessionListActivity).toHaveBeenCalledExactlyOnceWith('task', 21_600);
+      } else {
+        expect(current.deps.noteSessionListActivity).toHaveBeenCalledExactlyOnceWith('task', 20_000);
+      }
+    } finally { await current.dispose(); }
+  });
+
+  it('distinguishes a new generation that terminates without a running status', async () => {
+    const current = harness();
+    try {
+      current.emit(event('done', {}, { sessionTurnGeneration: 1 }));
+      current.emit(event('done', {}, { sessionTurnGeneration: 1 }));
+      expect(current.deps.noteSessionListActivity).toHaveBeenCalledTimes(1);
+      current.emit(event('error', {}, { sessionTurnGeneration: 2 }));
+      expect(current.deps.noteSessionListActivity).toHaveBeenCalledTimes(2);
+    } finally { await current.dispose(); }
+  });
+
+  it('commits a status-only stop once and cancels its fallback when the runtime closes', async () => {
+    const current = harness();
+    try {
+      current.emit(event('status', { isRunning: true }));
+      vi.setSystemTime(30_000);
+      current.emit(event('status', { isRunning: false }));
+      await vi.advanceTimersByTimeAsync(0);
+      current.emit(event('status', { isRunning: false }));
+      expect(current.deps.noteSessionListActivity).toHaveBeenCalledExactlyOnceWith('task', 30_000);
+      current.emit(event('status', { isRunning: true }));
+      current.emit(event('status', { isRunning: false }));
+      await current.dispose();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(current.deps.noteSessionListActivity).toHaveBeenCalledTimes(1);
+    } finally { await current.dispose(); }
+  });
+
+  it('ignores idle status without a turn and an interrupted turn reserved for automatic continuation', async () => {
+    const current = harness();
+    try {
+      current.emit(event('status', { isRunning: false }));
+      expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+      current.emit(event('status', { isRunning: true }));
+      current.deps.agentInputCoordinatorHolder.isAutoResumePending.mockReturnValue(true);
+      current.emit(event('status', { isRunning: false }));
+      current.emit(event('done'));
+      await microtasks();
+      expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+    } finally { await current.dispose(); }
+  });
+  it.each(['done', 'error', 'status'] as const)('records the %s handoff but not intermediate goal turns or background work', async terminal => {
+    const current = harness();
+    try {
+      current.emit(event('status', { isRunning: true }));
+      expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+      current.emit(event(terminal, terminal === 'status' ? { isRunning: false } : {}));
+      await microtasks();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(current.deps.noteSessionListActivity).toHaveBeenCalledWith('task', expect.any(Number));
+      current.deps.noteSessionListActivity.mockClear();
+      current.emit(event('status', { isRunning: true }, { turnOrigin: { kind: 'goal' } }));
+      current.emit(event(terminal, terminal === 'status' ? { isRunning: false } : {}, { turnOrigin: { kind: 'goal' } }));
+      await microtasks();
+      expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+      current.emit(event('compact_boundary'));
+      current.emit(event(terminal, terminal === 'status' ? { isRunning: false } : {}, { turnScope: 'background' }));
+      await microtasks();
+      expect(current.deps.noteSessionListActivity).not.toHaveBeenCalled();
+    } finally { await current.dispose(); }
+  });
+  // Regression: a delegated report used to leave only tool rows in the chat.
+  // The real pipeline must persist and broadcast its reply, then settle normally.
+  it('delivers coordination progress and final text through the ordinary message pipeline', async () => {
     const h = harness();
+    h.deps.redactEventForRenderer.mockImplementation(value => value);
     h.deps.agentInputCoordinatorHolder.isActiveTaskCoordination.mockReturnValue(true);
     h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('coordination');
     try {
-      h.emit(event('text', { text: 'Internal file ownership agreement', isFinal: true }));
-      h.emit(event('text', { text: 'Internal standalone' }, { standaloneText: true }));
-      h.emit(event('thinking', { text: 'Internal reasoning' }));
-      expect(effects.fn('onAssistantTextEvent')).not.toHaveBeenCalled();
-      expect(effects.fn('onStandaloneTextEvent')).not.toHaveBeenCalled();
-      expect(h.deps.broadcastToAllWindows).not.toHaveBeenCalled();
+      h.emit(event('text', { text: 'The new machines are running; checking the test results.', isFinal: false },
+        { agentMeta: { assistantPhase: 'commentary' } }));
+      expect(effects.fn('onAssistantTextEvent')).toHaveBeenCalledWith('task',
+        expect.objectContaining({ text: 'The new machines are running; checking the test results.' }),
+        expect.objectContaining({ botPrivateReply: false, assistantPhase: 'commentary' }), undefined);
+      expect(h.deps.broadcastToAllWindows).toHaveBeenCalledWith('maker:event', expect.objectContaining({
+        event: expect.objectContaining({ type: 'text', data: expect.objectContaining({
+          text: 'The new machines are running; checking the test results.',
+        }) }),
+      }));
+      h.emit(event('text', { text: 'Progress notice' }, { standaloneText: true }));
+      expect(effects.fn('onStandaloneTextEvent')).toHaveBeenCalledWith('task', 'Progress notice', { botPrivateReply: false });
+      h.emit(event('thinking', { text: 'Check the test results' }));
+      expect(effects.fn('onThinkingEvent')).toHaveBeenCalledOnce();
       h.emit(event('tool_use', { id: 'tool', name: 'read', input: {} }));
       expect(effects.fn('onToolUseEvent')).toHaveBeenCalledOnce();
       h.deps.agentInputCoordinatorHolder.onTurnEvent.mockImplementation(() => {
         h.deps.agentInputCoordinatorHolder.isActiveTaskCoordination.mockReturnValue(false);
       });
-      h.emit(event('done', { result: 'Internal acknowledgement', finalText: 'Internal acknowledgement' }));
+      h.emit(event('done', { result: 'The tests passed.', finalText: 'The tests passed.' }));
       expect(h.deps.broadcastToAllWindows).toHaveBeenCalledWith('maker:event', expect.objectContaining({
-        event: expect.objectContaining({ type: 'done', data: expect.objectContaining({ result: '', finalText: '' }),
-          agentMeta: expect.objectContaining({ botPrivateReply: true, botTaskCoordination: true }) }),
+        event: expect.objectContaining({ type: 'done', data: expect.objectContaining({ result: 'The tests passed.', finalText: 'The tests passed.' }),
+          agentMeta: expect.objectContaining({ botPrivateReply: false, botTaskCoordination: true }) }),
       }));
-      expect(JSON.stringify(h.deps.broadcastToAllWindows.mock.calls)).not.toContain('Internal acknowledgement');
+      expect(h.deps.agentInputCoordinatorHolder.onTurnEvent).toHaveBeenCalled();
+      const persisted = effects.fn('onAssistantTextEvent').mock.calls.length;
       h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('bot-delegation-completion:result');
       h.emit(event('text', { text: 'User requested final result', isFinal: true }));
-      expect(effects.fn('onAssistantTextEvent')).toHaveBeenCalledOnce();
+      expect(effects.fn('onAssistantTextEvent')).toHaveBeenCalledTimes(persisted + 1);
     } finally { await h.dispose(); }
   });
 
@@ -618,7 +810,7 @@ describe('production Session event pipeline', () => {
           gate.clear(owner);
           h.deps.onPluginTaskTerminal(sessionId, owner.originalExecution ?? owner, 'failed');
         }
-        await unsuccessful();
+        await unsuccessful(sessionId, owner);
       };
       const settleFailure = (sessionId: string) => gate.settle(
         sessionId,

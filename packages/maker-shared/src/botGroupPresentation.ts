@@ -18,6 +18,24 @@ import {
   type BotGroupSummary,
 } from './botGroupChat.js';
 
+interface ChatGroupNamedMember {
+  id: string; kind: string; state: string; name: string; ownerActorId?: string; ownerName?: string;
+}
+
+/** The server's member.name already includes that room's nickname override. Display only; never infer ownership from names. */
+export function chatGroupOwnerName(member: ChatGroupNamedMember, members: readonly ChatGroupNamedMember[]): string {
+  const owner = member.kind === 'bot' && member.ownerActorId
+    ? members.find(candidate => candidate.id === member.ownerActorId && candidate.kind === 'human' && candidate.state === 'joined')
+    : undefined;
+  return owner?.name.trim() || member.ownerName?.trim() || '';
+}
+
+/** Group-scoped labels shared by Desktop and the direct phone client; raw member records stay unchanged. */
+export function chatGroupMemberName(member: ChatGroupNamedMember, members: readonly ChatGroupNamedMember[]): string {
+  const owner = chatGroupOwnerName(member, members);
+  return member.kind === 'bot' && owner ? `${member.name} (${owner})` : member.name;
+}
+
 /** Only active members can be mentioned, speak, or keep a group sendable. */
 export function isActiveBotGroupMember(member: Pick<BotGroupMemberView, 'status'>): boolean {
   return member.status === 'active';
@@ -58,6 +76,19 @@ export function botGroupMemberNames(
 /** Collapse whitespace so a multi-line message fits a one-line preview. */
 export function botGroupPreviewLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/** New arrivals below a reader's viewport, excluding history pages and repeat snapshots. */
+export function botGroupNewMessageCount(messages: readonly BotGroupMessageView[], seenThrough: number | string | null, threadRootId?: string): number {
+  if (seenThrough === null) return 0;
+  const incoming = new Set<string>();
+  for (const message of messages) {
+    if (BigInt(message.serverSequence ?? message.sequence) <= BigInt(seenThrough) || message.deleted || (message.threadRootId ?? undefined) !== threadRootId || message.isSelf === true
+      || (message.kind !== 'message' && message.kind !== 'plan')
+      || (message.authorKind !== 'bot' && message.isSelf !== false) || message.authorKind === 'system') continue;
+    incoming.add(message.id);
+  }
+  return incoming.size;
 }
 
 /**
