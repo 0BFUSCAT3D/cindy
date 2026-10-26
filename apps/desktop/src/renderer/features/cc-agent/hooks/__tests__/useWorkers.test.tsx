@@ -39,6 +39,7 @@ import {
   retainWorkerProjection,
   revalidateActiveWorkerSettings,
   revalidateActiveWorkersProjection,
+  revalidateWorkersProjection,
 } from '../workerProjectionStore';
 import {
   __getWorkerAttentionSnapshotForTest,
@@ -524,15 +525,35 @@ describe('useWorkers / worker projection store', () => {
     expect(__getWorkerAttentionSnapshotForTest().has('worker-done')).toBe(true);
   });
 
-  it('lets a detached renderer derive attention from its owned lead projection', async () => {
+  // unit: 真实 watcher + projection + attention store；此前仅测初始 done，遗漏新一轮取代旧未读。
+  it('derives completion attention, clears it on new work, and restores it only for a new completion', async () => {
     mocks.listWorkersByLeads.mockResolvedValueOnce({
       'lead-1': [workerRecord('worker-done', 'session-done', false, 'done')],
     });
-    renderHook(() => useOrcaWorkerAttentionByLeadIds(['lead-1'], undefined));
+    const watcher = renderHook(({ active }: { active: string | undefined }) =>
+      useOrcaWorkerAttentionByLeadIds(['lead-1'], active),
+    { initialProps: { active: undefined as string | undefined } });
 
     await waitFor(() => {
       expect(__getWorkerAttentionSnapshotForTest().has('worker-done')).toBe(true);
     });
+    const publishStatus = async (status: 'running' | 'done') => {
+      mocks.listWorkersByLeads.mockResolvedValueOnce({
+        'lead-1': [workerRecord('worker-done', 'session-done', false, status)],
+      });
+      await act(async () => { await revalidateWorkersProjection('lead-1'); });
+    };
+    await publishStatus('running');
+    expect(__getWorkerAttentionSnapshotForTest().has('worker-done')).toBe(false);
+    watcher.rerender({ active: 'lead-1' });
+    watcher.rerender({ active: undefined });
+    // 第二个订阅晚挂载 / 初始 running 不能把上一轮完成重新打点。
+    renderHook(() => useOrcaWorkerAttentionByLeadIds(['lead-1'], undefined));
+    expect(__getWorkerAttentionSnapshotForTest().has('worker-done')).toBe(false);
+    await publishStatus('done');
+    expect(__getWorkerAttentionSnapshotForTest().has('worker-done')).toBe(true);
+    await publishStatus('running');
+    expect(__getWorkerAttentionSnapshotForTest().has('worker-done')).toBe(false);
   });
 
   it('keeps mounted consumers live after clearing an in-flight projection', async () => {

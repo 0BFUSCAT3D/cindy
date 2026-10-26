@@ -474,8 +474,9 @@ Worker turn 被 vendor 报终止型 error，但 interrupted-turn auto-resume 仍
    仍为 `error`，列表及头像也同步清除错误表达。没有错误时，
    Worker 有未处理交互（AskUserQuestion / 权限 / 计划审阅 / 插件设置 / 代输入）或任务为
    `awaiting` 时，在头像右上显示蓝点，切到 Worker 再切走也保留，直到交互处理完且任务
-   awaiting 消失；完成未读绿点仍只在未选中时显示。优先级为
-   出错 > 等待确认 > 完成未读。折叠入口也提示被隐藏 Worker 的错误或等待确认，不汇总完成。
+   awaiting 消失；Worker 进入 `running` 时由同一 attention watcher 清除上一轮完成未读，
+   新一轮完成且未查看时照常打点。完成未读绿点只在未选中且非 `running` 时显示，
+   优先级为出错 > 等待确认 > 运行中 > 完成未读。折叠入口也提示被隐藏 Worker 的错误或等待确认，不汇总完成。
    「运行设备」Worker、远程 Worker 或远程 Lead 下的 Worker 无法读取本机任务提醒，
    保留运行状态为 `error` 的既有表达；远程供应商不改变任务所在电脑，不属于这一兜底范围。
    `orcaWorkerTaskAttention.ts` 统一为列表、协同 tab、Lead 行及 Dock 派生任务提醒；列表

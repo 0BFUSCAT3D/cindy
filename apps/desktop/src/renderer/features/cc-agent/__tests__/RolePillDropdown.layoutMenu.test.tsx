@@ -249,6 +249,35 @@ describe('Worker list task attention', () => {
     __resetStickySessionOriginForTest();
   });
 
+  // unit: 真实工具栏；旧断言未覆盖 running + 上轮未读，后台选中只隐藏而不清 store 时尤其明显。
+  it.each(['tabs', 'dropdown'] as const)('%s：运行中不显示上轮绿点，切换选择不恢复，红蓝仍优先', (layout) => {
+    localStorage.setItem('orca-worker-list-layout-v1', layout);
+    const current = worker();
+    const other = worker({ workerId: 'worker-b', sessionId: 'session-b', role: 'tester', focused: false, status: 'done' });
+    const props = {
+      worker: current, workers: [current, other], selectedWorkerId: current.workerId,
+      activeWorkerCount: 2, softLimit: 5, hardLimit: 8,
+      onSwitchFocus: vi.fn(), onOpenCreate: vi.fn(), onOpenSettings: vi.fn(), onArchiveWorker: vi.fn(),
+      clearAttentionWhenVisible: false,
+    };
+    markWorkerAttention(other.workerId);
+    const view = render(<WorkerListToolbar {...props} />);
+    fireEvent.click(layout === 'tabs' ? menuButton() : screen.getByRole('button', { name: /^developer/ }));
+    expect(screen.getAllByLabelText('orca.rolePill.unread').length).toBeGreaterThan(0);
+    const running = { ...other, status: 'running' as const };
+    const runningProps = { ...props, workers: [current, running] };
+    view.rerender(<WorkerListToolbar {...runningProps} />);
+    expect(screen.queryAllByLabelText('orca.rolePill.unread')).toHaveLength(0);
+    view.rerender(<WorkerListToolbar {...runningProps} worker={running} selectedWorkerId={other.workerId} />);
+    view.rerender(<WorkerListToolbar {...runningProps} />);
+    expect(screen.queryAllByLabelText('orca.rolePill.unread')).toHaveLength(0);
+    act(() => addSessionAttention(other.sessionId, 'awaiting'));
+    expect(screen.getAllByLabelText('orca.rolePill.awaitingBadgeAria').length).toBeGreaterThan(0);
+    act(() => addSessionAttention(other.sessionId, 'error'));
+    expect(screen.getAllByLabelText('orca.rolePill.errorBadgeAria').length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText('orca.rolePill.awaitingBadgeAria')).toBeNull();
+  });
+
   it.each(['tabs', 'dropdown'] as const)(
     '%s：本机 Worker 关闭任务错误后，运行态仍 error 也清除列表错误并恢复蓝/绿点',
     (layout) => {

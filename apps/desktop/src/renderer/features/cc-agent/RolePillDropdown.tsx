@@ -45,7 +45,7 @@ export function resolveWorkerListAttention(
   const localKind = isLocal ? taskKind : undefined;
   if (localKind === 'error' || (!isLocal && worker.status === 'error')) return 'error';
   if (localKind === 'awaiting') return 'awaiting';
-  return !focused && hasUnread ? 'done' : undefined;
+  return !isRunningWorkerStatus(worker.status) && !focused && hasUnread ? 'done' : undefined;
 }
 
 /** 只订阅本列表本机任务的子映射：底层以 primitive key 比较，其他任务的广播不会重渲染列表。 */

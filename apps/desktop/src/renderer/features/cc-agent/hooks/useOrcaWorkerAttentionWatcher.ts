@@ -40,6 +40,10 @@ export function computeWorkerAttentionUpdates(
     currentWorkerIds.add(worker.workerId);
     nextStatusByWorkerId.set(worker.workerId, worker.status);
 
+    // A new run supersedes the previous result, including stale unread state
+    // restored before this watcher mounted. Clearing an absent record is a no-op.
+    if (worker.status === 'running') toPrune.push(worker.workerId);
+
     const prevStatus = prevStatusByWorkerId.get(worker.workerId);
     // `done` persists until the result is viewed and acknowledged, so an initial
     // snapshot can safely restore unread attention after a late mount or reload.
