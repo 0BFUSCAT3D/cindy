@@ -93,3 +93,21 @@ NODE_OPTIONS=--max-old-space-size=12288 node node_modules/typescript/bin/tsc --n
 回归驱动 exit 0。记录提交仅增加证据，生产代码仍对应上述源码提交。
 推送目的地为已配置个人 fork 的 `cindy/serene-euclid`；上游 origin 写入返回 403，未修改 main。
 查询该源码 SHA 的 fork check runs 为 0；未将本地验收写成远端 CI 或正式包验收通过。
+
+## PR #7241：安全边界延期切换补充
+
+Greptile 指出同引擎选择会进入 runtime control 的 pending，而非 Harness 切换登记表。
+清理前只检查后者，会在同引擎选择尚未应用时丢失恢复记录。已将生产应用步骤提取到同一模块的
+`createBotModelRouteApplier`，同时检查两处 pending；register 复用该步骤，沿用原切换和清理入口。
+
+在既有 `botModelRouteReconciler.test.ts` 增加 unit tier 表驱动回归：调用生产应用步骤及真实
+runtime control，覆盖同引擎/跨引擎延期、取消失败的待执行选择后保留记录，以及再次应用成功后清理。
+已有测试仅模拟 staging 抛错，没有覆盖 staging 成功但尚未生效的情况。
+
+- 先红：保留原来的单登记表检查，定向用例 1 失败、1 通过（1.11 秒）；同引擎分支错误地成功。
+- 后绿：`botModelRouteReconciler`、`sessionRuntimeControl`、`scheduledModelSelection` 三文件 141 项通过，exit 0（1.69 秒）。
+- 单独运行修改文件：40 项通过，exit 0（1.24 秒，测试体 272ms）。
+- 同一 Desktop 直接编译器类型检查命令：exit 0（180.16 秒）。
+
+上述是评审补修的自动化验证；前述真实模型状态副本结果仍对应明确记录的 `d6517ea6bd`，
+不将它冒称为该补修的新构建实测。

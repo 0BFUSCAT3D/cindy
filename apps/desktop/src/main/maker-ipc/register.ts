@@ -571,7 +571,7 @@ import {
   schedules,
 } from '../localDb/schema.js';
 import { nextBotModelRoute, normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
-import { createBotModelRouteReconciler } from './botModelRouteReconciler.js';
+import { createBotModelRouteApplier, createBotModelRouteReconciler } from './botModelRouteReconciler.js';
 import {
   cindyAutoRouteToFollow,
   followMovedCindyAutoRoutes,
@@ -16636,22 +16636,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           : control.pending?.profile ?? control.effectiveOverride ?? undefined,
       };
     },
-    apply: async (sessionId, route, current) => {
-      await stageSessionRouteSelection(sessionId, { ...route, agentDeviceId: route.agentDeviceId ?? null }, current.agentKind);
-      // Consume the same model/Harness intent as the normal send path. Its
-      // verified window protection and history handoff also apply here; a Bot
-      // settings save need not wait for a second user message. Busy runtimes
-      // retain their intent for the existing safe-boundary coordinator.
-      if (isSessionIdleForRouteApply(sessionId)) {
-        await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId, { bootstrapAfterSwitch: true });
-      }
-      // Keep the durable acceptance marker if the switch failed or still waits
-      // for a safe boundary. Staging alone must not lose recovery after restart.
-      if (agentSwitchPending.get(sessionId)) {
-        throw new ScheduledModelSelectionBusyError('Saved companion route is still pending');
-      }
-      await updateScheduledPreference(sessionId, null);
-    },
+    apply: createBotModelRouteApplier({
+      stage: (sessionId, route, current) => stageSessionRouteSelection(
+        sessionId, { ...route, agentDeviceId: route.agentDeviceId ?? null }, current.agentKind),
+      isIdle: isSessionIdleForRouteApply,
+      applyPendingSwitch: (sessionId) => applyPendingAgentSwitchIfIdle(
+        agentSwitchDeps, sessionId, { bootstrapAfterSwitch: true }),
+      hasPendingSwitch: (sessionId) => !!agentSwitchPending.get(sessionId),
+      onApplied: async (sessionId) => { await updateScheduledPreference(sessionId, null); },
+    }),
   });
 
   configureBotModelSelectionCoordinator(createBotModelSelectionCoordinator({
