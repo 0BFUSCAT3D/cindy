@@ -3,8 +3,8 @@
  *
  * 与订阅卡的 useProviderSubscriptionCard 互补：那边读 OAuth 订阅配额，这边经
  * PROVIDER_ACCOUNT_USAGE 读供应商自己的账户接口。挂载时拉一次，之后每 60s 静默
- * 刷新一次（main 侧缓存优先 + 节流，重复轮询不会放大上游请求）；失败不轮询重试，
- * 重挂载即重试。不支持（unsupported）时 supported=false，模块不渲染。
+ * 刷新一次（main 侧缓存优先 + 节流），失败同样在后续轮询重试。
+ * 结果绑定连接、引擎和接入地址；切换身份或停用查询时不返回旧快照。
  *
  * `agent` 用于会话场景（输入框 chip）：同一供应商各引擎可用不同账户的独立密钥，
  * 传入会话所在引擎才能对准当前会话实际消耗的账户；设置页供应商级视图不传。
@@ -14,7 +14,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { AgentKind, ProviderView } from '@cindy/model-providers';
 
-import type { ProviderAccountUsageResult } from '../../shared/providerAccountUsage';
+import {
+  PROVIDER_ACCOUNT_USAGE_AGENTS,
+  type ProviderAccountUsageResult,
+} from '../../shared/providerAccountUsage';
 import {
   hasDeepSeekOfficialRouteView,
   isZhipuCodingPlanProviderView,
@@ -35,33 +38,54 @@ export function useProviderAccountUsage(
   agent?: AgentKind,
 ): ProviderAccountUsageState {
   const supported =
-    !!provider
-    && provider.auth?.method !== 'oauth'
-    && (hasDeepSeekOfficialRouteView(provider) || isZhipuCodingPlanProviderView(provider));
-  const [result, setResult] = useState<ProviderAccountUsageResult | null>(null);
-  const [busy, setBusy] = useState(false);
+    !!provider &&
+    provider.auth?.method !== 'oauth' &&
+    (hasDeepSeekOfficialRouteView(provider) || isZhipuCodingPlanProviderView(provider));
+  const identity = JSON.stringify([
+    provider?.id,
+    agent,
+    provider?.auth?.method,
+    (agent ? [agent] : PROVIDER_ACCOUNT_USAGE_AGENTS).map(
+      (runtime) => provider?.routing[runtime]?.upstream,
+    ),
+  ]);
+  const [state, setState] = useState<{
+    identity: string;
+    result: ProviderAccountUsageResult | null;
+    busy: boolean;
+  }>({ identity, result: null, busy: false });
   const requestId = useRef(0);
 
   const load = useCallback(
     async (forceRefresh: boolean) => {
-      if (!provider?.id) return;
+      if (!supported || !provider?.id) return;
       const id = ++requestId.current;
-      setBusy(true);
+      setState((previous) => ({
+        identity,
+        result: previous.identity === identity ? previous.result : null,
+        busy: true,
+      }));
       try {
         const next = await window.electronAPI.maker.fetchProviderAccountUsage({
           providerId: provider.id,
           forceRefresh,
           ...(agent ? { agent } : {}),
         });
-        if (id === requestId.current) setResult(next);
+        if (id === requestId.current) setState({ identity, result: next, busy: false });
       } catch {
-        // IPC 层异常（不该发生）按未知失败处理，保留已有快照。
-        if (id === requestId.current) setResult(null);
-      } finally {
-        if (id === requestId.current) setBusy(false);
+        // IPC 异常也结束等待；只保留同一查询身份的已有快照。
+        if (id === requestId.current)
+          setState((previous) => ({
+            identity,
+            result:
+              previous.identity === identity && previous.result?.status === 'ready'
+                ? { ...previous.result, stale: true, error: 'unknown' }
+                : { status: 'unavailable', error: 'unknown' },
+            busy: false,
+          }));
       }
     },
-    [provider?.id, agent],
+    [provider?.id, agent, identity, supported],
   );
 
   useEffect(() => {
@@ -69,18 +93,17 @@ export function useProviderAccountUsage(
     void load(false);
     // 余额/窗口会随使用变化，挂载期间低频静默刷新（main 缓存优先，不会放大上游请求）。
     const timer = window.setInterval(() => void load(false), REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      // 停用、切换或卸载后，迟到响应不得再提交。
+      requestId.current += 1;
+    };
   }, [supported, provider?.id, load]);
-
-  // 换供应商即清空：旧连接的余额绝不能短暂挂在新连接的卡片下。
-  useEffect(() => {
-    setResult(null);
-  }, [provider?.id]);
 
   return {
     supported,
-    result,
-    busy,
+    result: supported && state.identity === identity ? state.result : null,
+    busy: supported && state.identity === identity && state.busy,
     refresh: () => void load(true),
   };
 }

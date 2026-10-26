@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => ({
   refreshCodexRateLimits: vi.fn(),
   resetSnapshot: null as MobileCodexRateLimitsResult | null,
   consumeReset: vi.fn(),
+  fetchProviderAccountUsage: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -272,9 +273,10 @@ beforeEach(() => {
   mocks.codexAuthInjection = null;
   mocks.providers = [];
   mocks.accountSnapshots = {};
+  mocks.fetchProviderAccountUsage.mockReset();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
-    value: { openExternal: mocks.openExternal, maker: { usage: { consumeCodexRateLimitReset: mocks.consumeReset } } },
+    value: { openExternal: mocks.openExternal, maker: { fetchProviderAccountUsage: mocks.fetchProviderAccountUsage, usage: { consumeCodexRateLimitReset: mocks.consumeReset } } },
   });
 });
 
@@ -283,6 +285,22 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.clearAllMocks();
+});
+
+// PR #7031: service error mapping alone does not verify the real chip's visible
+// result. Unit/jsdom, no saved snapshot + an auth/network failure must end waiting.
+it.each(['auth', 'network'])('shows API account %s errors instead of waiting forever', async (error) => {
+  mocks.providers = [{
+    id: 'deepseek', auth: { method: 'apiKey' },
+    routing: { pi: { upstream: 'https://api.deepseek.com', authStrategy: 'api-key-header' } },
+  } as ProviderView];
+  mocks.fetchProviderAccountUsage.mockResolvedValue({ status: 'unavailable', error });
+  render(<TodaySpendChip vendorKey="pi" providerId="deepseek" sessionId="session-1" />);
+  await act(async () => {});
+  act(() => screen.getByRole('button', { name: 'providerAccountUsage.openDashboard' }).focus());
+  const card = screen.getByTestId('quota-hover-card');
+  expect(within(card).getByText(`providerAccountUsage.error.${error}`)).toBeTruthy();
+  expect(within(card).queryByText('等待额度数据')).toBeNull();
 });
 
 // #4907: QuotaHoverCard tests cover the threshold, but the real chip never supplied

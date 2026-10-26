@@ -358,6 +358,29 @@ describe('readProviderAccountUsage', () => {
     ).resolves.toEqual({ status: 'unavailable', error: 'no-credentials' });
   });
 
+  // PR #7031: CN and Global share an integration id, not an account/cache namespace.
+  // Unit: changing only the upstream must fetch the new endpoint, never return old quota.
+  it('isolates CN and Global snapshots even when the stored key is unchanged', async () => {
+    let upstream = 'https://open.bigmodel.cn/api/anthropic';
+    setAccountUsageProviderReader(() => mkProvider({
+      routing: { 'claude-code': { upstream, authStrategy: 'api-key-header' } },
+    }));
+    const fetchMock = vi.fn(async (url: string | URL | Request) =>
+      String(url).includes('api.z.ai')
+        ? jsonRes({}, 401)
+        : jsonRes(ZHIPU_QUOTA),
+    );
+    setAccountUsageFetch(fetchMock as typeof fetch);
+    expect((await readProviderAccountUsage({ providerId: 'deepseek' })).status).toBe('ready');
+    upstream = 'https://api.z.ai/api/anthropic';
+    await expect(readProviderAccountUsage({ providerId: 'deepseek' })).resolves.toEqual({
+      status: 'unavailable', error: 'auth',
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      'https://api.z.ai/api/monitor/usage/quota/limit', expect.anything(),
+    );
+  });
+
   it('treats a swapped key as a different account (cache key includes key fingerprint)', async () => {
     const fetchMock = vi.fn(async () => jsonRes(DEEPSEEK_BALANCE));
     setAccountUsageFetch(fetchMock as unknown as typeof fetch);

@@ -415,7 +415,7 @@ export async function readProviderAccountUsage(
   }
   // 缓存键含凭证指纹：同一供应商下换 key（不同账户）后旧账户快照绝不复用。
   const keyFingerprint = createHash('sha256').update(resolution.key).digest('hex').slice(0, 12);
-  const cacheKey = `${ownerStamp.dataOwnerId ?? 'local'}:${ownerStamp.generation}:${request.providerId}:${resolution.integrationId}:${resolution.agent}:${keyFingerprint}`;
+  const cacheKey = `${ownerStamp.dataOwnerId ?? 'local'}:${ownerStamp.generation}:${request.providerId}:${resolution.integrationId}:${resolution.endpoint}:${resolution.agent}:${keyFingerprint}`;
   const now = accountUsageNow();
   const record = cache.get(cacheKey);
   const manualRefreshBlocked =

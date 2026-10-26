@@ -1664,6 +1664,9 @@ export function TodaySpendChip({
                   t,
                 )
               : buildClaudeUsageCard(claudeSubscriptionUsage, t);
+      if (usesProviderAccountUsageForm && providerAccountUsage.result?.status === 'unavailable') {
+        account.emptyText = t(`providerAccountUsage.error.${providerAccountUsage.result.error}`);
+      }
       if (
         !usesProviderAccountUsageForm &&
         (usesCodexQuotaForm || usesXaiQuotaForm || isClaudeSubscription)
