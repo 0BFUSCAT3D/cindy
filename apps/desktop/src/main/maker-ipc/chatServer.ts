@@ -871,7 +871,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // refresh, or actor.changed racing its own list notice): tell them to read again.
         if (replaced) { changed(''); for (const roomId of rooms.keys()) changed(roomId); }
       }
-    })().finally(() => { refreshActors = undefined; });
+    })().catch(error => {
+      // A forced refresh consumes the stale flag before I/O. On failure, keep it
+      // pending so a recent successful pass cannot defer recovery for a minute.
+      actorsStale = true;
+      throw error;
+    }).finally(() => { refreshActors = undefined; });
     return refreshActors;
   }
   /** Claim empty homes for this computer and publish where every companion runs. */

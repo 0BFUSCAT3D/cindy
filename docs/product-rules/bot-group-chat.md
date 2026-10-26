@@ -844,7 +844,7 @@ Desktop 群聊与话题之间的分隔线支持左右拖拽和方向键调宽；
 ### 11.0 本轮实现与边界
 
 - 服务端 `userPrincipal` 已改为已有身份只读，首次创建用 `INSERT ... DO NOTHING`，并发冲突后另一次 SELECT；每次仍校验 disabled 与 actingAs 归属。
-- Desktop actor 刷新兜底从 5 秒调整为 60 秒，Auth profile 刷新从 60 秒调整为 300 秒。本机伙伴变化信号、云端 `actor.changed` 仍可主动失效。
+- Desktop actor 刷新兜底从 5 秒调整为 60 秒，Auth profile 刷新从 60 秒调整为 300 秒。本机伙伴变化信号、云端 `actor.changed` 仍可主动失效；强制刷新失败保留失效标记，按既有错误退避重试，不能受最近成功登记的 60 秒节流阻挡。
 - 每个空闲伙伴独立按 2 / 4 / 8 / 15 秒空领取退避，另加最多 1 秒抖动；本机 2 秒调度 tick 带来不到 2 秒额外等待，因此稳定空闲兜底约 16–18 秒。queued 通知、重连和运行结束重置退避；401/429 等失败等待优先，运行中 15 秒续租及忙碌 lane 的检查保留。尚无覆盖全部未打开房间的可靠工作通知，因此没有拉长到 60 秒。
 - 共用 [chatHistory.ts](../../packages/maker-shared/src/chatHistory.ts)：首次 snapshot，缺页才取 messages，重启／重连按已提交 cursor 读 changes。已加载旧消息按 revision 更新／保留删除 tombstone；最新页变化后保留旧范围覆盖，分页边界移动不导致所有旧页重新下载。变化正文不带的表情聚合／话题回复数只刷新受影响的已展示页。
 - Desktop 在账号 SQLite 的 `chat_cache_rooms`、`chat_cache_messages` 中保存投影（追加 migration `0132`）；worker 事务同时提交消息、覆盖范围、snapshot、generation 与 cursor，并用 version + generation 防止并行实例回写旧状态（包括清除重建后的版本号重复）。WebSocket 按序处理，落盘完成后 ACK。

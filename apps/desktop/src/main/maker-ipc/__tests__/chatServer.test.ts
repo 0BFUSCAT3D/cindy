@@ -83,6 +83,7 @@ vi.mock('ws', async () => {
 });
 import { ChatResponseError, REACTION_REVISION_MESSAGE_LIMIT, splitChatMessageText, withChatServer } from '../chatServer.js';
 import { t } from '../../i18n.js';
+import { signalBotAutonomyBotsChanged } from '../../bot-autonomy/botsChangedSignal.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import { botGroupRuntimeFailureCode, settleUndispatchedBotGroupTurn } from '../botGroupRuntimeFailure.js';
 import { authorizeGroupTool } from '../botGroupToolAuthorization.js';
@@ -3239,6 +3240,32 @@ describe('Chat Server result delivery and refresh', () => {
       expect(count('/me')).toBeLessThanOrEqual(3);
       expect(count('/actors')).toBeLessThanOrEqual(3);
       expect(count('/profile/refresh')).toBe(1);
+    });
+
+    // PR #7242, unit: the idle cadence test never invalidated a recent registration.
+    // A failed forced refresh must still register a new bot when the poll backoff ends.
+    it.each(['/me', '/actors'])('retries a failed forced %s refresh before the idle throttle expires', async failedRoute => {
+      await vi.advanceTimersByTimeAsync(2000);
+      const requestStart = fixture.requests.length;
+      const newActor = { id: '20000000-0000-4000-8000-000000000002', kind: 'bot', externalId: 'new-bot', name: 'New' };
+      fixture.profiles = [{ id: 'new-bot', displayName: 'New', avatar: null, status: 'active' }];
+      let fail = true;
+      fixture.handle.mockImplementation((route, method) => {
+        if (fail && route === failedRoute) return { status: 503, body: { error: { code: 'UNAVAILABLE' } } };
+        if (route === '/actors') return { body: method === 'POST' ? newActor : [] };
+        if (route === '/executions/claim') return { body: { execution: null } };
+        return response(route);
+      });
+      signalBotAutonomyBotsChanged();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(fixture.handle.mock.calls.filter(([route, method]) => route === '/actors' && method === 'POST')).toHaveLength(0);
+      fail = false;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fixture.handle.mock.calls.filter(([route, method]) => route === '/actors' && method === 'POST')).toHaveLength(1);
+      expect(fixture.requests.slice(requestStart).some(request => request.url.endsWith('/executions/claim') && request.actor === newActor.id)).toBe(true);
+      const registered = fixture.handle.mock.calls.filter(([route]) => route === '/me').length;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fixture.handle.mock.calls.filter(([route]) => route === '/me')).toHaveLength(registered);
     });
 
     // Unit: a notice racing an old empty response must not inherit that response's idle delay.
