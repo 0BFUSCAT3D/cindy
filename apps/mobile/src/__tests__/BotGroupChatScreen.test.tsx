@@ -243,8 +243,8 @@ vi.mock('@/session/useBotGroupRemoteMedia', () => ({ useBotGroupRemoteMedia: () 
 vi.mock('@/session/useHostTeammates', () => ({ useHostTeammates: (_host: unknown, _enabled: boolean, query = '') => { h.teammateQuery = query; return h.teammates; } }));
 vi.mock('@/session/useBotGroupChat', () => ({ useBotGroupChat: () => h.chat }));
 vi.mock('@/session/useBotGroupSettingsManagement', () => ({ useBotGroupSettingsManagement: () => h.management ?? ({
-  selected: undefined, managers: [], loading: false, reason: 'noHost', act: vi.fn(), select: vi.fn(), refresh: vi.fn(),
-}) }));
+  group: undefined, editable: false, loading: false, reason: 'unavailable', act: vi.fn(), refresh: vi.fn(),
+}), useCloudGroupCandidates: () => ({ ...h.teammates, rows: h.teammates.rows.map(row => ({ id: row.item.ref.id, name: row.item.display.title, avatar: null })) }) }));
 
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
@@ -1274,20 +1274,20 @@ describe('group settings', () => {
     expect(h.chat.act).toHaveBeenLastCalledWith('update', { name: '保留草稿' });
   });
 
-  it('edits a direct server group through the management host while chat stays direct', async () => {
+  it('edits a direct server group without management computer UI while chat stays direct', async () => {
     const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsMemberRemoval: true, revision: 5 });
     data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
     h.chat.server = true;
     const manage = vi.fn(async () => ({ effects: [] }));
-    h.management = { displayHost: { deviceId: 'pc', deviceName: 'PC' }, selected: { host: { deviceId: 'pc', deviceName: 'PC' }, group: data }, managers: [], loading: false, reason: null,
+    h.management = { group: data, editable: true, loading: false, reason: null,
       act: manage, refresh: vi.fn(), select: vi.fn() };
     h.teammates = { rows: [{ key: 'new', host: { deviceId: 'pc', deviceName: 'PC' }, item: {
       ref: { collectionId: 'teammates', kind: 'bot', id: 'new-bot' }, revision: '1', display: { title: 'New bot' }, links: [],
     } }], loading: false, failed: false };
     await openSettings(data);
     expect(h.inputs['botGroup.settings.name'].editable).toBe(true);
-    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe('groupChat.settings.managementStatus.ready');
-    expect(byId('botGroup.settings.connectedDot')).not.toBeNull();
+    expect(byId('botGroup.settings.management')).toBeNull();
+    expect(byId('botGroup.settings.connectedDot')).toBeNull();
     expect(byId('botGroup.settings.retry')).toBeNull();
     expect(byId('botGroup.settings.body')?.style.opacity).toBe('');
     await act(async () => { h.inputs['botGroup.settings.name'].onChangeText('Managed'); });
@@ -1298,15 +1298,39 @@ describe('group settings', () => {
     expect(manage).toHaveBeenLastCalledWith('add-member', { botId: 'new-bot', expectedRevision: 5 });
   });
 
+  // Cloud description drafts must survive a concurrent edit; role changes use the selected member.
+  it('preserves a conflicted cloud description and changes a member role', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5, description: 'Original' });
+    data.members[0] = { ...data.members[0], isOwned: true, role: 'owner' };
+    data.members[1] = { ...data.members[1], actorId: 'member-actor', role: 'member' };
+    const manage = vi.fn(async () => ({ effects: [] }));
+    h.chat.server = true;
+    h.management = { group: data, editable: true, loading: false, reason: null, act: manage, refresh: vi.fn() };
+    await openSettings(data);
+    await act(async () => { h.inputs['botGroup.settings.description'].onChangeText('My draft'); });
+    manage.mockRejectedValueOnce(new Error('REVISION_CONFLICT'));
+    await act(async () => { h.inputs['botGroup.settings.description'].onBlur(); });
+    expect(manage).toHaveBeenLastCalledWith('update', { description: 'My draft', expectedRevision: 5 });
+    expect(h.inputs['botGroup.settings.description'].value).toBe('My draft');
+    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.conflict');
+    h.management.group = { ...data, description: 'Other edit', revision: 6 };
+    await render(h.management.group);
+    expect(h.inputs['botGroup.settings.description'].value).toBe('My draft');
+    await act(async () => { h.inputs['botGroup.settings.description'].onBlur(); });
+    expect(manage).toHaveBeenLastCalledWith('update', { description: 'My draft', expectedRevision: 6 });
+    await click(`botGroup.settings.memberMenu.${data.members[1].botId}.action.role:${data.members[1].botId}`);
+    expect(manage).toHaveBeenLastCalledWith('set-member-role', { actorId: 'member-actor', role: 'admin' });
+  });
+
   it('explains unavailable management and offers retry without enabling edits', async () => {
     const refresh = vi.fn();
-    h.management = { displayHost: { deviceId: 'pc', deviceName: 'PC' }, selected: undefined, managers: [], loading: false, reason: 'noHost', act: vi.fn(), select: vi.fn(), refresh };
+    h.management = { editable: false, loading: false, reason: 'unavailable', act: vi.fn(), refresh };
     h.chat.server = true; await openSettings(group({ serverBacked: true }));
     expect(h.inputs['botGroup.settings.name'].editable).toBe(false);
     expect(byId('botGroup.settings.body')?.style.opacity).toBe('0.6');
-    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe('groupChat.settings.managementStatus.noHost');
-    expect(byId('botGroup.settings.computerName')?.textContent).toBe('PC');
-    expect(byId('botGroup.settings.retry')?.textContent).toBe('groupChat.settings.reconnect');
+    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe('groupChat.settings.cloudStatus.unavailable');
+    expect(byId('botGroup.settings.computerName')).toBeNull();
+    expect(byId('botGroup.settings.retry')?.textContent).toBe('groupChat.settings.retry');
     expect((byId('botGroup.settings.member.mimi') as HTMLButtonElement)?.disabled).toBe(true);
     await click('botGroup.settings.add');
     expect(byId('botGroup.settings.addable')).toBeNull();
@@ -1318,13 +1342,13 @@ describe('group settings', () => {
     expect(byId('botGroup.settings')?.textContent).not.toContain('groupChat.settings.deleteNote');
   });
 
-  it.each(['upgrade', 'permission', 'unavailable', 'loading'])('keeps the %s reason explicit in the compact status row', async reason => {
+  it.each(['permission', 'unavailable', 'loading'])('keeps the %s reason explicit in the compact status row', async reason => {
     const refresh = vi.fn();
     h.chat.server = true;
-    h.management = { selected: undefined, managers: [], loading: reason === 'loading', reason: reason === 'loading' ? null : reason,
+    h.management = { editable: false, loading: reason === 'loading', reason: reason === 'loading' ? null : reason,
       act: vi.fn(), select: vi.fn(), refresh };
     await openSettings(group({ serverBacked: true }));
-    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe(`groupChat.settings.managementStatus.${reason}`);
+    expect(byId('botGroup.settings.managementStatus')?.textContent).toBe(`groupChat.settings.cloudStatus.${reason}`);
     expect(h.inputs['botGroup.settings.name'].editable).toBe(false);
     if (reason === 'loading') {
       expect(byId('botGroup.settings.connecting')).not.toBeNull();
@@ -1407,8 +1431,8 @@ describe('group settings', () => {
     const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
     data.members[0] = { ...data.members[0], isOwned: true, role: 'admin' };
     h.chat.server = true;
-    h.management = { selected: { host: { deviceId: 'pc', deviceName: 'PC' }, group: data }, managers: [], loading: false, reason: null,
-      act: vi.fn(), refresh: vi.fn(), select: vi.fn() };
+    h.management = { group: data, editable: true, loading: false, reason: null,
+      act: vi.fn(), refresh: vi.fn() };
     await openSettings(data);
     expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
     await click('botGroup.settings.delete');
