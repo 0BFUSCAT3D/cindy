@@ -26,6 +26,19 @@ describe("public plugin presentation boundary", () => {
       }),
     ).toEqual(publicView);
   });
+  it("preserves an embedded current plugin icon without exposing its storage location", () => {
+    const icon = "data:image/png;base64,iVBORw0KGgo=";
+    expect(parsePublicPluginPresentation({ ...publicView, icon })).toEqual({ ...publicView, icon });
+    expect(parsePublicPluginPresentation({ ...publicView, icon: null }).icon).toBeNull();
+  });
+  it.each([
+    "https://example.test/icon.png",
+    "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+    "data:image/png;base64,invalid!",
+    `data:image/png;base64,${"A".repeat(700_000)}`,
+  ])("uses the missing-icon state for an unsafe or oversized image", (icon) => {
+    expect(parsePublicPluginPresentation({ ...publicView, icon }).icon).toBeNull();
+  });
   it.each([
     { schemaVersion: 2 },
     { pluginId: "../../private" },

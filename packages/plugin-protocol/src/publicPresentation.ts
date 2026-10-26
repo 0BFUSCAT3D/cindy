@@ -15,6 +15,8 @@ export interface PublicPluginPresentation {
   author: string | null;
   version: string;
   publishedAt: string;
+  /** Current verified raster icon, embedded without a storage URL; absent on older servers. */
+  icon?: string | null;
 }
 
 export function parsePublicPluginPresentation(
@@ -26,6 +28,11 @@ export function parsePublicPluginPresentation(
   }
   const nullableText = (value: unknown, path: string, max: number) =>
     value === null || value === "" ? null : string(value, path, max);
+  const image = typeof row.icon === "string" && row.icon.length <= Math.ceil(512 * 1024 / 3) * 4 + 32
+    ? /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/.exec(row.icon) : null;
+  const base64 = image?.[2] ?? "";
+  const size = base64.length / 4 * 3 - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+  const icon = image && base64.length % 4 === 0 && size <= 512 * 1024 ? row.icon as string : null;
   return {
     schemaVersion: 1,
     pluginId: row.pluginId,
@@ -34,5 +41,6 @@ export function parsePublicPluginPresentation(
     author: nullableText(row.author, "author", 256),
     version: string(row.version, "version", 128),
     publishedAt: isoDate(row.publishedAt, "publishedAt"),
+    ...(row.icon === undefined ? {} : { icon }),
   };
 }
