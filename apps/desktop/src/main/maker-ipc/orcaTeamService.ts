@@ -2153,6 +2153,10 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
           : captureWorkerTerminalTurn(params.sessionId);
       let manualInterruptOwnership = capture.manualInterrupt;
       const autoBridgeAtEntry = capture.autoBridgeIdentity;
+      const ownsRuntime = () => !capture.runtime || (
+        deps.getLiveSession(params.sessionId) === capture.runtime
+        && capture.runtime.getTurnGeneration?.() === capture.turnGeneration
+      );
       const link = await deps.getWorkerLinkBySessionId(params.sessionId);
       if (!link) return;
 
@@ -2197,16 +2201,20 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
             }
           }
 
-          // Every terminal branch is scoped to the identities captured before queue drain. A
-          // committed newer turn replaces either the auto-bridge object, the manual mark, or both.
-          if (
-            (!autoBridgeAtEntry && capture.runtime && (
-              deps.getLiveSession(params.sessionId) !== capture.runtime
-              || capture.runtime.getTurnGeneration?.() !== capture.turnGeneration
-            )) ||
-            currentAutoBridge !== autoBridgeAtEntry ||
-            currentManualInterrupt !== manualInterruptOwnership
-          ) {
+          // A newer Lead assignment owns a different report identity; preserve that path.
+          if (currentAutoBridge !== autoBridgeAtEntry) {
+            staleTerminal = true;
+            return;
+          }
+          if (!ownsRuntime()) {
+            // Direct-user B can reuse A's report identity. Settle only A's obligation:
+            // its old terminal must not write B's status or clear B's Stop/provisional state.
+            const state = autoBridge.get(params.sessionId);
+            if (state?.pending) completionState = state;
+            else if (state) deletePendingReport(params.sessionId);
+            return;
+          }
+          if (currentManualInterrupt !== manualInterruptOwnership) {
             staleTerminal = true;
             return;
           }
@@ -2273,7 +2281,9 @@ export function createOrcaTeamService(deps: OrcaTeamServiceDeps): OrcaTeamServic
           // Manual acceptance can win while terminal waits outside the lock.
           await withWorkerTransition(link.workerId, async () => {
             if (completionState && autoBridge.get(params.sessionId) === completionState && !completionState.pending) {
-              clearRuntimeState(params.sessionId);
+              // A new direct-user turn may also start while delivery waits outside the lock.
+              if (ownsRuntime()) clearRuntimeState(params.sessionId);
+              else deletePendingReport(params.sessionId);
             }
           });
         }

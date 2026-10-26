@@ -1986,6 +1986,44 @@ describe('OrcaTeamService', () => {
     expect(h.service.hasPendingWorkerReports('lead-1')).toBe(true);
   });
 
+  // PR #7309: a direct-user B does not replace A's auto-bridge identity. Its generation
+  // must protect the visible status and Stop mark without losing A's outstanding report.
+  it.each([
+    { reported: true, stopB: false },
+    { reported: false, stopB: false },
+    { reported: true, stopB: true },
+    { reported: false, stopB: true },
+  ])('settles old A without ending direct-user B: %j', async ({ reported, stopB }) => {
+    let generation = 1;
+    const runtime = { isTurnRunning: () => true, getTurnGeneration: () => generation };
+    const h = createDeps({ getLiveSession: () => runtime });
+    const sessionId = 'worker-session-1';
+    await h.service.sendToWorker({ callerLeadSessionId: 'lead-1', targetSessionId: sessionId, message: 'A' });
+    if (reported) await h.service.captureLocalWorkerReport(sessionId)(true);
+    const capture = h.service.captureWorkerTerminalTurn(sessionId);
+    generation++;
+    await h.service.handleWorkerTurnStarted(sessionId);
+    if (stopB) h.setManualInterrupt('input_stop');
+    const stopMark = h.deps.getManualInterrupt(sessionId);
+    vi.mocked(h.deps.updateWorkerStatus).mockClear();
+    vi.mocked(h.deps.broadcastOrcaWorkerChanged).mockClear();
+    vi.mocked(h.deps.clearManualInterrupt).mockClear();
+    const oldTerminal = { sessionId, status: 'done' as const, finalText: 'A result', capture };
+    await h.service.handleWorkerTerminalTurn(oldTerminal);
+    await h.service.handleWorkerTerminalTurn(oldTerminal);
+    expect(h.getWorker().status).toBe('running');
+    expect(h.deps.updateWorkerStatus).not.toHaveBeenCalled();
+    expect(h.deps.broadcastOrcaWorkerChanged).not.toHaveBeenCalled();
+    expect(h.deps.clearManualInterrupt).not.toHaveBeenCalled();
+    expect(h.deps.getManualInterrupt(sessionId)).toBe(stopMark);
+    expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(reported ? 0 : 1);
+    if (!reported) expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledWith('lead-1', expect.stringContaining('A result'), 'worker-1');
+    expect(h.service.captureWorkerTerminalTurn(sessionId).autoBridgeIdentity).toBeNull();
+    await h.service.handleWorkerTerminalTurn({ sessionId, status: 'done', finalText: 'B result' });
+    expect(h.getWorker().status).toBe(stopB ? 'idle' : 'done');
+    expect(h.deps.sendAutoBridgeToLead).toHaveBeenCalledTimes(reported ? 0 : 1);
+  });
+
   it('keeps an in-flight auto-report pending across duplicate terminal delivery', async () => {
     let release!: (result: { accepted: boolean }) => void;
     let started!: () => void;
