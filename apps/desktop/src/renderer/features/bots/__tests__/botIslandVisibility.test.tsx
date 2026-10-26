@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -134,8 +134,8 @@ describe.each([
   });
 });
 
-// 不可用页自己从不处置提醒:只有灵动岛入口导航器在目标地址提交后、带着那次点击的编号
-// 才会请 main 处置(见 botSessionOwners)。直接打开地址、被新点击取代后再访问都不消费。
+// 错误页和旧地址外壳不处置提醒；原任务内容加载后才确认可见。
+// 点击重试或跟随兼容地址本身都不是已读。
 describe('unavailable Bot task page never disposes island alerts by itself', () => {
   it('shows the unavailable state without asking main to dispose anything', async () => {
     mocks.params = { botId: 'bot-a', sessionId: 'delegated-a' };
@@ -151,13 +151,21 @@ describe('unavailable Bot task page never disposes island alerts by itself', () 
     expect(report.mock.calls.every(([id]) => id === null)).toBe(true);
   });
 
-  it('keeps the alert for a live chat and for a retryable load failure', async () => {
+  it('keeps a failed lookup visible without redirecting, and retries without consuming its alert', async () => {
     const live = render(<BotSessionView />);
     await waitFor(() => expect(live.getByTestId('chat')).toBeTruthy());
     live.unmount();
     get.mockRejectedValue(new Error('db busy'));
     const failed = render(<BotSessionView />);
     await waitFor(() => expect(failed.getByText('ccAgent.sessionEntry.failed')).toBeTruthy());
+    expect(failed.queryByTestId('original-task')).toBeNull();
+    expect(failed.queryByTestId('chat')).toBeNull();
+    expect(consumeEntryAlert).not.toHaveBeenCalled();
+    get.mockResolvedValue(profile);
+    fireEvent.click(failed.getByRole('button', { name: 'ccAgent.sessionEntry.retry' }));
+    await waitFor(() => expect(failed.getByTestId('chat')).toBeTruthy());
+    expect(failed.queryByRole('alert')).toBeNull();
+    expect(failed.queryByTestId('original-task')).toBeNull();
     expect(consumeEntryAlert).not.toHaveBeenCalled();
   });
 });
