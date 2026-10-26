@@ -47,13 +47,14 @@ export const pluginUsageSubjects = sqliteTable('plugin_usage_subjects', {
   byBinding: index('plugin_usage_subjects_binding_idx').on(t.ghostId, t.bindingRevision),
 }));
 
-/** Dispatch facts only: no arguments, response bodies, credentials or title snapshots. */
+/** Host-confirmed invocation facts; no content, credentials or title snapshots. */
 export const pluginUsageEvents = sqliteTable('plugin_usage_events', {
   callId: text('call_id').primaryKey(),
   subjectId: text('subject_id').notNull().references(() => pluginUsageSubjects.id),
   historyGeneration: integer('history_generation').notNull(),
   occurredAt: integer('occurred_at').notNull(),
   toolName: text('tool_name').notNull(),
+  entryKind: text('entry_kind').notNull().default('tool'),
   sessionId: text('session_id'),
   version: text('version'),
   releaseId: text('release_id'),

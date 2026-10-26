@@ -58,6 +58,19 @@ describe('plugin target queries and delivery', () => {
   // Production entry: PluginTargetSlot.handle, called by the authorized logic-page pipe.
   // Contract: query/resolve without UI, explicit target delivery, durable deduplication and cancellation.
   // In-memory unit tier; storage and runner adapters are mocked, not the public entry.
+  it('records accepted target input once and preserves the Host parent across receipt replay', async () => {
+    const f = fixture();
+    const accepted: string[] = [];
+    f.slot.adapter!.prepareInvocation = (_pluginId, _id, parent) => parent ?? 'host-root';
+    f.slot.adapter!.acceptInvocation = (_pluginId, id) => { accepted.push(id); };
+    const request = { ...f.request, invocationId: 'tool-parent' };
+    await f.call(request);
+    await f.call(request);
+    expect(accepted).toEqual(['tool-parent']);
+    expect([...receipts.values()][0]?.invocationId).toBe('tool-parent');
+    expect(f.send).toHaveBeenCalledOnce();
+  });
+
   it.each(['project', 'task', 'bot'])('queries and resolves %s metadata without changing delivery state', async (kind) => {
     const f = fixture();
     const target = { kind, id: 'chosen' };
