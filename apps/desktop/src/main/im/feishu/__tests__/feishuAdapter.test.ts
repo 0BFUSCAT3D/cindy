@@ -476,6 +476,28 @@ describe('feishu group lane adapter hooks', () => {
     expect(downloadMessageAttachments).toHaveBeenCalledWith('om_child', [{ kind: 'image', imageKey: 'img_child', messageId: 'om_child' }]);
   });
 
+  // Unit regression r4374812155: many long filenames used to grow both model
+  // facts and the display snapshot without a bound; previous cases had one image.
+  it('bounds unavailable quote descriptions and summarizes excess attachments', async () => {
+    downloadMessageAttachments.mockClear();
+    scopeMocks.utilityText.mockResolvedValueOnce({ ok: true, text: 'NONE' });
+    for (let i = 0; i < 4; i++) {
+      downloadMessageAttachments.mockResolvedValueOnce({ attachments: [], unsupported: [{ type: 'file', label: 'failure '.repeat(1000) }] });
+    }
+    const result = await adapter.prepareAgentTurnText?.(groupEvent({
+      senderId: 'ou_owner',
+      replyContext: { author: 'Alice', text: 'Readable quoted record' },
+      feishuReplyAttachments: Array.from({ length: 100 }, (_, i) => ({
+        kind: 'file' as const, fileKey: `file_${i}`, messageId: `om_${i}`, fileName: 'long-name'.repeat(1000),
+      })),
+    }));
+    expect(downloadMessageAttachments).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(result?.replyContext?.unavailableAttachments).length).toBeLessThanOrEqual(1000);
+    expect(result?.replyContext?.unavailableAttachments?.at(-1)).toContain('96');
+    expect(result?.agentText).toContain('Readable quoted record');
+    expect(result?.contextSnapshot?.replyContext?.length).toBeLessThan(1500);
+  });
+
   it('does not download filtered quote resources and reports failed downloads for accepted quotes', async () => {
     downloadMessageAttachments.mockClear();
     const refs = [{ kind: 'image' as const, imageKey: 'img_child', messageId: 'om_child' }];

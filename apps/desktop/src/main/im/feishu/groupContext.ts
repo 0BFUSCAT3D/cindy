@@ -91,6 +91,8 @@ export interface FeishuGroupContextDeps {
     threadId?: string;
     pageToken?: string;
     pageSize?: number;
+    excludeMessageId?: string;
+    mergeForwardReadBudget?: { remaining: number };
   }) => Promise<FeishuChatHistoryPage>;
   /** 下载某条历史消息的附件(单附件失败隔离进 unsupported)。 */
   download: (messageId: string, refs: FeishuAttachmentRef[]) => Promise<FeishuDownloadResult>;
@@ -247,6 +249,7 @@ export async function buildFeishuGroupContext(args: {
   // 纯附件触发没有问题文本作判断依据, 只取最新一页。
   const latestPageOnly = question.trim().length === 0;
   const keptPages: FeishuRecentChatMessage[][] = [];
+  const mergeForwardReadBudget = { remaining: 20 };
   let pageToken: string | undefined;
   try {
     for (let pageIdx = 0; pageIdx < HISTORY_MAX_PAGES; pageIdx++) {
@@ -255,6 +258,8 @@ export async function buildFeishuGroupContext(args: {
         threadId: lane.threadId || undefined,
         pageToken,
         pageSize: HISTORY_PAGE_SIZE,
+        excludeMessageId: triggerMessageId,
+        mergeForwardReadBudget,
       });
       // thread 容器只回本话题消息, 无需再过滤; chat 容器混入话题消息,
       // 群主流 lane 只取 threadId 为空的(话题消息归各话题 lane)。

@@ -528,6 +528,43 @@ describe('feishu outbound lane routing', () => {
     });
   });
 
+  // Unit regressions r4374812162, through the production history entry: excluded
+  // envelopes must cause no reads, and nested reads must share the turn's budget.
+  it('excludes the trigger and other topics before expanding merged history', async () => {
+    larkMocks.list.mockResolvedValueOnce({ code: 0, data: { items: [
+      { message_id: 'om_trigger', chat_id: 'oc_group1', thread_id: '', msg_type: 'merge_forward' },
+      { message_id: 'om_other_topic', chat_id: 'oc_group1', thread_id: 'omt_other', msg_type: 'merge_forward' },
+      { message_id: 'om_kept', chat_id: 'oc_group1', thread_id: '', msg_type: 'text', body: { content: '{"text":"retained"}' } },
+    ] } });
+    const result = await outbound.fetchChatHistoryPage({ chatId: 'oc_group1', excludeMessageId: 'om_trigger' });
+    expect(result.messages.map((item) => item.text)).toEqual(['retained']);
+    expect(larkMocks.getMessage).not.toHaveBeenCalled();
+  });
+
+  it('shares merged-history reads across nested envelopes and pages', async () => {
+    const mergeForwardReadBudget = { remaining: 2 };
+    larkMocks.list.mockResolvedValueOnce({ code: 0, data: { items: [
+      { message_id: 'om_bundle', chat_id: 'oc_group1', thread_id: '', msg_type: 'merge_forward' },
+    ] } });
+    larkMocks.getMessage.mockResolvedValueOnce({ code: 0, data: { items: [
+      { message_id: 'om_bundle', chat_id: 'oc_group1', msg_type: 'merge_forward' },
+      { message_id: 'om_nested', upper_message_id: 'om_bundle', msg_type: 'merge_forward' },
+    ] } });
+    larkMocks.getMessage.mockResolvedValueOnce({ code: 0, data: { items: [
+      { message_id: 'om_nested', msg_type: 'merge_forward' },
+      { message_id: 'om_child', upper_message_id: 'om_nested', msg_type: 'text', body: { content: '{"text":"nested record"}' } },
+    ] } });
+    const first = await outbound.fetchChatHistoryPage({ chatId: 'oc_group1', mergeForwardReadBudget });
+    expect(first.messages[0]?.text).toContain('nested record');
+    larkMocks.list.mockResolvedValueOnce({ code: 0, data: { items: [
+      { message_id: 'om_older_bundle', chat_id: 'oc_group1', thread_id: '', msg_type: 'merge_forward' },
+      { message_id: 'om_text', chat_id: 'oc_group1', thread_id: '', msg_type: 'text', body: { content: '{"text":"older text"}' } },
+    ] } });
+    const second = await outbound.fetchChatHistoryPage({ chatId: 'oc_group1', pageToken: 'older', mergeForwardReadBudget });
+    expect(second.messages.map((item) => item.text)).toEqual(['older text', '[合并转发消息：读取预算已用完]']);
+    expect(larkMocks.getMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps an unreadable merged forward visible rather than dropping it', async () => {
     larkMocks.getMessage.mockResolvedValueOnce({ code: 0, data: { items: [
       { message_id: 'om_empty', chat_id: 'oc_group1', msg_type: 'merge_forward' },

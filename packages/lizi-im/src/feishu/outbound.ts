@@ -1810,9 +1810,12 @@ async function resolveReplyWithClient(
   c: Lark.Client,
   messageId: string,
   expectedChatId: string,
+  readBudget = { remaining: 21 },
 ): Promise<ResolvedReplyMessage | null> {
   const log = getLog();
   try {
+    if (readBudget.remaining <= 0) return null;
+    readBudget.remaining--;
     const res = await c.im.v1.message.get({
       params: { user_id_type: 'open_id', with_sender_name: true },
       path: { message_id: messageId },
@@ -1830,7 +1833,6 @@ async function resolveReplyWithClient(
         .replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim().slice(0, 64);
     const attachments: AttachmentRef[] = [];
     const visited = new Set<string>();
-    let nestedFetches = 0;
     const render = async (item: typeof root): Promise<string> => {
       if (!item.message_id || item.deleted || visited.has(item.message_id)) return '';
       // The envelope is checked against the triggering chat above. Forwarded
@@ -1840,8 +1842,9 @@ async function resolveReplyWithClient(
         let children = items.filter((child) => child.upper_message_id === item.message_id);
         // Some responses include only the immediate level. Fetch deeper envelopes
         // with the same client; never follow arbitrary message IDs from body text.
-        if (!children.length && item !== root && nestedFetches++ < 20) {
+        if (!children.length && item !== root && readBudget.remaining > 0) {
           try {
+            readBudget.remaining--;
             const nested = await c.im.v1.message.get({
               params: { user_id_type: 'open_id', with_sender_name: true },
               path: { message_id: item.message_id },
@@ -1862,7 +1865,8 @@ async function resolveReplyWithClient(
           const text = await render(child);
           if (text) lines.push(`[${authorOf(child)}] ${text}`);
         }
-        return lines.length ? `[合并转发消息]\n${lines.join('\n')}` : '[合并转发消息：未能读取子消息]';
+        return lines.length ? `[合并转发消息]\n${lines.join('\n')}`
+          : readBudget.remaining <= 0 ? '[合并转发消息：读取预算已用完]' : '[合并转发消息：未能读取子消息]';
       }
       const parsed = parseIncoming(item.msg_type ?? '', item.body?.content ?? '');
       attachments.push(...parsed.attachments.map((ref) => ({ ...ref, messageId: item.message_id })));
@@ -1908,8 +1912,7 @@ export interface ChatHistoryPage {
 
 /**
  * 按页拉群/话题历史(群 lane 触发时 adapter 拼上下文用)。倒序拉一页, 返回
- * 页内升序。话题 lane 传 threadId 走 thread 容器, 只回本话题消息; 群主流
- * 不传, 调用方自行按 thread_id 过滤(chat 容器会混入话题消息)。
+ * 页内升序。展开转发前按 threadId 筛选; 缺省只保留群主流。
  *
  * 需要「获取群组中所有消息」权限。**失败(权限不足/网络)直接抛错** — 调用方
  * 需要区分「真的没有历史」与「拉取失败」来做降级提示, 不能吞成空数组。
@@ -1920,6 +1923,9 @@ export async function fetchChatHistoryPage(args: {
   threadId?: string;
   pageToken?: string;
   pageSize?: number;
+  excludeMessageId?: string;
+  /** Mutable per-turn allowance, shared by every page and nested message.get. */
+  mergeForwardReadBudget?: { remaining: number };
 }): Promise<ChatHistoryPage> {
   const c = S().client;
   if (!c) throw new Error('feishu client not bound');
@@ -1938,15 +1944,18 @@ export async function fetchChatHistoryPage(args: {
   }
   const items = res.data?.items ?? [];
   const out: RecentChatMessage[] = [];
+  const readBudget = args.mergeForwardReadBudget ?? { remaining: 20 };
   for (const item of items) {
     if (!item.message_id || item.deleted) continue;
+    if (item.message_id === args.excludeMessageId || (item.thread_id ?? '') !== (args.threadId ?? '')) continue;
     const msgType = item.msg_type ?? '';
     const rawContent = item.body?.content ?? '';
     let text = '';
     let attachments: AttachmentRef[] = [];
     if (msgType === 'merge_forward') {
-      const resolved = await resolveReplyWithClient(c, item.message_id, args.chatId);
-      text = resolved?.replyContext.text ?? '[合并转发消息：读取失败]';
+      const exhausted = readBudget.remaining <= 0;
+      const resolved = exhausted ? null : await resolveReplyWithClient(c, item.message_id, args.chatId, readBudget);
+      text = resolved?.replyContext.text ?? (exhausted ? '[合并转发消息：读取预算已用完]' : '[合并转发消息：读取失败]');
       attachments = resolved?.attachments ?? [];
     } else if (
       msgType === 'text' ||

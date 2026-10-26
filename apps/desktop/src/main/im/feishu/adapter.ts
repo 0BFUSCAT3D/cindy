@@ -460,25 +460,41 @@ export function buildFeishuAdapter(
         if (!filtered) {
           let images = 0;
           let files = 0;
-          const unavailable = [...(safeReply.unavailableAttachments ?? [])];
+          // These notes also enter messageHandler's inbound facts. Bound the
+          // structured value itself, rather than only its display rendering.
+          const unavailable: string[] = [];
+          let unavailableChars = 2; // JSON array brackets
+          let omitted = 0;
+          const addUnavailable = (description: string) => {
+            const note = description.slice(0, 160);
+            const size = JSON.stringify(note).length + 1;
+            if (unavailableChars + size > 900) {
+              omitted++;
+              return;
+            }
+            unavailable.push(note);
+            unavailableChars += size;
+          };
+          for (const note of safeReply.unavailableAttachments ?? []) addUnavailable(note);
           for (const ref of event.feishuReplyAttachments ?? []) {
-            const label = ref.kind === 'image' ? '引用图片' : `引用文件 ${ref.fileName}`;
             const overLimit = ref.kind === 'image' ? images++ >= HISTORY_IMAGE_MAX : files++ >= HISTORY_FILE_MAX;
             if (!ref.messageId || overLimit) {
-              unavailable.push(`${label}：超出本轮附件数量上限或缺少来源`);
+              omitted++;
               continue;
             }
+            const label = ref.kind === 'image' ? '引用图片' : `引用文件 ${ref.fileName.slice(0, 80)}`;
             try {
               const downloaded = await feishuIm.downloadMessageAttachments(ref.messageId, [ref]);
               contextAttachments.push(...downloaded.attachments);
-              unavailable.push(...downloaded.unsupported.map((entry) => `${label}：${entry.label}`));
+              for (const entry of downloaded.unsupported) addUnavailable(`${label}：${entry.label}`);
               if (!downloaded.attachments.length && !downloaded.unsupported.length) {
-                unavailable.push(`${label}：未能下载`);
+                addUnavailable(`${label}：未能下载`);
               }
             } catch {
-              unavailable.push(`${label}：下载失败`);
+              addUnavailable(`${label}：下载失败`);
             }
           }
+          if (omitted) unavailable.push(`另有 ${omitted} 条引用附件未提供说明已省略（含超出数量上限或缺少来源的附件）`);
           if (contextAttachments.length) safeReply.attachmentCount = contextAttachments.length;
           if (unavailable.length) safeReply.unavailableAttachments = unavailable;
         }
